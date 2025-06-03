@@ -611,6 +611,20 @@ void WorldSession::HandleCharDeleteOpcode(WorldPacket& recv_data)
     SendPacket(data, true);
 }
 
+// 黑兔来打招呼了
+void WorldSession::HandleHeituHelloOpcode(WorldPacket& recv_data)
+{
+    // 能进入到这里说明是通过黑兔登录的
+    this->heituIsModernClient = true;
+
+    bool isSupportThreat = false; // 黑兔是否支持仇恨
+    if (recv_data.rpos() <= (recv_data.size()-sizeof(bool)))
+    {
+        recv_data >> isSupportThreat;
+    }
+    this->heituIsSupportThreat = isSupportThreat;
+}
+
 void WorldSession::HandlePlayerLoginOpcode(WorldPacket& recv_data)
 {
     ObjectGuid playerGuid;

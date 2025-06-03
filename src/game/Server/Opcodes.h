@@ -1093,11 +1093,21 @@ enum Opcodes
     SMSG_REFER_A_FRIEND_FAILURE                     = 0x420,
     SMSG_SPLINE_MOVE_SET_FLYING                     = 0x421,
     SMSG_SPLINE_MOVE_UNSET_FLYING                   = 0x422,
-    SMSG_SUMMON_CANCEL                              = 0x423
+    SMSG_SUMMON_CANCEL                              = 0x423,
+
+    /// 黑兔支持的一些opcode
+    // 以下都是黑兔自定义的OPCODE
+	CMSG_HEITU_HELLO = 0x424, // 黑兔发给服务器| 玩家在登录成功之后，向服务器注册自己拥有什么能力
+
+	// 下面三个是服务器传给客户端的，当黑兔
+	SMSG_HEITU_THREAT_CLEAR  = 0x425, //
+	SMSG_HEITU_THREAT_REMOVE = 0x426, //
+	SMSG_HEITU_THREAT_UPDATE = 0x427, //
+    SMSG_HEITU_HIGHEST_THREAT_UPDATE = 0x428, //
 };
 
 // Don't forget to change this value and add opcode name to Opcodes.cpp when you add new opcode!
-#define NUM_MSG_TYPES 0x424
+#define NUM_MSG_TYPES 0x429
 
 /// Player state
 enum SessionStatus
