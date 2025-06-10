@@ -797,6 +797,12 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder* holder)
     }
     SendPacket(data);
 
+    // 向客户端发送，请求黑兔扩展。2.4.3受到这个协议也不会有问题
+    {
+        WorldPacket data2(SMSG_HEITU_HELLO, 0);
+        SendPacket(data2);
+    }
+
     // load player specific part before send times
     LoadAccountData(holder->GetResult(PLAYER_LOGIN_QUERY_LOADACCOUNTDATA), PER_CHARACTER_CACHE_MASK);
     SendAccountDataTimes();

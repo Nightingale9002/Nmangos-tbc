@@ -1104,10 +1104,11 @@ enum Opcodes
 	SMSG_HEITU_THREAT_REMOVE = 0x426, //
 	SMSG_HEITU_THREAT_UPDATE = 0x427, //
     SMSG_HEITU_HIGHEST_THREAT_UPDATE = 0x428, //
+    SMSG_HEITU_HELLO = 0x429, //
 };
 
 // Don't forget to change this value and add opcode name to Opcodes.cpp when you add new opcode!
-#define NUM_MSG_TYPES 0x429
+#define NUM_MSG_TYPES 0x42A
 
 /// Player state
 enum SessionStatus
