@@ -1811,6 +1811,12 @@ class Unit : public WorldObject
         void SendTeleportPacket(float x, float y, float z, float ori, GenericTransport* transport);
         void SendHeartBeat();
 
+        // 黑兔扩展新加的方法，作用于仇恨
+        void SendHeituThreatListUpdate();
+        void SendHeituClearThreatListOpcode();
+        void SendHeituRemoveFromThreatListOpcode(HostileReference* pHostileReference);
+        void SendHeituChangeCurrentVictimOpcode(HostileReference* pHostileReference);
+
         void SendMoveRoot(bool state, bool broadcastOnly = false);
 
         bool IsMoving() const { return m_movementInfo.HasMovementFlag(movementFlagsMask); }

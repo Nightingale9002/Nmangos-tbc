@@ -503,6 +503,10 @@ void Unit::Update(const uint32 diff)
     _UpdateSpells(diff);
     m_spellUpdateHappening = false;
 
+    // 发送黑兔仇恨扩展功能
+    if (CanHaveThreatList() && getThreatManager().isNeedUpdateToClient(diff))
+        SendHeituThreatListUpdate();
+
     CleanupDeletedAuras();
 
     if (m_lastManaUseTimer)
@@ -9095,7 +9099,9 @@ void Unit::AddThreat(Unit* pVictim, float threat /*= 0.0f*/, bool crit /*= false
 
 void Unit::DeleteThreatList()
 {
-    getThreatManager().clearReferences();
+    // 黑兔仇恨扩展
+    getThreatManager().ClearAllThreat();
+    // getThreatManager().clearReferences();
     getHostileRefManager().deleteReferences();
 }
 
@@ -11140,6 +11146,66 @@ void Unit::SendTeleportPacket(float x, float y, float z, float ori, GenericTrans
     moveUpdateTeleport << GetPackGUID();
     teleportMovementInfo.Write(moveUpdateTeleport);
     SendMessageToSetExcept(moveUpdateTeleport, player);
+}
+
+// 黑兔，发送仇恨列表
+void Unit::SendHeituThreatListUpdate()
+{
+    if (!getThreatManager().isThreatListEmpty())
+    {
+        ThreatList const& tlist = getThreatManager().getThreatList();
+        uint32 count = tlist.size();
+
+        //LOG_DEBUG("entities.unit", "WORLD: Send SMSG_THREAT_UPDATE Message");
+        WorldPacket data(SMSG_HEITU_THREAT_UPDATE, 8 + count * 8);
+        data << GetPackGUID();
+        data << uint32(count);
+        
+        for (auto itr = tlist.begin(); itr != tlist.end(); ++itr)
+        {
+            data << (*itr)->getUnitGuid().WriteAsPacked();
+            data << uint32((*itr)->getThreat() * 100);
+        }
+        SendMessageToSet(data, false);
+    }
+}
+
+void Unit::SendHeituClearThreatListOpcode()
+{
+    // LOG_DEBUG("entities.unit", "WORLD: Send SMSG_THREAT_CLEAR Message");
+    WorldPacket data(SMSG_HEITU_THREAT_CLEAR, 8);
+    data << GetPackGUID();
+    SendMessageToSet(data, false);
+}
+
+void Unit::SendHeituRemoveFromThreatListOpcode(HostileReference* pHostileReference)
+{
+    // LOG_DEBUG("entities.unit", "WORLD: Send SMSG_THREAT_REMOVE Message");
+    WorldPacket data(SMSG_HEITU_THREAT_REMOVE, 8 + 8);
+    data << GetPackGUID();
+    data << pHostileReference->getUnitGuid().WriteAsPacked();
+    SendMessageToSet(data, false);
+}
+
+void Unit::SendHeituChangeCurrentVictimOpcode(HostileReference* pHostileReference)
+{
+    if (!getThreatManager().isThreatListEmpty())
+    {
+        ThreatList const& tlist = getThreatManager().getThreatList();
+        uint32 count = tlist.size();
+
+        WorldPacket data(SMSG_HEITU_HIGHEST_THREAT_UPDATE, 8 + 8 + count * 8);
+        data << GetPackGUID();
+        data << pHostileReference->getUnitGuid().WriteAsPacked();
+        data << uint32(count);
+
+        for (auto itr = tlist.begin(); itr != tlist.end(); ++itr)
+        {
+            data << (*itr)->getUnitGuid().WriteAsPacked();
+            data << uint32((*itr)->getThreat() * 100);
+        }
+        SendMessageToSet(data, false);
+    }
 }
 
 void Unit::MonsterMoveWithSpeed(float x, float y, float z, float speed, bool generatePath, bool forceDestination)

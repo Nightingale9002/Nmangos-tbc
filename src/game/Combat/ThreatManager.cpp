@@ -30,6 +30,8 @@
 //================= ThreatCalcHelper ===========================
 //==============================================================
 
+#define THREAT_UPDATE_INTERVAL 2 * IN_MILLISECONDS    // Server should send threat update to client periodically each second
+
 // The pHatingUnit is not used yet
 float ThreatCalcHelper::CalcThreat(Unit* hatedUnit, Unit* hatingUnit, float threat, bool crit, SpellSchoolMask schoolMask, SpellEntry const* threatSpell, bool assist)
 {
@@ -430,17 +432,26 @@ HostileReference* ThreatContainer::selectNextVictim(Unit* attacker, HostileRefer
 //============================================================
 
 ThreatManager::ThreatManager(Unit* owner)
-    : iCurrentVictim(nullptr), iOwner(owner)
+    : iCurrentVictim(nullptr), iOwner(owner), iUpdateTimer(THREAT_UPDATE_INTERVAL)
 {
 }
 
 //============================================================
+
+// 黑兔该仇恨扩展
+void ThreatManager::ClearAllThreat()
+{
+    if (iOwner->CanHaveThreatList(true) && !isThreatListEmpty())
+        iOwner->SendHeituClearThreatListOpcode();
+    clearReferences();
+}
 
 void ThreatManager::clearReferences()
 {
     iThreatContainer.clearReferences();
     iThreatOfflineContainer.clearReferences();
     iCurrentVictim = nullptr;
+    iUpdateTimer = THREAT_UPDATE_INTERVAL;
 }
 
 //============================================================
@@ -606,6 +617,10 @@ void ThreatManager::FixateTarget(Unit* victim)
 
 void ThreatManager::setCurrentVictim(HostileReference* hostileReference)
 {
+    if (hostileReference && hostileReference != iCurrentVictim)
+    {
+        iOwner->SendHeituChangeCurrentVictimOpcode(hostileReference);
+    }
     iCurrentVictim = hostileReference;
 }
 
@@ -642,6 +657,12 @@ void ThreatManager::processThreatEvent(ThreatRefStatusChangeEvent& threatRefStat
                     setCurrentVictim(nullptr);
                     setDirty(true);
                 }
+                // 黑兔仇恨扩展
+                if (getOwner() && getOwner()->IsInWorld())
+                    if (Unit* target = ObjectAccessor::GetUnit(*getOwner(), hostileReference->getUnitGuid()))
+                        if (getOwner()->IsInMap(target))
+                            getOwner()->SendHeituRemoveFromThreatListOpcode(hostileReference);
+
                 iThreatContainer.remove(hostileReference);
                 iThreatOfflineContainer.addReference(hostileReference);
             }
@@ -659,6 +680,10 @@ void ThreatManager::processThreatEvent(ThreatRefStatusChangeEvent& threatRefStat
                 setCurrentVictim(nullptr);
                 setDirty(true);
             }
+
+            // 黑兔仇恨扩展
+            iOwner->SendHeituRemoveFromThreatListOpcode(hostileReference);
+
             if (hostileReference->isOnline())
             {
                 iThreatContainer.remove(hostileReference);
@@ -672,6 +697,20 @@ void ThreatManager::processThreatEvent(ThreatRefStatusChangeEvent& threatRefStat
             setDirty(true);
             break;
     }
+}
+
+bool ThreatManager::isNeedUpdateToClient(uint32 time)
+{
+    if (isThreatListEmpty())
+        return false;
+
+    if (time >= iUpdateTimer)
+    {
+        iUpdateTimer = THREAT_UPDATE_INTERVAL;
+        return true;
+    }
+    iUpdateTimer -= time;
+    return false;
 }
 
 void ThreatManager::ClearSuppressed(HostileReference* except)
