@@ -611,20 +611,6 @@ void WorldSession::HandleCharDeleteOpcode(WorldPacket& recv_data)
     SendPacket(data, true);
 }
 
-// 黑兔来打招呼了
-void WorldSession::HandleHeituHelloOpcode(WorldPacket& recv_data)
-{
-    // 能进入到这里说明是通过黑兔登录的
-    this->heituIsModernClient = true;
-
-    bool isSupportThreat = false; // 黑兔是否支持仇恨
-    if (recv_data.rpos() <= (recv_data.size()-sizeof(bool)))
-    {
-        recv_data >> isSupportThreat;
-    }
-    this->heituIsSupportThreat = isSupportThreat;
-}
-
 void WorldSession::HandlePlayerLoginOpcode(WorldPacket& recv_data)
 {
     ObjectGuid playerGuid;
@@ -796,12 +782,6 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder* holder)
         data << pCurrChar->GetOrientation();
     }
     SendPacket(data);
-
-    // 向客户端发送，请求黑兔扩展。2.4.3受到这个协议也不会有问题
-    {
-        WorldPacket data2(SMSG_HEITU_HELLO, 0);
-        SendPacket(data2);
-    }
 
     // load player specific part before send times
     LoadAccountData(holder->GetResult(PLAYER_LOGIN_QUERY_LOADACCOUNTDATA), PER_CHARACTER_CACHE_MASK);

@@ -197,7 +197,6 @@ class ThreatManager
         ~ThreatManager() { clearReferences(); }
 
         void clearReferences();
-        void ClearAllThreat();
 
         void addThreat(Unit* victim, float threat, bool crit, SpellSchoolMask schoolMask, SpellEntry const* threatSpell, bool assist);
         void addThreat(Unit* victim, float threat) { addThreat(victim, threat, false, SPELL_SCHOOL_MASK_NONE, nullptr, false); }
@@ -216,8 +215,6 @@ class ThreatManager
         bool isThreatListEmpty() const { return iThreatContainer.empty(); }
 
         void processThreatEvent(ThreatRefStatusChangeEvent& threatRefStatusChangeEvent);
-
-        bool isNeedUpdateToClient(uint32 time);
 
         HostileReference* getCurrentVictim() const { return iCurrentVictim; }
 
@@ -248,8 +245,6 @@ class ThreatManager
         Unit* iOwner;
         ThreatContainer iThreatContainer;
         ThreatContainer iThreatOfflineContainer;
-
-        uint32 iUpdateTimer;
 };
 
 //=================================================

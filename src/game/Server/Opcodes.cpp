@@ -1086,5 +1086,4 @@ OpcodeHandler opcodeTable[NUM_MSG_TYPES] =
     /*0x421*/ { "SMSG_SPLINE_MOVE_SET_FLYING",                  STATUS_NEVER,    PROCESS_INPLACE,      &WorldSession::Handle_ServerSide               },
     /*0x422*/ { "SMSG_SPLINE_MOVE_UNSET_FLYING",                STATUS_NEVER,    PROCESS_INPLACE,      &WorldSession::Handle_ServerSide               },
     /*0x423*/ { "SMSG_SUMMON_CANCEL",                           STATUS_NEVER,    PROCESS_INPLACE,      &WorldSession::Handle_ServerSide               },
-    /*0x424*/ { "CMSG_HEITU_HELLO",                             STATUS_LOGGEDIN, PROCESS_THREADUNSAFE, &WorldSession::HandleHeituHelloOpcode          },
 };
