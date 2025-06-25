@@ -802,6 +802,10 @@ SpellAuraProcResult Unit::TriggerProccedSpell(Unit* target, std::array<int32, MA
     if (!triggeredByAura->GetHolder()->IsProcReady(GetMap()->GetCurrentClockTime()))
         return SPELL_AURA_PROC_FAILED;
 
+    // 检查视野，仅针对 Arcane Bolt (45429)
+    if (spellInfo->Id == 45429 && target && target != this && !IsWithinLOSInMap(target))
+        return SPELL_AURA_PROC_FAILED;
+
     if (basepoints[EFFECT_INDEX_0] || basepoints[EFFECT_INDEX_1] || basepoints[EFFECT_INDEX_2])
         CastCustomSpell(target, spellInfo,
             basepoints[EFFECT_INDEX_0] ? &basepoints[EFFECT_INDEX_0] : nullptr,
