@@ -3891,7 +3891,7 @@ void Player::_SaveSpellCooldowns()
 
 
 uint32 Player::resetTalentsCost() const
-{
+{/*
     // The first time reset costs 1 gold
     if (m_resetTalentsCost < 1 * GOLD)
         return 1 * GOLD;
@@ -3914,7 +3914,8 @@ uint32 Player::resetTalentsCost() const
     // until it hits a cap of 50 gold.
     if (new_cost > 50 * GOLD)
         new_cost = 50 * GOLD;
-    return new_cost;
+*/
+    return 0;
 }
 
 bool Player::resetTalents(bool no_cost)
