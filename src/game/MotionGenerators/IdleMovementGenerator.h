@@ -51,14 +51,4 @@ class DistractMovementGenerator : public IdleMovementGenerator
         ShortTimeTracker m_timer;
 };
 
-class AssistanceDistractMovementGenerator : public DistractMovementGenerator
-{
-public:
-    AssistanceDistractMovementGenerator(uint32 timer) :
-        DistractMovementGenerator(timer) {}
-
-    MovementGeneratorType GetMovementGeneratorType() const override { return CONFUSED_MOTION_TYPE; }
-    void Finalize(Unit& unit) override;
-};
-
 #endif

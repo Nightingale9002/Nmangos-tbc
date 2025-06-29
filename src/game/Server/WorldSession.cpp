@@ -46,10 +46,6 @@
 #include <cstdarg>
 #include <iostream>
 
-
-#ifdef BUILD_ELUNA
-#include "LuaEngine/LuaEngine.h"
-#endif
 #ifdef BUILD_DEPRECATED_PLAYERBOT
 #include "PlayerBot/Base/PlayerbotMgr.h"
 #include "PlayerBot/Base/PlayerbotAI.h"
@@ -785,15 +781,6 @@ void WorldSession::LogoutPlayer()
         uint32 guid = _player->GetGUIDLow();
 #endif
 
-#ifdef BUILD_ELUNA
-        if (Eluna* e = sWorld.GetEluna())
-            e->OnLogout(_player);
-#endif
-
-#ifdef BUILD_SOLOCRAFT
-        CharacterDatabase.PExecute("DELETE FROM custom_solocraft_character_stats WHERE GUID = %u", _player->GetGUIDLow());
-#endif
-
         ///- Remove the player from the world
         // the player may not be in the world when logging out
         // e.g if he got disconnected during a transfer to another map
@@ -1232,11 +1219,6 @@ void WorldSession::SendTransferAborted(uint32 mapid, uint8 reason, uint8 arg) co
 
 void WorldSession::ExecuteOpcode(OpcodeHandler const& opHandle, WorldPacket& packet)
 {
-#ifdef BUILD_ELUNA
-    if (Eluna* e = sWorld.GetEluna())
-        if (!e->OnPacketReceive(this, packet))
-            return;
-#endif
     // need prevent do internal far teleports in handlers because some handlers do lot steps
     // or call code that can do far teleports in some conditions unexpectedly for generic way work code
     if (_player)

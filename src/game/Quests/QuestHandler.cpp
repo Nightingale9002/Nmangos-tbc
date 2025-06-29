@@ -30,9 +30,6 @@
 #include "AI/ScriptDevAI/ScriptDevAIMgr.h"
 #include "Groups/Group.h"
 #include "Tools/Formulas.h"
-#ifdef BUILD_ELUNA
-#include "LuaEngine/LuaEngine.h"
-#endif
 
 #ifdef BUILD_DEPRECATED_PLAYERBOT
 #include "PlayerBot/Base/PlayerbotAI.h"
@@ -464,11 +461,6 @@ void WorldSession::HandleQuestLogRemoveQuest(WorldPacket& recv_data)
             }
 
             _player->SetQuestStatus(quest, QUEST_STATUS_NONE);
-#ifdef BUILD_ELUNA
-            // used by eluna
-            if (Eluna* e = _player->GetEluna())
-                e->OnQuestAbandon(_player, quest);
-#endif
         }
 
         _player->SetQuestSlot(slot, 0);

@@ -116,10 +116,6 @@ class Log : public MaNGOS::Singleton<Log, MaNGOS::ClassLevelLockable<Log, std::m
                 fclose(dberLogfile);
             dberLogfile = nullptr;
 
-            if (elunaErrLogfile != nullptr)
-                fclose(elunaErrLogfile);
-            elunaErrLogfile = nullptr;
-
             if (eventAiErLogfile != nullptr)
                 fclose(eventAiErLogfile);
             eventAiErLogfile = nullptr;
@@ -162,10 +158,6 @@ class Log : public MaNGOS::Singleton<Log, MaNGOS::ClassLevelLockable<Log, std::m
         void outErrorDb(const char* err, ...)     ATTR_PRINTF(2, 3);
         // any log level
         void outChar(const char* str, ...)        ATTR_PRINTF(2, 3);
-
-        void outErrorEluna();                               // any log level
-        // any log level
-        void outErrorEluna(const char* str, ...)        ATTR_PRINTF(2, 3);
 
         void outErrorEventAI();                             // any log level
         // any log level
@@ -211,7 +203,6 @@ class Log : public MaNGOS::Singleton<Log, MaNGOS::ClassLevelLockable<Log, std::m
         FILE* gmLogfile;
         FILE* charLogfile;
         FILE* dberLogfile;
-        FILE* elunaErrLogfile;
         FILE* eventAiErLogfile;
         FILE* scriptErrLogFile;
         FILE* worldLogfile;
