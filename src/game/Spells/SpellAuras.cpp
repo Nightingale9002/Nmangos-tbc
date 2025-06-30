@@ -3410,7 +3410,7 @@ void Aura::HandleAuraModShapeshift(bool apply, bool Real)
                 if (m_modifier.m_miscvalue == FORM_CAT)
                 {
                     if (target->IsPlayer())
-                        static_cast<Player*>(target)->UpdateEnergyRegen();
+                        //static_cast<Player*>(target)->UpdateEnergyRegen();
                     target->SetPower(POWER_ENERGY, 0);
                     if (irand(1, 100) <= furorChance)
                         target->CastSpell(target, 17099, TRIGGERED_OLD_TRIGGERED, nullptr, this);
