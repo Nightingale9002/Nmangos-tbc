@@ -21,6 +21,7 @@
 
 #include "Database/DatabaseEnv.h"
 #include "Entities/ObjectGuid.h"
+#include "Globals/EnumFlag.h"
 
 class SocialMgr;
 class PlayerSocial;
@@ -40,7 +41,7 @@ enum SocialFlag
 {
     SOCIAL_FLAG_FRIEND      = 0x01,
     SOCIAL_FLAG_IGNORED     = 0x02,
-    SOCIAL_FLAG_MUTED       = 0x04,                         // guessed
+    SOCIAL_FLAG_MUTED       = 0x04,
 };
 
 struct FriendInfo
@@ -107,6 +108,15 @@ enum FriendsResult
 
 #define SOCIALMGR_FRIEND_LIMIT  50
 #define SOCIALMGR_IGNORE_LIMIT  25                          // checked max for 2.4.3, list tail not show if more
+
+enum class SocialListFlags : uint32
+{
+    FRIEND_LIST = 0x1,
+    IGNORE_LIST = 0x2,
+    MUTE_LIST   = 0x4,
+};
+
+DEFINE_ENUM_FLAG(SocialListFlags);
 
 class PlayerSocial
 {

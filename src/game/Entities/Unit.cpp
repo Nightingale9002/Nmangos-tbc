@@ -4923,6 +4923,24 @@ int32 Unit::GetMaxNegativeAuraModifierByMiscValue(AuraType auratype, int32 misc_
     return modifier;
 }
 
+int32 Unit::GetMaxPositiveAuraModifierByItemClass(AuraType auratype, Item* weapon) const
+{
+    int32 modifier = 0;
+
+    AuraList const& mTotalAuraList = GetAurasByType(auratype);
+    for (auto i : mTotalAuraList)
+    {
+        Modifier* mod = i->GetModifier();
+        SpellEntry const* spellProto = i->GetSpellProto();
+        if (spellProto->EquippedItemClass == -1 ||
+            (weapon->IsFitToSpellRequirements(spellProto)))
+            if (mod->m_amount > modifier)
+                modifier = mod->m_amount;
+    }
+
+    return modifier;
+}
+
 bool Unit::AddSpellAuraHolder(SpellAuraHolder* holder)
 {
     SpellEntry const* aurSpellInfo = holder->GetSpellProto();
@@ -12385,7 +12403,7 @@ void Unit::AdjustZForCollision(float x, float y, float& z, float halfHeight) con
     }
 }
 
-uint32 Unit::GetSpellRank(SpellEntry const* spellInfo)
+uint32 Unit::GetSpellRank(SpellEntry const* spellInfo) const
 {
     uint32 spellRank = GetLevel();
     if (spellInfo->maxLevel > 0 && spellRank >= spellInfo->maxLevel * 5)

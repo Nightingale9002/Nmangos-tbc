@@ -666,6 +666,7 @@ INSERT INTO spell_scripts(Id, ScriptName) VALUES
 (30434,'spell_gameobject_call_for_help_on_usage'), -- Elemental Seaforium Charge
 (34799,'spell_arcane_devastation'),
 (34145,'spell_ritual_of_souls_dummy'),
+(34219,'spell_recharging_battery'),
 (32173,'spell_entangling_roots');
 
 -- Wotlk
@@ -688,6 +689,8 @@ INSERT INTO spell_scripts(Id, ScriptName) VALUES
 
 -- Priest
 INSERT INTO spell_scripts(Id, ScriptName) VALUES
+(527,'spell_dispel_magic_priest'),
+(988 ,'spell_dispel_magic_priest'),
 (10060,'spell_power_infusion'),
 (15268,'spell_blackout'),
 (15323,'spell_blackout'),
