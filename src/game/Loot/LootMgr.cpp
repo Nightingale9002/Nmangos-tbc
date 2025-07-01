@@ -1463,7 +1463,7 @@ void Loot::ShowContentTo(Player* plr)
         // for item loot that might be empty we should not display error but instead send empty loot window
         if (!m_lootItems.empty() && !CanLoot(plr))
         {
-            SendReleaseFor(plr);
+            //SendReleaseFor(plr);
             sLog.outError("Loot::ShowContentTo()> %s is trying to open a loot without credential", plr->GetGuidStr().c_str());
             return;
         }
