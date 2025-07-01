@@ -499,21 +499,19 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
         this->i_path = new PathFinder(&owner);
 
     bool gen = false;
-    if (owner.IsWithinDist3d(x, y, z, 200.f) && std::abs(owner.GetPositionZ() - z) < 5.f && owner.IsWithinLOS(x, y, z + i_target->GetCollisionHeight()) && !owner.IsInWater() && !i_target->IsInWater())
+    if (owner.IsWithinDist3d(x, y, z, 200.f) && std::abs(owner.GetPositionZ() - z) < 5.f && 
+        owner.IsWithinLOS(x, y, z + i_target->GetCollisionHeight()) && 
+        !owner.IsInWater() && !i_target->IsInWater())
     {
         this->i_path->calculate(x, y, z, false, true);
         auto& path = this->i_path->getPath();
         gen = true;
-        if (sWorld.getConfig(CONFIG_BOOL_PATH_FIND_NORMALIZE_Z) && (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) == 0)
+        
+        // 保留配置选项但不再使用高度差检查
+        if (sWorld.getConfig(CONFIG_BOOL_PATH_FIND_NORMALIZE_Z) && 
+            (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) == 0)
         {
-            for (uint32 i = 0; i < path.size() - 1; ++i)
-            {
-                if (std::abs(path[i].z - path[i + 1].z) > 1.f)
-                {
-                    gen = false;
-                    break;
-                }
-            }
+            // 保留空块以便将来扩展
         }
     }
 
@@ -543,6 +541,43 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
     }
 
     auto& path = this->i_path->getPath();
+    
+    // 修正路径点高度
+    for (auto& point : path)
+    {
+        owner.UpdateAllowedPositionZ(point.x, point.y, point.z);
+    }
+    
+    // 斜率检查（仅对不能飞行的单位）
+    if (!owner.CanFly())
+    {
+        for (uint32 i = 0; i < path.size() - 1; ++i)
+        {
+            const G3D::Vector3& p1 = path[i];
+            const G3D::Vector3& p2 = path[i + 1];
+            
+            // 计算水平距离和垂直距离
+            float dx = p2.x - p1.x;
+            float dy = p2.y - p1.y;
+            float dz = p2.z - p1.z;
+            float horizontal_distance = sqrt(dx*dx + dy*dy);
+            float vertical_distance = std::abs(dz);
+            
+            // 小距离移动允许较大的垂直变化（如台阶）
+            if (horizontal_distance < 0.5f)
+            {
+                if (vertical_distance > 2.0f)
+                {
+                    return false; // 台阶太高，路径无效
+                }
+            }
+            // 检查斜率是否超过45度
+            else if (vertical_distance / horizontal_distance > 1.0f)
+            {
+                return false; // 斜率太大，路径无效
+            }
+        }
+    }
 
     if (cutPath)
         CutPath(owner, path);

@@ -129,8 +129,49 @@ int32 AbstractRandomMovementGenerator::_setLocation(Unit& owner)
     if ((m_pathFinder->getPathType() & PATHFIND_NOPATH) != 0)
         return 0;
 
+    auto& path = m_pathFinder->getPath();
+
+    // ====== 修正路径点高度 ======
+    // 确保每个路径点都在正确的地面高度
+    for (auto& point : path)
+    {
+        owner.UpdateAllowedPositionZ(point.x, point.y, point.z);
+    }
+
+    // ====== 斜率检查（仅对不能飞行的单位）======
+    if (!owner.CanFly())
+    {
+        for (size_t i = 0; i < path.size() - 1; ++i)
+        {
+            const Vector3& p1 = path[i];
+            const Vector3& p2 = path[i + 1];
+
+            // 计算水平距离和垂直距离
+            float dx = p2.x - p1.x;
+            float dy = p2.y - p1.y;
+            float dz = p2.z - p1.z;
+            float horizontal_distance = sqrt(dx * dx + dy * dy);
+            float vertical_distance = std::abs(dz);
+
+            // 小距离移动允许较大的垂直变化（如台阶）
+            if (horizontal_distance < 0.5f)
+            {
+                // 台阶高度不超过2.0f
+                if (vertical_distance > 2.0f)
+                {
+                    return 0; // 路径无效：台阶太高
+                }
+            }
+            // 检查斜率是否超过45度（垂直/水平 > 1.0）
+            else if (vertical_distance / horizontal_distance > 1.0f)
+            {
+                return 0; // 路径无效：斜率太大
+            }
+        }
+    }
+
     Movement::MoveSplineInit init(owner);
-    init.MovebyPath(m_pathFinder->getPath());
+    init.MovebyPath(path);
     init.SetWalk(i_walk);
 
     if (owner.IsSlowedInCombat())
