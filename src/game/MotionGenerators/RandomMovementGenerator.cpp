@@ -129,6 +129,15 @@ int32 AbstractRandomMovementGenerator::_setLocation(Unit& owner)
     if ((m_pathFinder->getPathType() & PATHFIND_NOPATH) != 0)
         return 0;
 
+    // 新增：检查路径点之间的Z轴变化
+    auto& path = m_pathFinder->getPath();
+    for (size_t i = 0; i < path.size() - 1; ++i)
+    {
+        if (std::abs(path[i].z - path[i + 1].z) > 1.0f)
+        {
+            return 0; // 相邻点Z轴变化超过阈值，路径无效
+        }
+    }
     Movement::MoveSplineInit init(owner);
     init.MovebyPath(m_pathFinder->getPath());
     init.SetWalk(i_walk);

@@ -544,6 +544,14 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
 
     auto& path = this->i_path->getPath();
 
+    // 新增：检查正常路径的相邻点Z轴变化
+    for (uint32 i = 0; i < path.size() - 1; ++i)
+    {
+        if (std::abs(path[i].z - path[i + 1].z) > 1.0f)
+        {
+            return false; // 相邻点Z轴变化超过阈值，路径无效
+        }
+    }
     if (cutPath)
         CutPath(owner, path);
 
