@@ -548,8 +548,13 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
         owner.UpdateAllowedPositionZ(point.x, point.y, point.z);
     }
     
+<<<<<<< HEAD
+    // ====== 斜率检查（仅对不能飞行且不游泳的单位）======
+    if (!owner.CanFly() && !owner.IsInWater())
+=======
     // 斜率检查（仅对不能飞行的单位）
     if (!owner.CanFly())
+>>>>>>> f5247ff74649980739b2c7627d204ead6cfe4a11
     {
         for (uint32 i = 0; i < path.size() - 1; ++i)
         {

@@ -132,6 +132,35 @@ int32 AbstractRandomMovementGenerator::_setLocation(Unit& owner)
     auto& path = m_pathFinder->getPath();
 
     // ====== 修正路径点高度 ======
+<<<<<<< HEAD
+    // 确保每个路径点都在正确的高度
+    for (auto& point : path)
+    {
+        // 对于游泳生物，不使用水面高度修正
+        /*
+        if (owner.IsInWater())
+        {
+            // 获取水面高度
+            float waterLevel = owner.GetTerrain()->GetWaterLevel(point.x, point.y, point.z);
+
+            // 如果当前点在水下，使用水面高度
+            if (point.z < waterLevel)
+            {
+                point.z = waterLevel - 0.5f; // 保持在水面下一点
+            }
+            // 如果当前点在水面上，保持原高度
+        }
+        else
+        */
+        {
+            // 非游泳生物使用标准地面高度修正
+            owner.UpdateAllowedPositionZ(point.x, point.y, point.z);
+        }
+    }
+
+    // ====== 斜率检查（仅对不能飞行且不游泳的单位）======
+    if (!owner.CanFly() && !owner.IsInWater())
+=======
     // 确保每个路径点都在正确的地面高度
     for (auto& point : path)
     {
@@ -140,6 +169,7 @@ int32 AbstractRandomMovementGenerator::_setLocation(Unit& owner)
 
     // ====== 斜率检查（仅对不能飞行的单位）======
     if (!owner.CanFly())
+>>>>>>> f5247ff74649980739b2c7627d204ead6cfe4a11
     {
         for (size_t i = 0; i < path.size() - 1; ++i)
         {
@@ -172,7 +202,20 @@ int32 AbstractRandomMovementGenerator::_setLocation(Unit& owner)
 
     Movement::MoveSplineInit init(owner);
     init.MovebyPath(path);
+<<<<<<< HEAD
+
+    // 设置游泳动画（如果单位在水中）
+    if (owner.IsInWater())
+    {
+        init.SetFly();
+    }
+    else
+    {
+        init.SetWalk(i_walk);
+    }
+=======
     init.SetWalk(i_walk);
+>>>>>>> f5247ff74649980739b2c7627d204ead6cfe4a11
 
     if (owner.IsSlowedInCombat())
         init.SetCombatSlowed(1.f - (30.f - std::min(owner.GetHealthPercent(), 30.f)) * 1.67);
