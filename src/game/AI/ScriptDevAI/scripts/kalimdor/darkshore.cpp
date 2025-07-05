@@ -403,7 +403,10 @@ struct npc_volcorAI : public npc_escortAI
     void Reset() override
     {
         if (!HasEscortState(STATE_ESCORT_ESCORTING))
+        {
             m_uiQuestId = 0;
+            m_creature->SetStandState(UNIT_STAND_STATE_SIT, true);
+        }
     }
 
     void Aggro(Unit* /*pWho*/) override
@@ -691,7 +694,7 @@ struct npc_corrupted_furbolgAI : public CombatAI
             m_creature->SetFactionTemporary(FACTION_BLACKWOOD, TEMPFACTION_RESTORE_COMBAT_STOP);
             m_creature->GetMotionMaster()->MoveRandomAroundPoint(m_bowlCoords.GetPositionX(), m_bowlCoords.GetPositionY(), m_bowlCoords.GetPositionZ(), 40.f);
             m_creature->SetWalk(true);
-            ResetTimer(EVENT_FURBOLG_RESET, 1.5 * MINUTE * IN_MILLISECONDS);
+            ResetTimer(EVENT_FURBOLG_RESET, 90s);
         });
         AddCustomAction(EVENT_FURBOLG_RESET, true, [&]()
         {
