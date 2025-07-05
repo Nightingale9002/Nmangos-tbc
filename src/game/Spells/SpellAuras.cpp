@@ -310,7 +310,7 @@ pAuraHandler AuraHandler[TOTAL_AURAS] =
     &Aura::HandleNoImmediateEffect,                         //248 SPELL_AURA_MOD_COMBAT_RESULT_CHANCE         implemented in Unit::CalculateEffectiveDodgeChance, Unit::CalculateEffectiveParryChance, Unit::CalculateEffectiveBlockChance
     &Aura::HandleNULL,                                      //249
     &Aura::HandleAuraModIncreaseHealth,                     //250 SPELL_AURA_MOD_INCREASE_HEALTH_2
-    &Aura::HandleNULL,                                      //251 SPELL_AURA_MOD_ENEMY_DODGE
+    &Aura::HandleModEnemyDodge,                             //251 SPELL_AURA_MOD_ENEMY_DODGE
     &Aura::HandleUnused,                                    //252 unused
     &Aura::HandleUnused,                                    //253 unused
     &Aura::HandleUnused,                                    //254 unused
@@ -3099,6 +3099,7 @@ void Aura::HandleAuraWaterWalk(bool apply, bool Real)
     GetTarget()->SetWaterWalk(apply);
 }
 
+
 void Aura::HandleAuraFeatherFall(bool apply, bool Real)
 {
     // only at real add/remove aura
@@ -5797,6 +5798,32 @@ void Aura::HandleAuraModDodgePercent(bool apply, bool /*Real*/)
     ((Player*)target)->UpdateDodgePercentage();
     // sLog.outError("BONUS DODGE CHANCE: + %f", float(m_modifier.m_amount));
 }
+
+void Aura::HandleModEnemyDodge(bool apply, bool /*Real*/)
+{
+    // 此效果只对怪物生效
+    if (Unit* target = GetTarget())
+    {
+        if (target->GetTypeId() == TYPEID_UNIT) // 确保目标是怪物/NPC
+        {
+            // 直接修改怪物对玩家攻击的躲闪修正值
+            target->m_modEnemyDodgeChance += (apply ? m_modifier.m_amount : -m_modifier.m_amount);
+
+            // 调试日志
+            if (true)
+            {
+                sLog.outDebug("Aura %u: %s MOD_ENEMY_DODGE on %s (Entry: %u). Dodge reduction: %d%%",
+                    GetId(),
+                    apply ? "Applying" : "Removing",
+                    target->GetName(),
+                    target->GetEntry(),
+                    m_modifier.m_amount);
+            }
+        }
+
+    }
+}
+
 
 void Aura::HandleAuraModBlockPercent(bool apply, bool /*Real*/)
 {

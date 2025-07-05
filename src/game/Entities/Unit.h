@@ -2052,6 +2052,7 @@ class Unit : public WorldObject
         float m_threatModifier[MAX_SPELL_SCHOOL];
         float m_modAttackSpeedPct[3];
         float m_modAttackBaseDPSPct[MAX_ATTACK] = { 1.0f, 1.0f, 1.0f };
+        float m_modEnemyDodgeChance;   // 用于存储太阳井光辉等效果降低的玩家躲闪率（正值表示降低躲闪）
 
         // stat system
         bool HandleStatModifier(UnitMods unitMod, UnitModifierType modifierType, float amount, bool apply);
