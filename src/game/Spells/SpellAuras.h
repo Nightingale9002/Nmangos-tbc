@@ -441,7 +441,7 @@ class Aura
         void HandleAuraDetaunt(bool Apply, bool Real);
         void HandleOverrideClassScript(bool apply, bool real);
         void HandleAuraPhase(bool apply, bool real);
-        void HandleModEnemyDodge(bool apply, bool /*Real*/);
+
         virtual ~Aura();
 
         void SetModifier(AuraType type, int32 amount, uint32 periodicTime, int32 miscValue);

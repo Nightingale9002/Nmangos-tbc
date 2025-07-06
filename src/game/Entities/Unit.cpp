@@ -3395,41 +3395,6 @@ float Unit::CalculateEffectiveDodgeChance(const Unit* attacker, WeaponAttackType
     chance += attacker->GetTotalAuraModifierByMiscValue(SPELL_AURA_MOD_COMBAT_RESULT_CHANCE, VICTIMSTATE_DODGE);
     // Attacker's expertise reduction
     chance -= attacker->GetExpertisePercent(attType);
-
-    // ==================== 太阳之井光辉效果整合 ====================
-    // 如果攻击者是怪物且具有太阳之井光辉效果
-    if (attacker && attacker->GetTypeId() == TYPEID_UNIT)
-    {
-        // 获取太阳之井光辉的躲闪降低值
-        float sunwellDodgeReduction = 0.0f;
-
-        // 方法1：直接访问怪物存储的修正值（高效）
-        sunwellDodgeReduction = attacker->m_modEnemyDodgeChance;
-
-        // 方法2：动态计算光环效果（兼容性更好）
-        if (sunwellDodgeReduction == 0.0f)
-        {
-            Unit::AuraList const& dodgeAuras = attacker->GetAurasByType(SPELL_AURA_MOD_ENEMY_DODGE);
-            for (Unit::AuraList::const_iterator itr = dodgeAuras.begin(); itr != dodgeAuras.end(); ++itr)
-            {
-                sunwellDodgeReduction += (*itr)->GetModifier()->m_amount;
-            }
-        }
-
-        // 应用太阳之井光辉效果（正值表示降低躲闪率）
-        chance += sunwellDodgeReduction;
-
-        // 调试日志
-        if (sunwellDodgeReduction != 0.0f )
-        {
-            sLog.outDebug("Sunwell Radiance: Dodge reduction %.1f%% applied (Attacker: %s, Defender: %s)",
-                sunwellDodgeReduction,
-                attacker->GetName(),
-                GetName());
-        }
-    }
-    // ==================== 修改结束 ====================
-
     return std::max(0.0f, std::min(chance, 100.0f));
 }
 
