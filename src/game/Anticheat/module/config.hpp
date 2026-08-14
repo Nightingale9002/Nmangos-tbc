@@ -127,6 +127,7 @@ class AnticheatConfig : public Config
         uint32 GetWardenScanCount()                     const { return getConfig(CONFIG_UINT32_AC_WARDEN_SCAN_COUNT);                       }
         uint32 GetWardenMinimumLevel()                  const { return getConfig(CONFIG_UINT32_AC_WARDEN_MINIMUM_LEVEL);                    }
         uint32 GetWardenMinimumAdvancedLevel()          const { return getConfig(CONFIG_UINT32_AC_WARDEN_MINIMUM_ADVANCED_LEVEL);           }
+        bool GetWardenEnabled()                          const { return getConfig(CONFIG_BOOL_AC_WARDEN_ENABLED); }
         uint32 GetWardenSuspiciousEndSceneHookAction()  const { return getConfig(CONFIG_UINT32_AC_WARDEN_SUSPICIOUS_ENDSCENE_HOOK_ACTION);  }
         std::string GetWardenModuleDirectory()          const { return m_wardenModuleDir;                                                   }
 

@@ -666,7 +666,7 @@ bool AnticheatLib::ChatCommand(ChatHandler *handler, const std::string &origArgs
 #endif
 
 SessionAnticheat::SessionAnticheat(WorldSession *session, const BigNumber &K) :
-    _session(session), _warden(CreateWarden(session, K, this)), _inWorld(false), _worldEnterTime(0), _tickTimer(0),
+    _session(session), _warden(sAnticheatConfig.GetWardenEnabled() ? CreateWarden(session, K, this) : nullptr), _inWorld(false), _worldEnterTime(0), _tickTimer(0),
     _cheatsReported(0), _kickTimer(0), _banTimer(0), _banAccount(false), _banIP(false), _fingerprint(0),
     _antispam(sAntispamMgr.GetSession(session->GetAccountId()))
 {
@@ -767,7 +767,7 @@ void SessionAnticheat::Update(uint32 diff)
     if (!sAnticheatConfig.EnableAnticheat())
         return;
 
-    _warden->Update(diff);
+    if (_warden) _warden->Update(diff);
 
     if (_tickTimer > diff)
         _tickTimer -= diff;
@@ -788,7 +788,10 @@ void SessionAnticheat::Update(uint32 diff)
 
 void SessionAnticheat::SendCharEnum(WorldPacket &&packet)
 {
-    _warden->SetCharEnumPacket(std::move(packet));
+    if (_warden)
+        _warden->SetCharEnumPacket(std::move(packet));
+    else
+        _session->SendPacket(packet, true); // warden disabled: send character list directly
 }
 
 bool SessionAnticheat::IsSilenced() const
@@ -838,7 +841,7 @@ void SessionAnticheat::SendPlayerInfo(ChatHandler *handler) const
         handler->PSendSysMessage("OS: %s Build: %u Fingerprint: 0x%x Local IP: %s",
             _session->GetOS() == CLIENT_OS_WIN ? "Win" : "Mac", _session->GetGameBuild(), _fingerprint, _session->GetLocalAddress().c_str());
 
-    _warden->SendPlayerInfo(handler, includeFingerprint);
+    if (_warden) _warden->SendPlayerInfo(handler, includeFingerprint);
 }
 
 void SessionAnticheat::SendCheatInfo(ChatHandler *handler) const
@@ -1011,7 +1014,7 @@ void SessionAnticheat::OrderAck(uint16 opcode, uint32 counter)
 
 void SessionAnticheat::WardenPacket(WorldPacket &packet)
 {
-    _warden->HandlePacket(packet);
+    if (_warden) _warden->HandlePacket(packet);
 }
 
 void SessionAnticheat::AutoReply(const std::string &msg)

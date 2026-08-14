@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2017-2020 namreeb (legal@namreeb.org)
  *
  * This is private software and may not be shared under any circumstances,
@@ -494,8 +494,10 @@ void Warden::Update(uint32 /*diff*/)
 {
     if (!!_timeoutClock && WorldTimer::getMSTime() > _timeoutClock)
     {
-        sLog.outBasic("WARDEN: Account %u ip %s timeout", _session->GetAccountId(), _session->GetRemoteAddress().c_str());
-        _session->KickPlayer();
+        sLog.outBasic("WARDEN: Account %u ip %s timeout (not kicked)", _session->GetAccountId(), _session->GetRemoteAddress().c_str());
+        // 客户端不兼容/网络波动导致超时时不再踢人：仅记录并停止本会话 Warden 计时
+        StopTimeoutClock();
+        StopScanClock();
         return;
     }
 
