@@ -109,6 +109,34 @@ void AuctionHouseBot::Initialize()
         ParseItemValueConfig("AuctionHouseBot.Value.Legendary", m_itemValue[ITEM_QUALITY_LEGENDARY]);
         ParseItemValueConfig("AuctionHouseBot.Value.Artifact", m_itemValue[ITEM_QUALITY_ARTIFACT]);
 
+        // subclass-level value overrides, e.g. AuctionHouseBot.Value.Subclass.7.12.Normal for enchanting materials
+        // Format: AuctionHouseBot.Value.Subclass.<Class>.<SubClass>.<Quality>
+        //   -1 or absent: no override (use class/quality table); 0: disable this subclass/quality
+        static const char* qualityNames[MAX_ITEM_QUALITY] = { "Poor", "Normal", "Uncommon", "Rare", "Epic", "Legendary", "Artifact" };
+        for (uint32 cls = 0; cls < MAX_ITEM_CLASS; ++cls)
+        {
+            for (uint32 sub = 0; sub < 21; ++sub)
+            {
+                for (uint32 q = 0; q < MAX_ITEM_QUALITY; ++q)
+                {
+                    char subKey[96];
+                    snprintf(subKey, sizeof(subKey), "AuctionHouseBot.Value.Subclass.%u.%u.%s", cls, sub, qualityNames[q]);
+                    int32 subValue = m_ahBotCfg.GetIntDefault(subKey, -1);
+                    if (subValue >= 0)
+                    {
+                        auto itr = m_itemSubclassValue.find(std::make_pair(cls, sub));
+                        if (itr == m_itemSubclassValue.end())
+                        {
+                            std::array<int32, MAX_ITEM_QUALITY> values;
+                            values.fill(-1);
+                            itr = m_itemSubclassValue.emplace(std::make_pair(cls, sub), values).first;
+                        }
+                        itr->second[q] = subValue;
+                    }
+                }
+            }
+        }
+
         // item value for items sold by vendors
         m_vendorValue = m_ahBotCfg.GetBoolDefault("AuctionHouseBot.Value.Vendor", true);
 
@@ -235,8 +263,8 @@ void AuctionHouseBot::Update()
                     continue; // no BoP and quest items
                 if (prototype->Flags & ITEM_FLAG_HAS_LOOT)
                     continue; // nor items containing loot
-                if (m_itemValue[prototype->Quality][prototype->Class] == 0)
-                    continue; // item class is filtered out
+                if (GetItemValue(prototype) == 0)
+                    continue; // item class/subclass is filtered out
             }
 
             uint32 itemValue = ValueWithVariance(iterator != m_itemData.end() ? iterator->second.Value : CalculateBuyoutPrice(prototype));
@@ -610,6 +638,20 @@ void AuctionHouseBot::AddLootToItemMap(LootStore* store, std::vector<int32>& loo
     }
 }
 
+uint32 AuctionHouseBot::GetItemValue(ItemPrototype const* prototype) const
+{
+    // subclass-level override has the highest priority (per item quality)
+    auto itr = m_itemSubclassValue.find(std::make_pair(prototype->Class, prototype->SubClass));
+    if (itr != m_itemSubclassValue.end() && itr->second[prototype->Quality] >= 0)
+        return uint32(itr->second[prototype->Quality]);
+
+    // vendor-sold items default to vendor price (prevent buy-low/sell-high)
+    if (m_vendorValue && m_vendorItems.find(prototype->ItemId) != m_vendorItems.end())
+        return 100;
+
+    return m_itemValue[prototype->Quality][prototype->Class];
+}
+
 uint32 AuctionHouseBot::CalculateBuyoutPrice(ItemPrototype const* prototype)
 {
     uint32 buyoutPrice = prototype->BuyPrice;
@@ -619,7 +661,7 @@ uint32 AuctionHouseBot::CalculateBuyoutPrice(ItemPrototype const* prototype)
         buyoutPrice = prototype->SellPrice * (prototype->Quality <= ITEM_QUALITY_NORMAL ? 4 : 5);
     // multiply buyoutPrice with item quality price percentage
     // if item is sold by a vendor and vendor value is forced, then multiply by 100 (setting vendor price)
-    buyoutPrice *= (m_vendorValue && m_vendorItems.find(prototype->ItemId) != m_vendorItems.end() ? 100 : m_itemValue[prototype->Quality][prototype->Class]);
+    buyoutPrice *= GetItemValue(prototype);
     buyoutPrice /= 100; // since we multiplied with m_itemValue
     return buyoutPrice;
 }

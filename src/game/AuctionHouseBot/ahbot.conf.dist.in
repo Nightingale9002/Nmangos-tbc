@@ -146,6 +146,33 @@ AuctionHouseBot.Value.Rare      = 400,400,400,400,400,400,400,400,  0,400,  0,40
 AuctionHouseBot.Value.Epic      = 800,800,800,800,800,800,800,800,  0,800,  0,800,800,800,  0,800,800
 AuctionHouseBot.Value.Legendary =   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
 AuctionHouseBot.Value.Artifact  =   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0
+###################################################################################################################
+# Subclass value overrides (optional)
+#
+# Override AuctionHouseBot.Value.<quality> for a specific item class/subclass.
+# Format: AuctionHouseBot.Value.Subclass.<Class>.<SubClass>.<Quality> = <multiplier>
+#   -1 or missing = no override (use the class/quality table above)
+#   0 = disable this subclass/quality entirely
+#   Quality: Poor / Normal / Uncommon / Rare / Epic / Legendary / Artifact
+#
+# Trade goods (Class 7) subclasses used by TBC item data:
+#   0: Parts/Other     1: Parts       2: Explosives      3: Devices
+#   4: Jewelcrafting   5: Cloth       6: Leather         7: Metal & Stone
+#   8: Meat            9: Herb       10: Elemental      11: Other
+#  12: Enchanting     13: Other
+#
+# Elemental materials (Class 7, SubClass 10): 20x base (all qualities)
+AuctionHouseBot.Value.Subclass.7.10.Normal = 2000
+AuctionHouseBot.Value.Subclass.7.10.Uncommon = 2000
+AuctionHouseBot.Value.Subclass.7.10.Rare = 2000
+AuctionHouseBot.Value.Subclass.7.10.Epic = 2000
+#
+# Enchanting materials (Class 7, SubClass 12): half price (all qualities 50)
+AuctionHouseBot.Value.Subclass.7.12.Normal = 50
+AuctionHouseBot.Value.Subclass.7.12.Uncommon = 50
+AuctionHouseBot.Value.Subclass.7.12.Rare = 50
+AuctionHouseBot.Value.Subclass.7.12.Epic = 50
+###################################################################################################################
 
 ###################################################################################################################
 # Vendor item value override

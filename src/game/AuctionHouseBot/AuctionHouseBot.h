@@ -25,6 +25,9 @@
 #include "Globals/SharedDefines.h"
 #include "Loot/LootMgr.h"
 #include "Util/Util.h"
+#include <array>
+#include <map>
+#include <utility>
 
 struct AuctionHouseBotItemData
 {
@@ -69,6 +72,7 @@ class AuctionHouseBot
         void ParseItemValueConfig(char const* fieldname, std::vector<uint32>& itemValues);
         void AddLootToItemMap(LootStore* store, std::vector<int32>& lootConfig, std::vector<uint32>& lootTemplates, std::unordered_map<uint32, uint32>& itemMap);
         uint32 CalculateBuyoutPrice(ItemPrototype const* prototype);
+        uint32 GetItemValue(ItemPrototype const* prototype) const;
         uint32 ValueWithVariance(uint32 itemValue) { return (uint32) (itemValue + ((int32) urand(0, m_valueVariance * 2 + 1) - (int32) m_valueVariance) * (int32) (itemValue / 100)); };
 
         std::string m_configFileName;
@@ -98,6 +102,7 @@ class AuctionHouseBot
 	uint32 m_maxItemLevel;
 
         std::vector<std::vector<uint32>> m_itemValue = std::vector<std::vector<uint32>>(MAX_ITEM_QUALITY, std::vector<uint32>(MAX_ITEM_CLASS));
+        std::map<std::pair<uint32, uint32>, std::array<int32, MAX_ITEM_QUALITY>> m_itemSubclassValue;
         bool m_vendorValue;
         uint32 m_valueVariance;
         uint32 m_auctionBidMin;
