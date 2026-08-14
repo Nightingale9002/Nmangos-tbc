@@ -393,6 +393,15 @@ void WaypointMovementGenerator<Creature>::SendNextWayPointPath(Creature& creatur
         nextNode = &nodeAfterItr->second;
     }
 
+    // 防止怪物掉到地下：把巡逻路径所有点 Z 修正到实际地面高度
+    if (!creature.IsFlying() && !creature.IsLevitating() && !creature.IsHovering() && !creature.IsInWater())
+    {
+        // Snap each waypoint to the local ground only when it is close,
+        // avoiding wrong-layer snaps in multi-level terrain (caves/indoors).
+        for (auto& p : genPath)
+            creature.GetMap()->GetHeightInRange(p.x, p.y, p.z);
+    }
+
     Movement::MoveSplineInit init(creature);
     init.MovebyPath(genPath);
     if (nextNode->orientation && nextNode->delay != 0)

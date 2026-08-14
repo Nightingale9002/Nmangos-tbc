@@ -129,6 +129,15 @@ int32 AbstractRandomMovementGenerator::_setLocation(Unit& owner)
     if ((m_pathFinder->getPathType() & PATHFIND_NOPATH) != 0)
         return 0;
 
+    // 防止随机漫步时掉到地下：把路径所有点 Z 修正到实际地面高度
+    if (owner.GetTypeId() == TYPEID_UNIT && !owner.IsFlying() && !owner.IsLevitating() && !owner.IsHovering() && !owner.IsInWater())
+    {
+        // Snap each path point to the local ground only when it is close,
+        // avoiding wrong-layer snaps in multi-level terrain (caves/indoors).
+        for (auto& p : m_pathFinder->getPath())
+            owner.GetMap()->GetHeightInRange(p.x, p.y, p.z);
+    }
+
     Movement::MoveSplineInit init(owner);
     init.MovebyPath(m_pathFinder->getPath());
 
