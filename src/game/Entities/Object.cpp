@@ -3179,13 +3179,20 @@ int32 WorldObject::CalculateSpellEffectValue(Unit const* target, SpellEntry cons
         if (damage)
         {
             CreatureInfo const* cInfo = static_cast<Creature const*>(unitCaster)->GetCreatureInfo();
-            // Use vanilla (Expansion 0) CLS values to avoid overscaling spell damage after the s2488 CLS rework
+            // Always use vanilla (Expansion 0) CLS values to avoid overscaling spell damage
+            // after the s2488 CLS rework. Old-world creatures (Expansion 0) additionally use
+            // the pre-rework (gentler) curve values to match classic-era caster damage.
             CreatureClassLvlStats const* casterCLS = sObjectMgr.GetCreatureClassLvlStats(unitCaster->GetLevel(), cInfo->UnitClass, 0);
             CreatureClassLvlStats const* spellCLS = sObjectMgr.GetCreatureClassLvlStats(spellProto->spellLevel, cInfo->UnitClass, 0);
             if (casterCLS && spellCLS)
             {
                 float CLSPowerCreature = casterCLS->BaseDamage;
                 float CLSPowerSpell = spellCLS->BaseDamage;
+                if (cInfo->Expansion == 0)
+                {
+                    CLSPowerCreature = casterCLS->BaseDamageOLD;
+                    CLSPowerSpell = spellCLS->BaseDamageOLD;
+                }
                 value = value * (CLSPowerCreature / CLSPowerSpell);
             }
         }
