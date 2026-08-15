@@ -354,10 +354,21 @@ namespace VMAP
 
     struct GModelRayCallback
     {
-        GModelRayCallback(const std::vector<MeshTriangle>& tris, const std::vector<Vector3>& vert):
-            vertices(vert.begin()), triangles(tris.begin()), hit(false) {}
+        GModelRayCallback(const std::vector<MeshTriangle>& tris, const std::vector<Vector3>& vert, bool frontFacesOnly = false):
+            vertices(vert.begin()), triangles(tris.begin()), hit(false), frontFacesOnly(frontFacesOnly) {}
         bool operator()(const G3D::Ray& ray, uint32 entry, float& distance, bool /*pStopAtFirstHit*/, bool /*ignoreM2Model*/)
         {
+            // Height queries only accept hits on surfaces steep enough to stand on
+            // (within 60 degrees of horizontal), so walls and ceiling undersides /
+            // overhangs are not treated as floor.
+            if (frontFacesOnly)
+            {
+                const MeshTriangle& tri = triangles[entry];
+                Vector3 n = (vertices[tri.idx1] - vertices[tri.idx0]).cross(vertices[tri.idx2] - vertices[tri.idx0]).direction();
+                // front face within 60 degrees of vertical: dot(n, rayDir) <= -cos(60)
+                if (n.dot(ray.direction()) > -0.0f)
+                    return false;
+            }
             bool result = IntersectTriangle(triangles[entry], vertices, ray, distance);
             if (result)  hit = true;
             return hit;
@@ -365,13 +376,14 @@ namespace VMAP
         std::vector<Vector3>::const_iterator vertices;
         std::vector<MeshTriangle>::const_iterator triangles;
         bool hit;
+        bool frontFacesOnly;
     };
 
-    bool GroupModel::IntersectRay(const G3D::Ray& ray, float& distance, bool stopAtFirstHit, bool ignoreM2Model) const
+    bool GroupModel::IntersectRay(const G3D::Ray& ray, float& distance, bool stopAtFirstHit, bool ignoreM2Model, bool frontFacesOnly) const
     {
         if (triangles.empty())
             return false;
-        GModelRayCallback callback(triangles, vertices);
+        GModelRayCallback callback(triangles, vertices, frontFacesOnly);
         meshTree.intersectRay(ray, callback, distance, stopAtFirstHit, ignoreM2Model);
         return callback.hit;
     }
@@ -414,18 +426,19 @@ namespace VMAP
 
     struct WModelRayCallBack
     {
-        WModelRayCallBack(const std::vector<GroupModel>& mod): models(mod.begin()), hit(false) {}
+        WModelRayCallBack(const std::vector<GroupModel>& mod, bool frontFacesOnly = false): models(mod.begin()), hit(false), frontFacesOnly(frontFacesOnly) {}
         bool operator()(const G3D::Ray& ray, uint32 entry, float& distance, bool pStopAtFirstHit, bool ignoreM2Model)
         {
-            bool result = models[entry].IntersectRay(ray, distance, pStopAtFirstHit, ignoreM2Model);
+            bool result = models[entry].IntersectRay(ray, distance, pStopAtFirstHit, ignoreM2Model, frontFacesOnly);
             if (result)  hit = true;
             return hit;
         }
         std::vector<GroupModel>::const_iterator models;
         bool hit;
+        bool frontFacesOnly;
     };
 
-    bool WorldModel::IntersectRay(const G3D::Ray& ray, float& distance, bool stopAtFirstHit, bool ignoreM2Model) const
+    bool WorldModel::IntersectRay(const G3D::Ray& ray, float& distance, bool stopAtFirstHit, bool ignoreM2Model, bool frontFacesOnly) const
     {
         if (ignoreM2Model && (modelFlags & MOD_M2))
             return false;
@@ -433,9 +446,9 @@ namespace VMAP
         // small M2 workaround, maybe better make separate class with virtual intersection funcs
         // in any case, there's no need to use a bound tree if we only have one submodel
         if (groupModels.size() == 1)
-            return groupModels[0].IntersectRay(ray, distance, stopAtFirstHit, ignoreM2Model);
+            return groupModels[0].IntersectRay(ray, distance, stopAtFirstHit, ignoreM2Model, frontFacesOnly);
 
-        WModelRayCallBack isc(groupModels);
+        WModelRayCallBack isc(groupModels, frontFacesOnly);
         groupTree.intersectRay(ray, isc, distance, stopAtFirstHit, ignoreM2Model);
         return isc.hit;
     }

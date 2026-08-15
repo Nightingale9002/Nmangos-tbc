@@ -168,14 +168,33 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
 #endif    
         !HaveTile(start) || !HaveTile(dest))
     {
-        BuildShortcut();
-        m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
+        // Deliberate straight-line movement (IGNORE_PATHFINDING) and
+        // flying/swimming/hovering units keep the shortcut; other ground
+        // units must not walk straight across missing navigation tiles
+        // (they would walk through walls or onto wrong walkable surfaces).
+        const bool ignorePathfinding = m_sourceUnit && m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING);
+        if (ignorePathfinding || (m_sourceUnit && (m_sourceUnit->CanFly() || m_sourceUnit->CanSwim() ||
+                                                  m_sourceUnit->IsLevitating() || m_sourceUnit->IsHovering())))
+        {
+            BuildShortcut();
+            m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
+        }
+        else
+        {
+            // Keep a valid 2-point path for callers that launch the spline
+            // without checking NOPATH (e.g. HomeMovement), but mark it as
+            // NOPATH so path-aware callers stop instead of walking straight
+            // across missing navigation tiles.
+            BuildShortcut();
+            m_type = PATHFIND_NOPATH;
+        }
         return true;
     }
 
     updateFilter();
 
     BuildPolyPath(start, dest);
+
     return true;
 }
 
@@ -503,11 +522,50 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
 
     // *** poly path generating logic ***
 
+    // Root fix: the path must always end on the walkable navmesh surface.
+    // A destination below the surface (e.g. on a steep model face like a cave
+    // mushroom) would pull units into unwalkable geometry, and a destination
+    // above the surface (e.g. a player jumping into a cave hole) would make
+    // units rise vertically through the air. Snap the end both ways.
+    if (m_sourceUnit && !m_sourceUnit->CanFly())
+    {
+        float closestPoint[VERTEX_SIZE];
+        if (dtStatusSucceed(m_navMeshQuery->closestPointOnPoly(endPoly, endPoint, closestPoint, nullptr)))
+        {
+            dtVcopy(endPoint, closestPoint);
+            setActualEndPosition(Vector3(endPoint[2], endPoint[0], endPoint[1]));
+        }
+    }
+
     // start and end are on same polygon
     // just need to move in straight line
     if (startPoly == endPoly)
     {
         DEBUG_FILTER_LOG(LOG_FILTER_PATHFINDING, "++ BuildPolyPath :: (startPoly == endPoly)\n");
+
+        // A straight shortcut between two points of the same polygon is only
+        // valid when both points actually lie on the polygon's surface; a
+        // point far above/below the surface (multi-level polygons bridging
+        // floors / cave rims) would make units walk straight through the air.
+        float startClosest[VERTEX_SIZE];
+        float endClosest[VERTEX_SIZE];
+        // Both points must actually lie on the polygon's surface. closestPointOnPoly
+        // returns the nearest point on the poly for any query (even one 15 yd away),
+        // so a success alone is not enough - the distance must be small.
+        if (dtStatusFailed(m_navMeshQuery->closestPointOnPoly(startPoly, startPoint, startClosest, nullptr)) ||
+            dtStatusFailed(m_navMeshQuery->closestPointOnPoly(endPoly, endPoint, endClosest, nullptr)) ||
+            dtVdist(startPoint, startClosest) > 1.5f ||
+            dtVdist(endPoint, endClosest) > 1.5f)
+        {
+            // keep a valid 2-point path so callers that launch the spline
+            // without checking NOPATH (e.g. HomeMovement) do not get an empty path
+            BuildShortcut();
+            m_type = PATHFIND_NOPATH;
+            return;
+        }
+        // snap the end onto the polygon surface so the shortcut stays on the plane
+        dtVcopy(endPoint, endClosest);
+        setActualEndPosition(Vector3(endPoint[2], endPoint[0], endPoint[1]));
 
         BuildShortcut(); // todo move in straight line is different than build shortcut!
 
@@ -790,6 +848,7 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
 
     // generate the point-path out of our up-to-date poly-path
     BuildPointPath(startPoint, endPoint);
+
 }
 
 void PathFinder::BuildPointPath(const float* startPoint, const float* endPoint)
@@ -970,13 +1029,15 @@ void PathFinder::BuildPointPath(const float* startPoint, const float* endPoint)
             setActualEndPosition(getEndPosition());
             m_pathPoints[m_pathPoints.size() - 1] = getEndPosition();
         }
-        else
+        else if (m_sourceUnit && (m_sourceUnit->CanFly() || m_sourceUnit->CanSwim() ||
+                                 m_sourceUnit->IsLevitating() || m_sourceUnit->IsHovering()))
         {
             setActualEndPosition(getEndPosition());
             BuildShortcut();
+            m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
         }
-
-        m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
+        else
+            m_type = PATHFIND_NOPATH;
     }
 
     NormalizePath();
@@ -1237,10 +1298,15 @@ dtStatus PathFinder::findSmoothPath(const float* startPos, const float* endPos,
     float iterPos[VERTEX_SIZE];
     if (dtStatusFailed(m_navMeshQuery->closestPointOnPolyBoundary(m_smoothPathPolyRefs[0], startPos, iterPos)))
         return DT_FAILURE;
+    // closestPointOnPolyBoundary returns the query height unchanged when the
+    // point is inside the poly's 2D footprint; snap it to the poly surface.
+    m_navMeshQuery->getPolyHeight(m_smoothPathPolyRefs[0], iterPos, &iterPos[1]);
 
     float targetPos[VERTEX_SIZE];
     if (dtStatusFailed(m_navMeshQuery->closestPointOnPolyBoundary(m_smoothPathPolyRefs[npolys - 1], endPos, targetPos)))
         return DT_FAILURE;
+    // same here: never steer toward a height above/below the last poly surface.
+    m_navMeshQuery->getPolyHeight(m_smoothPathPolyRefs[npolys - 1], targetPos, &targetPos[1]);
 
     dtVcopy(&smoothPath[nsmoothPath * VERTEX_SIZE], iterPos);
     ++nsmoothPath;

@@ -34,10 +34,10 @@ namespace VMAP
     class MapRayCallback
     {
         public:
-            MapRayCallback(ModelInstance* val): prims(val), hit(false) {}
+            MapRayCallback(ModelInstance* val, bool frontFacesOnly = false): prims(val), hit(false), frontFacesOnly(frontFacesOnly) {}
             bool operator()(const G3D::Ray& ray, uint32 entry, float& distance, bool pStopAtFirstHit = true, bool ignoreM2Model = false)
             {
-                bool result = prims[entry].intersectRay(ray, distance, pStopAtFirstHit, ignoreM2Model);
+                bool result = prims[entry].intersectRay(ray, distance, pStopAtFirstHit, ignoreM2Model, frontFacesOnly);
                 if (result)
                     hit = true;
                 return result;
@@ -46,6 +46,7 @@ namespace VMAP
         protected:
             ModelInstance* prims;
             bool hit;
+            bool frontFacesOnly;
     };
 
     class AreaInfoCallback
@@ -140,10 +141,10 @@ namespace VMAP
     Else, pMaxDist is not modified and returns false;
     */
 
-    bool StaticMapTree::getIntersectionTime(const G3D::Ray& pRay, float& pMaxDist, bool pStopAtFirstHit, bool ignoreM2Model) const
+    bool StaticMapTree::getIntersectionTime(const G3D::Ray& pRay, float& pMaxDist, bool pStopAtFirstHit, bool ignoreM2Model, bool frontFacesOnly) const
     {
         float distance = pMaxDist;
-        MapRayCallback intersectionCallBack(iTreeValues);
+        MapRayCallback intersectionCallBack(iTreeValues, frontFacesOnly);
         iTree.intersectRay(pRay, intersectionCallBack, distance, pStopAtFirstHit, ignoreM2Model);
         if (intersectionCallBack.didHit())
             pMaxDist = distance;
@@ -219,7 +220,7 @@ namespace VMAP
             dir = Vector3(0, 0, 1);
         G3D::Ray ray(pPos, dir); // direction with length of 1
         float maxDist = std::abs(maxSearchDist);
-        if (getIntersectionTime(ray, maxDist))
+        if (getIntersectionTime(ray, maxDist, false, false, true))
         {
             if (maxSearchDist >= 0.f)
                 height = pPos.z - maxDist;

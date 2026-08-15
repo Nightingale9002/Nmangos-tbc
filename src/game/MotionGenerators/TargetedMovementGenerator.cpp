@@ -649,24 +649,8 @@ bool ChaseMovementGenerator::_getLocation(Unit& owner, float& x, float& y, float
     // 原有：生成目标点（会带上玩家二楼Z）
     i_target->GetNearPoint(&owner, x, y, z, owner.GetObjectBoundingRadius(), this->GetDynamicTargetDistance(owner, false), angle);
 
-    // ==================== TBC 兼容的防穿楼逻辑 ====================
-    float ownerZ = owner.GetPositionZ();
-
-    // TBC 常用 GetHeight 调用方式（通常 4~5 个参数）
-    float groundZ = z;
-    if (owner.GetMap()->GetHeight(x, y, groundZ, true)) // 最常见签名
-    {
-        // 如果Z差过大，强制使用当前楼层地面高度
-        if (std::fabs(groundZ - ownerZ) < 6.0f || std::fabs(z - i_target->GetPositionZ()) > 5.0f)
-        {
-            z = groundZ + 0.5f; // 略高于地面
-        }
-    }
-    else
-    {
-        // GetHeight失败时保守处理
-        z = ownerZ;
-    }
+    // destination height is handled by PathFinder (the path always ends
+    // on the navmesh surface), so no manual floor snapping is needed here
 
 
 
@@ -887,7 +871,28 @@ bool FollowMovementGenerator::Move(Unit& owner, float x, float y, float z)
 
     auto& path = i_path->getPath();
 
-    if (i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT))
+    // Correct every path point Z to the real floor (floorZ)
+    if (owner.GetTypeId() == TYPEID_UNIT && !owner.IsFlying() && !owner.IsLevitating() && !owner.IsHovering() && !owner.IsInWater())
+    {
+        for (auto& p : path)
+        {
+            float floorZ = owner.GetMap()->GetHeight(p.x, p.y, p.z, false);
+            if (floorZ > INVALID_HEIGHT)
+            {
+                // The navmesh surface is the authoritative walkable floor.
+                // A vmap floor far below the navmesh height means the query
+                // landed on a lower layer (mushroom face / cave roof) - keep
+                // the navmesh height instead of pulling the unit down.
+                if (floorZ < p.z - 2.0f)
+                    continue;
+                p.z = floorZ;
+            }
+        }
+    }
+
+    if ((i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT)) ||
+        (owner.GetTypeId() == TYPEID_UNIT && !owner.IsFlying() && !owner.IsInWater() &&
+         (i_path->getPathType() & PATHFIND_NOT_USING_PATH)))
     {
         if (!IsUnstuckAllowed(owner))
             return false;
@@ -939,8 +944,8 @@ bool FollowMovementGenerator::Move(Unit& owner, float x, float y, float z)
             if (!i_target->IsWithinLOS(x, y, (z + owner.GetCollisionHeight()), true))
                 i_target->GetPosition(x, y, z);
 
-        if (owner.GetTypeId() == TYPEID_PLAYER)
-            owner.NearTeleportTo(x, y, z, o);
+        //if (owner.GetTypeId() == TYPEID_PLAYER)
+        //    owner.NearTeleportTo(x, y, z, o);
         else
         {
             owner.GetMap()->CreatureRelocation(static_cast<Creature*>(&owner), x, y, z, o);
@@ -948,6 +953,24 @@ bool FollowMovementGenerator::Move(Unit& owner, float x, float y, float z)
         }
 
         return false;
+    }
+
+    // After floorZ correction, validate steep segments: if two consecutive
+    // path points differ a lot in Z and there is no clear line of sight
+    // between them, the segment crosses terrain (hole/wall) - the path is
+    // illegal, block it instead of letting the pet move through.
+    if (owner.GetTypeId() == TYPEID_UNIT && !owner.IsFlying() && !owner.IsLevitating() && !owner.IsHovering() && !owner.IsInWater())
+    {
+        const float height = owner.GetCollisionHeight();
+        for (size_t i = 1; i < path.size(); ++i)
+        {
+            if (std::fabs(path[i].z - path[i - 1].z) > 3.0f)
+            {
+                if (!owner.GetMap()->IsInLineOfSight(path[i - 1].x, path[i - 1].y, path[i - 1].z + height,
+                                                     path[i].x, path[i].y, path[i].z + height, true))
+                    return false;
+            }
+        }
     }
 
     _addUnitStateMove(owner);
