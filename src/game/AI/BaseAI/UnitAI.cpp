@@ -80,9 +80,9 @@ void UnitAI::MoveInLineOfSight(Unit* who)
     if (m_unit->IsNeutralToAll())
         return;
 
-    if (who->GetObjectGuid().IsCreature() && who->IsInCombat())
-        CheckForHelp(who, m_unit, sWorld.getConfig(CONFIG_FLOAT_CREATURE_CHECK_FOR_HELP_RADIUS));
-
+    // Blizzlike: do not continuously pull nearby creatures that merely see a
+    // friendly unit already in combat. Retail uses a one-shot call-for-help pulse
+    // plus explicit pack linking instead; CheckForHelp is intentionally left unused.
     if (!HasReactState(REACT_AGGRESSIVE)) // mobs who are aggressive can still assist
         return;
 

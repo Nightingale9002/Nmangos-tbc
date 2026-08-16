@@ -2257,7 +2257,9 @@ std::pair<bool, GuidVector> Creature::MarkCallAssistanceOnPull(Unit* enemy)
     GuidVector guids;
     for (Creature* creature : receiverList)
         guids.push_back(creature->GetObjectGuid());
-    return {stored, guids};
+    // Only the directly-aggroed creature (not yet marked by linking) emits the
+    // assistance pulse; linked members were already marked and must not re-emit.
+    return {!stored, guids};
 }
 
 void Creature::CallAssistanceOnPull(Unit* enemy, GuidVector const& receiverList)
