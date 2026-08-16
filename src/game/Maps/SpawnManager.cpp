@@ -70,9 +70,13 @@ void SpawnManager::Initialize()
     {
         for (uint32 dbGuid : *dynGuidGameObjects)
         {
+            auto data = sObjectMgr.GetGOData(dbGuid);
+            // Pooled and event-driven gameobjects are spawned by the pool/event system, not here
+            if (!data->IsNotPartOfPoolOrEvent())
+                continue;
+
             if (m_map.GetPersistentState()->GetGORespawnTime(dbGuid) < now)
             {
-                auto data = sObjectMgr.GetGOData(dbGuid);
                 if ((data->spawnMask & (1 << m_map.GetDifficulty())) != 0) // copy of Map::CanSpawn
                     m_map.GetPersistentState()->AddGameobjectToGrid(dbGuid, data);
             }
