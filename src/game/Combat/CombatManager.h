@@ -21,6 +21,7 @@
 
 #include "Common.h"
 #include <functional>
+#include <memory>
 #include "Entities/Object.h"
 
 enum EvadeState
@@ -55,6 +56,15 @@ class CombatManager
         void TriggerCombatTimer(bool pvp);
         void TriggerCombatTimer(uint32 timer);
         void StopCombatTimer() { m_combatTimer = 0; }
+
+        // leash-link: shared leash refresh timestamp between creatures that assist each other.
+        // Damaging one member refreshes the leash on the whole pack (vmangos 7d2f1e2).
+        std::shared_ptr<time_t> const& GetLastLeashExtensionPtr() const;
+        void ShareLeashExtension(std::shared_ptr<time_t> const& ptr);
+        void ClearLeashExtension();
+        time_t GetLastLeashExtension() const;
+        void UpdateLeashExtension();
+
         bool IsLeashingDisabled() { return m_leashingDisabled; }
         void SetLeashingDisable(bool apply) { m_leashingDisabled = apply; }
         void SetLeashingCheck(std::function<bool(Unit*, float x, float y, float z)> check) { m_leashingCheck = check; } // if check evals as true - evade
@@ -69,6 +79,7 @@ class CombatManager
         // combat timer handling
         uint32 m_combatTimer;
         Position m_lastRefreshPos;
+        mutable std::shared_ptr<time_t> m_lastLeashExtension;   // shared timer - damaging one refreshes leash on all linked
         bool m_leashingDisabled;                            // disables leashing timer for script mobs
         std::function<bool(Unit*, float x, float y, float z)> m_leashingCheck;
 };
