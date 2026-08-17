@@ -220,6 +220,10 @@ class WorldSession
         WorldSession(uint32 id, WorldSocket* sock, AccountTypes sec, uint8 expansion, time_t mute_time, LocaleConstant locale, std::string accountName, uint32 accountFlags, uint32 recruitingFriend, bool isARecruiter);
         ~WorldSession();
 
+        // 黑兔相关
+        bool heituIsModernClient = false; //  - 是否是现代客户端
+        bool heituIsSupportThreat = false; //  - 是否支持仇恨
+
         // Set this session have no attached socket but keep it alive for short period of time to permit a possible reconnection
         void SetOffline();
         void SetOnline();
@@ -478,6 +482,7 @@ class WorldSession
         void HandleCharEnumOpcode(WorldPacket& recvPacket);
         void HandleCharDeleteOpcode(WorldPacket& recvPacket);
         void HandleCharCreateOpcode(WorldPacket& recvPacket);
+        void HandleHeituHelloOpcode(WorldPacket& recvPacket); // 黑兔打招呼
         void HandlePlayerLoginOpcode(WorldPacket& recvPacket);
         void HandleCharEnum(QueryResult* result);
         void HandlePlayerLogin(LoginQueryHolder* holder);
