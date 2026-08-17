@@ -222,6 +222,18 @@ void WorldSession::SendPacket(WorldPacket const& packet, bool forcedSend /*= fal
         return;
     }
 
+    // 如果是黑兔扩展的消息，那么不应该发送给243和没有注册黑兔扩展的客户端
+    // 下面4个是仇恨相关
+    if (packet.GetOpcode() == SMSG_HEITU_THREAT_CLEAR || packet.GetOpcode() == SMSG_HEITU_THREAT_REMOVE ||
+        packet.GetOpcode() == SMSG_HEITU_THREAT_UPDATE || packet.GetOpcode() == SMSG_HEITU_HIGHEST_THREAT_UPDATE)
+    {
+        // 如果不支持黑兔仇恨扩展，那么直接返回
+        if (!this->heituIsSupportThreat)
+        {
+            return;
+        }
+    }
+
 #ifdef MANGOS_DEBUG
 
     // Code for network use statistic
