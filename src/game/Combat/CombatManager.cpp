@@ -24,7 +24,7 @@
 
 #define COMBAT_MANAGER_TICK 1200
 
-CombatManager::CombatManager(Unit* owner) : m_owner(owner), m_evadeTimer(0), m_evadeState(EVADE_NONE), m_combatTick(COMBAT_MANAGER_TICK), m_combatTimer(0), m_leashingDisabled(false), m_leashingCheck(nullptr)
+CombatManager::CombatManager(Unit* owner) : m_owner(owner), m_evadeTimer(0), m_evadeState(EVADE_NONE), m_combatTick(COMBAT_MANAGER_TICK), m_combatTimer(0), m_lastLeashExtension(nullptr), m_leashingDisabled(false), m_leashingCheck(nullptr)
 {
 
 }
@@ -85,30 +85,40 @@ void CombatManager::Update(const uint32 diff)
                     if (!m_owner->GetMap()->IsDungeon() && m_owner->IsImmobilizedState())
                         m_owner->getThreatManager().DeleteOutOfRangeReferences();
 
-                    if (!m_combatTimer)
+                    // Keep leash fresh while crowd controlled so the mob does not evade mid-CC (vmangos 1832036)
+                    if (!m_owner->IsPlayerControlled() && m_owner->IsCrowdControlled())
+                        UpdateLeashExtension();
+
+                    bool check = !m_owner->HasMaster();
+                    if (!check)
                     {
-                        bool check = !m_owner->HasMaster();
-                        if (!check)
+                        Unit* master = m_owner->GetMaster();
+                        if (!master || !master->IsAlive()) // if charmer alive, he will evade this charm
+                            check = true;
+                    }
+                    if (check)
+                    {
+                        if (m_owner->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED))
                         {
-                            Unit* master = m_owner->GetMaster();
-                            if (!master || !master->IsAlive()) // if charmer alive, he will evade this charm
-                                check = true;
-                        }
-                        if (check)
-                        {
-                            if (m_owner->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED))
+                            if (!m_combatTimer)
                             {
                                 if (m_owner->getHostileRefManager().getSize() == 0)
                                     m_owner->HandleExitCombat(false, m_owner->IsPlayer());
                             }
-                            // if timer ran out and we are far away from last refresh pos, evade
-                            else if (m_owner->GetVictim() && m_owner->GetVictim()->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED))
+                        }
+                        // if leash has not been refreshed for 15s and we are far away from last refresh pos, evade
+                        else if (m_owner->GetVictim() && m_owner->GetVictim()->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED))
+                        {
+                            // immobilized passive mobs ignore last refresh pos
+                            if (m_owner->IsImmobilizedState() && m_owner->AI()->GetReactState() == REACT_PASSIVE)
+                                m_owner->HandleExitCombat(false);
+                            // leash-link: shared last-leash-extension timestamp (vmangos 7d2f1e2) - damaging any
+                            // linked creature refreshes the shared timestamp so the whole pack chases and resets together
+                            else if (GetLastLeashExtension() + (time_t)(m_owner->GetPursuit() / 1000) < time(nullptr) &&
+                                     m_owner->GetVictim()->GetDistance2d(m_lastRefreshPos.GetPositionX(), m_lastRefreshPos.GetPositionY()) > sWorld.getConfig(CONFIG_FLOAT_LEASH_RADIUS))
                             {
-                                // immobilized passive mobs ignore last refresh pos
-                                if (m_owner->IsImmobilizedState() && m_owner->AI()->GetReactState() == REACT_PASSIVE)
-                                    m_owner->HandleExitCombat(false);
-                                else if (m_owner->GetVictim()->GetDistance2d(m_lastRefreshPos.GetPositionX(), m_lastRefreshPos.GetPositionY()) > sWorld.getConfig(CONFIG_FLOAT_LEASH_RADIUS))
-                                    m_owner->HandleExitCombat(false);
+                                sLog.outError("[LEASH] EVADE guid=%u val=%ld now=%ld", m_owner->GetGUIDLow(), (long)GetLastLeashExtension(), (long)time(nullptr));
+                                m_owner->HandleExitCombat(false);
                             }
                         }
                     }
@@ -191,10 +201,43 @@ void CombatManager::TriggerCombatTimer(bool pvp)
 {
     m_combatTimer = pvp ? 5000 : m_owner->GetPursuit();
     m_lastRefreshPos = m_owner->GetPosition();
+    UpdateLeashExtension();
 }
 
 void CombatManager::TriggerCombatTimer(uint32 timer)
 {
     m_combatTimer = timer;
     m_lastRefreshPos = m_owner->GetPosition();
+    UpdateLeashExtension();
+}
+
+std::shared_ptr<time_t> const& CombatManager::GetLastLeashExtensionPtr() const
+{
+    if (!m_lastLeashExtension)
+        m_lastLeashExtension = std::make_shared<time_t>(time(nullptr));
+    return m_lastLeashExtension;
+}
+
+void CombatManager::ShareLeashExtension(std::shared_ptr<time_t> const& ptr)
+{
+    m_lastLeashExtension = ptr;
+    if (m_owner->GetVictim() && m_owner->GetVictim()->IsControlledByPlayer())
+        sLog.outDebug("[LEASH] Share receiver=%u ptr=%p val=%ld", m_owner->GetGUIDLow(), (void*)m_lastLeashExtension.get(), (long)*m_lastLeashExtension);
+}
+
+void CombatManager::ClearLeashExtension()
+{
+    m_lastLeashExtension.reset();
+}
+
+time_t CombatManager::GetLastLeashExtension() const
+{
+    return *GetLastLeashExtensionPtr();
+}
+
+void CombatManager::UpdateLeashExtension()
+{
+    (*GetLastLeashExtensionPtr()) = time(nullptr);
+    if (m_owner->GetVictim() && m_owner->GetVictim()->IsControlledByPlayer())
+        sLog.outDebug("[LEASH] Update guid=%u ptr=%p val=%ld", m_owner->GetGUIDLow(), (void*)m_lastLeashExtension.get(), (long)*m_lastLeashExtension);
 }

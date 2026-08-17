@@ -6766,6 +6766,7 @@ void Unit::CombatStop(bool includingCast, bool includingCombo)
         AI()->CombatStop();
 
     GetCombatManager().StopCombatTimer();
+    GetCombatManager().ClearLeashExtension(); // break the leash link when leaving combat (vmangos 7d2f1e2)
 
     ClearInCombat();
 }

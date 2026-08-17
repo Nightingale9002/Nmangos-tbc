@@ -229,8 +229,14 @@ void CreatureAI::HandleAssistanceCall(Unit* sender, Unit* invoker)
         return;
     if (m_creature->CanAssistInCombatAgainst(sender, invoker) && m_creature->CanJoinInAttacking(invoker) && invoker->IsVisibleForOrDetect(m_creature, m_creature, false))
     {
+        if (invoker->IsControlledByPlayer())
+            sLog.outDebug("[LEASH] HandleAssistanceCall sender=%u receiver=%u", sender ? sender->GetGUIDLow() : 0, m_creature->GetGUIDLow());
         m_creature->SetNoCallAssistance(true);
         OnCallForHelp(invoker);
+        // Leash-link: share the caller's leash refresh timestamp so damaging one member
+        // of the pack refreshes the leash for all of them (vmangos 7d2f1e2).
+        if (sender && sender->IsCreature())
+            m_creature->GetCombatManager().ShareLeashExtension(sender->GetCombatManager().GetLastLeashExtensionPtr());
     }
 }
 
