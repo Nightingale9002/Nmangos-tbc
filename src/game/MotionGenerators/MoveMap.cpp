@@ -21,6 +21,27 @@
 #include "MotionGenerators/MoveMap.h"
 #include "MoveMapSharedDefines.h"
 
+#include <chrono>
+#include <malloc.h>
+
+// The heap keeps freed pages for reuse, so RSS stays high after mmap tiles are
+// unloaded. Explicitly return free heap memory to the OS (throttled) so
+// grid/vmap/mmap unloads actually shrink process memory.
+static void TrimMmapMemory()
+{
+    static std::chrono::steady_clock::time_point lastTrim;
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    if (now - lastTrim < std::chrono::seconds(30))
+        return;
+    lastTrim = now;
+
+#ifdef _WIN32
+    _heapmin();
+#else
+    malloc_trim(0);
+#endif
+}
+
 namespace MMAP
 {
     constexpr char MAP_FILE_NAME_FORMAT[] = "mmaps/%03i.mmap";
@@ -417,6 +438,7 @@ namespace MMAP
             mmapData->mmapLoadedTiles.erase(packedGridPos);
             --loadedTiles;
             DEBUG_FILTER_LOG(LOG_FILTER_MAP_LOADING, "MMAP:unloadMap: Unloaded mmtile %03i[%02i,%02i] from %03i", mapId, x, y, mapId);
+            TrimMmapMemory();
             return true;
         }
 
@@ -451,6 +473,8 @@ namespace MMAP
         loadedMMaps.erase(mapId);
         DEBUG_FILTER_LOG(LOG_FILTER_MAP_LOADING, "MMAP:unloadMap: Unloaded %03i.mmap", mapId);
 
+        TrimMmapMemory();
+
         return true;
     }
 
@@ -476,6 +500,8 @@ namespace MMAP
         dtFreeNavMeshQuery(query);
         mmapData->navMeshQueries.erase(instanceId);
         DEBUG_FILTER_LOG(LOG_FILTER_MAP_LOADING, "MMAP:unloadMapInstance: Unloaded mapId %03u instanceId %u", mapId, instanceId);
+
+        TrimMmapMemory();
 
         return true;
     }
