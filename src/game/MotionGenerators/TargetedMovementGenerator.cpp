@@ -23,6 +23,7 @@
 #include "Entities/Player.h"
 #include "World/World.h"
 #include "Movement/MoveSpline.h"
+#include "Maps/GridMap.h"
 #include "Maps/MapManager.h"
 #include "Grids/GridNotifiers.h"
 #include "Grids/GridNotifiersImpl.h"
@@ -474,6 +475,61 @@ void ChaseMovementGenerator::FanOut(Unit& owner)
     }
 }
 
+namespace
+{
+    // An underwater straight chase can dive into the seabed when the target is
+    // far from shore: subdivide the swim line and keep every intermediate point
+    // inside the band [floor + margin, water level] so the creature follows the
+    // terrain instead of clipping through it (and getting stuck underground).
+    void RefineWaterPath(Unit& owner, PointsArray& path)
+    {
+        if (path.size() < 2)
+            return;
+
+        const Map* map = owner.GetMap();
+        const TerrainInfo* terrain = map->GetTerrain();
+        const float floorMargin = 0.5f;
+        const float minWaterDeep = owner.GetCollisionHeight();
+
+        PointsArray refined;
+        refined.reserve(path.size() + 16);
+        refined.push_back(path.front()); // keep the exact start
+
+        for (size_t i = 0; i + 1 < path.size(); ++i)
+        {
+            const Vector3& a = path[i];
+            const Vector3& b = path[i + 1];
+            const float segLen = (b - a).magnitude();
+            const uint32 steps = uint32(segLen / SMOOTH_PATH_STEP_SIZE) + 1;
+
+            for (uint32 s = 1; s < steps; ++s)
+            {
+                const float t = float(s) / float(steps);
+                Vector3 p = a + (b - a) * t;
+
+                float groundZ = map->GetHeight(p.x, p.y, p.z, true);
+                if (groundZ > INVALID_HEIGHT)
+                {
+                    float maxZ = terrain->GetWaterOrGroundLevel(p.x, p.y, p.z, groundZ, true, minWaterDeep);
+                    if (maxZ > INVALID_HEIGHT)
+                    {
+                        if (p.z > maxZ)
+                            p.z = maxZ;
+                        else if (p.z < groundZ + floorMargin)
+                            p.z = groundZ + floorMargin;
+                    }
+                }
+
+                refined.push_back(p);
+            }
+
+            refined.push_back(b); // keep the exact end (the target)
+        }
+
+        path.swap(refined);
+    }
+}
+
 bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, float y, float z, bool walk, bool cutPath, bool target, bool checkReachable)
 {
     if (owner.IsDebuggingMovement())
@@ -499,12 +555,31 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
         this->i_path = new PathFinder(&owner);
 
     bool gen = false;
-    if (owner.IsWithinDist3d(x, y, z, 200.f) && std::abs(owner.GetPositionZ() - z) < 5.f && owner.IsWithinLOS(x, y, z + i_target->GetCollisionHeight()) && !owner.IsInWater() && !i_target->IsInWater())
+    // Underwater combat (e.g. the player at the surface and the target on the
+    // sea floor) has no reliable navmesh route: when the chasing unit itself
+    // is in water, skip every previous check (distance / LOS / z-difference /
+    // not-in-water) and swim straight to the target. A monster still on the
+    // shore must not take this shortcut while only the target is swimming;
+    // it paths normally and evades instead of diving straight into the sea.
+    const bool ownerInWater = owner.IsInWater();
+    if (ownerInWater ||
+        (owner.IsWithinDist3d(x, y, z, 200.f) && std::abs(owner.GetPositionZ() - z) < 5.f && owner.IsWithinLOS(x, y, z + i_target->GetCollisionHeight()) && !owner.IsInWater() && !i_target->IsInWater()))
     {
         this->i_path->calculate(x, y, z, false, true);
         auto& path = this->i_path->getPath();
         gen = true;
-        if (sWorld.getConfig(CONFIG_BOOL_PATH_FIND_NORMALIZE_Z) && (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) == 0)
+
+        // The navmesh has no underwater route: fall back to a direct swim path.
+        if (ownerInWater && (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
+        {
+            path.clear();
+            path.push_back(this->i_path->getStartPosition());
+            path.push_back(this->i_path->getActualEndPosition());
+        }
+
+        // The normalize-z rejection is land-oriented: a straight surface-to-bottom
+        // swim legitimately spans more than 1 yard of Z, so skip it underwater.
+        if (!ownerInWater && sWorld.getConfig(CONFIG_BOOL_PATH_FIND_NORMALIZE_Z) && (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) == 0)
         {
             for (uint32 i = 0; i < path.size() - 1; ++i)
             {
@@ -516,6 +591,12 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
             }
         }
     }
+
+    // An underwater straight chase can dive into the seabed when the target is
+    // far from shore: refine the swim line so it follows the terrain instead of
+    // clipping through it.
+    if (ownerInWater)
+        RefineWaterPath(owner, this->i_path->getPath());
 
     if (owner.IsDebuggingMovement())
     {
@@ -535,7 +616,7 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
         }
     }
 
-    if (!gen || (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
+    if (!ownerInWater && (!gen || (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))))
     {
         this->i_path->calculate(x, y, z);
         if (this->i_path->getPathType() & PATHFIND_NOPATH)

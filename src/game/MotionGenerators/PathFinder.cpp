@@ -169,12 +169,15 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
         !HaveTile(start) || !HaveTile(dest))
     {
         // Deliberate straight-line movement (IGNORE_PATHFINDING) and
-        // flying/swimming/hovering units keep the shortcut; other ground
-        // units must not walk straight across missing navigation tiles
-        // (they would walk through walls or onto wrong walkable surfaces).
+        // flying/swimming/hovering units keep the shortcut; units already in
+        // water keep it too, so underwater chases do not dead-end on missing
+        // navigation tiles. Other ground units must not walk straight across
+        // missing navigation tiles (they would walk through walls or onto
+        // wrong walkable surfaces).
         const bool ignorePathfinding = m_sourceUnit && m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING);
         if (ignorePathfinding || (m_sourceUnit && (m_sourceUnit->CanFly() || m_sourceUnit->CanSwim() ||
-                                                  m_sourceUnit->IsLevitating() || m_sourceUnit->IsHovering())))
+                                                  m_sourceUnit->IsLevitating() || m_sourceUnit->IsHovering() ||
+                                                  m_sourceUnit->IsInWater())))
         {
             BuildShortcut();
             m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
@@ -526,8 +529,10 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
     // A destination below the surface (e.g. on a steep model face like a cave
     // mushroom) would pull units into unwalkable geometry, and a destination
     // above the surface (e.g. a player jumping into a cave hole) would make
-    // units rise vertically through the air. Snap the end both ways.
-    if (m_sourceUnit && !m_sourceUnit->CanFly())
+    // units rise vertically through the air. Snap the end both ways. Units in
+    // water are excluded: the snap would drag an underwater destination onto
+    // the navmesh surface (into the seabed / below the water level).
+    if (m_sourceUnit && !m_sourceUnit->CanFly() && !m_sourceUnit->IsInWater())
     {
         float closestPoint[VERTEX_SIZE];
         if (dtStatusSucceed(m_navMeshQuery->closestPointOnPoly(endPoly, endPoint, closestPoint, nullptr)))
@@ -542,6 +547,17 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
     if (startPoly == endPoly)
     {
         DEBUG_FILTER_LOG(LOG_FILTER_PATHFINDING, "++ BuildPolyPath :: (startPoly == endPoly)\n");
+
+        // Underwater units keep the raw straight shortcut: the land-oriented
+        // surface-snap validation would reject or drag a swim path onto the
+        // navmesh surface (into the seabed) when the points lie far from the
+        // polygon surface.
+        if (m_sourceUnit && m_sourceUnit->IsInWater())
+        {
+            BuildShortcut();
+            m_type = farFromPoly ? PATHFIND_INCOMPLETE : PATHFIND_NORMAL;
+            return;
+        }
 
         // A straight shortcut between two points of the same polygon is only
         // valid when both points actually lie on the polygon's surface; a
@@ -1030,7 +1046,8 @@ void PathFinder::BuildPointPath(const float* startPoint, const float* endPoint)
             m_pathPoints[m_pathPoints.size() - 1] = getEndPosition();
         }
         else if (m_sourceUnit && (m_sourceUnit->CanFly() || m_sourceUnit->CanSwim() ||
-                                 m_sourceUnit->IsLevitating() || m_sourceUnit->IsHovering()))
+                                 m_sourceUnit->IsLevitating() || m_sourceUnit->IsHovering() ||
+                                 m_sourceUnit->IsInWater()))
         {
             setActualEndPosition(getEndPosition());
             BuildShortcut();
