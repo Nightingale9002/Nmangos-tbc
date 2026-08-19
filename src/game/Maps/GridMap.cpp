@@ -849,9 +849,17 @@ float TerrainInfo::GetHeightStatic(float x, float y, float z, bool useVmaps/*=tr
             // look from a bit higher pos to find the floor
             vmapHeight = m_vmgr->getHeight(GetMapId(), x, y, z2, maxSearchDist);
 
-            // if not found in expected range, look for infinity range (case of far above floor, but below terrain-height)
+            // [FIX-1] if not found in expected range and we are above .map surface, do not fall into
+            // "infinity" search down to a lower terrain layer (e.g. crypt floor under a surface hole).
+            // Only search as far as the .map surface (mapHeight) + small margin. If caller is below
+            // the .map surface (inside cave), keep the infinity search to reach the cave floor.
             if (vmapHeight <= INVALID_HEIGHT)
-                vmapHeight = m_vmgr->getHeight(GetMapId(), x, y, z2, 10000.0f);
+            {
+                if (mapHeight > INVALID_HEIGHT && z2 > mapHeight)
+                    vmapHeight = m_vmgr->getHeight(GetMapId(), x, y, z2, z2 - mapHeight + 2.0f);
+                else
+                    vmapHeight = m_vmgr->getHeight(GetMapId(), x, y, z2, 10000.0f);
+            }
 
             // look upwards
             if (vmapHeight <= INVALID_HEIGHT && mapHeight > z2 && std::abs(z2 - mapHeight) > 30.f)
@@ -863,25 +871,45 @@ float TerrainInfo::GetHeightStatic(float x, float y, float z, bool useVmaps/*=tr
         }
     }
 
+    // [FIX-2] vmap result must be close to caller z or to .map surface, otherwise it is a
+    // wrong (lower) terrain layer picked by the search above. Use .map surface then.
+    // Thresholds:
+    //  - closeToZ  1.0: creatures never jump, so a unit standing on its own floor is within
+    //    ~0.1 yd of it (observed 0.00-0.06 yd in logs). 1.0 keeps cave dwellers on the cave
+    //    floor while shrinking the "falling unit passes a lower layer" attraction window to
+    //    +/-1 yd. Deeper layers are still reachable: the check compares vmapHeight to the
+    //    unit's own z, so cave depth is not limited.
+    //  - closeToMap 3.0: same-layer vmap/.map differ by <1 yd (same ADT source); different
+    //    layers (surface vs cave floor) differ by >20 yd, so 3.0 never confuses them.
+    bool const vmapCloseToZ   = std::fabs(vmapHeight - z) <= 1.0f;
+    bool const vmapCloseToMap = std::fabs(vmapHeight - mapHeight) <= 3.0f;
+
     // mapHeight set for any above raw ground Z or <= INVALID_HEIGHT
     // vmapheight set for any under Z value or <= INVALID_HEIGHT
+    float resultHeight;
     if (vmapHeight > INVALID_HEIGHT)
     {
         if (mapHeight > INVALID_HEIGHT)
         {
             // we have mapheight and vmapheight and must select more appropriate
-
-            // we are already under the surface or vmap height above map heigt
-            if (z < mapHeight || vmapHeight > mapHeight)
-                return vmapHeight;
-            return mapHeight;
-            // better use .map surface height
+            if (vmapCloseToZ || vmapCloseToMap)
+            {
+                // we are already under the surface or vmap height above map heigt
+                if (z < mapHeight || vmapHeight > mapHeight)
+                    resultHeight = vmapHeight;
+                else
+                    resultHeight = mapHeight;
+            }
+            else
+                resultHeight = mapHeight;                  // vmap found wrong (far) layer -> use .map surface
         }
         else
-            return vmapHeight;                              // we have only vmapHeight (if have)
+            resultHeight = vmapHeight;                     // we have only vmapHeight (if have)
     }
+    else
+        resultHeight = mapHeight;
 
-    return mapHeight;
+    return resultHeight;
 }
 
 inline bool IsOutdoorWMO(uint32 mogpFlags, uint32 mapId)

@@ -127,12 +127,12 @@ namespace Movement
             spline.initLengths(init);
         }
 
-        // TODO: what to do in such cases? problem is in input data (all points are at same coords)
+        // A degenerate input (all points at the same coords, e.g. a 2-point shortcut
+        // whose start was overwritten by the unit's current position in Launch) used to
+        // spam "zero length spline". The spline is still fully initialized here - only
+        // its total duration is forced to a tiny 1ms so the unit effectively stays put.
         if (spline.length() < minimal_duration)
-        {
-            sLog.outError("MoveSpline::init_spline: zero length spline, wrong input data?");
             spline.set_length(spline.last(), spline.isCyclic() ? 1000 : 1);
-        }
         point_Idx = spline.first();
         speed = args.velocity;
     }
