@@ -230,3 +230,51 @@ TargetedMovementGenerator.cpp +87  Chase 水下：跳过距离/LOS/z 检查直�
 - **随机漫步垃圾点**（数千码外）：`[WANDERDBG]`/`[RANDDBG]` 距离过滤后本地 0 输出，与 mmap 数据无关；
   若再出现，从 `ComputePathToRandomPoint` 的 `getPolyByLocation`/`getPolyHeight` 返回值方向排查（日志已就位）。
 - **待办**：本次工作区改动（0-A/B/C）尚未 commit；确认本地验证充分后建议提交，再同步到云服（Linux 需重新编译）。
+
+---
+
+## [内存] mangosd 内存持续增长（active 怪网格永不卸载）— 2026-08-20 已修
+
+### 现象
+- 云端 mem_monitor.log：每次重启后 mangosd 以 **25-80MB/小时** 持续增长，峰值 1485-1539MB 后 OOM 崩溃（load 飙到 27+）。
+- 8-16 20:25→20:45 玩家外域移动：20 分钟 +680MB。
+- 无玩家时段也涨（8-17 14-18h：1402→1465MB）——非玩家活动引起。
+
+### 根因链（通过 [GRIDDBG] 日志证实）
+1. **`Autoload.Active = 1`**（配置）→ 启动时 `ObjectMgr::LoadActiveEntities` 对 227 个
+   `CREATURE_EXTRA_FLAG_ACTIVE` 怪物的坐标调 `ForceLoadGrid` → **启动即加载 74 个网格/9479 只怪**。
+2. `ForceLoadGrid`（Map.cpp）调用 `setUnloadExplicitLock(true)` **永久锁定**网格（上游 cmangos 原版问题，
+   无任何地方调用 false 清除）。
+3. active 怪的事件 AI **无玩家也在运行**（这正是 active 的意义）→ 跨网格移动/召唤 →
+   `EnsureGridLoadedAtEnter` 加载新网格 → 网格含 active 怪 → `ActiveObjectsInGrid()>0` +
+   `ActiveObjectsNearGrid()`（检查 `m_activeNonPlayers`）→ **网格永不转 IDLE/永不卸载**。
+4. 循环：网格只增不减 → 内存无限增长。
+
+实测（本地 GRIDDBG）：启动后无玩家，网格 74→86（+12），怪物 9479→10957（+1478），全部 playersInMap=0。
+
+### 修复（2026-08-20，本地验证有效）
+1. **`ForceLoadGrid` 去掉 `setUnloadExplicitLock(true)`**（Map.cpp）——该锁由
+   `AddToActive`/`RemoveFromActive` 的 `inc/decUnloadActiveLock()` 引用锁覆盖，冗余且泄漏。
+2. **`Map::ActiveObjectsNearGrid` 只检查玩家 + transports**（Map.cpp）——移除 `m_activeNonPlayers`
+   检查（active 怪不再阻止网格卸载）。
+3. **`GridStates.cpp` ActiveState::Update**：转 IDLE 只依据 `!ActiveObjectsNearGrid`（即玩家/transport），
+   去掉 `ActiveObjectsInGrid()==0` 条件。
+4. **Transport 保护**：`ActiveObjectsNearGrid` 对 `m_transports`（船/飞艇/电梯）所在网格返回 true——
+   运输工具是地图级对象，网格卸载会删除其所在网格，故必须保留（防载具消失）。
+5. **`Autoload.Active = 0`**（云端+本地配置）：启动不再预加载 active 网格。
+
+### 验证结果（本地）
+| 配置 | 启动内存 | 启动网格 | 10分钟增长 |
+|---|---|---|---|
+| Autoload.Active=1（修复前） | ~1180MB | 74 | 25-80MB/小时 |
+| Autoload.Active=0（修复后） | ~600MB | 1-3 | ~9MB/10分钟 |
+
+- 启动内存 **省 ~600MB（50%）**；网格加载从 74 → 1-3（仅 transport 网格）。
+- 行为变化：**完全懒加载**——无玩家时网格（含 active 怪）卸载，事件怪只在玩家附近活动
+  （玩家离开区域 → 网格卸载 → 事件怪消失，回到懒加载语义）。用户确认接受此权衡。
+
+### 遗留/注意
+- `[GRIDDBG]` 日志（Map.cpp LoadN/Unload、ObjectGridLoader LoadN）**保留**，便于云端检查网格加载/卸载。
+- 云端需等凌晨脚本编译部署新二进制 + `Autoload.Active=0` 配置（已改 `/opt/mangos/bin/mangosd.conf`，
+  备份 `mangosd.conf.bak_autoload_20260820_022208`）。
+- 若未来需要 active 怪无玩家推进事件（如跨服事件），需重新评估此改动。

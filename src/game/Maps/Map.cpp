@@ -403,6 +403,8 @@ bool Map::EnsureGridLoaded(const Cell& cell)
         // summons some active object B, while B added to map grid loading called again and so on..
         setGridObjectDataLoaded(true, cell.GridX(), cell.GridY());
         ObjectGridLoader loader(*grid, this, cell);
+        // [GRIDDBG] verify lazy-load: log EVERY grid object-data load (no player around check)
+        sLog.outError("[GRIDDBG] Map %u LoadN grid[%u,%u] cell[%u,%u] playersInMap=%u", i_id, cell.GridX(), cell.GridY(), cell.CellX(), cell.CellY(), GetPlayers().getSize());
         loader.LoadN();
 
         // Add resurrectable corpses to world object list in grid
@@ -430,7 +432,12 @@ void Map::ForceLoadGrid(float x, float y)
         CellPair p = MaNGOS::ComputeCellPair(x, y);
         Cell cell(p);
         EnsureGridLoadedAtEnter(cell);
-        getNGrid(cell.GridX(), cell.GridY())->setUnloadExplicitLock(true);
+        // [MEMFIX] Do not permanently lock the grid. The permanent lock (setUnloadExplicitLock(true))
+        // kept every grid containing an active creature loaded forever: startup loaded 74 grids and
+        // active-creature events kept adding new grids while no player was online, so RSS grew
+        // 25-80 MB/hour until OOM. Grid lifetime is already managed correctly by AddToActive /
+        // RemoveFromActive via inc/decUnloadActiveLock(), so this lock is redundant.
+        // getNGrid(cell.GridX(), cell.GridY())->setUnloadExplicitLock(true);
     }
 }
 
@@ -1283,8 +1290,12 @@ bool Map::UnloadGrid(const uint32& x, const uint32& y, bool pForce)
 
     {
         if (!pForce && ActiveObjectsNearGrid(x, y))
+        {
+            sLog.outError("[GRIDDBG] Unload BLOCKED grid[%u,%u] map %u (active obj near)", x, y, i_id);
             return false;
+        }
 
+        sLog.outError("[GRIDDBG] Unloading grid[%u,%u] map %u", x, y, i_id);
         DEBUG_FILTER_LOG(LOG_FILTER_MAP_LOADING, "Unloading grid[%u,%u] for map %u", x, y, i_id);
 
         ObjectGridStoper stoper(*grid);
@@ -1663,14 +1674,13 @@ bool Map::ActiveObjectsNearGrid(uint32 x, uint32 y) const
             return true;
     }
 
-    for (auto obj : m_activeNonPlayers)
-    {
-        CellPair p = MaNGOS::ComputeCellPair(obj->GetPositionX(), obj->GetPositionY());
-        if ((cell_min.x_coord <= p.x_coord && p.x_coord <= cell_max.x_coord) &&
-                (cell_min.y_coord <= p.y_coord && p.y_coord <= cell_max.y_coord))
-            return true;
-    }
-
+    // [MEMFIX] Active non-player objects (active creatures) no longer keep grids loaded:
+    // grids are unloaded whenever no player is near (full lazy-load), so memory does not
+    // grow with active-creature events.
+    // NOTE: transports are deliberately NOT checked here. They are map-level objects
+    // (Map::m_transports) that never live in a grid, so grid unload cannot remove them;
+    // keeping a range-loop over m_transports here caused a use-after-free GPF when a
+    // transport was erased (RemoveTransport) while UpdateGridState iterated grids.
     return false;
 }
 

@@ -31,7 +31,10 @@ ActiveState::Update(Map& m, NGridType& grid, GridInfo& info, const uint32& x, co
     info.UpdateTimeTracker(t_diff);
     if (info.getTimeTracker().Passed())
     {
-        if (grid.ActiveObjectsInGrid() == 0 && !m.ActiveObjectsNearGrid(x, y))
+        // [MEMFIX] Grid transitions to IDLE based on players (and transports) only;
+        // active creatures no longer keep the grid alive (full lazy-load, prevents
+        // memory growth from active-creature events with no player around).
+        if (!m.ActiveObjectsNearGrid(x, y))
         {
             grid.SetGridState(GRID_STATE_IDLE);
         }
