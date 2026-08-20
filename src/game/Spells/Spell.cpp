@@ -1039,7 +1039,11 @@ void Spell::AddUnitTarget(Unit* target, uint8 effectMask, CheckException excepti
     {
         bool isReflected = targetInfo.missCondition == SPELL_MISS_REFLECT && targetInfo.reflectResult == SPELL_MISS_NONE;
         Unit* targetForDiminish = isReflected ? m_caster : target;
-        if (IsAuraApplyEffects(m_spellInfo, SpellEffectIndexMask(targetInfo.effectHitMask)))
+        // [DISARMFIX] 修复：混合法术（如 36208 Steal Weapon = 召唤+MOD_DISARM）
+        // 用 IsAuraApplyEffects 要求"所有命中效果都是 aura"会返回 false，
+        // 导致 CalculateAuraDuration（武器掌握缴械时长减免）不被调用。
+        // 改为 IsSpellAppliesAura：只要有 aura 效果命中就计算时长修正。
+        if (IsSpellAppliesAura(m_spellInfo, targetInfo.effectHitMask))
             targetInfo.effectDuration = targetForDiminish->CalculateAuraDuration(m_spellInfo, effectMask, targetInfo.effectDuration, realCaster);
         if ((targetInfo.missCondition == SPELL_MISS_NONE || isReflected) && CanSpellDiminish())
         {
@@ -1480,6 +1484,11 @@ void Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, TargetInfo* target, 
         {
             int32 duration = m_spellAuraHolder->GetAuraMaxDuration();
             int32 originalDuration = duration;
+            // [DISARMFIX] fix: creature-cast spells have CanSpellDiminish()=false,
+            // so the reduced duration from CalculateAuraDuration (Weapon Mastery)
+            // is lost (diminishing branch not taken). Apply it directly here.
+            if (target->effectDuration > 0 && target->effectDuration < duration)
+                duration = target->effectDuration;
 
             if (duration > 0 && target->diminishGroup > DIMINISHING_NONE)
             {
