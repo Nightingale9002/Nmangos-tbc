@@ -5341,15 +5341,34 @@ bool Unit::RemoveNoStackAurasDueToAuraHolder(SpellAuraHolder* holder)
                     return false;
             }
 
-            if (personal && stackable)
-                RemoveAurasByCasterSpell(existingSpellId, holder->GetCasterGuid());
+            // [SEALTWIST] Seal Twisting: when switching seals, keep the old seal aura
+            // alive for 300ms so an in-flight melee swing can still trigger it
+            // (e.g. Seal of Command). Non-seal conflicts keep immediate removal.
+            if (IsSealSpell(existingSpellProto))
+            {
+                const uint32 oldSealSpellId = existingSpellId;
+                const time_t oldSealApplyTime = existing->GetAuraApplyTime();
+                m_events.AddEvent(new UnitLambdaEvent(*this, [oldSealSpellId, oldSealApplyTime](Unit& unit)
+                {
+                    // Only remove if the old seal holder is still the same one (player may have re-cast it)
+                    SpellAuraHolder* h = unit.GetSpellAuraHolder(oldSealSpellId);
+                    if (h && h->GetAuraApplyTime() == oldSealApplyTime)
+                        unit.RemoveAurasDueToSpell(oldSealSpellId);
+                }), m_events.CalculateTime(400));
+                break;                                          // keep old seal holder, exit loop (no re-iteration)
+            }
             else
-                RemoveAurasDueToSpell(existingSpellId);
+            {
+                if (personal && stackable)
+                    RemoveAurasByCasterSpell(existingSpellId, holder->GetCasterGuid());
+                else
+                    RemoveAurasDueToSpell(existingSpellId);
 
-            if (m_spellAuraHolders.empty())
-                break;
+                if (m_spellAuraHolders.empty())
+                    break;
 
-            next = m_spellAuraHolders.begin();
+                next = m_spellAuraHolders.begin();
+            }
         }
     }
     return true;
