@@ -449,6 +449,15 @@ void WorldSession::HandleQuestLogRemoveQuest(WorldPacket& recv_data)
                 if (pQuest->HasSpecialFlag(QUEST_SPECIAL_FLAG_TIMED))
                     _player->RemoveTimedQuest(quest);
 
+                // [QUESTFIX] 放弃任务时销毁该任务收集的任务物品（ReqItemId）的【全部持有量】，
+                // 与官方行为一致（任务物品不能在放弃任务后保留/囤积/倒卖）。
+                // 销毁全部（含银行），不残留任何垃圾任务物品占背包。
+                for (int i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                {
+                    if (pQuest->ReqItemId[i])
+                        _player->DestroyItemCount(pQuest->ReqItemId[i], _player->GetItemCount(pQuest->ReqItemId[i], true), true, false, true);
+                }
+
                 for (int i = 0; i < QUEST_SOURCE_ITEM_IDS_COUNT; ++i)
                 {
                     if (pQuest->ReqSourceId[i])
