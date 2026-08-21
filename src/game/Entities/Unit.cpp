@@ -526,6 +526,28 @@ void Unit::Update(const uint32 diff)
     // update abilities available only for fraction of time
     UpdateReactives(diff);
 
+    // Dynamically update swimming state: the SWIMMING flag is only set at creature
+    // creation based on the spawn point. A water dweller spawned in shallow water and
+    // chasing into deep water stays flagged as a land unit and sinks/evades. Recompute
+    // from the current position each tick (SetSwim only sends packets on state change).
+    // Skip WALK_IN_WATER creatures (crabs etc.): they must walk on the seabed, forcing
+    // them to swim makes the client sink/bob against the server position.
+    if (GetTypeId() == TYPEID_UNIT && CanSwim() &&
+        !(static_cast<Creature const*>(this)->GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER))
+    {
+        // A swimmer starts swimming as soon as it is below the surface (with a
+        // small hysteresis band so the waterline does not flip-flop the state),
+        // and stops swimming only once it is clearly out of the water. This
+        // keeps it swimming across the shallow bank too, instead of wading the
+        // seabed when it follows the target back toward the shore.
+        float waterLevel = GetMap()->GetTerrain()->GetWaterLevel(GetPositionX(), GetPositionY(), GetPositionZ());
+        bool const swimming = m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
+        if (!swimming && waterLevel > INVALID_HEIGHT && GetPositionZ() < waterLevel - 0.5f)
+            SetSwim(true);
+        else if (swimming && (waterLevel <= INVALID_HEIGHT || GetPositionZ() > waterLevel + 0.5f))
+            SetSwim(false);
+    }
+
     UpdateSplineMovement(diff);
     i_motionMaster.UpdateMotion(diff);
 
@@ -11738,7 +11760,14 @@ void Unit::UpdateSplinePosition(bool relocateOnly)
     if (IsPlayer())
         static_cast<Player*>(this)->SetPosition(pos.x, pos.y, pos.z, pos.o);
     else
+    {
         GetMap()->CreatureRelocation((Creature*)this, pos.x, pos.y, pos.z, pos.o);
+        // Keep the movement info position in sync with the real position:
+        // it is otherwise never updated for creatures during spline movement
+        // and stays at the spawn point (any object-update movement block
+        // would teleport the unit back there).
+        m_movementInfo.ChangePosition(pos.x, pos.y, pos.z, pos.o);
+    }
 }
 
 void Unit::SendFlightSplineSyncIfNeeded()
@@ -12487,6 +12516,11 @@ void Unit::UpdateAllowedPositionZ(float x, float y, float& z, Map* atMap /*=null
     if (!atMap)
         atMap = GetMap();
 
+    // Units in water (incl. shallow water) keep their swimming depth; snapping z
+    // to the floor below fights the swimming logic and causes surface/floor bobbing.
+    if (IsInWater())
+        return;
+
     // non fly unit don't must be in air
     // non swim unit must be at ground (mostly speedup, because it don't must be in water and water level check less fast
     if (!CanFly())
@@ -13101,6 +13135,19 @@ void Unit::SetSwim(bool enable)
         m_movementInfo.AddMovementFlag(MOVEFLAG_SWIMMING);
     else
         m_movementInfo.RemoveMovementFlag(MOVEFLAG_SWIMMING);
+
+    // The client anchors a creature's swim state in UNIT_FIELD_FLAGS
+    // (UNIT_FLAG_SWIMMING = 0x8000): water-spawned creatures get the bit at
+    // CREATE, land creatures need it set dynamically when entering deep water
+    // so the client plays the swim animation persistently. 0x30B alone
+    // reverts after ~2s and re-creating the object does not re-anchor it.
+    if (GetTypeId() == TYPEID_UNIT)
+    {
+        if (enable)
+            SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SWIMMING);
+        else
+            RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SWIMMING);
+    }
 
     if (!IsInWorld()) // is sent on add to map
         return;

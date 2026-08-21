@@ -263,8 +263,6 @@ void ObjectGridLoader::LoadN(void)
         }
     }
     DETAIL_FILTER_LOG(LOG_FILTER_MAP_LOADING, "%u GameObjects, %u Creatures, and %u Corpses/Bones loaded for grid %u on map %u", i_gameObjects, i_creatures, i_corpses, i_grid.GetGridId(), i_map->GetId());
-    // [GRIDDBG] verify lazy-load: log creatures actually loaded per grid
-    sLog.outError("[GRIDDBG] LoadN done: %u creatures, %u gameobjects, %u corpses in grid %u on map %u", i_creatures, i_gameObjects, i_corpses, i_grid.GetGridId(), i_map->GetId());
 }
 
 void ObjectGridUnloader::MoveToRespawnN()

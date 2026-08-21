@@ -451,9 +451,18 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
         {
 #endif
             // Check for swimming or flying shortcut
-            if ((startPoly == INVALID_POLYREF && m_sourceUnit->GetTerrain()->IsSwimmable(startPos.x, startPos.y, startPos.z)) ||
-                (endPoly == INVALID_POLYREF && m_sourceUnit->GetTerrain()->IsSwimmable(endPos.x, endPos.y, endPos.z)))
-                m_type = m_sourceUnit->CanSwim() ? PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH) : PATHFIND_NOPATH;
+            // Swimmers take the shortcut whenever either endpoint lacks a navmesh
+            // polygon, regardless of IsSwimmable(): shallow water (< 1.5 yd deep)
+            // reports IsSwimmable()==false, which used to NOPATH creatures even
+            // though they can swim there (e.g. Greymist Tidehunter 2208).
+            // Any unit actually in water (incl. non-swimmers that fell in) gets
+            // the shortcut: IsSwimmable() fails for deep positions and would
+            // otherwise NOPATH them (evade spam).
+            if (m_sourceUnit && (m_sourceUnit->CanSwim() || m_sourceUnit->IsInWater()))
+                m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
+            else if ((startPoly == INVALID_POLYREF && m_sourceUnit->GetTerrain()->IsSwimmable(startPos.x, startPos.y, startPos.z)) ||
+                     (endPoly == INVALID_POLYREF && m_sourceUnit->GetTerrain()->IsSwimmable(endPos.x, endPos.y, endPos.z)))
+                m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
             else
             {
                 if (m_sourceUnit->GetTypeId() != TYPEID_PLAYER)
@@ -1484,6 +1493,16 @@ void PathFinder::ComputePathToRandomPoint(Vector3 const& startPoint, float maxRa
     bool fail = true;
     if (centerPoly != INVALID_POLYREF)
     {
+        if (m_sourceUnit && m_sourceUnit->IsInWater())
+        {
+            // Water: keep the random point at the unit's current swimming depth.
+            // Snapping z to the navmesh surface (seabed/shore) made swimmers dive
+            // to the floor and bob back up on the next random roll.
+            endPoint.z = currPos.z;
+            setEndPosition(endPoint);
+        }
+        else
+        {
         // first we have to fix z value before hit test, z is in index 1 of randomPoint
         dtStatus dtResult = m_navMeshQuery->getPolyHeight(centerPoly, randomPoint, &randomPoint[1]);
         endPoint.z = randomPoint[1];
@@ -1495,6 +1514,7 @@ void PathFinder::ComputePathToRandomPoint(Vector3 const& startPoint, float maxRa
             BuildPolyPath(currPos, endPoint);
             fail = false;
             //sLog.outDebug("PathFinder::GetPathToRandomPoint> path type %d size %d poly-size %d\n", m_type, m_pathPoints.size(), m_polyLength);
+        }
         }
     }
 

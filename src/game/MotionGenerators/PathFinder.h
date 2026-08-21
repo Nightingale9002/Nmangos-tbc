@@ -95,6 +95,7 @@ class PathFinder
 
         PointsArray& getPath() { return m_pathPoints; }
         PathType getPathType() const { return m_type; }
+        void setPathType(PathType type) { m_type = type; }
 
 #ifdef ENABLE_PLAYERBOTS
         PathFinder();

@@ -20,6 +20,7 @@
 #include "MoveSpline.h"
 #include "packet_builder.h"
 #include "Entities/Unit.h"
+#include "Entities/Creature.h"
 #include "Log/Log.h"
 #include "Maps/TransportSystem.h"
 #include "Entities/Transports.h"
@@ -79,6 +80,50 @@ namespace Movement
 
         // corrent first vertex
         args.path[0] = real_position;
+
+        // Unified in-water path handling for creatures, covering every movement
+        // type (chase/follow/wander/waypoint/home): swimmers stay in the
+        // [floor+0.5, surface] band, non-swimmers and WALK_IN_WATER creatures
+        // walk on the seabed.
+        if (unit.GetTypeId() == TYPEID_UNIT)
+        {
+            CreatureInfo const* cinfo = static_cast<Creature const&>(unit).GetCreatureInfo();
+            bool const walkInWater = (cinfo->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER) != 0;
+            bool const canSwim = unit.CanSwim();
+            Map const* map = unit.GetMap();
+            auto terrain = map->GetTerrain();
+            for (auto& p : args.path)
+            {
+                float groundZ = map->GetHeight(p.x, p.y, p.z, true);
+                if (groundZ <= INVALID_HEIGHT)
+                    continue;
+                float waterLevel = terrain->GetWaterLevel(p.x, p.y, p.z, &groundZ);
+                if (waterLevel <= INVALID_HEIGHT)
+                    continue;
+                // Points on solid land above the water surface (shore, rock,
+                // boat deck) keep their z: pulling them down to the water
+                // level teleports the unit off the land into the sea and it
+                // fights the next re-path forever (pet jitter between shore
+                // and water when following onto a rock). Points above the
+                // surface over OPEN water (a straight segment crossing a bay)
+                // ride the surface for swimmers, the seabed for walkers.
+                if (p.z > waterLevel && groundZ > waterLevel)
+                    continue;
+                if (walkInWater || !canSwim)
+                    p.z = groundZ + 0.5f;
+                else
+                {
+                    // Swimmers follow the path depth (which already descends to
+                    // the target); only keep them under the surface and above
+                    // the seabed - never force a fixed depth.
+                    if (p.z > waterLevel)
+                        p.z = waterLevel;
+                    else if (p.z < groundZ + 0.5f)
+                        p.z = groundZ + 0.5f;
+                }
+            }
+        }
+
         args.flags.enter_cycle = args.flags.cyclic;
         uint32 moveFlags = unit.m_movementInfo.GetMovementFlags();
         if (args.flags.runmode)

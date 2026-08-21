@@ -249,6 +249,19 @@ void ChaseMovementGenerator::HandleTargetedMovement(Unit& owner, const uint32& t
     {
         targetMoved = this->RequiresNewPosition(owner, dest); // uses transport coordinates
 
+        // Re-path when the creature enters/leaves water so the chase spline
+        // matches the new movement mode (otherwise it keeps walking the old
+        // land path into the water and can get stuck / evade).
+        if (owner.GetTypeId() == TYPEID_UNIT)
+        {
+            bool const swimNow = owner.m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
+            if (swimNow != m_lastSwimState)
+            {
+                m_lastSwimState = swimNow;
+                targetMoved = true;
+            }
+        }
+
         if ((this->i_speedChanged && !owner.movespline->Finalized()) || targetMoved)
         {
             float x, y, z;
@@ -489,7 +502,10 @@ namespace
         const Map* map = owner.GetMap();
         const TerrainInfo* terrain = map->GetTerrain();
         const float floorMargin = 0.5f;
-        const float minWaterDeep = owner.GetCollisionHeight();
+        // WALK_IN_WATER creatures (crabs etc.) must walk on the seabed instead of
+        // swimming in the [floor, surface] band - clamp them to the floor.
+        bool const walkInWater = owner.GetTypeId() == TYPEID_UNIT &&
+            (static_cast<Creature const&>(owner).GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER);
 
         PointsArray refined;
         refined.reserve(path.size() + 16);
@@ -508,15 +524,37 @@ namespace
                 Vector3 p = a + (b - a) * t;
 
                 float groundZ = map->GetHeight(p.x, p.y, p.z, true);
+                float waterLevel = INVALID_HEIGHT;
                 if (groundZ > INVALID_HEIGHT)
                 {
-                    float maxZ = terrain->GetWaterOrGroundLevel(p.x, p.y, p.z, groundZ, true, minWaterDeep);
-                    if (maxZ > INVALID_HEIGHT)
+                    // Use the plain water level (valid even in shallow water) instead of
+                    // GetWaterOrGroundLevel(swim=true), which returns the ground for shallow
+                    // water and snapped swimmers onto the floor, bobbing up and down.
+                    waterLevel = terrain->GetWaterLevel(p.x, p.y, p.z, &groundZ);
+                    if (waterLevel > INVALID_HEIGHT)
                     {
-                        if (p.z > maxZ)
-                            p.z = maxZ;
-                        else if (p.z < groundZ + floorMargin)
+                        if (p.z > waterLevel && groundZ > waterLevel)
+                        {
+                            // On solid land above the surface (shore/rock):
+                            // snap to the ground instead of pulling the point
+                            // down to the water surface.
                             p.z = groundZ + floorMargin;
+                        }
+                        else if (walkInWater)
+                            p.z = groundZ + floorMargin;
+                        else
+                        {
+                            if (p.z > waterLevel)
+                                p.z = waterLevel;
+                            else if (p.z < groundZ + floorMargin)
+                                p.z = groundZ + floorMargin;
+                        }
+                    }
+                    else
+                    {
+                        // On land: snap to the ground so the straight segment crossing the
+                        // shoreline does not leave the creature hovering/bobbing above terrain.
+                        p.z = groundZ + floorMargin;
                     }
                 }
 
@@ -562,15 +600,35 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
     // shore must not take this shortcut while only the target is swimming;
     // it paths normally and evades instead of diving straight into the sea.
     const bool ownerInWater = owner.IsInWater();
-    if (ownerInWater ||
+    // A swimming player keeps the SWIMMING flag while jumping out of the
+    // water, so judge the target by its swim state as well as its position:
+    // position alone flips on every jump and swaps the chase between the
+    // direct swim line and the land path (teleporting the chaser).
+    const bool targetInWater = i_target->IsInWater() || i_target->m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
+    const bool walkInWater = owner.GetTypeId() == TYPEID_UNIT &&
+        (static_cast<Creature const&>(owner).GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER);
+    if ((ownerInWater && targetInWater) ||
         (owner.IsWithinDist3d(x, y, z, 200.f) && std::abs(owner.GetPositionZ() - z) < 5.f && owner.IsWithinLOS(x, y, z + i_target->GetCollisionHeight()) && !owner.IsInWater() && !i_target->IsInWater()))
     {
         this->i_path->calculate(x, y, z, false, true);
         auto& path = this->i_path->getPath();
         gen = true;
 
+        // A swimming chaser goes straight to the target at its depth: the
+        // underwater navmesh is the seabed, so the corridor path would make it
+        // dive to the bottom and stop below the target (out of melee range),
+        // re-pathing forever. End at the target's actual position instead of
+        // the navmesh-snapped seabed point. WALK_IN_WATER creatures keep the
+        // corridor (they must walk the seabed).
+        if (ownerInWater && targetInWater && !walkInWater && owner.CanSwim())
+        {
+            path.clear();
+            path.push_back(this->i_path->getStartPosition());
+            path.push_back(G3D::Vector3(x, y, z));
+            this->i_path->setPathType(PATHFIND_NORMAL);
+        }
         // The navmesh has no underwater route: fall back to a direct swim path.
-        if (ownerInWater && (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
+        else if (ownerInWater && targetInWater && (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
         {
             path.clear();
             path.push_back(this->i_path->getStartPosition());
@@ -616,9 +674,15 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
         }
     }
 
-    if (!ownerInWater && (!gen || (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))))
+    if (!gen || (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
     {
         this->i_path->calculate(x, y, z);
+        // Refine unconditionally: even when both the unit and the target are on
+        // land, the navmesh/straight path can cross water (shoreline bays) and the
+        // in-water points would otherwise ride the water surface instead of the
+        // seabed. Refine fixes water points (floor band, or floor for
+        // WALK_IN_WATER) and leaves land points on the ground.
+        RefineWaterPath(owner, this->i_path->getPath());
         if (this->i_path->getPathType() & PATHFIND_NOPATH)
             return false;
     }
@@ -952,6 +1016,18 @@ bool FollowMovementGenerator::Move(Unit& owner, float x, float y, float z)
 
     auto& path = i_path->getPath();
 
+    // A swimming follower goes straight to the target at its depth: the
+    // underwater navmesh is the seabed and would route it along the bottom,
+    // ending below the target (out of follow range, re-pathing forever).
+    const bool targetInWater = i_target->IsInWater() || i_target->m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
+    if (owner.GetTypeId() == TYPEID_UNIT && owner.CanSwim() && owner.IsInWater() && targetInWater)
+    {
+        path.clear();
+        path.push_back(G3D::Vector3(owner.GetPositionX(), owner.GetPositionY(), owner.GetPositionZ()));
+        path.push_back(G3D::Vector3(x, y, z));
+        i_path->setPathType(PATHFIND_NORMAL);
+    }
+
     // Correct every path point Z to the real floor (floorZ)
     if (owner.GetTypeId() == TYPEID_UNIT && !owner.IsFlying() && !owner.IsLevitating() && !owner.IsHovering() && !owner.IsInWater())
     {
@@ -1252,6 +1328,17 @@ void FollowMovementGenerator::HandleTargetedMovement(Unit& owner, const uint32& 
 
             targetSpeedChanged = (targetSpeedChanged && targetRelocation);
             i_lastTargetPos = currentTargetPos;
+        }
+    }
+
+    // Re-path when the pet enters/leaves water (same reasoning as Chase).
+    if (owner.GetTypeId() == TYPEID_UNIT)
+    {
+        bool const swimNow = owner.m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
+        if (swimNow != m_lastSwimState)
+        {
+            m_lastSwimState = swimNow;
+            targetRelocation = true;
         }
     }
 

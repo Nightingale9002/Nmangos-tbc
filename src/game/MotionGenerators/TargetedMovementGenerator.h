@@ -47,7 +47,7 @@ class TargetedMovementGeneratorMedium
             i_recheckDistance(0),
             i_offset(offset), i_angle(angle),
             i_speedChanged(false), i_targetReached(false),
-            i_faceTarget(true), i_path(nullptr)
+            i_faceTarget(true), m_lastSwimState(false), i_path(nullptr)
         {
         }
         ~TargetedMovementGeneratorMedium() { delete i_path; }
@@ -84,6 +84,7 @@ class TargetedMovementGeneratorMedium
         bool i_speedChanged : 1;
         bool i_targetReached : 1;
         bool i_faceTarget : 1;
+        bool m_lastSwimState : 1;
 
         PathFinder* i_path;
 };

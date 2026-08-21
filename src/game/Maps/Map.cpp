@@ -403,8 +403,6 @@ bool Map::EnsureGridLoaded(const Cell& cell)
         // summons some active object B, while B added to map grid loading called again and so on..
         setGridObjectDataLoaded(true, cell.GridX(), cell.GridY());
         ObjectGridLoader loader(*grid, this, cell);
-        // [GRIDDBG] verify lazy-load: log EVERY grid object-data load (no player around check)
-        sLog.outError("[GRIDDBG] Map %u LoadN grid[%u,%u] cell[%u,%u] playersInMap=%u", i_id, cell.GridX(), cell.GridY(), cell.CellX(), cell.CellY(), GetPlayers().getSize());
         loader.LoadN();
 
         // Add resurrectable corpses to world object list in grid
@@ -1291,11 +1289,9 @@ bool Map::UnloadGrid(const uint32& x, const uint32& y, bool pForce)
     {
         if (!pForce && ActiveObjectsNearGrid(x, y))
         {
-            sLog.outError("[GRIDDBG] Unload BLOCKED grid[%u,%u] map %u (active obj near)", x, y, i_id);
             return false;
         }
 
-        sLog.outError("[GRIDDBG] Unloading grid[%u,%u] map %u", x, y, i_id);
         DEBUG_FILTER_LOG(LOG_FILTER_MAP_LOADING, "Unloading grid[%u,%u] for map %u", x, y, i_id);
 
         ObjectGridStoper stoper(*grid);
