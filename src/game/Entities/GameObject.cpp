@@ -647,7 +647,13 @@ void GameObject::Update(const uint32 diff)
                 break;
 
             // Remove wild summoned after use
-            if (!HasStaticDBSpawnData() && (!GetSpellId() || GetGOInfo()->GetDespawnPossibility() || GetGOInfo()->IsDespawnAtAction() || m_forcedDespawn))
+            // non-consumable chests/goobers (IsDespawnAtAction == false) must never despawn,
+            // even when wild-summoned by a spell: keep them alive with reset loot so other
+            // players can still loot them (e.g. Xabraxxis' Demon Bag 177624)
+            bool const isNonConsumableLootObj = (GetGoType() == GAMEOBJECT_TYPE_CHEST || GetGoType() == GAMEOBJECT_TYPE_GOOBER) &&
+                                                !GetGOInfo()->IsDespawnAtAction() && !m_forcedDespawn;
+
+            if (!isNonConsumableLootObj && !HasStaticDBSpawnData() && (!GetSpellId() || GetGOInfo()->GetDespawnPossibility() || GetGOInfo()->IsDespawnAtAction() || m_forcedDespawn))
             {
                 if (Unit* owner = GetOwner())
                     owner->RemoveGameObject(this, false);
