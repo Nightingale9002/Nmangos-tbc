@@ -525,6 +525,13 @@ void OutdoorPvPNA::RespawnSoldier()
 
         if (Player* player = sObjectMgr.GetPlayer(itr->first))
         {
+            // Guard against an empty queue: the timer can still fire after the
+            // queue was drained (e.g. SummonCreature failed silently), and
+            // front() on an empty queue is undefined behaviour that corrupts
+            // the heap and crashes later in unrelated STL code.
+            if (m_deadSoldiers.empty())
+                return;
+
             // summon a soldier replacement in the order they were set in the deque. delete the element after summon
             const HalaaSoldiersSpawns& location = m_deadSoldiers.front();
             player->SummonCreature(m_zoneOwner == ALLIANCE ? NPC_ALLIANCE_HANAANI_GUARD : NPC_HORDE_HALAANI_GUARD, location.x, location.y, location.z, location.o, TEMPSPAWN_DEAD_DESPAWN, 0, true);
