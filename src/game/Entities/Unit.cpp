@@ -696,7 +696,13 @@ enum SwingErrors
 bool Unit::UpdateMeleeAttackingState()
 {
     Unit* victim = GetVictim();
-    if (!victim || IsNonMeleeSpellCasted(false))
+    // A dead unit must never swing: some update paths can reach here while the
+    // death state is still being processed (e.g. the frame the HP hits zero
+    // before SetDeathState runs, or an AI entry point that bypasses the
+    // IsAlive() gate in Unit::Update).
+    // hp == 0 is treated as dead even if the death state was never set
+    // (GM kill spells can zero the health without going through SetDeathState).
+    if (!victim || !IsAlive() || GetHealth() == 0 || IsNonMeleeSpellCasted(false))
         return false;
 
     if (GetTypeId() != TYPEID_PLAYER && (!static_cast<Creature*>(this)->CanInitiateAttack()))

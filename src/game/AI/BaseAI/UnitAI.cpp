@@ -1090,6 +1090,12 @@ void UnitAI::OnSpellInterrupt(SpellEntry const* spellInfo)
 
 void UnitAI::UpdateAI(const uint32 diff)
 {
+    // Defense-in-depth: Unit::Update already gates UpdateAI on IsAlive(), but
+    // some call paths can still reach a dead unit's AI (death-frame race), and
+    // GM kill spells can zero the health without setting the death state.
+    if (!m_unit->IsAlive() || m_unit->GetHealth() == 0)
+        return;
+
     UpdateTimers(diff, m_unit->IsInCombat());
 
     bool combat = m_unit->SelectHostileTarget();

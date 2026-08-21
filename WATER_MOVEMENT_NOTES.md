@@ -51,11 +51,22 @@
 - "怪物被拉到 -2"问题：早期 clamp 强制深度，已删（跟随目标深度）
 - 玩家跳跃时怪物"瞬移"：未确认是位置跳变还是模型朝向/动画切换（日志已清无法复现）；已尝试水中忽略 z 防 relaunch（未验证，已还原）
 
-## 最终工作树改动（8 文件，未提交）
-- Unit.cpp：动态游泳迟滞判据 + SetSwim 设 UNIT_FLAG_SWIMMING + UpdateAllowedPositionZ 水中跳过 + UpdateSplinePosition 同步 m_movementInfo.pos
+## 死怪攻击问题（2026 检查）
+- 现象：已死亡的怪物偶尔还能发动攻击（玩家掉血）
+- 排查：主循环 Unit::Update 有 if (AI() && IsAlive()) 保护；死亡走 SetDeathState -> CombatStop（清理完整）
+- **根因（GM 技能复现）**：GM 的 area death（INSTAKILL 类伤害）把血量归零但**跳过 SetDeathState** -> m_deathState 仍为 ALIVE -> IsAlive() 返回 true -> 死怪继续攻击（仅 IsAlive 防御无效）
+- **修复（防御，已保留）**：
+  1. UpdateMeleeAttackingState：!IsAlive() || GetHealth() == 0 才允许挥砍（hp=0 视为死亡，即使死亡状态未设置）
+  2. UnitAI::UpdateAI 开头：!IsAlive() || GetHealth() == 0 提前返回（纵深防御）
+- 云端未见此问题（可能只是 GM 测试工具的 edge case），防御无害保留
+- 附带发现：阿图门"被杀死后复活"= GM 技能 INSTAKILL 绕过 SetDeathPrevention 死亡保护、打乱 25% 骑乘变身脚本，非服务器 bug
+
+## 最终工作树改动（8 文件 + 2 防御，未提交）
+- Unit.cpp：动态游泳迟滞判据 + SetSwim 设 UNIT_FLAG_SWIMMING + UpdateAllowedPositionZ 水中跳过 + UpdateSplinePosition 同步 m_movementInfo.pos + UpdateMeleeAttackingState 存活/hp 防御
 - MoveSplineInit.cpp：Launch 统一水中路径 z 处理
 - TargetedMovementGenerator.cpp/.h：RefineWaterPath + 双水中直线游（Chase/Follow）+ swim 变化重寻路（m_lastSwimState）
 - PathFinder.cpp/.h：游泳/水中快捷路径 + 随机点保深 + setPathType
+- UnitAI.cpp：UpdateAI 存活/hp 防御
 - Map.cpp / ObjectGridLoader.cpp：删 GRIDDBG 调试日志
 - （HomeMovementGenerator / MovementHandler 改动已还原——被 Launch 统一处理覆盖 / 纯调试）
 
