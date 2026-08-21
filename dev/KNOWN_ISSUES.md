@@ -1,7 +1,8 @@
 # 已知问题记录 (KNOWN ISSUES)
 
-> 本文件记录服务器遇到的已知问题及排查信息，供后续会话接续处理。
-> 更新时间: 2026-08-18
+> 本文件 = **Bug 修复手册**（随源码提交）：记录服务器遇到的已知问题、排查信息与已修复项，供后续会话接续处理。
+> 功能性更新见同目录《功能更新手册_卡布魔兽.md》；运维内容见本地《HANDOFF_卡布魔兽运维.md》（不提交）。
+> 更新时间: 2026-08-21
 
 ---
 
@@ -339,18 +340,17 @@ TargetedMovementGenerator.cpp +87  Chase 水下：跳过距离/LOS/z 检查直�
   防囤积靠"放弃任务销毁 ReqItemId"官方机制，完成任务只扣所需（官方原版）。
   014 已 git rm；016 合并版已删除；016b 已恢复本地+云端 1442 个物品为原版 maxcount（flags 2048 保留），本地与原版差异=0。
 
-## [天赋] 战士狂暴·武器掌握 缴械时间减半未生效 — 待修
-### 现象
-- 被甘尔葛机械师"窃取武器"（缴械）后，实测缴械时间仍为 6 秒，
-  武器掌握天赋（-50% 缴械持续时间）未触发。
-### 待办
-- [ ] 定位缴械机制：缴械 debuff 施加时是否调用武器掌握天赋修正（Talent 减免路径）
-- [ ] 对比原版行为，修天赋减免逻辑
-
-## [机制] 圣印舞（联盟骑士殉难圣印）— 待评估
-### 需求
-- 添加圣印舞：命令圣印切换其他圣印有 0.3-0.4 秒残留（机制核心）。
-- 卡在最后 0.3-0.4 秒切鲜血圣印会出现两种情况（待用户补充详细说明）。
-### 待办
-- [ ] 确认"圣印残留"当前服务端行为（Seal 切换时旧圣印消失时机）
-- [ ] 评估实现圣印舞所需改动
+## [天赋] 战士狂暴·武器掌握 缴械时间减半 — 已解决（2026-08-20，commit ec8dbfef9）
+### 结论
+- 武器掌握（20504/20505，aura 234 = SPELL_AURA_MECHANIC_DURATION_MOD_NOT_STACK，MiscValue=3 = DISARM；
+  等级 1 减 26%，等级 2 减 50%）已生效。
+### 根因与修复
+- 缴械时长修正链路：Spell::AddUnitTarget → Unit::CalculateAuraDuration 读
+  GetMaxNegativeAuraModifierByMiscValue(234, mechanic) → duration = duration*(100+durationMod)/100。
+- 修复 1（Spell.cpp AddUnitTarget）：混合法术（36208 窃取武器 = 召唤 + MOD_DISARM）被
+  IsAuraApplyEffects 误判（要求所有命中效果都是 aura，召唤不满足）→ 改 IsSpellAppliesAura
+  （任一命中为 aura 即计算时长修正）。
+- 修复 2（Spell.cpp 施放链路）：holder 时长覆盖用 target->effectDuration，且 originalDuration
+  在修改前保存，否则 SetAuraMaxDuration 不生效（曾导致玩家仍 6 秒）。
+### 验证
+- 实测 36208（窃取武器）对玩家缴械 3000ms（-50% 生效）。
