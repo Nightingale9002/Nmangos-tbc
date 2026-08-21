@@ -2413,7 +2413,10 @@ void Aura::HandleAuraDummy(bool apply, bool Real)
     // AT REMOVE
     else
     {
-        if (IsQuestTameSpell(GetId()) && target->IsAlive())
+        // Only a naturally finished tame (channel/cast completed, aura expired) should
+        // succeed; if the tame was interrupted/cancelled (aura removed for another reason)
+        // the attempt fails, matching the tame-beast skill behaviour.
+        if (IsQuestTameSpell(GetId()) && target->IsAlive() && m_removeMode == AURA_REMOVE_BY_EXPIRE)
         {
             Unit* caster = GetCaster();
             if (!caster || !caster->IsAlive())
