@@ -1508,6 +1508,38 @@ void PathFinder::ComputePathToRandomPoint(Vector3 const& startPoint, float maxRa
         endPoint.z = randomPoint[1];
         setEndPosition(endPoint);
 
+            // The random point must sit on its own floor: check the real ground
+            // height at the destination (queried from the point z itself so cave
+            // dwellers match their own floor, not the surface above). If the
+            // navmesh height is not on that floor (floating above, sunk into a
+            // hillside, or a wrong cave layer) the point is unreachable - block it.
+            float floorZ = m_sourceUnit->GetMap()->GetHeight(endPoint.x, endPoint.y, endPoint.z, true);
+            if (floorZ > INVALID_HEIGHT)
+            {
+                if (std::fabs(floorZ - endPoint.z) > 1.0f)
+                {
+                    // not standing on the floor at this point - block the roll
+                    m_type = PathType(PATHFIND_NOPATH);
+                    return;
+                }
+                // snap exactly to the floor
+                endPoint.z = floorZ;
+                setEndPosition(endPoint);
+            }
+
+            // Do not pick a destination blocked by a static object (tree root,
+            // rock, building): the straight random walk would clip into it and
+            // the creature gets stuck inside the model.
+            if (!m_sourceUnit->GetMap()->IsInLineOfSight(currPos.x, currPos.y, currPos.z + m_sourceUnit->GetCollisionHeight(),
+                endPoint.x, endPoint.y, endPoint.z + m_sourceUnit->GetCollisionHeight(), true))
+            {
+                m_type = PathType(PATHFIND_NOPATH);
+                return;
+            }
+
+
+
+
         if (dtResult == DT_SUCCESS)
         {
             // generate path
