@@ -294,6 +294,15 @@ ObjectGridUnloader::Visit(GridRefManager<T>& m)
         // if option set then object already saved at this moment
         if (!sWorld.getConfig(CONFIG_BOOL_SAVE_RESPAWN_TIME_IMMEDIATELY))
             obj->SaveRespawnTime();
+
+        // [GRIDFIX] The lazy grid unload (MEMFIX) can now drop grids that still
+        // hold active creatures, so an active object can be freed here while its
+        // entry is still in Map::m_activeNonPlayers. Next Map::Update would then
+        // collect the stale pointer into objToUpdate and call Update() on freed
+        // memory (use-after-free crash). Clean up the active list before delete.
+        if (obj->isActiveObject())
+            obj->GetMap()->RemoveFromActive(obj);
+
         ///- object must be out of world before delete
         obj->RemoveFromWorld();
         ///- object will get delinked from the manager when deleted

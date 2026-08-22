@@ -1498,8 +1498,41 @@ void PathFinder::ComputePathToRandomPoint(Vector3 const& startPoint, float maxRa
             // Water: keep the random point at the unit's current swimming depth.
             // Snapping z to the navmesh surface (seabed/shore) made swimmers dive
             // to the floor and bob back up on the next random roll.
+            // Validate the destination water column first: if it is too shallow
+            // to hold the current depth (shore slope, sandbank) or not water at
+            // all, the launch clamp would pull the swimmer up to the shallow
+            // bottom (looking like it surfaces) or into the shore - re-roll.
+            TerrainInfo const* terrain = m_sourceUnit->GetMap()->GetTerrain();
+            float destGroundZ = INVALID_HEIGHT;
+            float destWaterLevel = terrain->GetWaterLevel(endPoint.x, endPoint.y, currPos.z, &destGroundZ);
+            if (destWaterLevel <= INVALID_HEIGHT || destGroundZ <= INVALID_HEIGHT ||
+                currPos.z < destGroundZ + 0.5f || currPos.z > destWaterLevel - 0.5f)
+            {
+                m_type = PathType(PATHFIND_NOPATH);
+                return;
+            }
             endPoint.z = currPos.z;
             setEndPosition(endPoint);
+
+            // The straight-line swim must stay inside the water column: if the
+            // terrain rises above the swimming depth anywhere along the way
+            // (bank, sandbar, underwater ridge), the creature would clip into it
+            // ("swimming in underground water"). Sample the terrain along the
+            // line and re-roll if it breaks the surface.
+            float const swimDepth = currPos.z;
+            float const dX = endPoint.x - currPos.x;
+            float const dY = endPoint.y - currPos.y;
+            uint32 const samples = 4;
+            for (uint32 s = 1; s <= samples; ++s)
+            {
+                float const t = float(s) / float(samples);
+                float groundZ = m_sourceUnit->GetMap()->GetHeight(currPos.x + dX * t, currPos.y + dY * t, swimDepth, true);
+                if (groundZ > INVALID_HEIGHT && swimDepth < groundZ + 0.5f)
+                {
+                    m_type = PathType(PATHFIND_NOPATH);
+                    return;
+                }
+            }
         }
         else
         {
