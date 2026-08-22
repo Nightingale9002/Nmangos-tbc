@@ -719,7 +719,30 @@ bool Unit::UpdateMeleeAttackingState()
 
     uint8 swingError = 0;
     if (!CanReachWithMeleeAttack(victim))
-        swingError = SWING_ERROR_NOT_IN_RANGE;
+    {
+        // A rooted/immobilized creature cannot chase its victim: attack a
+        // target that is actually in melee range instead of staring at the
+        // old distant one (e.g. a player standing next to a rooted mob).
+        // black-rabbit: do NOT call Attack() here - it runs AttackStop(true)
+        // internally which clears the target guid and MELEE_ATTACKING state,
+        // and the re-set only happens when AI()->CanExecuteCombatAction(),
+        // so a rooted creature could end up with no target at all (it stops
+        // attacking the hate target too). Just swap the local victim: the
+        // threat list still drives aggro, MeleeAttackStart stays active.
+        if (IsRooted() && GetTypeId() != TYPEID_PLAYER)
+        {
+            if (Unit* inRangeTarget = SelectAttackingTarget(ATTACKING_TARGET_NEAREST_BY, 0, nullptr, SELECT_FLAG_IN_MELEE_RANGE))
+            {
+                if (inRangeTarget != victim && CanReachWithMeleeAttack(inRangeTarget))
+                {
+                    victim = inRangeTarget;
+                    swingError = 0;
+                }
+            }
+        }
+        if (!CanReachWithMeleeAttack(victim))
+            swingError = SWING_ERROR_NOT_IN_RANGE;
+    }
     else if (!HasInArc(victim, 2 * M_PI_F / 3))
         swingError = SWING_ERROR_BAD_FACING;
     else if (!victim->IsAlive())
