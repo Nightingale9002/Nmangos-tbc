@@ -607,7 +607,12 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
     const bool targetInWater = i_target->IsInWater() || i_target->m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
     const bool walkInWater = owner.GetTypeId() == TYPEID_UNIT &&
         (static_cast<Creature const&>(owner).GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER);
-    if ((ownerInWater && targetInWater) ||
+    // A chaser that is itself in water always swims straight to the target
+    // (whether the target is still in the water or has reached the shore):
+    // the land navmesh has no polygon under the water start point, so a
+    // normal path there NOPATHs and the creature evades. Shore creatures
+    // chasing a swimming target still path normally (do not dive into the sea).
+    if (ownerInWater ||
         (owner.IsWithinDist3d(x, y, z, 200.f) && std::abs(owner.GetPositionZ() - z) < 5.f && owner.IsWithinLOS(x, y, z + i_target->GetCollisionHeight()) && !owner.IsInWater() && !i_target->IsInWater()))
     {
         this->i_path->calculate(x, y, z, false, true);
@@ -620,7 +625,7 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
         // re-pathing forever. End at the target's actual position instead of
         // the navmesh-snapped seabed point. WALK_IN_WATER creatures keep the
         // corridor (they must walk the seabed).
-        if (ownerInWater && targetInWater && !walkInWater && owner.CanSwim())
+        if (ownerInWater && !walkInWater && owner.CanSwim())
         {
             path.clear();
             path.push_back(this->i_path->getStartPosition());
@@ -628,7 +633,7 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
             this->i_path->setPathType(PATHFIND_NORMAL);
         }
         // The navmesh has no underwater route: fall back to a direct swim path.
-        else if (ownerInWater && targetInWater && (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
+        else if (ownerInWater && (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
         {
             path.clear();
             path.push_back(this->i_path->getStartPosition());
@@ -1020,7 +1025,10 @@ bool FollowMovementGenerator::Move(Unit& owner, float x, float y, float z)
     // underwater navmesh is the seabed and would route it along the bottom,
     // ending below the target (out of follow range, re-pathing forever).
     const bool targetInWater = i_target->IsInWater() || i_target->m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
-    if (owner.GetTypeId() == TYPEID_UNIT && owner.CanSwim() && owner.IsInWater() && targetInWater)
+    // A follower in water goes straight to the master wherever the master is
+    // (in the water or back on the shore): the land navmesh has no polygon
+    // under the water start, so a normal path would NOPATH and the pet stops.
+    if (owner.GetTypeId() == TYPEID_UNIT && owner.CanSwim() && owner.IsInWater())
     {
         path.clear();
         path.push_back(G3D::Vector3(owner.GetPositionX(), owner.GetPositionY(), owner.GetPositionZ()));
