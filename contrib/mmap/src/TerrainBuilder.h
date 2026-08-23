@@ -66,6 +66,10 @@ namespace MMAP
     {
         G3D::Array<float> solidVerts;
         G3D::Array<int> solidTris;
+        // per-triangle source: 0 = .map terrain (ADT), 1 = vmap object (WMO/M2)
+        // kept in sync with solidTris so the builder can rasterize vmap first
+        // and drop ADT surfaces hidden under a vmap floor.
+        G3D::Array<uint8> triSource;
 
         G3D::Array<float> liquidVerts;
         G3D::Array<int> liquidTris;

@@ -168,29 +168,11 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
 #endif    
         !HaveTile(start) || !HaveTile(dest))
     {
-        // Deliberate straight-line movement (IGNORE_PATHFINDING) and
-        // flying/swimming/hovering units keep the shortcut; units already in
-        // water keep it too, so underwater chases do not dead-end on missing
-        // navigation tiles. Other ground units must not walk straight across
-        // missing navigation tiles (they would walk through walls or onto
-        // wrong walkable surfaces).
-        const bool ignorePathfinding = m_sourceUnit && m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING);
-        if (ignorePathfinding || (m_sourceUnit && (m_sourceUnit->CanFly() || m_sourceUnit->CanSwim() ||
-                                                  m_sourceUnit->IsLevitating() || m_sourceUnit->IsHovering() ||
-                                                  m_sourceUnit->IsInWater())))
-        {
-            BuildShortcut();
-            m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
-        }
-        else
-        {
-            // Keep a valid 2-point path for callers that launch the spline
-            // without checking NOPATH (e.g. HomeMovement), but mark it as
-            // NOPATH so path-aware callers stop instead of walking straight
-            // across missing navigation tiles.
-            BuildShortcut();
-            m_type = PATHFIND_NOPATH;
-        }
+        // No navigation tile at start or destination: fall back to a straight
+        // shortcut for everyone (upstream behaviour). Marking ground units
+        // NOPATH here froze them in ungenerated tiles (stuck evading).
+        BuildShortcut();
+        m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
         return true;
     }
 
@@ -1101,6 +1083,8 @@ void PathFinder::BuildShortcut()
     m_pathPoints[0] = getStartPosition();
     m_pathPoints[1] = getActualEndPosition();
 
+    // No navmesh to follow here, so walk straight to the destination
+    // (upstream behaviour); the caller decides what to do with the shortcut.
     NormalizePath();
 
     m_type = PATHFIND_SHORTCUT;
@@ -1376,6 +1360,20 @@ dtStatus PathFinder::findSmoothPath(const float* startPos, const float* endPos,
 
         m_navMeshQuery->getPolyHeight(m_smoothPathPolyRefs[0], result, &result[1]);
         result[1] += 0.5f;
+
+        // moveAlongSurface can slide the smooth path onto a neighbouring pit
+        // polygon at the rim, making getPolyHeight report the pit bottom
+        // (z=-65.7) - walking that drops the creature into the hole and back.
+        // Snap the point back to the unit's own ground level instead: the
+        // creature keeps walking along the rim on the floor.
+        if (m_sourceUnit && m_sourceUnit->GetTypeId() == TYPEID_UNIT &&
+            !m_sourceUnit->CanFly() && !m_sourceUnit->IsInWater())
+        {
+            float const unitZ = m_sourceUnit->GetPositionZ();
+            if (std::fabs(result[1] - unitZ) > 10.0f)
+                result[1] = unitZ + 0.5f;      // keep walking on the unit's floor
+        }
+
         dtVcopy(iterPos, result);
 
         // Handle end of path and off-mesh links when close enough.

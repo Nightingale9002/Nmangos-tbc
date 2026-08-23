@@ -120,7 +120,12 @@ bool rcErodeWalkableArea(rcContext* context, const int erosionRadius, rcCompactH
 					const int neighborZ = z + rcGetDirOffsetY(direction);
 					const int neighborSpanIndex = (int)compactHeightfield.cells[neighborX + neighborZ * zStride].index + neighborConnection;
 					
-					if (compactHeightfield.areas[neighborSpanIndex] == RC_NULL_AREA)
+					// black-rabbit: STEEP obstacle spans (area id 10) count as a
+					// boundary for erosion, so walkable ground next to a wall
+					// erodes away and creatures keep their body radius away from
+					// obstacles (otherwise the path hugs the wall and clips).
+					if (compactHeightfield.areas[neighborSpanIndex] == RC_NULL_AREA ||
+						compactHeightfield.areas[neighborSpanIndex] == 10)
 					{
 						break;
 					}
@@ -275,6 +280,12 @@ bool rcErodeWalkableArea(rcContext* context, const int erosionRadius, rcCompactH
 	const unsigned char minBoundaryDistance = (unsigned char)(erosionRadius * 2);
 	for (int spanIndex = 0; spanIndex < compactHeightfield.spanCount; ++spanIndex)
 	{
+		// black-rabbit: never erode STEEP obstacle spans (area id 10,
+		// NAV_AREA_GROUND_STEEP in CMaNGOS): walls/pillars are often thinner
+		// than the agent radius and would otherwise be eroded away entirely,
+		// silently turning every obstacle back into walkable ground.
+		if (compactHeightfield.areas[spanIndex] == 10)
+			continue;
 		if (distanceToBoundary[spanIndex] < minBoundaryDistance)
 		{
 			compactHeightfield.areas[spanIndex] = RC_NULL_AREA;

@@ -554,7 +554,12 @@ namespace
                     {
                         // On land: snap to the ground so the straight segment crossing the
                         // shoreline does not leave the creature hovering/bobbing above terrain.
-                        p.z = groundZ + floorMargin;
+                        // black-rabbit: guard against GetHeight falling through a WMO edge
+                        // to the ADT pit below the building (z=-65.7): only snap when the
+                        // height is close to the navmesh-interpolated point (<= 10 yd),
+                        // otherwise keep the navmesh z (it decides walkability).
+                        if (std::fabs(groundZ - p.z) <= 10.0f)
+                            p.z = groundZ + floorMargin;
                     }
                 }
 
@@ -612,8 +617,15 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
     // the land navmesh has no polygon under the water start point, so a
     // normal path there NOPATHs and the creature evades. Shore creatures
     // chasing a swimming target still path normally (do not dive into the sea).
-    if (ownerInWater ||
-        (owner.IsWithinDist3d(x, y, z, 200.f) && std::abs(owner.GetPositionZ() - z) < 5.f && owner.IsWithinLOS(x, y, z + i_target->GetCollisionHeight()) && !owner.IsInWater() && !i_target->IsInWater()))
+    // black-rabbit: the short-range straight-line chase is disabled for
+    // land units - BuildPointPath's straightLine mode re-samples the
+    // line and snaps each point to the nearest navmesh polygon, so a
+    // line crossing above a pit snaps to the pit polygons (z=-65.7)
+    // and the creature walks down into the hole and back - endless
+    // bobbing. Land chases use normal navmesh pathing (safe); only
+    // swimming chasers keep the direct line (underwater navmesh is
+    // the seabed and would route them along the bottom).
+    if (ownerInWater)
     {
         this->i_path->calculate(x, y, z, false, true);
         auto& path = this->i_path->getPath();
@@ -682,12 +694,15 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
     if (!gen || (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
     {
         this->i_path->calculate(x, y, z);
-        // Refine unconditionally: even when both the unit and the target are on
-        // land, the navmesh/straight path can cross water (shoreline bays) and the
-        // in-water points would otherwise ride the water surface instead of the
-        // seabed. Refine fixes water points (floor band, or floor for
-        // WALK_IN_WATER) and leaves land points on the ground.
-        RefineWaterPath(owner, this->i_path->getPath());
+        // black-rabbit: RefineWaterPath must NOT touch land paths. findSmoothPath
+        // already gives every point the navmesh poly height; re-sampling and
+        // re-heighting with GetHeight() here made WMO-edge points fall through to
+        // the ADT pit below the building (z=-65.7), dragging the creature into the
+        // hole. The navmesh decides walkability, so only re-height the path when
+        // the chaser is actually in water (the ownerInWater branch above already
+        // refined the first calculate; this one re-refines after a re-calculate).
+        if (ownerInWater)
+            RefineWaterPath(owner, this->i_path->getPath());
         if (this->i_path->getPathType() & PATHFIND_NOPATH)
             return false;
     }
@@ -715,6 +730,7 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
     }
 
     _addUnitStateMove(owner);
+
 
     Movement::MoveSplineInit init(owner);
     init.MovebyPath(path);
@@ -794,9 +810,9 @@ bool ChaseMovementGenerator::_getLocation(Unit& owner, float& x, float& y, float
     const bool currentAngle = (i_angle == 0.f || (i_target->GetVictim() && i_target->GetVictim() == &owner));
     float angle = (currentAngle ? i_target->GetAngle(&owner) : (i_target->GetOrientation() + i_angle));
 
-    owner.GetPosition(x, y, z); // »ñÈ¡Æðµã×ø±ê
+    owner.GetPosition(x, y, z); // ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 
-    // Ô­ÓÐ£ºÉú³ÉÄ¿±êµã£¨»á´øÉÏÍæ¼Ò¶þÂ¥Z£©
+    // Ô­ï¿½Ð£ï¿½ï¿½ï¿½ï¿½ï¿½Ä¿ï¿½ï¿½ã£¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ò¶ï¿½Â¥Zï¿½ï¿½
     i_target->GetNearPoint(&owner, x, y, z, owner.GetObjectBoundingRadius(), this->GetDynamicTargetDistance(owner, false), angle);
 
     // destination height is handled by PathFinder (the path always ends

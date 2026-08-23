@@ -476,6 +476,7 @@ void Unit::Update(const uint32 diff)
 {
     if (!IsInWorld())
         return;
+
 #ifdef BUILD_METRICS
     metric::duration<std::chrono::microseconds> meas("unit.update", {
         { "entry", std::to_string(GetEntry()) },
@@ -12543,9 +12544,15 @@ void Unit::UpdateAllowedPositionZ(float x, float y, float& z, Map* atMap /*=null
             maxZ = groundZ;
         if (maxZ > INVALID_HEIGHT)
         {
-            if (z > maxZ)
+            // Never snap the unit to a floor layer more than 10 yd away - a
+            // bigger gap means GetHeight fell back to a wrong terrain layer
+            // (pit edge: vmap raycast misses, .map surface is a step far
+            // below), which dragged creatures layer by layer down to the
+            // bottom of Hellfire Citadel pits and back - endless bobbing.
+            // Normal stairs/slopes are < 10 yd and still work.
+            if (z > maxZ && z - maxZ <= 10.0f)
                 z = maxZ;
-            else if (z < groundZ)
+            else if (z < groundZ && groundZ - z <= 10.0f)
                 z = groundZ;
         }
     }
