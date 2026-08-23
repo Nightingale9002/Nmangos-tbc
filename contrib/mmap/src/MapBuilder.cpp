@@ -1081,12 +1081,13 @@ namespace MMAP
         // filter), exactly like upstream.
         if (triSource)
         {
-            // terrain (.map ADT): slopes < 90 deg walkable; >= 90 deg becomes
-            // a STEEP obstacle (cliff walls block routing instead of being
-            // pass-through holes).
+            // terrain (.map ADT): upstream behaviour - slopes >= 60 deg are
+            // cleared entirely (rcClearUnwalkableTriangles), so they never reach
+            // the navmesh. Keeping them (even as STEEP) blew past the 0xffff
+            // vertex limit on complex cliff tiles (e.g. outland void tiles).
             unsigned char* terrFlags = new unsigned char[tTriCount];
             memset(terrFlags, NAV_AREA_GROUND, tTriCount * sizeof(unsigned char));
-            MarkSteepTrianglesAsSteep(tVerts, tTris, tTriCount, terrFlags, 89.0f);
+            rcClearUnwalkableTriangles(m_rcContext, 60.0f, tVerts, tVertCount, tTris, tTriCount, terrFlags);
 
             // WMO buildings: < 60 deg walkable (upstream), >= 60 deg becomes a
             // STEEP obstacle (walls block routing instead of pass-through holes).

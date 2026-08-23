@@ -23,6 +23,9 @@
 #include <Detour/Include/DetourNavMesh.h>
 
 #define MMAP_MAGIC 0x4d4d4150   // 'MMAP'
+// 9: per-source walkability rules (ADT 89 / WMO 60 / M2 climb-height), WMO-coverage
+//    ADT check removed, STEEP erosion fix - all old mmtiles must be regenerated.
+// Back to 8 to match the deployed cloud server (its mmaps are version 8).
 #define MMAP_VERSION 8
 
 struct MmapTileHeader
