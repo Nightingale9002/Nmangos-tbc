@@ -70,6 +70,15 @@
 - Map.cpp / ObjectGridLoader.cpp：删 GRIDDBG 调试日志
 - （HomeMovementGenerator / MovementHandler 改动已还原——被 Launch 统一处理覆盖 / 纯调试）
 
+## 2026-08-23 水中随机移动修复（2 处，待提交）
+- 现象：水中随机移动的怪物被拉到水面 / 游进地面下的水里（dbguid 10898 蓝鳃突袭者复现）
+- 根因：随机点只保留起始深度（endPoint.z = currPos.z），不校验目的地水柱；且直线路径可能穿过岸边/坡地地形（Launch 钳制把浅水区路径点抬到"浅底+0.5≈水面"）
+- 修复（PathFinder.cpp ComputePathToRandomPoint 水分支）：
+  1. **目的地水柱校验**：destGroundZ+0.5 <= 当前深度 <= destWaterLevel-0.5，不满足或非水 → PATHFIND_NOPATH 重掷
+  2. **沿途地形采样**：直线路径采样 4 点，任何一点地形高于游泳深度 → PATHFIND_NOPATH 重掷
+- 效果：随机点要么落在合理水柱内，要么重掷；既不拉水面、也不钻地底
+- 附带：本版同时部署了网格卸载 UAF 修复（ObjectGridLoader）与放弃任务物品清理修复（QuestHandler），详见 SERVER_TODOS.md
+
 ## 遗留观察
 - 玩家跳跃时怪物偶尔"瞬移一下"：疑似模型转向/动画切换的视觉现象，未确认真实位置跳变（无日志无法判断）
 - 测试方法：心灵视界 aura 10909 门控的调试日志已全部清理；如需复现排查需重新加日志
