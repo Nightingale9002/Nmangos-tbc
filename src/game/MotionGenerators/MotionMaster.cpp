@@ -549,6 +549,10 @@ void MotionMaster::MoveCharge(float x, float y, float z, float speed, uint32 id/
     Movement::MoveSplineInit init(*m_owner);
     init.SetWalk(false);
     init.SetVelocity(speed);
+    // navmesh charge: PathFinder snaps every point (incl. the endpoint) to the
+    // walkable surface, so a charge never leaves the creature stuck floating in
+    // the air / inside a wall after clipping through geometry (straight-line
+    // charge was tried and removed 2026-08-24 for that reason).
     init.MoveTo(x, y, z, true);
 
     Mutate(new EffectMovementGenerator(init, id, false));
@@ -567,6 +571,8 @@ void MotionMaster::MoveCharge(Unit& target, float speed, uint32 id/* = EVENT_CHA
     init.SetWalk(false);
     init.SetVelocity(speed);
     init.SetFacing(&target);
+    // navmesh charge (see MoveCharge(x,y,z) comment): endpoint lands on the
+    // walkable surface instead of floating over cliffs / clipping into walls.
     init.MoveTo(pos.x, pos.y, pos.z, true);
 
     Mutate(new EffectMovementGenerator(init, id, false));

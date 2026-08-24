@@ -18,6 +18,7 @@
 
 #include "MotionGenerators/TargetedMovementGenerator.h"
 #include "MotionGenerators/PathFinder.h"
+#include "MotionGenerators/PfDebug.h"
 #include "Entities/Unit.h"
 #include "Entities/Creature.h"
 #include "Entities/Player.h"
@@ -499,13 +500,30 @@ namespace
         if (path.size() < 2)
             return;
 
+        // Only creatures actually inside a body of water need the [floor, surface]
+        // clamping. A unit standing on the shore / shallow puddle (IsInWater true
+        // from a far-below ADT pit or a wrong water layer) must keep its navmesh
+        // path, otherwise this drags it down to the deep water level
+        // (Magisters' Terrace 24560: z=-19.92, adt=-119, water=-92 -> pulled to -92).
+        // Gate: water must be swimmable (depth > 1.5 yd) AND ADT ground < unit z
+        // < water surface. WALK_IN_WATER creatures always walk the seabed instead.
         const Map* map = owner.GetMap();
         const TerrainInfo* terrain = map->GetTerrain();
-        const float floorMargin = 0.5f;
-        // WALK_IN_WATER creatures (crabs etc.) must walk on the seabed instead of
-        // swimming in the [floor, surface] band - clamp them to the floor.
         bool const walkInWater = owner.GetTypeId() == TYPEID_UNIT &&
             (static_cast<Creature const&>(owner).GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER);
+        if (!walkInWater)
+        {
+            if (!owner.IsInSwimmableWater())
+                return;
+            float const ox = owner.GetPositionX();
+            float const oy = owner.GetPositionY();
+            float const oz = owner.GetPositionZ();
+            float const adt = terrain->GetHeightStatic(ox, oy, oz, false);
+            float const wl = terrain->GetWaterLevel(ox, oy, oz);
+            if (adt <= INVALID_HEIGHT || wl <= INVALID_HEIGHT || oz <= adt || oz >= wl)
+                return;
+        }
+        const float floorMargin = 0.5f;
 
         PointsArray refined;
         refined.reserve(path.size() + 16);
@@ -612,6 +630,10 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
     const bool targetInWater = i_target->IsInWater() || i_target->m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
     const bool walkInWater = owner.GetTypeId() == TYPEID_UNIT &&
         (static_cast<Creature const&>(owner).GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER);
+    // [PFDBG] DispatchSplineToPosition 入口：目标点、owner 位置、水状态
+    PFDBG_MSG(&owner, "DispatchSpline target(%.2f,%.2f,%.2f) owner(%.2f,%.2f,%.2f) ownerInWater=%d targetInWater=%d walkInWater=%d",
+              x, y, z, owner.GetPositionX(), owner.GetPositionY(), owner.GetPositionZ(),
+              ownerInWater ? 1 : 0, targetInWater ? 1 : 0, walkInWater ? 1 : 0);
     // A chaser that is itself in water always swims straight to the target
     // (whether the target is still in the water or has reached the shore):
     // the land navmesh has no polygon under the water start point, so a
@@ -650,6 +672,22 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
             path.clear();
             path.push_back(this->i_path->getStartPosition());
             path.push_back(this->i_path->getActualEndPosition());
+        }
+
+        // [PFDBG] ownerInWater 直线 shortcut 必须 LOS 可见：若直线穿过实体
+        // （魔导师平台 24560 一楼浅水直线到二楼，穿过楼板），NOPATH 让怪走
+        // 正常 navmesh pathing（INCOMPLETE 卡一楼）。深水怪上岸的直线在水体
+        // +空气，LOS 可见，正常放行（不卡闪避）。
+        if (gen && path.size() >= 2)
+        {
+            float const h = owner.GetCollisionHeight();
+            auto const& s0 = path.front();
+            auto const& s1 = path.back();
+            if (!owner.GetMap()->IsInLineOfSight(s0.x, s0.y, s0.z + h, s1.x, s1.y, s1.z + h, true))
+            {
+                PFDBG_MSG(&owner, "ownerInWater 直线 LOS 被挡 (%.1f,%.1f,%.1f)->(%.1f,%.1f,%.1f) -> NOPATH", s0.x, s0.y, s0.z, s1.x, s1.y, s1.z);
+                this->i_path->setPathType(PATHFIND_NOPATH);
+            }
         }
 
         // The normalize-z rejection is land-oriented: a straight surface-to-bottom
@@ -732,6 +770,14 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
     _addUnitStateMove(owner);
 
 
+    // [PFDBG] spline 实际执行的路径点（spline 用它移动，看是否有 z 跳变）
+    if (IsPfDbg(&owner))
+    {
+        sLog.outError("[PFDBG] SPLINE type=%d npts=%zu", (int)this->i_path->getPathType(), path.size());
+        for (size_t pi = 0; pi < path.size(); ++pi)
+            sLog.outError("[PFDBG] SPLINE pt%zu (%.2f,%.2f,%.2f)", pi, path[pi].x, path[pi].y, path[pi].z);
+    }
+
     Movement::MoveSplineInit init(owner);
     init.MovebyPath(path);
     init.SetWalk(walk);
@@ -812,8 +858,15 @@ bool ChaseMovementGenerator::_getLocation(Unit& owner, float& x, float& y, float
 
     owner.GetPosition(x, y, z); // ��ȡ�������
 
+    // [PFDBG] Chase 计算追击目标点前：owner 位置 + 目标(玩家)位置
+    PFDBG_MSG(&owner, "_getLocation owner(%.2f,%.2f,%.2f) target(%.2f,%.2f,%.2f) angle=%.2f",
+              x, y, z, i_target->GetPositionX(), i_target->GetPositionY(), i_target->GetPositionZ(), angle);
+
     // ԭ�У�����Ŀ��㣨�������Ҷ�¥Z��
     i_target->GetNearPoint(&owner, x, y, z, owner.GetObjectBoundingRadius(), this->GetDynamicTargetDistance(owner, false), angle);
+
+    // [PFDBG] Chase 追击目标点（GetNearPoint 结果，可能是玩家脚下投影/二楼点）
+    PFDBG_MSG(&owner, "_getLocation result(%.2f,%.2f,%.2f)", x, y, z);
 
     // destination height is handled by PathFinder (the path always ends
     // on the navmesh surface), so no manual floor snapping is needed here
@@ -1125,11 +1178,17 @@ bool FollowMovementGenerator::Move(Unit& owner, float x, float y, float z)
             if (!i_target->IsWithinLOS(x, y, (z + owner.GetCollisionHeight()), true))
                 i_target->GetPosition(x, y, z);
 
-        //if (owner.GetTypeId() == TYPEID_PLAYER)
-        //    owner.NearTeleportTo(x, y, z, o);
-        else
+        // Follow's owner is Unit-typed; never down-cast to Creature without a
+        // check (a Player owner would be UB). Creatures/pets relocate normally;
+        // anything else falls back to a plain relocate (no teleport-snap).
+        if (owner.GetTypeId() == TYPEID_UNIT)
         {
             owner.GetMap()->CreatureRelocation(static_cast<Creature*>(&owner), x, y, z, o);
+            owner.SendHeartBeat();
+        }
+        else
+        {
+            owner.Relocate(x, y, z, o);
             owner.SendHeartBeat();
         }
 

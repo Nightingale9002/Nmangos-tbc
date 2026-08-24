@@ -23,6 +23,7 @@
 #include "ModelInstance.h"
 
 #include "DetourNavMeshBuilder.h"
+#include "DetourNavMesh.h"
 #include "DetourCommon.h"
 
 #include <climits>
@@ -962,6 +963,40 @@ namespace MMAP
                 continue;
             }
 
+            // black-rabbit: drop walkable polys fully isolated in the detour
+            // navmesh (no inner neighbour, no EXT portal). findNearestPoly /
+            // getPolyHeight would report their ghost height -> pits/floating.
+            // Clear GROUND flag (pathfinding filter skips flags==0). Only land
+            // polys (i < offMeshBase): off-mesh arcs keep their flags.
+            {
+                dtMeshHeader* hdr = (dtMeshHeader*)navData;
+                int const vc = hdr->vertCount;
+                int const ob = hdr->offMeshBase;
+                unsigned char* polysBase = navData + sizeof(dtMeshHeader) + vc * 3 * sizeof(float);
+                for (int i = 0; i < ob; ++i)
+                {
+                    unsigned char* poly = polysBase + i * (int)sizeof(dtPoly);
+                    dtPoly* dp = (dtPoly*)poly;
+                    unsigned short const flags = *((unsigned short*)(poly + 28));
+                    if (!(flags & NAV_GROUND))
+                        continue;
+                    bool hasInner = false;
+                    bool hasExt = false;
+                    for (int j = 0; j < dp->vertCount; ++j)
+                    {
+                        unsigned short const raw = dp->neis[j];
+                        if (raw == 0)
+                            continue;
+                        if (raw & DT_EXT_LINK)
+                            hasExt = true;
+                        else
+                            hasInner = true;
+                    }
+                    if (!hasInner && !hasExt)
+                        *((unsigned short*)(poly + 28)) = 0;
+                }
+            }
+
             dtTileRef tileRef = 0;
             printf("%s Adding tile to navmesh...                          \r", tileString);
             // DT_TILE_FREE_DATA tells detour to unallocate memory when the tile
@@ -1037,7 +1072,11 @@ namespace MMAP
                 rcVsub(e1, &verts[tri[2] * 3], &verts[tri[0] * 3]);
                 rcVcross(n, e0, e1);
                 rcVnormalize(n);
-                if (fabsf(n[1]) <= thr)
+                // bare n[1] (NOT fabsf): downward-facing triangles (ceiling / bridge
+                // underside, n.y<0) must become STEEP so creatures never read their
+                // ghost height. fabsf wrongly let ceilings escape the STEEP test and
+                // become walkable floor (2026-08-24).
+                if (n[1] <= thr)
                     areas[i] = NAV_AREA_GROUND_STEEP;
             }
         }

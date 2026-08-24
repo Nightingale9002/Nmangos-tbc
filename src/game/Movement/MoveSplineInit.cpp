@@ -22,6 +22,7 @@
 #include "Entities/Unit.h"
 #include "Entities/Creature.h"
 #include "Log/Log.h"
+#include "MotionGenerators/PfDebug.h"
 #include "Maps/TransportSystem.h"
 #include "Entities/Transports.h"
 
@@ -85,41 +86,46 @@ namespace Movement
         // type (chase/follow/wander/waypoint/home): swimmers stay in the
         // [floor+0.5, surface] band, non-swimmers and WALK_IN_WATER creatures
         // walk on the seabed.
+        //
+        // GATE: only re-height when the unit is actually inside water. This
+        // block used to run for EVERY creature spline: GetHeight() falls
+        // through WMO seams to the ADT pit / seabed far below a building's
+        // floor (Magisters' Terrace 24560/24685: floor z=-20/-2.6, seabed
+        // z=-92.4), and re-writing land path points to groundZ+0.5 dragged
+        // creatures straight through the floor into the basement. The
+        // navmesh decides walkability; land units keep their path z.
         if (unit.GetTypeId() == TYPEID_UNIT)
         {
             CreatureInfo const* cinfo = static_cast<Creature const&>(unit).GetCreatureInfo();
             bool const walkInWater = (cinfo->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER) != 0;
             bool const canSwim = unit.CanSwim();
-            Map const* map = unit.GetMap();
-            auto terrain = map->GetTerrain();
-            for (auto& p : args.path)
+            PFDBG_MSG(&unit, "MoveSplineInit water-rewrite gate: isInWater=%d npts=%zu", unit.IsInWater() ? 1 : 0, args.path.size());
+            if (unit.IsInWater())
             {
-                float groundZ = map->GetHeight(p.x, p.y, p.z, true);
-                if (groundZ <= INVALID_HEIGHT)
-                    continue;
-                float waterLevel = terrain->GetWaterLevel(p.x, p.y, p.z, &groundZ);
-                if (waterLevel <= INVALID_HEIGHT)
-                    continue;
-                // Points on solid land above the water surface (shore, rock,
-                // boat deck) keep their z: pulling them down to the water
-                // level teleports the unit off the land into the sea and it
-                // fights the next re-path forever (pet jitter between shore
-                // and water when following onto a rock). Points above the
-                // surface over OPEN water (a straight segment crossing a bay)
-                // ride the surface for swimmers, the seabed for walkers.
-                if (p.z > waterLevel && groundZ > waterLevel)
-                    continue;
-                if (walkInWater || !canSwim)
-                    p.z = groundZ + 0.5f;
-                else
+                Map const* map = unit.GetMap();
+                auto terrain = map->GetTerrain();
+                for (auto& p : args.path)
                 {
-                    // Swimmers follow the path depth (which already descends to
-                    // the target); only keep them under the surface and above
-                    // the seabed - never force a fixed depth.
-                    if (p.z > waterLevel)
-                        p.z = waterLevel;
+                    float const origZ = p.z;
+                    float groundZ = map->GetHeight(p.x, p.y, p.z, true);
+                    if (groundZ <= INVALID_HEIGHT)
+                        continue;
+                    float waterLevel = terrain->GetWaterLevel(p.x, p.y, p.z, &groundZ);
+                    // A path point above the water surface is on land/air and
+                    // must never be pulled down, whatever the terrain height
+                    // below reports (WMO floor above an ADT pit, boat deck,
+                    // shallow-water walker at the shore, ...).
+                    if (waterLevel <= INVALID_HEIGHT || p.z > waterLevel)
+                        continue;
+                    if (walkInWater || !canSwim)
+                        p.z = groundZ + 0.5f;
+                    // Swimmers follow the path depth (which already descends
+                    // to the target); only keep them above the seabed - never
+                    // force a fixed depth.
                     else if (p.z < groundZ + 0.5f)
                         p.z = groundZ + 0.5f;
+                    PFDBG_MSG(&unit, "MoveSplineInit z-rewrite pt(%.2f,%.2f) origZ=%.2f -> newZ=%.2f groundZ=%.2f waterLevel=%.2f walkInWater=%d canSwim=%d",
+                              p.x, p.y, origZ, p.z, groundZ, waterLevel, walkInWater ? 1 : 0, canSwim ? 1 : 0);
                 }
             }
         }

@@ -393,14 +393,11 @@ void WaypointMovementGenerator<Creature>::SendNextWayPointPath(Creature& creatur
         nextNode = &nodeAfterItr->second;
     }
 
-    // 防止怪物掉到地下：把巡逻路径所有点 Z 修正到实际地面高度
-    if (!creature.IsFlying() && !creature.IsLevitating() && !creature.IsHovering() && !creature.IsInWater())
-    {
-        // Snap each waypoint to the local ground only when it is close,
-        // avoiding wrong-layer snaps in multi-level terrain (caves/indoors).
-        for (auto& p : genPath)
-            creature.GetMap()->GetHeightInRange(p.x, p.y, p.z);
-    }
+    // Note: the GetHeightInRange ground-snap for every genPath point was removed
+    // on 2026-08-24. genPath comes from PathFinder (navmesh poly heights), which
+    // already decides walkability - re-snapping with GetHeightInRange here dragged
+    // points onto wrong terrain layers (WMO-edge pit z=-65.7) and caused
+    // waypoint patrol creatures to hover/sink. Trust the navmesh path.
 
     Movement::MoveSplineInit init(creature);
     init.MovebyPath(genPath);

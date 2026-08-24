@@ -20,6 +20,7 @@
 #include "Maps/GridMap.h"
 #include "Entities/Creature.h"
 #include "MotionGenerators/PathFinder.h"
+#include "MotionGenerators/PfDebug.h"
 #include "Log/Log.h"
 #include "World/World.h"
 #include "Entities/Transports.h"
@@ -145,6 +146,10 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
     //if (GenericTransport* transport = m_sourceUnit->GetTransport())
     //    transport->CalculatePassengerOffset(dest.x, dest.y, dest.z, nullptr);
 
+    // [PFDBG] calculate 入口：本次寻路请求的起终点与模式
+    PFDBG_MSG(m_sourceUnit, "calculate start(%.2f,%.2f,%.2f) end(%.2f,%.2f,%.2f) forceDest=%d straightLine=%d",
+              start.x, start.y, start.z, dest.x, dest.y, dest.z, forceDest ? 1 : 0, straightLine ? 1 : 0);
+
     setStartPosition(start);
 
     setEndPosition(dest);
@@ -171,6 +176,10 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
         // No navigation tile at start or destination: fall back to a straight
         // shortcut for everyone (upstream behaviour). Marking ground units
         // NOPATH here froze them in ungenerated tiles (stuck evading).
+        PFDBG_MSG(m_sourceUnit, "NO tile: navMesh=%d query=%d ignorePF=%d haveStartTile=%d haveEndTile=%d -> BuildShortcut NORMAL|NOT_USING",
+                  m_navMesh ? 1 : 0, m_navMeshQuery ? 1 : 0,
+                  m_sourceUnit ? (m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING) ? 1 : 0) : 0,
+                  HaveTile(start) ? 1 : 0, HaveTile(dest) ? 1 : 0);
         BuildShortcut();
         m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
         return true;
@@ -179,6 +188,19 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
     updateFilter();
 
     BuildPolyPath(start, dest);
+
+    // [PFDBG] 最终路径点（带 aura 10909 过滤）：type + 全部平滑点
+    if (IsPfDbg(m_sourceUnit))
+    {
+        PathType const pt = getPathType();
+        auto const& pp = getPath();
+        sLog.outError("[PFDBG] FINAL start(%.2f,%.2f,%.2f) end(%.2f,%.2f,%.2f) type=%d npts=%zu",
+                      start.x, start.y, start.z,
+                      dest.x, dest.y, dest.z,
+                      (int)pt, pp.size());
+        for (size_t i = 0; i < pp.size(); ++i)
+            sLog.outError("[PFDBG] FINAL pt%zu (%.2f,%.2f,%.2f)", i, pp[i].x, pp[i].y, pp[i].z);
+    }
 
     return true;
 }
@@ -418,6 +440,20 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
     dtPolyRef startPoly = getPolyByLocation(startPoint, &distToStartPoly);
     dtPolyRef endPoly = getPolyByLocation(endPoint, &distToEndPoly);
 
+    // [PFDBG] start/end poly 查找结果（带 aura 10909 过滤）
+    PFDBG_MSG(m_sourceUnit, "BuildPolyPath startPoly=%u endPoly=%u distS=%.2f distE=%.2f unitZ=%.2f",
+              (uint32)startPoly, (uint32)endPoly, distToStartPoly, distToEndPoly,
+              m_sourceUnit ? m_sourceUnit->GetPositionZ() : 0.f);
+    if (IsPfDbg(m_sourceUnit) && startPoly != INVALID_POLYREF && endPoly != INVALID_POLYREF)
+    {
+        float spz = -9999.0f, epz = -9999.0f, scp[3], ecp[3];
+        if (dtStatusSucceed(m_navMeshQuery->closestPointOnPoly(startPoly, startPoint, scp, nullptr)))
+            spz = scp[1];
+        if (dtStatusSucceed(m_navMeshQuery->closestPointOnPoly(endPoly, endPoint, ecp, nullptr)))
+            epz = ecp[1];
+        sLog.outError("[PFDBG] BuildPolyPath startPolyZ=%.2f endPolyZ=%.2f (两 poly 表面高度)", spz, epz);
+    }
+
     dtStatus dtResult;
 
     // we have a hole in our mesh
@@ -426,6 +462,8 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
     if (startPoly == INVALID_POLYREF || endPoly == INVALID_POLYREF)
     {
         DEBUG_FILTER_LOG(LOG_FILTER_PATHFINDING, "++ BuildPolyPath :: (startPoly == 0 || endPoly == 0)\n");
+        PFDBG_MSG(m_sourceUnit, "BuildPolyPath INVALID_POLY start=%d end=%d -> BuildShortcut 分支",
+                  startPoly == INVALID_POLYREF ? 1 : 0, endPoly == INVALID_POLYREF ? 1 : 0);
         BuildShortcut();
 
 #ifdef ENABLE_PLAYERBOTS
@@ -441,7 +479,19 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
             // the shortcut: IsSwimmable() fails for deep positions and would
             // otherwise NOPATH them (evade spam).
             if (m_sourceUnit && (m_sourceUnit->CanSwim() || m_sourceUnit->IsInWater()))
-                m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
+            {
+                // Straight shortcut must be LOS-clear: a near-horizontal line that
+                // clips through floors (Magisters' Terrace 24560: start z -31 in a
+                // shallow lower hall, target z -2 on the floor above -> line cuts
+                // straight through solid ground) must not be used. NOPATH if the
+                // straight segment is blocked by geometry.
+                float const h = m_sourceUnit->GetCollisionHeight();
+                if (m_sourceUnit->GetMap()->IsInLineOfSight(startPos.x, startPos.y, startPos.z + h,
+                                                            endPos.x, endPos.y, endPos.z + h, true))
+                    m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
+                else
+                    m_type = PATHFIND_NOPATH;
+            }
             else if ((startPoly == INVALID_POLYREF && m_sourceUnit->GetTerrain()->IsSwimmable(startPos.x, startPos.y, startPos.z)) ||
                      (endPoly == INVALID_POLYREF && m_sourceUnit->GetTerrain()->IsSwimmable(endPos.x, endPos.y, endPos.z)))
                 m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
@@ -499,6 +549,7 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
 
         if (buildShortcut)
         {
+            PFDBG_MSG(m_sourceUnit, "farFromPoly buildShortcut (underWater/CanFly) -> NORMAL|NOT_USING");
             BuildShortcut();
             m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
             return;
@@ -511,7 +562,31 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
             setActualEndPosition(Vector3(endPoint[2], endPoint[0], endPoint[1]));
         }
 
-        m_type = PATHFIND_INCOMPLETE;
+        // Land units whose destination is far from the navmesh surface
+        // (farFromPoly: target >7 yd away, e.g. the player on a floor level NOT
+        // connected to the creature's floor - Magisters' Terrace 24560 chasing
+        // a player on the 2nd floor): do NOT snap the end to a wrong layer's
+        // poly (deep pit / upper floor), which made the creature clip straight
+        // through the floor. Instead:
+        //  - if the straight line to the target is LOS-clear, keep chasing
+        //    directly (no floor clipping possible through clear air);
+        //  - if the line is blocked by geometry (floor/wall between the
+        //    levels), NOPATH - the creature stops instead of clipping through.
+        // Flyers/swimmers keep the INCOMPLETE behaviour.
+        if (m_sourceUnit && !m_sourceUnit->CanFly() && !m_sourceUnit->IsInWater())
+        {
+            float const h = m_sourceUnit->GetCollisionHeight();
+            bool const los = m_sourceUnit->GetMap()->IsInLineOfSight(startPos.x, startPos.y, startPos.z + h,
+                                                                    endPos.x, endPos.y, endPos.z + h, true);
+            PFDBG_MSG(m_sourceUnit, "farFromPoly 陆地: LOS(竖直+%d,即到目标直线)=%d -> %s",
+                      (int)h, los ? 1 : 0, los ? "NORMAL|NOT_USING(直线追)" : "NOPATH");
+            if (los)
+                m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
+            else
+                m_type = PATHFIND_NOPATH;
+        }
+        else
+            m_type = PATHFIND_INCOMPLETE;
     }
 
     // *** poly path generating logic ***
@@ -545,6 +620,26 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
         // polygon surface.
         if (m_sourceUnit && m_sourceUnit->IsInWater())
         {
+            BuildShortcut();
+            m_type = farFromPoly ? PATHFIND_INCOMPLETE : PATHFIND_NORMAL;
+            return;
+        }
+
+        // Flying units legitimately hover above the polygon surface (3-7 yd),
+        // so the surface-snap distance check below would wrongly NOPATH them
+        // when both endpoints share one poly. Skip the snap for flyers, but
+        // still require a clear line of sight so the straight shortcut cannot
+        // clip through floors/walls.
+        if (m_sourceUnit && m_sourceUnit->CanFly())
+        {
+            float const h = m_sourceUnit->GetCollisionHeight();
+            if (!m_sourceUnit->GetMap()->IsInLineOfSight(startPos.x, startPos.y, startPos.z + h,
+                                                         endPos.x, endPos.y, endPos.z + h, true))
+            {
+                BuildShortcut();
+                m_type = PATHFIND_NOPATH;
+                return;
+            }
             BuildShortcut();
             m_type = farFromPoly ? PATHFIND_INCOMPLETE : PATHFIND_NORMAL;
             return;
@@ -825,9 +920,28 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
             }
         }
 
+        // [PFDBG] findPath/raycast 返回的 poly 路径：每个 poly 的表面 z（判断是否含 endPoly 二楼、z 是否跳变）
+        if (IsPfDbg(m_sourceUnit))
+        {
+            std::string polyLog;
+            char buf[96];
+            for (uint32 pi = 0; pi < m_polyLength; ++pi)
+            {
+                dtPolyRef const ref = m_pathPolyRefs[pi];
+                float cp[3], hz = 0.0f;
+                if (dtStatusSucceed(m_navMeshQuery->closestPointOnPoly(ref, startPoint, cp, nullptr)))
+                    hz = cp[1];
+                snprintf(buf, sizeof(buf), " #%u(z=%.2f)", (uint32)ref, hz);
+                polyLog += buf;
+            }
+            sLog.outError("[PFDBG] findPath dtResult=0x%08X polyLength=%u type=%d polyPath:%s",
+                          (uint32)dtResult, m_polyLength, (int)m_type, polyLog.c_str());
+        }
+
         if (!m_polyLength || dtStatusFailed(dtResult))
         {
             // only happens if we passed bad data to findPath(), or navmesh is messed up
+            PFDBG_MSG(m_sourceUnit, "findPath FAILED: polyLength=%u dtResult=0x%08X -> BuildShortcut NOPATH", m_polyLength, (uint32)dtResult);
 #ifdef ENABLE_PLAYERBOTS
             if (m_sourceUnit)
 #endif
@@ -1361,18 +1475,11 @@ dtStatus PathFinder::findSmoothPath(const float* startPos, const float* endPos,
         m_navMeshQuery->getPolyHeight(m_smoothPathPolyRefs[0], result, &result[1]);
         result[1] += 0.5f;
 
-        // moveAlongSurface can slide the smooth path onto a neighbouring pit
-        // polygon at the rim, making getPolyHeight report the pit bottom
-        // (z=-65.7) - walking that drops the creature into the hole and back.
-        // Snap the point back to the unit's own ground level instead: the
-        // creature keeps walking along the rim on the floor.
-        if (m_sourceUnit && m_sourceUnit->GetTypeId() == TYPEID_UNIT &&
-            !m_sourceUnit->CanFly() && !m_sourceUnit->IsInWater())
-        {
-            float const unitZ = m_sourceUnit->GetPositionZ();
-            if (std::fabs(result[1] - unitZ) > 10.0f)
-                result[1] = unitZ + 0.5f;      // keep walking on the unit's floor
-        }
+        // Note: the old ZSnap (|result[1]-unitZ|>10 -> result[1]=unitZ+0.5) was removed
+        // on 2026-08-24: it anchored on the unit's absolute Z, so any downhill run
+        // taller than 10 yd got its remaining points pinned to a flat line
+        // (unitZ+0.5) - creatures flew horizontally (58284: z 67.59 over ground 47).
+        // trust getPolyHeight (navmesh poly heights are walkability authorities).
 
         dtVcopy(iterPos, result);
 
