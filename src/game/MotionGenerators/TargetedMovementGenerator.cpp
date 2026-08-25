@@ -511,6 +511,12 @@ namespace
         const TerrainInfo* terrain = map->GetTerrain();
         bool const walkInWater = owner.GetTypeId() == TYPEID_UNIT &&
             (static_cast<Creature const&>(owner).GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER);
+        // Only-swimming creatures (CanWalk=false, e.g. fish) live in water only.
+        // They never wade into shallow water / onto the shore: the moment a
+        // refined point cannot hold the swim depth, truncate the path at the
+        // last deep-water point instead of snapping z to the bank.
+        bool const pureSwimmer = owner.GetTypeId() == TYPEID_UNIT &&
+            owner.CanSwim() && !owner.CanWalk() && !walkInWater;
         if (!walkInWater)
         {
             if (!owner.IsInSwimmableWater())
@@ -518,18 +524,31 @@ namespace
             float const ox = owner.GetPositionX();
             float const oy = owner.GetPositionY();
             float const oz = owner.GetPositionZ();
-            float const adt = terrain->GetHeightStatic(ox, oy, oz, false);
             float const wl = terrain->GetWaterLevel(ox, oy, oz);
-            if (adt <= INVALID_HEIGHT || wl <= INVALID_HEIGHT || oz <= adt || oz >= wl)
-                return;
+            // Pure swimmers do not need the ADT surface: several dungeons have
+            // no /bad .map height (Serpentshrine Cavern map=548: GroundZ INVALID),
+            // which used to return right here and skip the shore-truncation below,
+            // letting the fish chase players straight onto the shore.
+            if (pureSwimmer)
+            {
+                if (wl <= INVALID_HEIGHT || oz >= wl)
+                    return;
+            }
+            else
+            {
+                float const adt = terrain->GetHeightStatic(ox, oy, oz, false);
+                if (adt <= INVALID_HEIGHT || wl <= INVALID_HEIGHT || oz <= adt || oz >= wl)
+                    return;
+            }
         }
         const float floorMargin = 0.5f;
+        bool truncated = false;
 
         PointsArray refined;
         refined.reserve(path.size() + 16);
         refined.push_back(path.front()); // keep the exact start
 
-        for (size_t i = 0; i + 1 < path.size(); ++i)
+        for (size_t i = 0; i + 1 < path.size() && !truncated; ++i)
         {
             const Vector3& a = path[i];
             const Vector3& b = path[i + 1];
@@ -549,6 +568,21 @@ namespace
                     // GetWaterOrGroundLevel(swim=true), which returns the ground for shallow
                     // water and snapped swimmers onto the floor, bobbing up and down.
                     waterLevel = terrain->GetWaterLevel(p.x, p.y, p.z, &groundZ);
+                    // Only-swimming creature: block the path at the first point
+                    // where the water column is too shallow to swim (ground rises
+                    // to/near the surface, or water disappears = shore), so the
+                    // swimmer stops at the deep-water edge and never wades ashore.
+                    if (pureSwimmer)
+                    {
+                        float const depth = (waterLevel > INVALID_HEIGHT && groundZ > INVALID_HEIGHT)
+                            ? (waterLevel - groundZ) : 0.0f;
+                        if (waterLevel <= INVALID_HEIGHT || groundZ <= INVALID_HEIGHT || depth <= 1.5f)
+                        {
+                            PFDBG_MSG(&owner, "RefineWaterPath 截断: 只游泳怪浅水/岸 pt(%.2f,%.2f,%.2f) wl=%.2f gz=%.2f depth=%.2f", p.x, p.y, p.z, waterLevel, groundZ, depth);
+                            truncated = true;
+                            break;
+                        }
+                    }
                     if (waterLevel > INVALID_HEIGHT)
                     {
                         if (p.z > waterLevel && groundZ > waterLevel)
@@ -584,8 +618,17 @@ namespace
                 refined.push_back(p);
             }
 
+            if (truncated)
+                break;
+
             refined.push_back(b); // keep the exact end (the target)
         }
+
+        // If every point after the start was on the shore/shallow edge, the path
+        // would be a single point, which fails the spline Validate (path.size>1).
+        // Duplicate the start so the unit stays put at the deep-water edge.
+        if (refined.size() < 2)
+            refined.push_back(refined.front());
 
         path.swap(refined);
     }

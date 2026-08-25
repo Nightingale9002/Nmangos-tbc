@@ -1,8 +1,9 @@
 # 已知问题记录 (KNOWN ISSUES)
 
-> 本文件 = **Bug 修复手册**（随源码提交）：记录服务器遇到的已知问题、排查信息与已修复项，供后续会话接续处理。
+> 本文件 = **Bug 修复手册 / 已知问题与技术笔记**（随源码提交）：记录服务器遇到的已知问题、排查信息、已修复项与技术性内容（含水中移动、寻路、地图瓦片等），供后续会话接续处理。
 > 功能性更新见同目录《功能更新手册_卡布魔兽.md》；运维内容见本地《HANDOFF_卡布魔兽运维.md》（不提交）。
-> 更新时间: 2026-08-21
+> 技术性笔记一律写入本文件（不再另开 md），仓库根/根目录散落的旧技术 md 已陆续归并。
+> 更新时间: 2026-08-25
 
 ---
 
@@ -473,3 +474,81 @@ TargetedMovementGenerator.cpp +87  Chase 水下：跳过距离/LOS/z 检查直�
 - 矿洞门口：玩家站门口 5 码内，怪不再卡闪避（覆盖检查移除后门口 ADT 保留）
 - 本地服务器已重启加载新 mmap（8086 正常）
 
+---
+
+## [水移动] 水中移动问题总结（2.4.3 私服）— 最终版
+
+> 本文档由仓库根 WATER_MOVEMENT_NOTES.md 整合而来，后续水移动相关技术内容统一写入本手册。
+
+### 目标与原则
+
+- 修水中移动三件事：不卡闪避 / 不抽搐 / 不穿模
+- 原则：**服务器逻辑向客户端靠拢**（客户端是原版，服务器应匹配）
+- 分类：会游泳的永远游泳；不会游泳的永远不游泳（贴水底/水面上方走路）；CREATURE_EXTRA_FLAG_WALK_IN_WATER（螃蟹）永远贴水底
+- 2.4.3 客户端 movement flags：**SWIMMING = 0x00200000**（玩家 MSG_MOVE_START_SWIM 包证实）
+
+### 核心发现：客户端如何判定怪物游泳
+
+**客户端判定怪物游泳，看的是 UNIT_FIELD_FLAGS 里的 UNIT_FLAG_SWIMMING（0x8000），不是 movement flags（m_movementInfo）！**
+
+- 水生怪 spawn 时 Creature.cpp 会把它写进 UNIT_FIELD_FLAGS（CREATE 锚定）-> 一直游泳
+- 陆地怪下水：动态游泳判据触发 SetSwim(true) -> **SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SWIMMING)** -> 客户端通过字段更新持久获得游泳状态
+- 这是 boss_the_lurker_below.cpp 里官方用法（JustSummoned 里 SetFlag 让娜迦游泳）
+
+### 完整方案（组件）
+
+1. **动态游泳判据**（Unit::Update，迟滞式）：进入游泳 z < 水面 - 0.5（浅水也游，不贴浅滩）；退出游泳 z > 水面 + 0.5（完全出水才走路）；中间 +-0.5 迟滞带保持当前状态（防水面边缘翻转）；跳过 WALK_IN_WATER
+2. **SetSwim**：m_movementInfo 加 SWIMMING + **SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SWIMMING)** + 发 0x30B（原版行为）
+3. **Launch 统一水中路径处理**（MoveSplineInit，对所有 creature 移动生效）：游泳者路径点约束 [水底+0.5, 水面]，不穿底不冒头，**跟随目标深度**（不强制固定深度）；陆地点（groundZ > waterLevel）保持原 z
+4. **RefineWaterPath**（Chase）：GetWaterLevel（浅水也有效）替代 GetWaterOrGroundLevel（浅水返回地面导致贴底），groundZ 判别 + walkInWater 贴底
+5. **双方都在水中且会游泳 -> 直线游到目标深度**（Chase/Follow）：水下导航网格是水底，走廊路径会潜到水底够不到目标；WALK_IN_WATER 保持走廊
+6. **swim 状态变化强制重新寻路**（Chase/Follow relaunch，m_lastSwimState）：下水/上岸切换路径模式，防旧陆地路径卡住闪避
+7. **PathFinder**：CanSwim() || IsInWater() -> 快捷路径（浅水 IsSwimmable()==false 会 NOPATH -> 闪避）；随机点水中保持当前深度
+8. **UpdateAllowedPositionZ**：水中单位跳过 z 修正（防水面/水底弹跳）
+9. **UpdateSplinePosition 同步 m_movementInfo.pos**：防 CREATE/movement 块带陈旧出生点位置
+
+### 排查经验：为什么"投递游泳状态"各种方法都失败
+
+| 方法 | 结果 |
+|---|---|
+| SMSG_SPLINE_MOVE_START_SWIM (0x30B) 单发 | 有效但 ~2 秒后客户端自己衰减回走路 |
+| 0x30B 周期重发（1s/500ms） | 保持游泳但**抖**（每次重发动画状态机重置） |
+| CREATE_OBJECT2 重建（对已存在单位） | 不应用，无效 |
+| destroy + create（强制重建） | 短暂游泳后仍回走路（客户端不重新锚定） |
+| monster move 带状态 | **SMSG_MONSTER_MOVE 协议不带 movement flags**（查实），无此通道 |
+| UPDATETYPE_MOVEMENT | 4 次实验全失败（位置错乱/怪消失），放弃 |
+
+**结论：客户端游泳 = UNIT_FIELD_FLAGS 的 UNIT_FLAG_SWIMMING 锚定，0x30B 只是临时动画提示。动态 SetFlag 是唯一持久方案。**
+
+### 其他经验
+
+- monster move 的 spline_id 字段 = 自增计数器，不是动画 ID（客户端动画不靠它）
+- 客户端水底高度 = 服务器一致（实测 -6），无地形认知差异
+- "怪物被拉到 -2"问题：早期 clamp 强制深度，已删（跟随目标深度）
+- 玩家跳跃时怪物"瞬移"：未确认是位置跳变还是模型朝向/动画切换（日志已清无法复现）；已尝试水中忽略 z 防 relaunch（未验证，已还原）
+
+### 0.5 数值来源（2026-08-25 核实）
+
+- `groundZ + 0.5f` 离地半码余量**继承自 CMaNGOS 原版**：官方 PathFinder.cpp 的 `result[1] += 0.5f` / `iterPos[1] += 0.5f`（navmesh 平滑路径点 z 抬高半码，避免怪贴地/穿地）在 fork 之前的官方父提交就存在，d64379342 未改这两行。
+- 我们 fork 的 MoveSplineInit 水处理块（含 groundZ+0.5）本身是 d64379342 加的，但 **0.5 这个数值取自原版 navmesh 惯例**，不是凭空定的。
+
+### 2026-08-25 游泳怪"上岸前卡住" + 高度上限（本次改动）
+
+- **现象**：游泳怪游向岸边目标，会游到浅水/岸贴地走一小段（"上岸一小段才卡"）。
+- **根源**：RefineWaterPath 是 z 修正型护栏，只夹 z 不拦路径方向；浅水/岸段被贴地放行。
+- **修复 A（RefineWaterPath 截断）**：只游泳怪（CanSwim && !CanWalk，如鱼）细分点水深 <= 1.5 或岸边/无水面时**截断路径**，终点停在最后一个深水点，不贴地上岸；两栖怪不受影响。截断后仅 1 点则复制起点保证 spline 校验通过。
+- **修复 B（MoveSplineInit 高度上限）**：游泳怪路径点 clamp 到 [水底+0.5, 水面-1.5]，**z 任何情况不高于水面下 1.5**（完全没入水中），不潜入地。
+
+### 死怪攻击问题（2026 检查）
+
+- 现象：已死亡怪物偶尔还能发动攻击（玩家掉血）。
+- 根因（GM 技能复现）：GM 的 area death（INSTAKILL 类伤害）把血量归零但**跳过 SetDeathState** -> m_deathState 仍为 ALIVE -> IsAlive() 返回 true -> 死怪继续攻击。
+- 修复（防御，已保留）：UpdateMeleeAttackingState：!IsAlive() || GetHealth() == 0 才允许挥砍；UnitAI::UpdateAI 开头 !IsAlive() || GetHealth() == 0 提前返回。
+- 云端未见此问题，防御无害保留。附带发现：阿图门"被杀死后复活"= GM 技能 INSTAKILL 绕过 SetDeathPrevention，非服务器 bug。
+
+### 2026-08-23 水中随机移动修复（2 处）
+
+- 现象：水中随机移动怪被拉到水面 / 游进地面下的水里（dbguid 10898 蓝鳃突袭者复现）。
+- 根因：随机点只保留起始深度（endPoint.z = currPos.z），不校验目的地水柱；直线路径可能穿过岸边/坡地。
+- 修复（PathFinder.cpp ComputePathToRandomPoint 水分支）：①目的地水柱校验 destGroundZ+0.5 <= 当前深度 <= destWaterLevel-0.5，不满足或非水 → PATHFIND_NOPATH 重掷；②沿途地形采样 4 点，任何一点地形高于游泳深度 → NOPATH 重掷。
+- 效果：随机点要么落在合理水柱内，要么重掷；既不拉水面、也不钻地底。

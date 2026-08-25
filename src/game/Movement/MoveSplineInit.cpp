@@ -120,10 +120,13 @@ namespace Movement
                     if (walkInWater || !canSwim)
                         p.z = groundZ + 0.5f;
                     // Swimmers follow the path depth (which already descends
-                    // to the target); only keep them above the seabed - never
-                    // force a fixed depth.
-                    else if (p.z < groundZ + 0.5f)
-                        p.z = groundZ + 0.5f;
+                    // to the target): keep them above the seabed (>= groundZ+0.5)
+                    // AND never closer than 1.5 yd to the surface (<= waterLevel-1.5),
+                    // so a swimming creature is always fully submerged, never
+                    // bobbing at or breaking the surface. clamp() keeps the lower
+                    // bound winning when the pocket is too shallow to hold both.
+                    else
+                        p.z = std::max(groundZ + 0.5f, std::min(p.z, waterLevel - 1.5f));
                     PFDBG_MSG(&unit, "MoveSplineInit z-rewrite pt(%.2f,%.2f) origZ=%.2f -> newZ=%.2f groundZ=%.2f waterLevel=%.2f walkInWater=%d canSwim=%d",
                               p.x, p.y, origZ, p.z, groundZ, waterLevel, walkInWater ? 1 : 0, canSwim ? 1 : 0);
                 }
