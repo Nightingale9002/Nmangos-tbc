@@ -146,9 +146,18 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
     //if (GenericTransport* transport = m_sourceUnit->GetTransport())
     //    transport->CalculatePassengerOffset(dest.x, dest.y, dest.z, nullptr);
 
-    // [PFDBG] calculate 入口：本次寻路请求的起终点与模式
-    PFDBG_MSG(m_sourceUnit, "calculate start(%.2f,%.2f,%.2f) end(%.2f,%.2f,%.2f) forceDest=%d straightLine=%d",
-              start.x, start.y, start.z, dest.x, dest.y, dest.z, forceDest ? 1 : 0, straightLine ? 1 : 0);
+    // [PFDBG] calculate 入口：本次寻路请求的起终点与模式（map 用于 .go xyz）
+    PFDBG_MSG(m_sourceUnit, "calculate map=%u start(%.2f,%.2f,%.2f) end(%.2f,%.2f,%.2f) forceDest=%d straightLine=%d",
+              m_defaultMapId, start.x, start.y, start.z, dest.x, dest.y, dest.z, forceDest ? 1 : 0, straightLine ? 1 : 0);
+    // [PFDBG] 当前怪物坐标的 GPS：groundZ(MAX_HEIGHT 查地面=ADT) vs floorZ(怪z查面=WMO/ADT)
+    //   怪 z≈floorZ>groundZ → 在 WMO 上; 怪 z≈floorZ≈groundZ → 在 ADT 上
+    if (IsPfDbg(m_sourceUnit))
+    {
+        float const gz = m_sourceUnit->GetMap()->GetHeight(start.x, start.y, MAX_HEIGHT);
+        float const fz = m_sourceUnit->GetMap()->GetHeight(start.x, start.y, start.z);
+        sLog.outError("[PFDBG] GPS map=%u x=%.2f y=%.2f z=%.2f groundZ=%.2f floorZ=%.2f",
+                      m_defaultMapId, start.x, start.y, start.z, gz, fz);
+    }
 
     setStartPosition(start);
 
@@ -194,12 +203,19 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
     {
         PathType const pt = getPathType();
         auto const& pp = getPath();
-        sLog.outError("[PFDBG] FINAL start(%.2f,%.2f,%.2f) end(%.2f,%.2f,%.2f) type=%d npts=%zu",
-                      start.x, start.y, start.z,
+        sLog.outError("[PFDBG] FINAL map=%u start(%.2f,%.2f,%.2f) end(%.2f,%.2f,%.2f) type=%d npts=%zu",
+                      m_defaultMapId, start.x, start.y, start.z,
                       dest.x, dest.y, dest.z,
                       (int)pt, pp.size());
         for (size_t i = 0; i < pp.size(); ++i)
-            sLog.outError("[PFDBG] FINAL pt%zu (%.2f,%.2f,%.2f)", i, pp[i].x, pp[i].y, pp[i].z);
+            sLog.outError("[PFDBG] FINAL pt%zu map=%u (%.2f,%.2f,%.2f)", i, m_defaultMapId, pp[i].x, pp[i].y, pp[i].z);
+        // 目标点 GPS：判断玩家/目标在 WMO 上还是 ADT 上
+        {
+            float const egz = m_sourceUnit->GetMap()->GetHeight(dest.x, dest.y, MAX_HEIGHT);
+            float const efz = m_sourceUnit->GetMap()->GetHeight(dest.x, dest.y, dest.z);
+            sLog.outError("[PFDBG] FINAL endGPS map=%u x=%.2f y=%.2f z=%.2f groundZ=%.2f floorZ=%.2f",
+                          m_defaultMapId, dest.x, dest.y, dest.z, egz, efz);
+        }
     }
 
     return true;
@@ -1598,7 +1614,12 @@ void PathFinder::ComputePathToRandomPoint(Vector3 const& startPoint, float maxRa
     bool fail = true;
     if (centerPoly != INVALID_POLYREF)
     {
-        if (m_sourceUnit && m_sourceUnit->IsInWater())
+        // Only deep water (real swimming) takes the swim branch. Shallow water
+        // (IsInWater true but not deep enough to swim) must walk normally -
+        // treating it as swimming kept the "swim depth" and the water-column
+        // check re-rolled the point, so flee/roam creatures in shallow water
+        // never moved. Walkers fall through to the ground branch / navmesh floor.
+        if (m_sourceUnit && m_sourceUnit->CanSwim() && m_sourceUnit->IsInSwimmableWater())
         {
             // Water: keep the random point at the unit's current swimming depth.
             // Snapping z to the navmesh surface (seabed/shore) made swimmers dive
