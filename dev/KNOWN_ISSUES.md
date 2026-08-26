@@ -586,3 +586,62 @@ TargetedMovementGenerator.cpp +87  Chase 水下：跳过距离/LOS/z 检查直�
 - 回滚保险：mmaps_old_20260627（旧版 2777 tile）保留不清，正常运行一段时间确认稳定后再删。
 - 运行中二进制核对法：md5sum /proc/PID/exe = /opt/mangos/bin/mangosd = /root/Nmangos-tbc-build/src/mangosd/mangosd。
 - 云端当前运行 = 04:08 编译（48b7c8463 版本，不含 8-25 水下寻路修复），需凌晨重编译。
+
+---
+
+## [寻路] 2026-08-26/27 多项修复与调查结论
+
+### 1. 鱼类上岸修复（commit 3e341792a）
+- RefineWaterPath gate：纯游泳怪（CanWalk=false）跳过 IsInSwimmableWater 检查，浅水/埋地鱼也能触发截断。
+- 截断阈值结束于 depth<=1.5 的浅水位（鱼停在深水边界不上岸）。
+
+### 2. 空中寻路修复（commit 17884f7dd，PathFinder）
+- INVALID_POLY 捷径分支改为「起点和终点都必须在可游泳水域」：
+  - `CanSwim() && IsSwimmable(startPos) && IsSwimmable(endPos)`
+  - 空洞分支同样要求两端可游泳。
+- 效果：地面怪（InhabitType=3 但当前位置不在水区）追飞行玩家 → NOPATH → 回营，不再飘天。
+
+### 3. loadMap 崩溃修复（MoveMap.cpp，未 commit）
+- 现象：v8 mmap 启动崩在 Loading WorldState。/ 打怪崩（calcTileLoc NaN）。
+- gdb 抓栈：SIGABRT in MMapManager::loadMap → `MANGOS_ASSERT(itr != loadedMMaps.end())`（map 未预加载）。
+  触发链：WorldState::RespawnEmeraldDragons → IsSwimmable → GetHeightStatic → loadMap(530) → assert。
+- 修复：loadMap 遇到 map 未加载时自动调用 loadMapData（加载 .mmap + navmesh），不再 assert。
+
+### 4. v8 mmap 缺 .mmap 文件（关键教训）
+- **v8 zip（mmaps_v8_0824.zip）只含 2764 个 .mmtile，缺 72 个 .mmap**（navmesh 全局参数，各地图 28 字节）。
+- 没有 .mmap → loadMapData 无法初始化 navmesh → 后续 calcTileLoc 用无效 navmesh → NaN/崩溃。
+- **修复：从旧版 mmaps 复制 .mmap 到 v8 目录**（.mmap 只含地图边界/tile 尺寸，与 tile 生成规则无关，可复用）。
+- 教训：打包/部署 mmap 时必须同时包含 .mmap 和 .mmtile，两者缺一不可。
+
+### 5. 任务物品每人一份（commit 68d5d1d15 + dev/035 SQL）
+- item_template class=12（Quest 物品）全部加 ITEM_FLAG_MULTI_DROP（0x800=2048）：队伍里每人可拾取自己的一份。
+- 云端已执行：3865/3865 全部带 MULTI_DROP。
+- 生效前提：需重启 mangosd 加载新 item_template（内存缓存）。
+
+### 6. 多层地形穿模：接受现状（未解决）
+- 现象：Duskwood 下层怪追上层目标时，路径 z 跳变（20→34→29→34），本地平滑（24→27→29）。
+- 同起点同目标确凿对比：本地平滑、云端跳变。
+- 已排查全部因素均一致：mmtile 2764 全量 MD5、.mmap、源码(68d5d1d15)、recast库(去行尾符MD5)、优化级别(-O3/-O2都跳变)、DT_POLYREF64 宏。
+- polyPath（navmesh 路径）两边相同且平滑，FINAL（findSmoothPath）跳变 → 问题在 findSmoothPath 插值。
+- 结论（2026-08-27 修正）：现象 = findSmoothPath 逐点 getPolyHeight 在多层共享 poly 间的"判层歧义"（z 台阶、x/y 平滑）；差异源 = 输入微差（%.2f 掩盖完整 float）+ 平台浮点细节，且 GCC 代码生成确参与（O3→O2 穿模减少，见下）。非逻辑 bug，不动算法。
+- 拒绝 z 斜率限制方案（会引入卡闪避/新穿模/卡战斗风险，且 ZSnap 曾因压平下坡被移除）。
+- 缓解（2026-08-27 确认）：编译优化 -O3 改 -O2 后部分怪穿模消失（同批怪穿模减少，用户实测确认有区别）。
+- 决策：改用 -O2 编译（云端 CMakeCache + flags.make 已设为 -O2，凌晨编译沿用；O3 版备份 mangosd.bak_O3_bf86ba2d）。
+- 性能影响：2 核云机上差异可忽略；穿模虽未完全消除但明显减少，接受现状（不再深挖）。
+- 二次分析（2026-08-27，深挖"polyPath 相同、FINAL 不同"）：
+  - 实证（云端 02:40:45 样本，下层怪追地表目标）：polyPath 10 个 poly 的 z 单调平滑
+    （16.76→20.00→…→35.18）；FINAL 的 x/y 连续平滑、**仅 z 跳变**
+    （34.00→34.08→29.81→34.70→35.09）。
+  - 机制：polyPath = Detour 离散图搜索（鲁棒，微差不改 poly 链 → 两台必然一致）；
+    FINAL = moveAlongSurface 连续插值 + 逐点 getPolyHeight 重心插值补表面高度
+    （对 (x,y) ULP 级微差敏感），多层共享边处点被判到不同楼层 → z 台阶。
+    "polyPath 相同、FINAL 不同"因此**不矛盾**。
+  - 差异源排序：① 输入微差（%.2f 只到 0.01 码，"同起点同目标"未严格证明；真要实锤
+    需 %.8f 打印或离线同一 .mmap + 同输入复现）② 平台浮点细节（云端 flags =
+    -O2 -DNDEBUG -std=c++2a / GCC 10.2.1，**无 -mfma/-march=native/-ffast-math
+    → FMA 差异排除**；O3→O2 穿模减少说明代码生成仍参与）③ detour 固有判层歧义（放大器）。
+  - 决定（2026-08-27）：**不做防御性修复**（同层校验/LOS 拦截等）——问题偶发不严重，
+    防御补丁有回归风险（误杀正常爬坡/绕路路径、重新引入卡闪避），维持接受现状。
+
+### 7. PlayerSave.Interval 改 1 分钟
+- 云端 mangosd.conf：PlayerSave.Interval = 300000 → 60000（1分钟），重启生效。
