@@ -220,7 +220,19 @@ namespace MMAP
     {
         // get this mmap data
         auto itr = loadedMMaps.find(mapId);
-        MANGOS_ASSERT(itr != loadedMMaps.end()); // must not occur here as it would not be thread safe - only in loadMapData through loadMapInstance
+        if (itr == loadedMMaps.end())
+        {
+            // The map's navmesh was not preloaded yet (e.g. a creature spawn
+            // during startup asks for terrain height on this map before its
+            // mmap is loaded - RespawnEmeraldDragons -> IsSwimmable ->
+            // GetHeightStatic -> loadMap). Load the map data on demand instead
+            // of asserting, so startup does not abort on a late tile query.
+            if (!loadMapData(basePath, mapId))
+                return false;
+            itr = loadedMMaps.find(mapId);
+            if (itr == loadedMMaps.end())
+                return false;
+        }
 
         const auto& mmapData = itr->second;
 
