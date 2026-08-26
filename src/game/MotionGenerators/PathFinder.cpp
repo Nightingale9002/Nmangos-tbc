@@ -487,14 +487,16 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
         {
 #endif
             // Check for swimming or flying shortcut
-            // Swimmers take the shortcut whenever either endpoint lacks a navmesh
-            // polygon, regardless of IsSwimmable(): shallow water (< 1.5 yd deep)
-            // reports IsSwimmable()==false, which used to NOPATH creatures even
-            // though they can swim there (e.g. Greymist Tidehunter 2208).
-            // Any unit actually in water (incl. non-swimmers that fell in) gets
-            // the shortcut: IsSwimmable() fails for deep positions and would
-            // otherwise NOPATH them (evade spam).
-            if (m_sourceUnit && (m_sourceUnit->CanSwim() || m_sourceUnit->IsInWater()))
+            // Swimmers take the shortcut only when BOTH the start AND the end
+            // are in swimmable water: a straight underwater line must not be
+            // used to chase a target that is in the air/on shore (that lifts
+            // the swimmer out of the water into the sky). Land creatures that
+            // merely CAN swim (InhabitType includes WATER, e.g. Mo'arg/Gan'arg)
+            // chasing a flying target fall through to the ground branch
+            // (NOPATH -> evade), matching upstream.
+            if (m_sourceUnit && m_sourceUnit->CanSwim() &&
+                m_sourceUnit->GetTerrain()->IsSwimmable(startPos.x, startPos.y, startPos.z) &&
+                m_sourceUnit->GetTerrain()->IsSwimmable(endPos.x, endPos.y, endPos.z))
             {
                 // Straight shortcut must be LOS-clear: a near-horizontal line that
                 // clips through floors (Magisters' Terrace 24560: start z -31 in a
@@ -508,8 +510,11 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
                 else
                     m_type = PATHFIND_NOPATH;
             }
-            else if ((startPoly == INVALID_POLYREF && m_sourceUnit->GetTerrain()->IsSwimmable(startPos.x, startPos.y, startPos.z)) ||
-                     (endPoly == INVALID_POLYREF && m_sourceUnit->GetTerrain()->IsSwimmable(endPos.x, endPos.y, endPos.z)))
+            // Sinkhole between two water points: only shortcut when BOTH ends
+            // are in swimmable water (a missing poly in deep water). A single
+            // in-water end with a land/air start would lift the creature up.
+            else if (m_sourceUnit->GetTerrain()->IsSwimmable(startPos.x, startPos.y, startPos.z) &&
+                     m_sourceUnit->GetTerrain()->IsSwimmable(endPos.x, endPos.y, endPos.z))
                 m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
             else
             {
