@@ -519,23 +519,26 @@ namespace
             owner.CanSwim() && !owner.CanWalk() && !walkInWater;
         if (!walkInWater)
         {
-            if (!owner.IsInSwimmableWater())
-                return;
             float const ox = owner.GetPositionX();
             float const oy = owner.GetPositionY();
             float const oz = owner.GetPositionZ();
             float const wl = terrain->GetWaterLevel(ox, oy, oz);
-            // Pure swimmers do not need the ADT surface: several dungeons have
-            // no /bad .map height (Serpentshrine Cavern map=548: GroundZ INVALID),
-            // which used to return right here and skip the shore-truncation below,
-            // letting the fish chase players straight onto the shore.
             if (pureSwimmer)
             {
+                // Pure swimmers (CanWalk=false, e.g. fish): only need to be
+                // under the water surface for the shore-truncation to apply.
+                // Skip the deep-water (IsInSwimmableWater) and ADT checks:
+                // a fish in shallow water (depth < 1.5 yd) or slightly buried
+                // must still have its path truncated at the shore, otherwise
+                // it chases players straight onto land (observed: Umbrafen Eel
+                // in 0.5 yd depth swam to the shore target and beached).
                 if (wl <= INVALID_HEIGHT || oz >= wl)
                     return;
             }
             else
             {
+                if (!owner.IsInSwimmableWater())
+                    return;
                 float const adt = terrain->GetHeightStatic(ox, oy, oz, false);
                 if (adt <= INVALID_HEIGHT || wl <= INVALID_HEIGHT || oz <= adt || oz >= wl)
                     return;

@@ -552,3 +552,37 @@ TargetedMovementGenerator.cpp +87  Chase 水下：跳过距离/LOS/z 检查直�
 - 根因：随机点只保留起始深度（endPoint.z = currPos.z），不校验目的地水柱；直线路径可能穿过岸边/坡地。
 - 修复（PathFinder.cpp ComputePathToRandomPoint 水分支）：①目的地水柱校验 destGroundZ+0.5 <= 当前深度 <= destWaterLevel-0.5，不满足或非水 → PATHFIND_NOPATH 重掷；②沿途地形采样 4 点，任何一点地形高于游泳深度 → NOPATH 重掷。
 - 效果：随机点要么落在合理水柱内，要么重掷；既不拉水面、也不钻地底。
+
+---
+
+## [部署] mmap 热替换导致 mangosd 崩溃循环（2026-08-25 排查）
+
+### 现象
+- 23:05 起云端 mangosd 崩溃循环：23:05/23:06/23:07/23:08/23:09/23:10 连续 6 次启动→加载→崩溃，watchdog 每分钟拉起又崩。
+- 崩溃发生在启动加载地图数据阶段（Server.log 显示 Load 到一半）。
+
+### 根因（用户指正 + 确认）
+- 不是 mmap 版本不匹配：新旧 mmtile 头部都是 magic=MMAP ver=8 dt=7（MoveMapSharedDefines.h:29 MMAP_VERSION=8），版本完全一致。
+- 真正原因：在 mangosd 运行中热替换了它正在使用的 mmaps 目录。
+  - 20:46 操作：mv mmaps → mmaps_old_20260627，再新建 mmaps 目录解压 v8。
+  - 运行中的旧 mangosd（04:08 二进制）仍持有旧 inode/句柄，但按需加载新 tile 时按路径重新打开 → 路径已指向新 v8 目录 → 读到内容不同的数据 → 解析崩溃。
+  - 触发时机：23:05 玩家进入需要按需加载 tile 的地图（如毒蛇神殿 548 测试 21508）。
+
+### 教训（重要）
+1. 绝不能在 mangosd 运行时替换/移动它正在使用的 mmaps 目录（同理 vmaps/maps/dbc）。
+2. 换 mmap 必须：先停进程 → 再换文件 → 再启动。
+3. 部署顺序固定为：4:00 整机重启（无进程）→ 4:02 放 v8 mmap → 4:06 新二进制启动加载。
+4. 云端已加安全脚本 /root/deploy_v8_mmap.sh：pgrep mangosd 存在则 abort 跳过，防止再踩。
+
+### 当前部署方案（2026-08-25 定稿）
+| 时间 | 动作 |
+|---|---|
+| 3:00 | restart_server.sh 发 server shutdown 3600（4:00 关闭） |
+| 4:00 | 整机重启 |
+| 4:02 | deploy_v8_mmap.sh：pgrep 检查无进程 → 旧 mmaps 备份为 mmaps_old_20260627 → mv mmaps_v8_new → mmaps（原子改名） |
+| 4:06 | nightly_build_restart.sh：用 ec714992c 编译新二进制 → 部署 → 启动 → 加载 v8 |
+
+- mmap 部署方式（2026-08-25 改进）：v8 提前解压到独立目录 mmaps_v8_new（运行中 mangosd 无感知），部署时仅两次 mv（备份旧目录 + 改名上线），原子且不产生"读到一半文件"状态。
+- 回滚保险：mmaps_old_20260627（旧版 2777 tile）保留不清，正常运行一段时间确认稳定后再删。
+- 运行中二进制核对法：md5sum /proc/PID/exe = /opt/mangos/bin/mangosd = /root/Nmangos-tbc-build/src/mangosd/mangosd。
+- 云端当前运行 = 04:08 编译（48b7c8463 版本，不含 8-25 水下寻路修复），需凌晨重编译。
