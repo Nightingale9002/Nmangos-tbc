@@ -127,7 +127,7 @@ namespace Movement
                     // bound winning when the pocket is too shallow to hold both.
                     else
                         p.z = std::max(groundZ + 0.5f, std::min(p.z, waterLevel - 1.5f));
-                    PFDBG_MSG(&unit, "MoveSplineInit z-rewrite pt(%.2f,%.2f) origZ=%.2f -> newZ=%.2f groundZ=%.2f waterLevel=%.2f walkInWater=%d canSwim=%d",
+                    PFDBG_MSG(&unit, "MoveSplineInit z-rewrite pt(%.8f,%.8f) origZ=%.8f -> newZ=%.8f groundZ=%.8f waterLevel=%.8f walkInWater=%d canSwim=%d",
                               p.x, p.y, origZ, p.z, groundZ, waterLevel, walkInWater ? 1 : 0, canSwim ? 1 : 0);
                 }
             }

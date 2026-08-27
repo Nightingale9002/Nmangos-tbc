@@ -146,8 +146,8 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
     //if (GenericTransport* transport = m_sourceUnit->GetTransport())
     //    transport->CalculatePassengerOffset(dest.x, dest.y, dest.z, nullptr);
 
-    // [PFDBG] calculate 入口：本次寻路请求的起终点与模式（map 用于 .go xyz）
-    PFDBG_MSG(m_sourceUnit, "calculate map=%u start(%.2f,%.2f,%.2f) end(%.2f,%.2f,%.2f) forceDest=%d straightLine=%d",
+    // [PFDBG] calculate 入口：本次寻路请求的起终点与模式（%.8f 供离线复现精确输入）
+    PFDBG_MSG(m_sourceUnit, "calculate map=%u start(%.8f,%.8f,%.8f) end(%.8f,%.8f,%.8f) forceDest=%d straightLine=%d",
               m_defaultMapId, start.x, start.y, start.z, dest.x, dest.y, dest.z, forceDest ? 1 : 0, straightLine ? 1 : 0);
     // [PFDBG] 当前怪物坐标的 GPS：groundZ(MAX_HEIGHT 查地面=ADT) vs floorZ(怪z查面=WMO/ADT)
     //   怪 z≈floorZ>groundZ → 在 WMO 上; 怪 z≈floorZ≈groundZ → 在 ADT 上
@@ -155,7 +155,7 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
     {
         float const gz = m_sourceUnit->GetMap()->GetHeight(start.x, start.y, MAX_HEIGHT);
         float const fz = m_sourceUnit->GetMap()->GetHeight(start.x, start.y, start.z);
-        sLog.outError("[PFDBG] GPS map=%u x=%.2f y=%.2f z=%.2f groundZ=%.2f floorZ=%.2f",
+        sLog.outError("[PFDBG] GPS map=%u x=%.8f y=%.8f z=%.8f groundZ=%.8f floorZ=%.8f",
                       m_defaultMapId, start.x, start.y, start.z, gz, fz);
     }
 
@@ -203,17 +203,17 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
     {
         PathType const pt = getPathType();
         auto const& pp = getPath();
-        sLog.outError("[PFDBG] FINAL map=%u start(%.2f,%.2f,%.2f) end(%.2f,%.2f,%.2f) type=%d npts=%zu",
+        sLog.outError("[PFDBG] FINAL map=%u start(%.8f,%.8f,%.8f) end(%.8f,%.8f,%.8f) type=%d npts=%zu",
                       m_defaultMapId, start.x, start.y, start.z,
                       dest.x, dest.y, dest.z,
                       (int)pt, pp.size());
         for (size_t i = 0; i < pp.size(); ++i)
-            sLog.outError("[PFDBG] FINAL pt%zu map=%u (%.2f,%.2f,%.2f)", i, m_defaultMapId, pp[i].x, pp[i].y, pp[i].z);
+            sLog.outError("[PFDBG] FINAL pt%zu map=%u (%.8f,%.8f,%.8f)", i, m_defaultMapId, pp[i].x, pp[i].y, pp[i].z);
         // 目标点 GPS：判断玩家/目标在 WMO 上还是 ADT 上
         {
             float const egz = m_sourceUnit->GetMap()->GetHeight(dest.x, dest.y, MAX_HEIGHT);
             float const efz = m_sourceUnit->GetMap()->GetHeight(dest.x, dest.y, dest.z);
-            sLog.outError("[PFDBG] FINAL endGPS map=%u x=%.2f y=%.2f z=%.2f groundZ=%.2f floorZ=%.2f",
+            sLog.outError("[PFDBG] FINAL endGPS map=%u x=%.8f y=%.8f z=%.8f groundZ=%.8f floorZ=%.8f",
                           m_defaultMapId, dest.x, dest.y, dest.z, egz, efz);
         }
     }
@@ -457,7 +457,7 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
     dtPolyRef endPoly = getPolyByLocation(endPoint, &distToEndPoly);
 
     // [PFDBG] start/end poly 查找结果（带 aura 10909 过滤）
-    PFDBG_MSG(m_sourceUnit, "BuildPolyPath startPoly=%u endPoly=%u distS=%.2f distE=%.2f unitZ=%.2f",
+    PFDBG_MSG(m_sourceUnit, "BuildPolyPath startPoly=%u endPoly=%u distS=%.8f distE=%.8f unitZ=%.8f",
               (uint32)startPoly, (uint32)endPoly, distToStartPoly, distToEndPoly,
               m_sourceUnit ? m_sourceUnit->GetPositionZ() : 0.f);
     if (IsPfDbg(m_sourceUnit) && startPoly != INVALID_POLYREF && endPoly != INVALID_POLYREF)
@@ -467,7 +467,7 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
             spz = scp[1];
         if (dtStatusSucceed(m_navMeshQuery->closestPointOnPoly(endPoly, endPoint, ecp, nullptr)))
             epz = ecp[1];
-        sLog.outError("[PFDBG] BuildPolyPath startPolyZ=%.2f endPolyZ=%.2f (两 poly 表面高度)", spz, epz);
+        sLog.outError("[PFDBG] BuildPolyPath startPolyZ=%.8f endPolyZ=%.8f (两 poly 表面高度)", spz, epz);
     }
 
     dtStatus dtResult;
@@ -952,7 +952,7 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
                 float cp[3], hz = 0.0f;
                 if (dtStatusSucceed(m_navMeshQuery->closestPointOnPoly(ref, startPoint, cp, nullptr)))
                     hz = cp[1];
-                snprintf(buf, sizeof(buf), " #%u(z=%.2f)", (uint32)ref, hz);
+                snprintf(buf, sizeof(buf), " #%u(z=%.8f)", (uint32)ref, hz);
                 polyLog += buf;
             }
             sLog.outError("[PFDBG] findPath dtResult=0x%08X polyLength=%u type=%d polyPath:%s",
@@ -1434,6 +1434,11 @@ dtStatus PathFinder::findSmoothPath(const float* startPos, const float* endPos,
 {
     *smoothPathSize = 0;
     uint32 nsmoothPath = 0;
+
+    // [PFDBG] findSmoothPath 入口（全精度，供离线复现）：detour 坐标 start=(y,z,x)
+    PFDBG_MSG(m_sourceUnit, "smoothIn start(%.8f,%.8f,%.8f) end(%.8f,%.8f,%.8f) npolys=%u firstRef=%u lastRef=%u",
+              startPos[0], startPos[1], startPos[2], endPos[0], endPos[1], endPos[2], polyPathSize,
+              (uint32)polyPath[0], (uint32)polyPath[polyPathSize - 1]);
 
     if (m_pointPathLimit > m_smoothPathPolyRefs.size())
         m_smoothPathPolyRefs.resize(m_pointPathLimit);

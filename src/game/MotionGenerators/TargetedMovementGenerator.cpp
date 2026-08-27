@@ -581,7 +581,7 @@ namespace
                             ? (waterLevel - groundZ) : 0.0f;
                         if (waterLevel <= INVALID_HEIGHT || groundZ <= INVALID_HEIGHT || depth <= 1.5f)
                         {
-                            PFDBG_MSG(&owner, "RefineWaterPath 截断: 只游泳怪浅水/岸 pt(%.2f,%.2f,%.2f) wl=%.2f gz=%.2f depth=%.2f", p.x, p.y, p.z, waterLevel, groundZ, depth);
+                            PFDBG_MSG(&owner, "RefineWaterPath 截断: 只游泳怪浅水/岸 pt(%.8f,%.8f,%.8f) wl=%.8f gz=%.8f depth=%.8f", p.x, p.y, p.z, waterLevel, groundZ, depth);
                             truncated = true;
                             break;
                         }
@@ -677,7 +677,7 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
     const bool walkInWater = owner.GetTypeId() == TYPEID_UNIT &&
         (static_cast<Creature const&>(owner).GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER);
     // [PFDBG] DispatchSplineToPosition 入口：目标点、owner 位置、水状态
-    PFDBG_MSG(&owner, "DispatchSpline target(%.2f,%.2f,%.2f) owner(%.2f,%.2f,%.2f) ownerInWater=%d targetInWater=%d walkInWater=%d",
+    PFDBG_MSG(&owner, "DispatchSpline target(%.8f,%.8f,%.8f) owner(%.8f,%.8f,%.8f) ownerInWater=%d targetInWater=%d walkInWater=%d",
               x, y, z, owner.GetPositionX(), owner.GetPositionY(), owner.GetPositionZ(),
               ownerInWater ? 1 : 0, targetInWater ? 1 : 0, walkInWater ? 1 : 0);
     // A chaser that is itself in water always swims straight to the target
@@ -821,7 +821,7 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
     {
         sLog.outError("[PFDBG] SPLINE type=%d npts=%zu", (int)this->i_path->getPathType(), path.size());
         for (size_t pi = 0; pi < path.size(); ++pi)
-            sLog.outError("[PFDBG] SPLINE pt%zu (%.2f,%.2f,%.2f)", pi, path[pi].x, path[pi].y, path[pi].z);
+            sLog.outError("[PFDBG] SPLINE pt%zu (%.8f,%.8f,%.8f)", pi, path[pi].x, path[pi].y, path[pi].z);
     }
 
     Movement::MoveSplineInit init(owner);
@@ -905,14 +905,14 @@ bool ChaseMovementGenerator::_getLocation(Unit& owner, float& x, float& y, float
     owner.GetPosition(x, y, z); // ��ȡ�������
 
     // [PFDBG] Chase 计算追击目标点前：owner 位置 + 目标(玩家)位置
-    PFDBG_MSG(&owner, "_getLocation owner(%.2f,%.2f,%.2f) target(%.2f,%.2f,%.2f) angle=%.2f",
+    PFDBG_MSG(&owner, "_getLocation owner(%.8f,%.8f,%.8f) target(%.8f,%.8f,%.8f) angle=%.8f",
               x, y, z, i_target->GetPositionX(), i_target->GetPositionY(), i_target->GetPositionZ(), angle);
 
     // ԭ�У�����Ŀ��㣨�������Ҷ�¥Z��
     i_target->GetNearPoint(&owner, x, y, z, owner.GetObjectBoundingRadius(), this->GetDynamicTargetDistance(owner, false), angle);
 
     // [PFDBG] Chase 追击目标点（GetNearPoint 结果，可能是玩家脚下投影/二楼点）
-    PFDBG_MSG(&owner, "_getLocation result(%.2f,%.2f,%.2f)", x, y, z);
+    PFDBG_MSG(&owner, "_getLocation result(%.8f,%.8f,%.8f)", x, y, z);
 
     // destination height is handled by PathFinder (the path always ends
     // on the navmesh surface), so no manual floor snapping is needed here
