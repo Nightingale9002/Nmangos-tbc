@@ -12560,11 +12560,23 @@ void Unit::UpdateAllowedPositionZ(float x, float y, float& z, Map* atMap /*=null
     if (!CanFly())
     {
         bool canSwim = CanSwim();
-        float groundZ = GetMap()->GetHeight(x, y, z, canSwim), maxZ;
+        float groundZ = z, maxZ;
         if (canSwim)
+        {
+            groundZ = GetMap()->GetHeight(x, y, z, canSwim);
             maxZ = atMap->GetTerrain()->GetWaterOrGroundLevel(x, y, z, groundZ, !HasAuraType(SPELL_AURA_WATER_WALK), GetCollisionHeight());
+        }
         else
+        {
+            // [BOUNDED-HEIGHT] Use GetHeightInRange (bounded search, 4yd) instead of
+            // unbounded GetHeight: a creature on a WMO platform over open ADT ground
+            // (map530 -1154,1907: navmesh 82.5, ADT 73.5) would otherwise be snapped
+            // down to the far ADT layer. If no ground is within range (platform over
+            // air) keep z.
+            if (!atMap->GetHeightInRange(x, y, groundZ, 4.0f))
+                return;
             maxZ = groundZ;
+        }
         if (maxZ > INVALID_HEIGHT)
         {
             // Never snap the unit to a floor layer more than 10 yd away - a

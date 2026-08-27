@@ -198,6 +198,16 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
 
     BuildPolyPath(start, dest);
 
+    // [ZCORR-DBG-CALC] after BuildPolyPath: value + address of the SAME index
+    PFDBG_MSG(m_sourceUnit, "[ZCORR-DBG-CALC] after BuildPolyPath npts=%zu data=%p size=%zu", m_pathPoints.size(), (void*)m_pathPoints.data(), m_pathPoints.capacity());
+    for (size_t i = 0; i < m_pathPoints.size(); ++i)
+        PFDBG_MSG(m_sourceUnit, "[ZCORR-DBG-CALC] pt%zu z=%.4f", i, m_pathPoints[i].z);
+
+    // [ZCORR-DEBUG2] what does getPath() actually contain right before FINAL is printed?
+    PFDBG_MSG(m_sourceUnit, "[ZCORR-DEBUG2] calculate getPath npts=%zu data=%p", getPath().size(), (void*)getPath().data());
+    for (size_t i = 0; i < getPath().size(); ++i)
+        PFDBG_MSG(m_sourceUnit, "[ZCORR-DEBUG2] pt%zu z=%.4f", i, getPath()[i].z);
+
     // [PFDBG] 最终路径点（带 aura 10909 过滤）：type + 全部平滑点
     if (IsPfDbg(m_sourceUnit))
     {
@@ -1140,6 +1150,39 @@ void PathFinder::BuildPointPath(const float* startPoint, const float* endPoint)
         }
     }
 
+    // [ZCORR-DEBUG] aura-10909-gated - confirm BuildPointPath output for the debugged unit
+    PFDBG_MSG(m_sourceUnit, "[ZCORR-DEBUG] BuildPointPath pointCount=%u m_pathPoints=%zu type=%d", pointCount, m_pathPoints.size(), (int)m_type);
+    for (size_t j = 0; j < m_pathPoints.size(); ++j)
+        PFDBG_MSG(m_sourceUnit, "[ZCORR-DEBUG] pt%zu z=%.4f", j, m_pathPoints[j].z);
+
+    // [Z-CORRECTION-PATH] Post-process the finished path: snap an isolated z-dip.
+    // If a point sits >4yd below BOTH neighbours (which lie within 3yd of each other
+    // = same layer) it was a stacked-layer snap (creature on a WMO at 81.5 dragged to
+    // the ADT at 73.5) that the per-step guards could not catch because the descent
+    // was gradual. Lift it back onto the neighbour layer. A real V-valley (neighbours
+    // also on the low layer) or a real downhill (z keeps decreasing) is untouched.
+    if (m_pathPoints.size() > 2)
+    {
+        for (size_t i = 1; i + 1 < m_pathPoints.size(); ++i)
+        {
+            float const zPrev = m_pathPoints[i - 1].z;
+            float const zNext = m_pathPoints[i + 1].z;
+            float const zCur = m_pathPoints[i].z;
+            if (std::fabs(zPrev - zNext) <= 3.0f &&
+                zCur < zPrev - 4.0f && zCur < zNext - 4.0f)
+            {
+                float const newZ = (zPrev + zNext) * 0.5f;
+                PFDBG_MSG(m_sourceUnit, "Z-CORRECTION-PATH pt%zu z=%.2f -> %.2f (isolated dip)", i, zCur, newZ);
+                m_pathPoints[i].z = newZ;
+            }
+        }
+    }
+
+    // [ZCORR-DBG-BP] at end of BuildPointPath: value + address of m_pathPoints
+    PFDBG_MSG(m_sourceUnit, "[ZCORR-DBG-BP] end BuildPointPath npts=%zu data=%p", m_pathPoints.size(), (void*)m_pathPoints.data());
+    for (size_t j = 0; j < m_pathPoints.size(); ++j)
+        PFDBG_MSG(m_sourceUnit, "[ZCORR-DBG-BP] pt%zu z=%.4f", j, m_pathPoints[j].z);
+
     if (pointCount < 2 || dtStatusFailed(dtResult))
     {
         // only happens if pass bad data to findStraightPath or navmesh is broken
@@ -1199,6 +1242,9 @@ void PathFinder::NormalizePath()
     {
         if (transport)
             transport->CalculatePassengerPosition(m_pathPoint.x, m_pathPoint.y, m_pathPoint.z);
+        // UpdateAllowedPositionZ now uses GetHeightInRange (bounded 4yd search), so it
+        // no longer pierces through a WMO platform to the ADT ground below (map530
+        // -1154,1907). No extra cross-layer guard is needed here.
         m_sourceUnit->UpdateAllowedPositionZ(m_pathPoint.x, m_pathPoint.y, m_pathPoint.z);
         if (transport)
             transport->CalculatePassengerOffset(m_pathPoint.x, m_pathPoint.y, m_pathPoint.z);
@@ -1500,6 +1546,11 @@ dtStatus PathFinder::findSmoothPath(const float* startPos, const float* endPos,
 
         m_navMeshQuery->getPolyHeight(m_smoothPathPolyRefs[0], result, &result[1]);
         result[1] += 0.5f;
+
+        // (per-step z guards removed 2026-08-27: the observed WMO->ADT dips are
+        // gradual, not single-step jumps, so per-step clamping cannot catch them and
+        // only risks flattening steep slopes. Isolated dips are handled after the
+        // whole path is built, in BuildPointPath -> Z-CORRECTION-PATH.)
 
         // Note: the old ZSnap (|result[1]-unitZ|>10 -> result[1]=unitZ+0.5) was removed
         // on 2026-08-24: it anchored on the unit's absolute Z, so any downhill run
