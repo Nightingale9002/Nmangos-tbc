@@ -99,9 +99,27 @@ namespace Movement
             CreatureInfo const* cinfo = static_cast<Creature const&>(unit).GetCreatureInfo();
             bool const walkInWater = (cinfo->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER) != 0;
             bool const canSwim = unit.CanSwim();
-            PFDBG_MSG(&unit, "MoveSplineInit water-rewrite gate: isInWater=%d npts=%zu", unit.IsInWater() ? 1 : 0, args.path.size());
-            if (unit.IsInWater())
+            // [WATER-POINT] Water handling is now per path-point, not gated on the
+            // unit being inside water at Launch time. A patrol that STARTS on shore
+            // and crosses a lake used to skip this whole block (unit.IsInWater()
+            // false) -> waypoints kept their table Z -> the creature glided on the
+            // water surface. The same happened to water patrols whose table Z sat
+            // at/above the surface. Every point is now judged by the terrain
+            // structure at its own 2D position:
+            //   - no liquid there          -> keep table Z (land/bridge/boat deck)
+            //   - ground < water surface   -> the point IS inside a water body:
+            //       swimmer                -> submerge into [floor+0.5, surface-1.5]
+            //       non-swimmer / WALK_IN_WATER -> seabed+0.5, but ONLY when the
+            //       point itself is already below the surface (a land patrol
+            //       crossing a bridge/shore rock must not be pulled down by a
+            //       GetHeight that fell through a WMO seam, e.g. Magisters' Terrace
+            //       seabed z=-92.4 below a floor at -20).
+            // [PERF-GUARD] Land-only units (cannot swim AND not currently in water)
+            // skip all per-point terrain queries -> no extra cost vs the old
+            // unit.IsInWater() gate. Amphibious / water units get per-point handling.
+            if (unit.IsInWater() || canSwim)
             {
+                bool sawUnderwater = false;
                 Map const* map = unit.GetMap();
                 auto terrain = map->GetTerrain();
                 for (auto& p : args.path)
@@ -111,24 +129,50 @@ namespace Movement
                     if (groundZ <= INVALID_HEIGHT)
                         continue;
                     float waterLevel = terrain->GetWaterLevel(p.x, p.y, p.z, &groundZ);
-                    // A path point above the water surface is on land/air and
-                    // must never be pulled down, whatever the terrain height
-                    // below reports (WMO floor above an ADT pit, boat deck,
-                    // shallow-water walker at the shore, ...).
-                    if (waterLevel <= INVALID_HEIGHT || p.z > waterLevel)
-                        continue;
+                    if (waterLevel <= INVALID_HEIGHT)
+                        continue;                                   // no liquid here
                     if (walkInWater || !canSwim)
-                        p.z = groundZ + 0.5f;
-                    // Swimmers follow the path depth (which already descends
-                    // to the target): keep them above the seabed (>= groundZ+0.5)
-                    // AND never closer than 1.5 yd to the surface (<= waterLevel-1.5),
-                    // so a swimming creature is always fully submerged, never
-                    // bobbing at or breaking the surface. clamp() keeps the lower
-                    // bound winning when the pocket is too shallow to hold both.
-                    else
-                        p.z = std::max(groundZ + 0.5f, std::min(p.z, waterLevel - 1.5f));
-                    PFDBG_MSG(&unit, "MoveSplineInit z-rewrite pt(%.8f,%.8f) origZ=%.8f -> newZ=%.8f groundZ=%.8f waterLevel=%.8f walkInWater=%d canSwim=%d",
+                    {
+                        // land walker / crab: walk the seabed, but never drag a point
+                        // that is above the surface down (bridge, shore rock, WMO seam)
+                        if (p.z <= waterLevel)
+                            p.z = groundZ + 0.5f;
+                        continue;
+                    }
+                    // swimmer: submerge the point only when it is a real water body
+                    // AND the point is not far above the surface (a point on a
+                    // bridge/high ledge must not be dragged down if GetHeight fell
+                    // through to the water below it)
+                    if (groundZ < waterLevel && p.z <= waterLevel + 2.0f)
+                    {
+                        sawUnderwater = true;
+                        // fully-submerged band requires enough depth (bottom+0.5 <
+                        // surface-1.5). In a shallow pocket (e.g. waterline at 18.27,
+                        // floor 18.20) max(groundZ+0.5, min(p.z, surface-1.5)) used to
+                        // pin the point to groundZ+0.5 = 18.70, i.e. ABOVE the surface
+                        // -> creature floated out of the water. Clamp to the band when
+                        // it exists, else floor or skim the waterline.
+                        float const lo = groundZ + 0.5f;
+                        float const hi = waterLevel - 1.5f;
+                        if (lo <= hi)
+                            p.z = std::max(lo, std::min(p.z, hi));
+                        else
+                            p.z = std::min(lo, waterLevel);        // shallow: walk floor / skim surface
+                    }
+                    PFDBG_MSG(&unit, "MoveSplineInit water-rewrite pt(%.8f,%.8f) origZ=%.8f -> newZ=%.8f groundZ=%.8f waterLevel=%.8f walkInWater=%d canSwim=%d",
                               p.x, p.y, origZ, p.z, groundZ, waterLevel, walkInWater ? 1 : 0, canSwim ? 1 : 0);
+                }
+
+                // [SWIM-FLAG] A swim-capable creature whose path enters a water body
+                // must enter the SWIMMING state now, so the spline carries the swim
+                // movement flag and the client plays the swim animation. The z
+                // correction alone leaves it "walking through water". Unit::Update
+                // clears the flag when the unit surfaces (z > surface + 0.5).
+                if (sawUnderwater && canSwim && !walkInWater &&
+                    !unit.m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING))
+                {
+                    unit.SetSwim(true);
+                    PFDBG_MSG(&unit, "MoveSplineInit set-swim: path enters water -> SWIMMING");
                 }
             }
         }
