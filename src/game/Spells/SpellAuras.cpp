@@ -2908,7 +2908,8 @@ void Aura::HandleAuraDummy(bool apply, bool Real)
                     if (target->IsInWorld())
                     {
                         // Lifebloom dummy store single stack amount always
-                        int32 amount = m_modifier.m_amount;
+                        // final bloom must scale by stack (fix: was always single-stack)
+                        int32 amount = m_modifier.m_amount * GetStackAmount();
                         target->CastCustomSpell(nullptr, 33778, &amount, nullptr, nullptr, TRIGGERED_OLD_TRIGGERED, nullptr, this, GetCasterGuid());
                     }
                 }
