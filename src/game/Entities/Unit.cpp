@@ -10652,6 +10652,12 @@ void Unit::SetImmobilizedState(bool apply, bool stun, bool logout)
             StopMoving();
 
         SendMoveRoot(true);
+
+        // black-rabbit: while immobilized, redirect victim selection to targets in
+        // melee range instead of the (distant) top-aggro target - selectNextVictim
+        // honors IsIgnoringRangedTargets (ThreatManager). Symmetric clear at 10664.
+        if (!IsClientControlled())
+            SetIgnoreRangedTargets(true);
     }
     else
     {

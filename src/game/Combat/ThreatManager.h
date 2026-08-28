@@ -150,7 +150,7 @@ typedef std::list<HostileReference*> ThreatList;
 class ThreatContainer
 {
     public:
-        ThreatContainer() { iDirty = false; }
+        ThreatContainer() : iDirty(false), m_lastForce(false) { }
         ~ThreatContainer() { clearReferences(); }
 
         HostileReference* addThreat(Unit* victim, float threat);
@@ -183,6 +183,7 @@ class ThreatContainer
         ThreatList iThreatList;
     private:
         bool iDirty;
+        bool m_lastForce;                               // previous "force" (suppressRanged) so a change re-sorts
 };
 
 //=================================================

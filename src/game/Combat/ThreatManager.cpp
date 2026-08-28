@@ -291,7 +291,10 @@ void ThreatContainer::modifyAllThreatPercent(int32 threatPercent)
 
 void ThreatContainer::update(bool force, bool isPlayer)
 {
-    if ((iDirty || force || isPlayer) && iThreatList.size() > 1)
+    // black-rabbit: also re-sort when the suppressRanged (rooted) flag changes -
+    // otherwise the melee-first order used while rooted is kept after unroot and
+    // selectNextVictim keeps picking the (now not prioritized) melee target.
+    if ((iDirty || force || isPlayer || force != m_lastForce) && iThreatList.size() > 1)
     {
         iThreatList.sort([&](const HostileReference* lhs, const HostileReference* rhs)->bool
         {
@@ -325,6 +328,7 @@ void ThreatContainer::update(bool force, bool isPlayer)
             return lhs->getThreat() > rhs->getThreat(); // reverse sorting
         });
     }
+    m_lastForce = force;
     iDirty = false;
 }
 
@@ -422,7 +426,16 @@ HostileReference* ThreatContainer::selectNextVictim(Unit* attacker, HostileRefer
         ++iter;
     }
     if (!found)
-        currentRef = nullptr;
+    {
+        // black-rabbit: while ignoring ranged targets (rooted) and nothing is in
+        // melee range, fall back to the top-aggro target instead of returning null -
+        // otherwise SelectHostileTarget clears m_attacking and the creature stops
+        // facing its first-aggro target entirely.
+        if (suppressRanged && !iThreatList.empty())
+            currentRef = iThreatList.front();
+        else
+            currentRef = nullptr;
+    }
 
     return currentRef;
 }

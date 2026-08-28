@@ -299,7 +299,12 @@ void UnitAI::AttackStart(Unit* who)
 
 bool UnitAI::DoMeleeAttackIfReady() const
 {
-    return m_unit->hasUnitState(UNIT_STAT_MELEE_ATTACKING) && GetAIOrder() == ORDER_NONE && m_unit->UpdateMeleeAttackingState();
+    // black-rabbit: rooted creatures may have MELEE_ATTACKING cleared (ranged-mode
+    // MeleeAttackStop) or never set; still run UpdateMeleeAttackingState so the
+    // rooted-target swap can attack a target standing in melee range.
+    const bool canSwing = m_unit->hasUnitState(UNIT_STAT_MELEE_ATTACKING) ||
+        (m_unit->GetTypeId() == TYPEID_UNIT && m_unit->IsRooted() && m_unit->GetVictim());
+    return canSwing && GetAIOrder() == ORDER_NONE && m_unit->UpdateMeleeAttackingState();
 }
 
 void UnitAI::SetCombatMovement(bool enable, bool stopOrStartMovement /*=false*/)
@@ -1125,7 +1130,10 @@ void UnitAI::UpdateAI(const uint32 diff)
         // casters only display melee animation when in ranged mode when someone is actually close enough
         if (m_currentRangedMode && m_meleeEnabled)
         {
-            if (m_unit->hasUnitState(UNIT_STAT_MELEE_ATTACKING) && !m_unit->CanReachWithMeleeAttack(victim))
+            // black-rabbit: while immobilized do NOT MeleeAttackStop - the rooted
+            // swap in UpdateMeleeAttackingState needs MELEE_ATTACKING (or the
+            // relaxed DoMeleeAttackIfReady gate) to reach a melee target.
+            if (m_unit->hasUnitState(UNIT_STAT_MELEE_ATTACKING) && !m_unit->CanReachWithMeleeAttack(victim) && !m_unit->IsRooted())
                 m_unit->MeleeAttackStop(m_unit->GetVictim());
             else if (!m_unit->hasUnitState(UNIT_STAT_MELEE_ATTACKING) && m_unit->CanReachWithMeleeAttack(victim))
                 m_unit->MeleeAttackStart(m_unit->GetVictim());
