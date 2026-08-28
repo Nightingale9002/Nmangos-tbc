@@ -47,6 +47,12 @@
 #include <memory>
 
 #ifdef _WIN32
+#include <malloc.h>
+#else
+#include <malloc.h>
+#endif
+
+#ifdef _WIN32
 #include "Platform/ServiceWin32.h"
 extern int m_ServiceStatus;
 #else
@@ -100,6 +106,19 @@ class FreezeDetectorRunnable : public MaNGOS::Runnable
 /// Main function
 int Master::Run()
 {
+    // black-rabbit: return freed heap memory to the OS so grid/vmap/mmap unloads
+    // actually shrink RSS. glibc keeps small free blocks in the brk heap by default
+    // (M_TRIM_THRESHOLD/M_MMAP_THRESHOLD default 128KB dynamic), so big allocs stay
+    // in the heap and RSS never drops after unload. Force big allocs to mmap so free
+    // returns them to the OS, and trim the top chunk automatically.
+#ifndef _WIN32
+    mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+    mallopt(M_TRIM_THRESHOLD, 128 * 1024);
+    malloc_trim(0);
+#else
+    _heapmin();
+#endif
+
     /// worldd PID file creation
     std::string pidfile = sConfig.GetStringDefault("PidFile");
     if (!pidfile.empty())
