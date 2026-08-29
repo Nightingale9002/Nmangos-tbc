@@ -56,6 +56,7 @@
 #include "AI/ScriptDevAI/include/sc_grid_searchers.h"
 #include "Maps/InstanceData.h"
 #include "Entities/Transports.h"
+#include "MotionGenerators/PathFinder.h"
 
 pEffect SpellEffects[MAX_SPELL_EFFECTS] =
 {
@@ -3075,6 +3076,43 @@ void Spell::EffectTeleportUnits(SpellEffectIndex eff_idx)
     {
         if (unitTarget->IsPlayer() && unitTarget->IsMoving())
             position.z += 0.5f;
+
+        // [PATH-CHECK] Blink teleports (38203/38643 are the landing spells of the
+        // mage Blink chain 38194->38203, 38642->38643): validate the full path
+        // against the navmesh before teleporting. The dest point alone is only
+        // vmap-checked (ADT terrain is ignored by GetHitPosition), which let
+        // Blink clip through ADT slopes into unreachable ground. If no walkable
+        // path exists -> block the teleport. Restricted to the Blink landing
+        // spells so unrelated teleports (hearth, portals, quest teleports) are
+        // never touched.
+        if (unitTarget->IsPlayer() &&
+            (m_spellInfo->Id == 38203 || m_spellInfo->Id == 38643))
+        {
+            PathFinder path(static_cast<Unit*>(unitTarget));
+            bool const calcOk = path.calculate(position.x, position.y, position.z, false, false);
+            if (!calcOk)
+            {
+                DEBUG_LOG("Spell::EffectTeleportUnits: PathFinder::calculate failed for spell %u, blocking teleport", m_spellInfo->Id);
+                return;
+            }
+            // Require a REAL navmesh-based result. NORMAL = full path: move to
+            // the destination. INCOMPLETE = partial path: move only to the
+            // closest reachable point (getActualEndPosition). Anything that was
+            // not validated against the navmesh at all (SHORTCUT / NOT_USING_PATH
+            // = no mmaps or off-mesh start/end) or NOPATH is blocked.
+            if (path.getPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH))
+            {
+                DEBUG_LOG("Spell::EffectTeleportUnits: spell %u blocked - no navmesh-validated path (pathType=0x%X)",
+                          m_spellInfo->Id, (uint32)path.getPathType());
+                return; // no real path: do not teleport through terrain
+            }
+            // NORMAL or INCOMPLETE: snap to the closest reachable navmesh point
+            Vector3 const& end = path.getActualEndPosition();
+            position.x = end.x;
+            position.y = end.y;
+            position.z = end.z;
+        }
+
         unitTarget->NearTeleportTo(position.x, position.y, position.z, orientation, unitTarget == m_caster,
             m_spellInfo->EffectImplicitTargetA[eff_idx] == TARGET_LOCATION_DATABASE ||
             m_spellInfo->EffectImplicitTargetB[eff_idx] == TARGET_LOCATION_DATABASE);
@@ -7426,6 +7464,39 @@ void Spell::EffectLeapForward(SpellEffectIndex /*eff_idx*/)
     m_targets.getDestination(x, y, z);
 
     float orientation = unitTarget->GetOrientation();
+
+    // [PATH-CHECK] Leap/Blink: validate the full path from caster to destination
+    // against the navmesh. The plain dest point is only vmap-collision checked
+    // (GetHitPosition ignores ADT terrain), so a leap off a WMO towards an ADT
+    // slope used to clip straight through the terrain into unreachable ground.
+    // If no walkable path exists -> block the teleport entirely.
+    if (unitTarget->IsPlayer())
+    {
+        PathFinder path(static_cast<Unit*>(unitTarget));
+        bool const calcOk = path.calculate(x, y, z, false, false);
+        if (!calcOk)
+        {
+            // PathFinder failed to even start (invalid coords / no navmesh loaded)
+            DEBUG_LOG("Spell::EffectLeapForward: PathFinder::calculate failed for spell %u, blocking leap", m_spellInfo->Id);
+            return;
+        }
+        // Require a REAL navmesh-based result. NORMAL = full path: move to the
+        // destination. INCOMPLETE = partial path: move only to the closest
+        // reachable point (getActualEndPosition). Anything not validated against
+        // the navmesh (SHORTCUT / NOT_USING_PATH = no mmaps or off-mesh
+        // start/end) or NOPATH is blocked.
+        if (path.getPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH))
+        {
+            DEBUG_LOG("Spell::EffectLeapForward: spell %u blocked - no navmesh-validated path (pathType=0x%X)",
+                      m_spellInfo->Id, (uint32)path.getPathType());
+            return; // no real path: do not teleport through terrain
+        }
+        // NORMAL or INCOMPLETE: snap to the closest reachable navmesh point
+        Vector3 const& end = path.getActualEndPosition();
+        x = end.x;
+        y = end.y;
+        z = end.z;
+    }
 
     unitTarget->NearTeleportTo(x, y, z, orientation, unitTarget == m_caster);
 }

@@ -1,11 +1,11 @@
--- 038_矿脉刷新加速.sql
--- 目的：加快矿脉刷新频率（挖掉后 300-600 秒重新出现，原主流 600s/部分 7 天）。
+-- 038_矿脉刷新加速.sql (v2: 300/600 -> 45/90, 按 pfQuest 矿脉频率 45s 调整)
+-- 目的：加快矿脉刷新频率（挖掉后 45-90 秒重新出现，原主流 600s/部分 7 天）。
 -- 原理：spawn_group 的 RespawnOverrideMin/Max 覆盖矿脉组刷新时间
 --       （SpawnGroup.cpp:80 组空时用 override 时间调度），只影响矿脉组，
 --       不动草药占位点；同时覆盖 78 个 604800s(7天) 的矿脉占位点坑。
--- 生效：本地重启 mangosd 立即生效；云端改库后需重启 mangosd 生效（或 .reload）。
+-- 生效：本地重启 mangosd 立即生效；云端改库后需重启 mangosd 生效（或 .reload spawn_group）。
 
-UPDATE spawn_group SET RespawnOverrideMin = 300, RespawnOverrideMax = 600
+UPDATE spawn_group SET RespawnOverrideMin = 45, RespawnOverrideMax = 90
 WHERE Id IN (
     SELECT DISTINCT Id FROM spawn_group_entry
     WHERE Entry IN (
