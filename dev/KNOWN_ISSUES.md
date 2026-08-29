@@ -645,3 +645,35 @@ TargetedMovementGenerator.cpp +87  Chase 水下：跳过距离/LOS/z 检查直�
 
 ### 7. PlayerSave.Interval 改 1 分钟
 - 云端 mangosd.conf：PlayerSave.Interval = 300000 → 60000（1分钟），重启生效。
+
+---
+
+## [资源] 矿点三方对比与修复（Questie / pfQuest / 当前服务器）— 2026-08-29
+
+> 完整分析见 `dev/050_矿点三方对比分析.md`；修复 SQL 见 `dev/051_矿脉组MaxCount提高.sql`。
+> 结论：**矿少不是数据缺失，是 spawn_group 动态生成机制 + MaxCount=1 导致**；数据库与原版逐项一致。
+
+### 一、三方数据口径
+
+| 来源 | 点数口径 | 刷新时间 |
+|---|---|---|
+| Questie（tbcObjectDB.lua） | 铜 2637 / 锡 2598 / 银 3524 等，**所有潜在位置** | 无 |
+| pfQuest（objects-tbc.lua） | 铜 2180 / 富瑟 539 等 | 普通矿 45s、Ooze 360s |
+| 当前服务器 gameobject 静态 | 仅铜 1843 多，其他个位数（银 0/瑟银 0/真银 1/金 3/铁 6/锡 5/秘银 25/富瑟 9） | — |
+
+### 二、矿少根因（机制设计，非bug）
+
+1. **高价值矿几乎全靠动态生成**：265 组矿脉组、633 条 spawn_group_entry（带 Chance 随机矿种），
+   位置是 id=0 的占位 guid（spawn_group_spawn 3149 个），gameobject 静态实体只有铜矿。
+2. **MaxCount 决定同时存在的矿数**：215/265 组（81%）MaxCount=1，一组即使有多个位置同一时间
+   也只有 1 个矿，被采后整组空 + 45~90s 才随机重生 1 个。
+3. **Chance 权重压低高价值矿**：瑟银总和 90、富瑟 180，远低于锡 1170；同组通常 3~4 候选矿种。
+
+### 三、与原版一致性验证（不是我们改的）
+矿脉组 265=265、entry 633=633、MaxCount 分布逐项一致、占位 guid 3149=3149。→ 100% 与原版一致。
+
+### 四、修复（2026-08-29，dev/051）
+将 215 个 MaxCount=1 的矿脉组改为 **2**（同时存在的矿翻倍），位置/Chance/刷新时间不动。
+- 本地执行 `dev/051`，云端在停机窗口执行后 `.reload spawn_group` 热加载（已确认支持）。
+- 回滚：脚本内备份表 `spawn_group_bak_maxcount_20260829`。
+- 效果待玩家实测：若仍显少，可继续提高或调 Chance/刷新（见 050 方案 B）。
