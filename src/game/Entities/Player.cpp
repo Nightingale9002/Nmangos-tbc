@@ -20468,10 +20468,12 @@ void Player::RewardSinglePlayerAtKill(Unit* pVictim)
     {
         Creature* creatureVictim = static_cast<Creature*>(pVictim);
         RewardReputation(creatureVictim, 1);
-        GiveXP(MaNGOS::XP::Gain(this, creatureVictim), creatureVictim);
+        uint32 ownerXp = MaNGOS::XP::Gain(this, creatureVictim);
+        GiveXP(ownerXp, creatureVictim);
 
+        // 卡布魔兽定制: 宠物获得与主人等量 XP（官方机制 100%，不再按宠物等级重算导致偏低）
         if (Pet* pet = GetPet())
-            pet->GivePetXP(MaNGOS::XP::Gain(pet, creatureVictim));
+            pet->GivePetXP(ownerXp);
 
         // normal creature (not pet/etc) can be only in !PvP case
         if (CreatureInfo const* normalInfo = creatureVictim->GetCreatureInfo())

@@ -761,9 +761,15 @@ void Pet::LooseHappiness()
     uint32 curValue = GetPower(POWER_HAPPINESS);
     if (curValue <= 0)
         return;
-    int32 addvalue = (140 >> GetLoyaltyLevel()) * 125;      // value is 70/35/17/8/4 (per min) * 1000 / 8 (timer 7.5 secs)
-    if (IsInCombat())                                       // we know in combat happiness fades faster, multiplier guess
-        addvalue = int32(addvalue * 1.5);
+    // 卡布魔兽定制: 快乐衰减按官方速率（wowpedia Happiness 页实测数据）。
+    // 官方满条 ~1050 点，忠诚6 约 50 点/6 分钟、忠诚2 约 50 点/3 分钟（每级约 ×1.19 梯度）。
+    // 折算到本核心 1000000 满条体系（×952.38）后每分钟衰减量：
+    //   忠诚1~6: 18889 / 15873 / 13365 / 11238 / 9443 / 7937
+    // 每 7.5 秒 tick 一次，故每次扣 = 每分钟值 / 8。
+    // 原实现 (140>>loyalty)*125 在低忠诚时快 2-3 倍，且战斗 ×1.5 无官方依据，已移除。
+    static const uint32 officialDecayPerMin[6] = { 18889, 15873, 13365, 11238, 9443, 7937 };
+    uint32 loyalty = GetLoyaltyLevel();
+    int32 addvalue = int32(officialDecayPerMin[(loyalty >= 1 && loyalty <= 6) ? loyalty - 1 : 0] / 8);
     ModifyPower(POWER_HAPPINESS, -addvalue);
 }
 

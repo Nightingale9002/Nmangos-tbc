@@ -1519,12 +1519,9 @@ static void RewardGroupAtKill_helper(Player* pGroupGuy, Unit* pVictim, uint32 co
                 float itr_xp = (member_with_max_level == not_gray_member_with_max_level) ? xp * rate : (xp * rate * 0.5f) + 1.0f;
 
                 pGroupGuy->GiveXP((uint32)(std::round(itr_xp)), creatureVictim, group_rate);
+                // 卡布魔兽定制: 宠物获得与主人等量 XP（官方机制 100%，不再按宠物等级重算）
                 if (Pet* pet = pGroupGuy->GetPet())
-                {
-                    uint32 pet_xp = MaNGOS::XP::Gain(pet, creatureVictim);
-                    itr_xp = (member_with_max_level == not_gray_member_with_max_level) ? pet_xp * rate : (pet_xp * rate * 0.5f) + 1.0f;
-                    pet->GivePetXP((uint32)(std::round(itr_xp * rate)));
-                }
+                    pet->GivePetXP((uint32)(std::round(itr_xp)));
             }
 
             // quest objectives updated only for alive group member or dead but with not released body
