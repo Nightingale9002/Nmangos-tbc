@@ -744,3 +744,99 @@ Air Force Alarm Bot 2615 z≈84~120（明显偏高/空中）。
 ### 附带核实
 - 原版 tbcmangos_orig 也是这套错数据（557=Merciless+Forgotten代价），即数据源本身有误，非我们改出来的。
 - 云端库尚未应用 053，需同步执行（回滚备份同步）。
+
+---
+
+## [平衡] 公正徽章商人 G'eras 装备分档解锁 — 2026-08-30 已设计+本地执行
+
+> 本节及以下"虚空旋涡BoP / 铁匠Anwehu / 太阳之井对话"三段的数据改动，均已合并到
+> **整合版 `dev/054_公正徽章与铁匠分阶段解锁_整合版.sql`**（可重放、含备份/回滚）。
+> 原分散文件 054/054b/055/056 已删除。以下为过程记录。
+
+### 需求
+玩家早期就能用公正徽章直接换高级装备。设计：按**物品开放阶段**给 G'eras 徽章装备分档，
+防止早期就入手高级货（延续"任务线限制进高难副本"的思路）。
+
+### NPC
+- **G'eras**，guid 96654 / entry 18525，奎尔丹纳斯岛，公正徽章（Badge of Justice 29434）商人。
+- npc_vendor 里 137 件徽章装备，原 `condition_id` 全 0（全量开放）。
+
+### 分档规则（用户定）
+| 档 | 内容 | 开放时机 | 条件 |
+|---|---|---|---|
+| 无条件档 | 装等 **≤115**（110 + 115 Inferno 系列）+ **源生虚空(23572/1909)** | 团本前 | 无 |
+| P3 档 | 装等 **≥128**（128/132/133/136）+ **虚空旋涡(30183/1642)** | P3（祖阿曼合并开放）| **已完成任务 10445「永恒水瓶」** |
+
+- 128+ 官服 P4 才开，但无祖阿曼单独进度，合并到 P3，用海山开门任务 10445 当门槛。
+
+### 实现（dev/054，本地已执行）
+- 新增 `conditions(5800002)`：`type=8(CONDITION_QUESTREWARDED), value1=10445`。
+- `npc_vendor` 里 G'eras 83 件（虚空旋涡 + ≥128）挂 `condition_id=5800002`；54 件（≤115+源生虚空）保持 0。
+- 机制：`ItemHandler.cpp:780` 对不满足条件的物品 `continue`（玩家看不到）。
+- 备份：`npc_vendor_bak_18525_20260830`、`conditions_bak_10445_20260830`。
+
+### ⚠️ uint16 坑（061:25 实测，已修正）
+- **npc_vendor.condition_id 服务端用 `uint16` 读取**（ObjectMgr.cpp:9684 `GetUInt16()`），范围 ≤65535。
+- 初用 condition_entry=**5800002** → 被截断成 **32834**（5800002 的低 16 位）→ reload 报
+  `condition_id=32834 not valid, ignoring`，**高档物品全部不加载**（而非"完成后可见"）。
+- **修正**：改用 condition_entry=**28023**（≤65535，本地/云端均空闲）。本地+云端已切到 28023，
+  重载验证无错误（Loaded 6444 vendor items）。
+- **教训**：condition_id 必须 ≤65535；且 reload 顺序应先 `.reload conditions` 再 `.reload npc_vendor`。
+- dev/054 SQL 已更新为 28023 并加注释。
+
+### 生效与回滚
+- 服务端需 `.reload conditions` + `.reload npc_vendor`（此顺序）。
+- 已完成的玩家不受影响（QUESTREWARDED=已拿到奖励为真）。
+- 回滚语句在 dev/054 文件末尾。云端已同步（条件28023 + 分档 + BoP）。
+
+### 054b 补充：虚空旋涡(30183)改拾取绑定（2026-08-30，本地已执行）
+- 054 把虚空旋涡纳入"需完成任务10445"高档兑换，但其原 Bonding=0（可交易），
+  存在"一人兑换后交易给未完成者"的绕过漏洞。
+- 修复：`Bonding 0→1`（拾取绑定 BoP，含掉落来源一并绑定），堵住绕过。
+- 依据：用户明确"虚空旋涡应该设置为拾取绑定"，并确认整体改BoP（含掉落）。
+- 注意：与官服不同（官服虚空旋涡可交易），此为配合自定义分阶段门槛的定制。
+- 文件：~`dev/054b_虚空旋涡改为拾取绑定.sql`~（已并入整合版 `dev/054`）。生效需 `.reload item_template`。
+
+---
+
+## [任务] Exarch Nasuun(24932) 缺失对话补全 — 2026-08-30 已补（台服翻译）
+
+### 现状
+- NPC Exarch Nasuun(24932) 的 gossip 文本（军械库 12300 / 铁砧 12301）在全库 npc_text/locales 缺失，
+  导致对话窗口空白（任务功能正常，仅台词缺失）。确认脚本 `npc_suns_reach_reclamation` 无 gossip 处理，
+  纯数据库驱动。
+- 查遍本地库：WotLK(wotlkmangos/ac_cmp/wlk_cmp) 也没有；英文原文在 classicmangos_ref、台服中文在 zh_ref。
+
+### 修复（dev/055，本地+云端已执行；已并入整合版 dev/054）
+- npc_text 补 12300/12301：英文为 fallback（classicmangos_ref 原文）
+- locales_npc_text 补 12300/12301 的 Text0_0_loc4 = **台服中文**（zh_ref）
+  - 12300 军械库："我很高兴你问了。我们完成了计画的$3233w％..."
+  - 12301 铁砧："我从荷莎那边听来，她说我们才完成了目标的$3228w％..."
+- ⚠️ 台服翻译（计画/日境/荷莎）非国服简体，如需国服风格需另行改写。已在 SQL 内注释。
+
+### 坑
+- npc_text 直接 INSERT 会因 locales_npc_text **无主键**产生重复行；SQL 已改为先 DELETE 再 INSERT。
+- PowerShell/文件转义：`$B`/`$3233w` 通配符必须原样写入，不能加 `\$`（否则文本损坏）
+  → 已用 UTF-8 无 BOM + 单引号保护重写。
+- 生效需 `.reload npc_text`。
+
+---
+
+## [平衡] 铁匠 Anwehu(27667) P5 徽章装备加任务 10959 条件 — 2026-08-30 已执行
+
+### NPC
+- **Anwehu(安维赫)** entry 27667，奎尔丹纳斯岛，`VendorTemplateId=505`（template 505 仅它使用）。
+- 57 件 P5 太阳之井徽章装备（装等141×45 + 146×12，34887-34952），全部用公正徽章
+  （ExtendedCost 2049/2059/2329-2333）兑换。
+- **Smith Hauthaa(铁匠霍尔萨)** entry 25046：由 game_event 307 脚本刷新、`VendorTemplateId=0` 且无 npc_vendor
+  条目 → 游戏内无售货（确认脚本无 vendor 注入），本次**不处理**。
+
+### 需求
+给 Anwehu 的 57 件 P5 徽章装备加"完成任务 **10959**《The Fall of the Betrayer》(击败基尔加丹)"条件，
+玩家未完成该任务前看不到/买不了，防止过早入手顶级徽章装。
+
+### 实现（dev/056，本地+云端已执行；已并入整合版 dev/054）
+- 新增 `conditions(28024)`：type=8(QUESTREWARDED), value1=10959（≤65535，避 uint16 截断坑）。
+- `npc_vendor_template 505` 全部 57 件设 `condition_id=28024`。
+- 验证：57/57 挂条件；云端 conditions 加载 1976（含 28024）；无 not valid 报错。
+- 生效：`.reload conditions` + `.reload npc_vendor_template`。备份 `npc_vendor_template_bak_505_20260830`。
