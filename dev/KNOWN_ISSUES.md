@@ -677,3 +677,70 @@ TargetedMovementGenerator.cpp +87  Chase 水下：跳过距离/LOS/z 检查直�
 - 本地执行 `dev/051`，云端在停机窗口执行后 `.reload spawn_group` 热加载（已确认支持）。
 - 回滚：脚本内备份表 `spawn_group_bak_maxcount_20260829`。
 - 效果待玩家实测：若仍显少，可继续提高或调 Chance/刷新（见 050 方案 B）。
+
+---
+
+## [资源] 飞行生物"待机悬空 vs 移动贴地"观感 — 2026-08-30（分析，未改）
+
+> 状态：**仅分析，未改代码**。影响疑似有限，暂缓修改；本文档供备查。
+
+### 现象
+- 提诉：飞行生物（如贪婪风蛇 18220）**待机动画看起来悬空，移动时却贴地爬行**，观感割裂。
+- 服务器 `.gps` 实测 spawn 点：Windroc 18220，z=-4.68，**GroundZ=FloorZ=-4.68**（≈贴地）。
+
+### 关键结论（站长指正后修正）
+1. **飞行生物生来就在地面高度**（spawn z = 地面），**不是被移动逻辑拉下来的**。
+2. **"保持当前高度直线飞"（上游）与"floorZ 吸附"（本 fork）对本身贴地的生物结果一样**——都是地面，
+   **所以"移动被吸到地面"根本不构成问题**。
+3. **服务器 z 自始至终贴地不变**，"待机悬空 vs 移动贴地"的差异**纯在客户端动画层**：
+   - 待机：飞行/扇翅动画让模型视觉上浮起（似悬空）
+   - 移动：走地/滑行动画 → 看起来贴地爬
+   - 两类动画与"贴地碰撞点"组合不一致 → 观感割裂，**非高度问题**。
+
+### 数据观察（spawn 高度分布）
+飞行生物 spawn z 各不相同：Windroc 18220 z≈-4.68（外域低地）、Avian Flyer 21931 z≈27~61、
+Air Force Alarm Bot 2615 z≈84~120（明显偏高/空中）。
+→ spawn z 是**按各点地形/意图设置**，有高有低；**仅看 z 无法判断贴地与否，需对比该点 GroundZ**。
+
+### 技术发现（备查，非本现象直接原因）
+本 fork `PathFinder::ComputePathToRandomPoint`（PathFinder.cpp 1724-1748）有**上游没有**的陆地 `floorZ` 检查，
+未排除飞行生物：`|floorZ-z|>1 → NOPATH；否则 z=floorZ（吸地）`。
+- 对 **spawn 在空中**的飞行生物会误伤（NOPATH 卡死/吸地）；
+- 对**本身贴地**的生物（本案例）**无影响**（z 已=地面，检查通过且不变）。
+→ 该段并非本现象原因，仅当此类生物 spawn 在空中时才相关，现保留不处理。
+
+### 结论与建议（暂缓）
+- 野外低空飞行生物官方本多在低空贴地，观感轻微，**不值得为它改系统级寻路**（风险>收益）。
+- 若确需处理，优先**数据层**：批量实测 GroundZ 对比 spawn 点，摸清贴地比例，再决定是否抬 spawn z
+  或改移动姿势——比改寻路代码安全得多。
+
+---
+
+## [数据] Exotic Gear Purveyor 三商 NPC 装备层级（26090/26091/26092）— 2026-08-30 已修
+
+### 现象
+- 用户发现 26091（Olus）和 26092（Soryn）同卖 Merciless（S2），询问是否官服如此。
+- 实测（本地+原版 tbcmangos_orig 一致）：两 NPC 的 vendor 模板 556=557 全套 Merciless S2，内容完全相同。
+
+### 根治：对照官服（wowhead TBC Classic）逐 NPC 核实
+| NPC | 官服售卖（wowhead 实测） | 兑换代价（ExtendedCost） | 修复前（本地） | 修复后 |
+|---|---|---|---|---|
+| 26090 Karynna | Gladiator's（S1）| Fallen（BT）| Gladiator's S1 ✓ | 不变 |
+| 26091 Olus | Merciless Gladiator's（S2）| Vanquished（BT）| Merciless S2 ✓ | 不变 |
+| 26092 Soryn | **Vengeful Gladiator's（S3）** | **Forgotten（太阳之井 T6.5）** | Merciless S2 ✗ | **Vengeful S3** |
+
+**关键**：26092 Soryn 的 ExtendedCost 本是 **Forgotten 套件（31089-31103，太阳之井）**——最高端兑换，
+官服对应换 **Vengeful Gladiator's（S3）**。但模板 557 的 item 错填为 Merciless（S2），
+导致 26091=26092 且 26092 代价与内容不匹配。用户判断"用 T6 套件换不应该是 S1"完全正确。
+
+### 修复（2026-08-30，dev/053，本地已执行）
+- `dev/053_修复NPC26092_S3装备.sql`：将模板 557 的 85 件 item 从 Merciless(32xxx) 改为
+  对应的 Vengeful(33xxx)，**ExtendedCost(1474-1524 Forgotten代价)/slot 保留**。
+- 映射依据：从 wowhead NPC 26092 sells 数据抓取 85 件 Vengeful + 对应 Forgotten token，逐件匹配。
+- 验证：557 全 85 件 Vengeful、0 残留 Merciless；与 556（S2）不再重复。
+- 备份表：`npc_vendor_template_bak_557_20260830`（85 行）。回滚语句在 SQL 文件末尾。
+- 注意：本地 vendor 需服务端 `npc_vendor` 内存缓存 reload（.reload npc_vendor / npc_vendor_template）生效。
+
+### 附带核实
+- 原版 tbcmangos_orig 也是这套错数据（557=Merciless+Forgotten代价），即数据源本身有误，非我们改出来的。
+- 云端库尚未应用 053，需同步执行（回滚备份同步）。
