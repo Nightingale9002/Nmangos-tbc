@@ -3,7 +3,7 @@
 > 本文件 = **Bug 修复手册 / 已知问题与技术笔记**（随源码提交）：记录服务器遇到的已知问题、排查信息、已修复项与技术性内容（含水中移动、寻路、地图瓦片等），供后续会话接续处理。
 > 功能性更新见同目录《功能更新手册_卡布魔兽.md》；运维内容见本地《HANDOFF_卡布魔兽运维.md》（不提交）。
 > 技术性笔记一律写入本文件（不再另开 md），仓库根/根目录散落的旧技术 md 已陆续归并。
-> 更新时间: 2026-08-25
+> 更新时间: 2026-08-30
 
 ---
 
@@ -840,3 +840,76 @@ Air Force Alarm Bot 2615 z≈84~120（明显偏高/空中）。
 - `npc_vendor_template 505` 全部 57 件设 `condition_id=28024`。
 - 验证：57/57 挂条件；云端 conditions 加载 1976（含 28024）；无 not valid 报错。
 - 生效：`.reload conditions` + `.reload npc_vendor_template`。备份 `npc_vendor_template_bak_505_20260830`。
+
+---
+
+## [机制] 法师闪现 Blink 落点修复 — 2026-08-30 完成（先 navmesh 有路径 / 无路径才碰撞）
+
+> 涉及文件：`src/game/Spells/Spell.cpp`（落点计算）、`src/game/Spells/SpellEffects.cpp`（EffectLeapForward / EffectTeleportUnits 传送处理）。
+> 属源码改动，需**重新编译部署 mangosd** 才生效（非 DB 改动，`.reload` 无效）。
+
+### 需求（站长三连约束）
+1. **天上（跳起/下落/飞行）放闪现不能被"没有路径"卡住**——空中起点脚下无 navmesh 可行走路径，
+   PathFinder 会报 NOPATH / NOT_USING_PATH 导致整个施法被取消、原地不动。
+2. **不能穿过 ADT 地面穿模**——落点/路径不得钻进地形里面（山脊/陡坡/悬崖壁）。
+3. **不能穿过 WMO 模型**（建筑墙面）。
+4. **跳起/原地闪现应像普通闪现一样正常远闪**（顺地形），不能因为 WMO 起伏/坡面卡在原地。
+
+### 关键发现：法师闪现真实走 `SPELL_EFFECT_LEAP`（Effect=29），不是 TELEPORT_UNITS
+- 玩家实际用的法师 Blink **1953**（`BLINK_1`）：`Effect1=29(=SPELL_EFFECT_LEAP)`、
+  `EffectImplicitTargetB1=55(=TARGET_LOCATION_CASTER_FRONT_LEAP)`。
+- 所以 1953 走 **`Spell::EffectLeapForward`**（SpellEffects.cpp），**不是** `EffectTeleportUnits`。
+- 之前对 `EffectTeleportUnits`（仅匹配 spell 38203/38643）的所有 PATH-CHECK 改动，**对 1953 完全不生效**
+  ——这就是之前反复改却"没效果"的根因。**改闪现必须改 `EffectLeapForward`。**
+
+### 最终设计：先问 navmesh 有无路径，有路径用 navmesh，无路径才碰撞
+不再用 flag（IsFlying/IsJumping/IsFalling）或离地高度猜分支，统一流程：
+
+```
+Spell.cpp（TARGET_LOCATION_CASTER_FRONT_LEAP）：
+  只算"简单直线目标" = prevPos + dist*cos/sin(朝向)，z 保持当前高度（仅水面吸附）。
+  不做任何碰撞、不依赖 flag；它只是给 EffectLeapForward 的一个初始目标。
+
+EffectLeapForward（1953 实际走的）：
+  读直线目标 (x,y,z) → 跑 PathFinder：
+  ├─ 有路径（NORMAL | INCOMPLETE）
+  │    → 用 navmesh 落点 getActualEndPosition()（顺地形，闪到远处地面）。
+  │    地面 / 跳起 / 下落段(fall=1) 只要 navmesh 命中起点多边形都走这里。
+  └─ 无路径（NOPATH | SHORTCUT | NOT_USING_PATH）→ 不 block，做碰撞校正：
+       ADT：纯 ADT 高度符号翻转 → 停前一点（不穿 ADT）
+       WMO：LOS 判明 - LOS 通过→放行(地形起伏)，LOS 遮挡→GetHitPosition 停墙面
+       落点 = 校正后的点。
+  最后 NearTeleportTo。
+```
+
+- **"有没有路径"由 navmesh 自己回答**，最准确——彻底绕开 flag/高度阈值的不可靠。
+- 跳起下落段 `fall=1` 但离地近（起点命中 navmesh）→ 有路径 → navmesh 远闪，不再卡原地。
+- 真高空（起点离 navmesh 几十码，如高跳崖/飞行顶）→ 无路径 → 碰撞校正落点，不 block 也不穿地。
+
+### 碰撞校正细节（无路径分支，EffectLeapForward 内）
+把 `施法者位置 → 直线目标` 连成直线，每 **2 码**采样，逐点两层检测：
+1. **ADT（符号翻转）**：`GetHeightStatic(x,y,z, checkVMap=false)`，纯 ADT 静态地形、无 vmap/WMO、
+   无搜索距离限制。`d = 路径z − ADT面z` 相邻两点符号翻转（正↔负）＝直线穿过 ADT 面 → 停**前一个采样点**。
+2. **WMO（LOS 门控 + 碰撞）**：先 `IsInLineOfSight`——LOS 通过说明只是可越过的缓坡/起伏 → 放行继续走；
+   仅 LOS 被挡（真墙/峭壁）才 `GetHitPosition` 竖直扫掠 → 停在模型表面命中高度。
+
+> ⚠️ WMO 层**必须先过 LOS**，否则 `GetHitPosition` 会把前方地形小幅起伏也判成"挡墙"，
+> 导致跳起/原地朝起伏地形闪时第一步(<2码)就停下、看似"原地不动"。
+
+### 踩过的坑（务必记录）
+- `G3D::Vector3` **无 distance()**，距离用 `(a-b).magnitude()`；const 初始化会 C2737。
+- `TerrainInfo::GetGrid` 是 **private**，不能直接调 `gmap->getHeight`；
+  应走 public 的 `TerrainInfo::GetHeightStatic(_,_,_, checkVMap=false)`。
+- 判断分支用 navmesh 有无路径，而非 flag：跳起**下落段** `MOVEFLAG_JUMPING=false`、`FALLING=true`，
+  无法用 flag 区分"普通跳起"和"真下落"，用 PathFinder 结果判定最准。
+- 闪现实测 spell id 可能是 **1953**(BLINK_1 走 Effect_LEAP)，务必确认走 EffectLeapForward 还是
+  EffectTeleportUnits，改错函数无效。
+- 之前层层堆叠的校正（FINAL-LAND GetHeight 兜底、startAboveADT clamp、LOS 门控移来移去、
+  大范围 GetHeightInRange）均已移除，恢复正常版简洁直线目标 + navmesh 判路。
+
+### 验证结果（本地实测，用户确认）
+- 原地闪 / 跳起闪：全部 navmesh(0x1 NORMAL / 0x4 INCOMPLETE) → 远闪顺地形，落点 z 随地形起伏。
+- 无 `WMO-STOP/ADT-STOP`（无断点）出现——说明真实场景都能 navmesh 到远处，未触发碰撞。
+- 真高空（无 navmesh 路径）会进碰撞分支防穿（该场景未在本次日志触发，逻辑保留）。
+- 状态：本地编译部署实测通过；**源码已 scp 到云端 `/root/Nmangos-tbc/src/game/Spells/`，
+  云端待下次编译部署生效**（同步时未编译）。调试日志已全部移除。

@@ -3085,32 +3085,32 @@ void Spell::EffectTeleportUnits(SpellEffectIndex eff_idx)
         // path exists -> block the teleport. Restricted to the Blink landing
         // spells so unrelated teleports (hearth, portals, quest teleports) are
         // never touched.
-        if (unitTarget->IsPlayer() &&
-            (m_spellInfo->Id == 38203 || m_spellInfo->Id == 38643))
+        // [AIR-BLINK] Blink landing: let both grounded AND mid-air casts attempt a real
+        // navmesh walk-path. If the origin sits on/very near a navmesh polygon (grounded
+        // blink, or a low jump - the client clears JUMPING during the fall so we cannot
+        // reliably keyed off that flag), PathFinder finds a walkable path and we snap to
+        // the far landing, following the terrain up/down instead of clipping into rolling
+        // WMO/ADT ground. If the origin is truly airborne (high fall / fly - no navmesh
+        // under it), PathFinder reports NOPATH/NOT_USING_PATH/SHORTCUT; in that case we
+        // do NOT cancel the cast - we keep the straight-line ADT+WMO collision landing
+        // that Spell.cpp already computed into `position` and just teleport there. So the
+        // "is there a path" question is answered by navmesh itself, no flag/heuristic.
+        if (unitTarget->IsPlayer() && (m_spellInfo->Id == 38203 || m_spellInfo->Id == 38643))
         {
             PathFinder path(static_cast<Unit*>(unitTarget));
             bool const calcOk = path.calculate(position.x, position.y, position.z, false, false);
-            if (!calcOk)
+            bool const navOk = calcOk && !(path.getPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH));
+            if (navOk)
             {
-                DEBUG_LOG("Spell::EffectTeleportUnits: PathFinder::calculate failed for spell %u, blocking teleport", m_spellInfo->Id);
-                return;
+                // NORMAL (full) or INCOMPLETE (partial, closest reachable): use the
+                // real navmesh landing - follow the terrain to a far-away point.
+                Vector3 const& end = path.getActualEndPosition();
+                position.x = end.x;
+                position.y = end.y;
+                position.z = end.z;
             }
-            // Require a REAL navmesh-based result. NORMAL = full path: move to
-            // the destination. INCOMPLETE = partial path: move only to the
-            // closest reachable point (getActualEndPosition). Anything that was
-            // not validated against the navmesh at all (SHORTCUT / NOT_USING_PATH
-            // = no mmaps or off-mesh start/end) or NOPATH is blocked.
-            if (path.getPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH))
-            {
-                DEBUG_LOG("Spell::EffectTeleportUnits: spell %u blocked - no navmesh-validated path (pathType=0x%X)",
-                          m_spellInfo->Id, (uint32)path.getPathType());
-                return; // no real path: do not teleport through terrain
-            }
-            // NORMAL or INCOMPLETE: snap to the closest reachable navmesh point
-            Vector3 const& end = path.getActualEndPosition();
-            position.x = end.x;
-            position.y = end.y;
-            position.z = end.z;
+            // else: no navmesh path (airborne) - keep the straight-line landing already
+            // in `position` from Spell.cpp; do NOT block the cast.
         }
 
         unitTarget->NearTeleportTo(position.x, position.y, position.z, orientation, unitTarget == m_caster,
@@ -7465,37 +7465,95 @@ void Spell::EffectLeapForward(SpellEffectIndex /*eff_idx*/)
 
     float orientation = unitTarget->GetOrientation();
 
-    // [PATH-CHECK] Leap/Blink: validate the full path from caster to destination
-    // against the navmesh. The plain dest point is only vmap-collision checked
-    // (GetHitPosition ignores ADT terrain), so a leap off a WMO towards an ADT
-    // slope used to clip straight through the terrain into unreachable ground.
-    // If no walkable path exists -> block the teleport entirely.
+    // [BLINK] Leap/Blink landing: the destination computed in Spell.cpp is a simple
+    // straight-line target. Decide which landing to use by asking navmesh FIRST:
+    //   - PATH (grounded / low jump): use the real navmesh walk-path landing - it
+    //     follows the terrain up/down to a far point instead of clipping into rolling
+    //     WMO/ADT ground.
+    //   - NO PATH (truly airborne / off-mesh - no navmesh under the origin): do NOT
+    //     block; correct the straight-line target with collision detection so the blink
+    //     still works and never clips through ADT or WMO:
+    //       * ADT: pure-ADT height sign-flip (d = pathZ - adtZ crossing) -> stop at
+    //         the previous sample (last point above the terrain).
+    //       * WMO: LOS first - if LOS is clear the relief is below the path and we keep
+    //         going; only a genuinely blocking model (LOS blocked) stops us via
+    //         GetHitPosition.
     if (unitTarget->IsPlayer())
     {
         PathFinder path(static_cast<Unit*>(unitTarget));
         bool const calcOk = path.calculate(x, y, z, false, false);
-        if (!calcOk)
+        bool const navOk = calcOk && !(path.getPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH));
+        if (navOk)
         {
-            // PathFinder failed to even start (invalid coords / no navmesh loaded)
-            DEBUG_LOG("Spell::EffectLeapForward: PathFinder::calculate failed for spell %u, blocking leap", m_spellInfo->Id);
-            return;
+            // PATH: use the real navmesh landing.
+            Vector3 const& end = path.getActualEndPosition();
+            x = end.x;
+            y = end.y;
+            z = end.z;
         }
-        // Require a REAL navmesh-based result. NORMAL = full path: move to the
-        // destination. INCOMPLETE = partial path: move only to the closest
-        // reachable point (getActualEndPosition). Anything not validated against
-        // the navmesh (SHORTCUT / NOT_USING_PATH = no mmaps or off-mesh
-        // start/end) or NOPATH is blocked.
-        if (path.getPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH))
+        else
         {
-            DEBUG_LOG("Spell::EffectLeapForward: spell %u blocked - no navmesh-validated path (pathType=0x%X)",
-                      m_spellInfo->Id, (uint32)path.getPathType());
-            return; // no real path: do not teleport through terrain
+            // NO PATH: collide-correct the straight-line target (ADT + WMO) so the
+            // blink lands safely and never clips through the terrain.
+
+            G3D::Vector3 const startPos(
+                unitTarget->GetPositionX(), unitTarget->GetPositionY(), unitTarget->GetPositionZ());
+            G3D::Vector3 const target(x, y, z);
+
+            float stepLen = 2.0f;
+            float lineDist = (target - startPos).magnitude();
+            uint32 steps = std::max<uint32>(1, uint32(ceil(lineDist / stepLen)));
+            G3D::Vector3 dir = (target - startPos) / float(steps);
+
+            G3D::Vector3 res = target;     // default: full straight distance
+
+            // d for the origin: if no ADT grid loaded, treat as far above ground.
+            float terrainZ = unitTarget->GetMap()->GetTerrain()->GetHeightStatic(startPos.x, startPos.y, startPos.z, false);
+            float prevD = (terrainZ > INVALID_HEIGHT_VALUE) ? startPos.z - terrainZ : 1000.0f;
+
+            G3D::Vector3 prevPoint = startPos;
+            G3D::Vector3 cur = startPos;
+            for (uint32 i = 1; i <= steps; ++i)
+            {
+                cur = startPos + dir * float(i);
+
+                // 1) ADT ground-plane crossing: pure ADT height (no vmap/WMO, no search
+                //    limit). d = pathZ - adtZ sign flip == line crossed the ADT surface.
+                terrainZ = unitTarget->GetMap()->GetTerrain()->GetHeightStatic(cur.x, cur.y, cur.z, false);
+                if (terrainZ > INVALID_HEIGHT_VALUE)
+                {
+                    float d = cur.z - terrainZ;
+                    if ((prevD > 0.0f && d <= 0.0f) || (prevD < 0.0f && d >= 0.0f))
+                    {
+                        res = prevPoint;             // last point still above the ADT ground
+                        break;
+                    }
+                    prevD = d;
+                }
+
+                // 2) WMO collision: LOS first, GetHitPosition only if LOS blocked.
+                {
+                    bool const losClear = unitTarget->GetMap()->IsInLineOfSight(
+                        startPos.x, startPos.y, startPos.z + 0.5f,
+                        cur.x, cur.y, cur.z + 0.5f, false);
+                    if (!losClear)
+                    {
+                        float hitZ = cur.z;
+                        if (unitTarget->GetMap()->GetHitPosition(startPos.x, startPos.y, startPos.z + 0.5f, cur.x, cur.y, hitZ, -0.5f))
+                        {
+                            res = G3D::Vector3(cur.x, cur.y, hitZ);
+                            break;
+                        }
+                    }
+                }
+
+                prevPoint = cur;
+            }
+
+            x = res.x;
+            y = res.y;
+            z = res.z;
         }
-        // NORMAL or INCOMPLETE: snap to the closest reachable navmesh point
-        Vector3 const& end = path.getActualEndPosition();
-        x = end.x;
-        y = end.y;
-        z = end.z;
     }
 
     unitTarget->NearTeleportTo(x, y, z, orientation, unitTarget == m_caster);
