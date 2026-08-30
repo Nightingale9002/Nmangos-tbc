@@ -433,13 +433,8 @@ namespace MMAP
                 }
 
                 if (useTerrain)
-                {
                     for (int k = 0; k < 3 * tTriCount / 2; ++k)
                         meshData.solidTris.append(ttris[k]);
-                    // black-rabbit: tag terrain (ADT) triangles for vmap-first rasterization
-                    for (int k = 0; k < tTriCount / 2; ++k)
-                        meshData.triSource.append(0);
-                }
 
                 // advance to next set of triangles
                 ltris += 3;
@@ -580,7 +575,7 @@ namespace MMAP
             if (!instanceTrees[mapID])
                 break;
 
-        ModelInstance* models = nullptr;
+            ModelInstance* models = nullptr;
             uint32 count = 0;
             instanceTrees[mapID]->getModelInstances(models, count);
 
@@ -605,15 +600,6 @@ namespace MMAP
                 // all M2s need to have triangle indices reversed
                 bool isM2 = instance.name.find(".m2") != instance.name.npos || instance.name.find(".M2") != instance.name.npos;
 
-                // black-rabbit: decorations (M2 doodads) must not let creatures
-                // climb their steep faces - that is the "floating on a pillar"
-                // bug: the navmesh marks the pillar face walkable, the creature
-                // follows it up, and GetHeight (front-faces-only raycast) misses
-                // it, so the creature floats. Near-horizontal decoration faces
-                // (floors, platforms, flat rock tops) stay walkable: creature
-                // spawns often stand on such decoration floors. WMO buildings are
-                // untouched here (they keep the upstream 60 deg slope handling).
-
                 // transform data
                 float scale = instance.iScale;
                 G3D::Matrix3 rotation = G3D::Matrix3::fromEulerAnglesXYZ(G3D::pi() * instance.iRot.z / -180.f, G3D::pi() * instance.iRot.x / -180.f, G3D::pi() * instance.iRot.y / -180.f);
@@ -637,37 +623,6 @@ namespace MMAP
 
                     copyVertices(transformedVertices, meshData.solidVerts);
                     copyIndices(tempTriangles, meshData.solidTris, offset, isM2);
-                    // black-rabbit: tag triangle source so MapBuilder can apply
-                    // per-source walkability:
-                    //   0 = .map terrain  (slopes < 89 deg walkable)
-                    //   1 = WMO building (slopes < 60 deg walkable, walls become
-                    //       STEEP obstacles instead of pass-through holes)
-                    //   2 = M2 decoration, short model (<= walkableClimb yd tall):
-                    //       walkable, creatures walk over crates/carts/barrels
-                    //   3 = M2 decoration, tall model (> walkableClimb yd): STEEP
-                    //       obstacle, creatures route around pillars/walls/big
-                    //       rocks and never climb them. The threshold is the
-                    //       navmesh climb height (config walkableClimb=4 cells x
-                    //       BASE_UNIT_DIM 0.2667 = 1.07 yd) so a decoration a
-                    //       creature could step onto matches the navmesh climb
-                    //       rule instead of the old fixed 2 yd cutoff.
-                    if (isM2)
-                    {
-                        float minY = FLT_MAX, maxY = -FLT_MAX;
-                        for (Vector3 const& v : transformedVertices)
-                        {
-                            if (v.y < minY) minY = v.y;
-                            if (v.y > maxY) maxY = v.y;
-                        }
-                        bool const tall = (maxY - minY) > (4.0f * 0.2666666f);
-                        for (size_t k = 0; k < tempTriangles.size(); ++k)
-                            meshData.triSource.append(tall ? 3 : 2);
-                    }
-                    else
-                    {
-                        for (size_t k = 0; k < tempTriangles.size(); ++k)
-                            meshData.triSource.append(1);
-                    }
 
                     // now handle liquid data
                     if (liquid)

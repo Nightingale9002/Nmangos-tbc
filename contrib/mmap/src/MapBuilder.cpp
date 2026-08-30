@@ -23,7 +23,6 @@
 #include "ModelInstance.h"
 
 #include "DetourNavMeshBuilder.h"
-#include "DetourNavMesh.h"
 #include "DetourCommon.h"
 
 #include <climits>
@@ -815,7 +814,7 @@ namespace MMAP
                 tileCfg.bmax[0] += tileCfg.borderSize * tileCfg.cs;
                 tileCfg.bmax[2] += tileCfg.borderSize * tileCfg.cs;
 
-                buildCommonTile(tileString, tile, tileCfg, tVerts, tVertCount, tTris, tTriCount, lVerts, lVertCount, lTris, lTriCount, lTriFlags, meshData.triSource.getCArray());
+                buildCommonTile(tileString, tile, tileCfg, tVerts, tVertCount, tTris, tTriCount, lVerts, lVertCount, lTris, lTriCount, lTriFlags);
             }
         }
 
@@ -963,40 +962,6 @@ namespace MMAP
                 continue;
             }
 
-            // black-rabbit: drop walkable polys fully isolated in the detour
-            // navmesh (no inner neighbour, no EXT portal). findNearestPoly /
-            // getPolyHeight would report their ghost height -> pits/floating.
-            // Clear GROUND flag (pathfinding filter skips flags==0). Only land
-            // polys (i < offMeshBase): off-mesh arcs keep their flags.
-            {
-                dtMeshHeader* hdr = (dtMeshHeader*)navData;
-                int const vc = hdr->vertCount;
-                int const ob = hdr->offMeshBase;
-                unsigned char* polysBase = navData + sizeof(dtMeshHeader) + vc * 3 * sizeof(float);
-                for (int i = 0; i < ob; ++i)
-                {
-                    unsigned char* poly = polysBase + i * (int)sizeof(dtPoly);
-                    dtPoly* dp = (dtPoly*)poly;
-                    unsigned short const flags = *((unsigned short*)(poly + 28));
-                    if (!(flags & NAV_GROUND))
-                        continue;
-                    bool hasInner = false;
-                    bool hasExt = false;
-                    for (int j = 0; j < dp->vertCount; ++j)
-                    {
-                        unsigned short const raw = dp->neis[j];
-                        if (raw == 0)
-                            continue;
-                        if (raw & DT_EXT_LINK)
-                            hasExt = true;
-                        else
-                            hasInner = true;
-                    }
-                    if (!hasInner && !hasExt)
-                        *((unsigned short*)(poly + 28)) = 0;
-                }
-            }
-
             dtTileRef tileRef = 0;
             printf("%s Adding tile to navmesh...                          \r", tileString);
             // DT_TILE_FREE_DATA tells detour to unallocate memory when the tile
@@ -1054,55 +1019,8 @@ namespace MMAP
         }
     }
 
-    // black-rabbit: mark triangles steeper than slopeAngleDeg as
-    // NAV_AREA_GROUND_STEEP instead of clearing them. Cleared triangles create
-    // pass-through holes (a creature walks out through a building wall whose
-    // > 60 deg faces were dropped). STEEP stays in the navmesh as an obstacle:
-    // creatures route around it and never climb it (filter excludes STEEP).
-    static void MarkSteepTrianglesAsSteep(const float* verts, const int* tris, int nt, unsigned char* areas, float slopeAngleDeg)
-    {
-        const float thr = cosf(slopeAngleDeg * RC_PI / 180.0f);
-        for (int i = 0; i < nt; ++i)
-        {
-            if (areas[i] & RC_WALKABLE_AREA)
-            {
-                const int* tri = &tris[i * 3];
-                float e0[3], e1[3], n[3];
-                rcVsub(e0, &verts[tri[1] * 3], &verts[tri[0] * 3]);
-                rcVsub(e1, &verts[tri[2] * 3], &verts[tri[0] * 3]);
-                rcVcross(n, e0, e1);
-                rcVnormalize(n);
-                // bare n[1] (NOT fabsf): downward-facing triangles (ceiling / bridge
-                // underside, n.y<0) must become STEEP so creatures never read their
-                // ghost height. fabsf wrongly let ceilings escape the STEEP test and
-                // become walkable floor (2026-08-24).
-                if (n[1] <= thr)
-                    areas[i] = NAV_AREA_GROUND_STEEP;
-            }
-        }
-    }
-
-    // black-rabbit: true if the heightfield column at (x,z) has a span whose top
-    // is inside (lo, hi). Used to decide whether an M2 decoration triangle is
-    // "floor dressing" (real terrain/WMO ground exists just below it) or a
-    // floating decoration (pit steps, crate tops) that creatures must not stand on.
-    static bool HasSpanInWindow(rcHeightfield const& hf, float x, float z, float lo, float hi)
-    {
-        int const ix = int((x - hf.bmin[0]) / hf.cs);
-        int const iz = int((z - hf.bmin[2]) / hf.cs);
-        if (ix < 0 || ix >= hf.width || iz < 0 || iz >= hf.height)
-            return false;
-        for (rcSpan const* s = hf.spans[ix + iz * hf.width]; s; s = s->next)
-        {
-            float const top = hf.bmin[1] + (s->smax + 1) * hf.ch;
-            if (top < hi && top > lo)
-                return true;
-        }
-        return false;
-    }
-
     bool MapBuilder::buildCommonTile(const char* tileString, Tile& tile, rcConfig& tileCfg, float* tVerts, int tVertCount, int* tTris, int tTriCount, float* lVerts, int lVertCount,
-                                     int* lTris, int lTriCount, uint8* lTriFlags, uint8 const* triSource)
+                                     int* lTris, int lTriCount, uint8* lTriFlags)
     {
         // Build heightfield for walkable area
         tile.solid = rcAllocHeightfield();
@@ -1112,112 +1030,16 @@ namespace MMAP
             return false;
         }
 
-        // black-rabbit: per-source walkable slope.
-        // Terrain (.map ADT) keeps slopes < 90 deg walkable - creatures can walk
-        // steep ground. Objects (WMO buildings) keep the upstream walkableSlopeAngle
-        // (60 deg) so creatures cannot climb building faces; the 50 deg steep flag
-        // marks 50-60 deg object surfaces as STEEP (excluded by the creature
-        // filter), exactly like upstream.
-        if (triSource)
-        {
-            // terrain (.map ADT): upstream behaviour - slopes >= 60 deg are
-            // cleared entirely (rcClearUnwalkableTriangles), so they never reach
-            // the navmesh. Keeping them (even as STEEP) blew past the 0xffff
-            // vertex limit on complex cliff tiles (e.g. outland void tiles).
-            unsigned char* terrFlags = new unsigned char[tTriCount];
-            memset(terrFlags, NAV_AREA_GROUND, tTriCount * sizeof(unsigned char));
-            rcClearUnwalkableTriangles(m_rcContext, 60.0f, tVerts, tVertCount, tTris, tTriCount, terrFlags);
+        // mark all walkable tiles, both liquids and solids
+        unsigned char* triFlags = new unsigned char[tTriCount];
+        memset(triFlags, NAV_AREA_GROUND, tTriCount * sizeof(unsigned char));
+        rcClearUnwalkableTriangles(m_rcContext, tileCfg.walkableSlopeAngle, tVerts, tVertCount, tTris, tTriCount, triFlags);
 
-            // WMO buildings: < 60 deg walkable (upstream), >= 60 deg becomes a
-            // STEEP obstacle (walls block routing instead of pass-through holes).
-            unsigned char* objFlags = new unsigned char[tTriCount];
-            memset(objFlags, NAV_AREA_GROUND, tTriCount * sizeof(unsigned char));
-            MarkSteepTrianglesAsSteep(tVerts, tTris, tTriCount, objFlags, 60.0f);
+        // mark almost unwalkable triangles with steep flag
+        rcModAlmostUnwalkableTriangles(m_rcContext, 50.0f, tVerts, tVertCount, tTris, tTriCount, triFlags);
 
-            // M2 decorations: short models (source 2) stay walkable - creatures
-            // walk over crates/carts/barrels; tall models (source 3) are STEEP
-            // obstacles - creatures route around pillars/walls/big rocks and
-            // never climb them.
-
-            G3D::Array<int> terrTris;
-            G3D::Array<unsigned char> terrF;
-            G3D::Array<int> objTris;
-            G3D::Array<unsigned char> objF;
-            G3D::Array<int> m2Tris;
-            G3D::Array<unsigned char> m2F;
-            for (int i = 0; i < tTriCount * 3; i += 3)
-            {
-                uint8 const src = triSource[i / 3];
-                if (src == 1)
-                {
-                    objTris.append(tTris[i]);
-                    objTris.append(tTris[i + 1]);
-                    objTris.append(tTris[i + 2]);
-                    objF.append(objFlags[i / 3]);
-                }
-                else if (src == 2 || src == 3)
-                {
-                    m2Tris.append(tTris[i]);
-                    m2Tris.append(tTris[i + 1]);
-                    m2Tris.append(tTris[i + 2]);
-                    m2F.append(src == 3 ? NAV_AREA_GROUND_STEEP : 0);   // 0 = ground-support check later
-                }
-                else
-                {
-                    terrTris.append(tTris[i]);
-                    terrTris.append(tTris[i + 1]);
-                    terrTris.append(tTris[i + 2]);
-                    terrF.append(terrFlags[i / 3]);
-                }
-            }
-
-            // rasterize WMO first: it is the real floor inside buildings
-            if (objTris.size())
-                rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, objTris.getCArray(), objF.getCArray(), objTris.size() / 3, *tile.solid, tileCfg.walkableClimb);
-
-            // then terrain. black-rabbit: the WMO-covers-ADT check was removed -
-            // it deleted ADT at cave/mine entrances (WMO faces far below matched
-            // the window), leaving a navmesh gap right at the door and creatures
-            // stuck evading. ADT is the ground truth surface; WMO floors build on
-            // top of it, the entrance slopes keep their ADT.
-            if (terrTris.size())
-                rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, terrTris.getCArray(), terrF.getCArray(), terrTris.size() / 3, *tile.solid, tileCfg.walkableClimb);
-
-            // finally M2: tall models already STEEP; short models walkable only
-            // when real ground exists just below (crate/cart on the floor).
-            // Floating short decorations (pit steps) become obstacles too, so
-            // creatures never walk off into a hole (GetHeight has no floor there).
-            if (m2Tris.size())
-            {
-                unsigned char* m2Fc = m2F.getCArray();
-                for (int i = 0; i < m2Tris.size(); i += 3)
-                {
-                    if (m2Fc[i / 3] != 0)
-                        continue;                                       // tall M2: already STEEP
-                    int const* tri = &m2Tris[i];
-                    float const cx = (tVerts[tri[0] * 3] + tVerts[tri[1] * 3] + tVerts[tri[2] * 3]) * (1.0f / 3.0f);
-                    float const cz = (tVerts[tri[0] * 3 + 2] + tVerts[tri[1] * 3 + 2] + tVerts[tri[2] * 3 + 2]) * (1.0f / 3.0f);
-                    float const cy = (tVerts[tri[0] * 3 + 1] + tVerts[tri[1] * 3 + 1] + tVerts[tri[2] * 3 + 1]) * (1.0f / 3.0f);
-                    if (HasSpanInWindow(*tile.solid, cx, cz, cy - 4.5f, cy - 0.5f))
-                        m2Fc[i / 3] = NAV_AREA_GROUND;                  // floor dressing
-                    else
-                        m2Fc[i / 3] = NAV_AREA_GROUND_STEEP;            // floating decoration
-                }
-                rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, m2Tris.getCArray(), m2F.getCArray(), m2Tris.size() / 3, *tile.solid, tileCfg.walkableClimb);
-            }
-            delete[] terrFlags;
-            delete[] objFlags;
-        }
-        else
-        {
-            // legacy path without source info: upstream behaviour
-            unsigned char* triFlags = new unsigned char[tTriCount];
-            memset(triFlags, NAV_AREA_GROUND, tTriCount * sizeof(unsigned char));
-            rcClearUnwalkableTriangles(m_rcContext, tileCfg.walkableSlopeAngle, tVerts, tVertCount, tTris, tTriCount, triFlags);
-            rcModAlmostUnwalkableTriangles(m_rcContext, 50.0f, tVerts, tVertCount, tTris, tTriCount, triFlags);
-            rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, tTris, triFlags, tTriCount, *tile.solid, tileCfg.walkableClimb);
-            delete[] triFlags;
-        }
+        rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, tTris, triFlags, tTriCount, *tile.solid, tileCfg.walkableClimb);
+        delete[] triFlags;
 
         rcFilterLowHangingWalkableObstacles(m_rcContext, tileCfg.walkableClimb, *tile.solid);
         rcFilterLedgeSpans(m_rcContext, tileCfg.walkableHeight, tileCfg.walkableClimb, *tile.solid);
@@ -1240,6 +1062,11 @@ namespace MMAP
             return false;
         }
 
+        if (!rcMedianFilterWalkableArea(m_rcContext, *tile.chf))
+        {
+            printf("%s Failed filtering area!                             \n", tileString);
+            return false;
+        }
 
         if (!rcBuildDistanceField(m_rcContext, *tile.chf))
         {
