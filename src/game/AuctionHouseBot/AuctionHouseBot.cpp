@@ -647,7 +647,15 @@ uint32 AuctionHouseBot::GetItemValue(ItemPrototype const* prototype) const
 
     // vendor-sold items default to vendor price (prevent buy-low/sell-high)
     if (m_vendorValue && m_vendorItems.find(prototype->ItemId) != m_vendorItems.end())
+    {
+        // If this item's class/quality value is explicitly 0 (Value.<quality> = 0,
+        // i.e. "filter this class+quality out of the AH"), keep it excluded instead
+        // of forcing the vendor price (100) back in. A 0 in Value.<quality> must win
+        // over the vendor override so e.g. white armor (class 4, Normal=0) stays off.
+        if (m_itemValue[prototype->Quality][prototype->Class] == 0)
+            return 0;
         return 100;
+    }
 
     return m_itemValue[prototype->Quality][prototype->Class];
 }
