@@ -55,9 +55,13 @@ void SpawnManager::Initialize()
     {
         for (uint32 dbGuid : *dynGuidCreatures)
         {
+            auto data = sObjectMgr.GetCreatureData(dbGuid);
+            // Pooled and event-driven creatures are spawned by the pool/event system, not here
+            if (!data->IsNotPartOfPoolOrEvent())
+                continue;
+
             if (m_map.GetPersistentState()->GetCreatureRespawnTime(dbGuid) < now)
             {
-                auto data = sObjectMgr.GetCreatureData(dbGuid);
                 if (m_map.GetCreatureLinkingHolder()->CanSpawn(dbGuid, &m_map, nullptr, 0.f, 0.f)) // copy of Map::CanSpawn
                     m_map.GetPersistentState()->AddCreatureToGrid(dbGuid, data);
             }

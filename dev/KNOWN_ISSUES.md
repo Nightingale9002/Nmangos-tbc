@@ -3,7 +3,7 @@
 > 本文件 = **Bug 修复手册 / 已知问题与技术笔记**（随源码提交）：记录服务器遇到的已知问题、排查信息、已修复项与技术性内容（含水中移动、寻路、地图瓦片等），供后续会话接续处理。
 > 功能性更新见同目录《功能更新手册_卡布魔兽.md》；运维内容见本地《HANDOFF_卡布魔兽运维.md》（不提交）。
 > 技术性笔记一律写入本文件（不再另开 md），仓库根/根目录散落的旧技术 md 已陆续归并。
-> 更新时间: 2026-08-30
+> 更新时间: 2026-09-01
 
 ---
 
@@ -79,11 +79,15 @@ LoadMapAndVMap(gx, gy)
 |---|---|---|---|
 | 地形 .map | `maps/%03u%02u%02u.map` = `<mapId><gx><gy>` | **gx 在前**（x 是第 1 个两位数） | src/game/Maps/GridMap.cpp:1264 |
 | vmap .vmtile | `vmaps/%03u_%02u_%02u.vmtile` = `<mapId>_<gy>_<gx>` | **gy 在前**（与 .map 相反） | src/game/vmap/MapTree.cpp:89 |
-| mmap .mmtile | `mmaps/%03u%02u%02u.mmtile` = `<mapId><gy><gx>` | **gy 在前**（同 vmap） | contrib/mmap/src/MapBuilder.cpp:979 |
+| mmap .mmtile | `mmaps/%03u%02u%02u.mmtile` = `<mapId><gx><gy>` | **gx 在前**（同 .map，与 .vmtile 相反） | contrib/mmap/src/MapBuilder.cpp:979 |
 
-> ⚠️ **最容易踩的坑：.map 是 gx 在前，而 .vmtile/.mmtile 是 gy 在前。**
-> 同一个位置，.map 和 .vmtile 文件名的两位数顺序正好相反。
-> 例子：Duskwood 某点 → .map=`0005131.map`、.vmtile=`000_31_51.vmtile`，数字互反。
+> ⚠️ **最容易踩的坑：.map 和 .mmtile 是 gx 在前，而 .vmtile 是 gy 在前（唯一相反者）。**
+> 同一个位置，.map/.mmtile 与 .vmtile 文件名的两位数顺序正好相反（.map 与 .mmtile 数字相同）。
+> 例子：Duskwood 某点 → .map=`0005131.map`、.vmtile=`000_31_51.vmtile`、.mmtile=`0005131.mmtile`，.map/.mmtile 互反于 .vmtile。
+>
+> **更正记录（2026-09-01）**：原表曾写 .mmtile「gy 在前（同 vmap）」——**错**，已改为 gx 在前（同 .map）。
+> 实锤依据：服务端读 `mmaps/%03i%02i%02i.mmtile`（MoveMap.cpp:48）由 GridMap.cpp:1334 以 (gx,gy) 调用；
+> 生成器 MapBuilder.cpp:979 虽写 `(mapID, tileY, tileX)`，但其 tileY 恰等于服务端 gx（getTileList 用 .map/.vmtile 两源解析出同一 packed ID 可证）——故文件名两位数仍是 X 坐标值在前。
 
 ### 3. 换算生效的关键（为何不能只看范围/猜测）
 
@@ -913,3 +917,35 @@ EffectLeapForward（1953 实际走的）：
 - 真高空（无 navmesh 路径）会进碰撞分支防穿（该场景未在本次日志触发，逻辑保留）。
 - 状态：本地编译部署实测通过；**源码已 scp 到云端 `/root/Nmangos-tbc/src/game/Spells/`，
   云端待下次编译部署生效**（同步时未编译）。调试日志已全部移除。
+
+---
+
+## [机制] dynguid 池生物双刷修复 — 2026-09-01（源码改动）
+
+### 现象（用户报告）
+- 部分怪在同一出生点**同时出现两只**，行为完全相同（走同一条路径）。例：纳格兰 Northwind Cleft
+  guid 151374（Boulderfist Warrior 17136）与 guid 151421（Boulderfist Mage 17137）同点双刷。
+- 数据侧核查（本地=云端=原版 TBCDB 全一致）：两者同坐标/同朝向/同 300s 刷新/同一 22 点
+  creature_movement 路径，且都在 pool_creature 池 **118**（pool_template max_limit=1，各 50% 几率）——
+  **设计上二选一，同时只能有一只**。数据本身无重复。
+
+### 根因（SpawnManager dynguid 分支漏池检查）
+- 两个 entry 的 creature_template.ExtraFlags=1048576 = **CREATURE_EXTRA_FLAG_DYNGUID**（动态 guid 生物）。
+- ObjectMgr::LoadCreatures 只把非池/非事件 guid 加入 ObjectMgr 网格（IsNotPartOfPoolOrEvent，ObjectMgr.cpp:2374）；
+  池成员由池系统管理：PoolManager::Initialize → 池 118 按 max_limit=1 只选一只加入 persistent-state 网格。
+- **但 SpawnManager::Initialize（src/game/Maps/SpawnManager.cpp）的 creature 分支把该图所有 dynguid 生物
+  无条件 AddCreatureToGrid，没有像下方 GO 分支那样跳过池/事件成员** → 池 118 两只都被加进网格 →
+  网格加载时两只都以全新 dynguid 生成（Creature.cpp:1729）→ 同点双刷、走同一路径。
+- 上游 mangos-tbc 同款缺陷（两个分支都缺检查）；本 fork 之前已给 GO 分支补过
+  if (!data->IsNotPartOfPoolOrEvent()) continue;（SpawnManager.cpp:75），**creature 分支漏补**。
+
+### 修复（本 commit）
+- SpawnManager.cpp Initialize() creature 分支：与 GO 分支对齐，先取 data 并加
+  if (!data->IsNotPartOfPoolOrEvent()) continue;（池/事件成员交由池/事件系统刷，SpawnManager 不再重复添加）。
+- 影响面：本地库 10328 行 dynguid 刷怪中，**153 只属于 guid 池**（池 106-123 Northwind Cleft 系列、
+  45103/49301 等）此前全部双刷；事件 dynguid 不受影响（!data.gameEvent 已排除在 dynguid 列表外）。
+
+### 部署与验证
+- 需重新编译部署（本地 build_deploy_restart.bat；云端走凌晨 nightly_build_restart.sh 或 manual_deploy.sh）。
+- 验证：重启后 Northwind Cleft 该点应只见 1 只（Warrior 或 Mage 随机）；.npc info 查 guid 只剩被选中者。
+
