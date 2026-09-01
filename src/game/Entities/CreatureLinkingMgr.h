@@ -190,6 +190,8 @@ class CreatureLinkingHolder
         void ProcessSlaveGuidList(CreatureLinkingEvent eventType, Creature* pSource, uint32 flag, uint16 searchRange, std::list<std::pair<uint32, ObjectGuid>>& slaveGuidList, Unit* pEnemy);
         // Helper function, to process a single slave
         void ProcessSlave(CreatureLinkingEvent eventType, Creature* pSource, uint32 flag, Creature* pSlave, Unit* pEnemy);
+        // Helper function to respawn a linked slave (dynguid-aware)
+        void RespawnLinkedSlave(Creature* pSlave, Creature* pSource) const;
         // Helper function to set following
         void SetFollowing(Creature* pWho, Creature* pWhom) const;
         // Helper function to return if a slave is in range of a boss

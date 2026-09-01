@@ -534,7 +534,20 @@ void CreatureLinkingHolder::ProcessSlaveGuidList(CreatureLinkingEvent eventType,
             pSource->GetMap()->GetSpawnManager().RespawnCreature((*slave_itr).first);
         if (!pSlave)
         {
-            // Remove old guid first
+            // Remove old guid first. Dynguid slots are kept: their object is
+            // SpawnManager-managed and may legitimately be out of the world while
+            // a respawn is scheduled (erasing would permanently drop the link).
+            // If the triggering source is not dynguid the respawn flags were not
+            // routed through the SpawnManager yet - do it now so an out-of-world
+            // dynguid slave still gets revived by this event.
+            if (sObjectMgr.GetCreatureData((*slave_itr).first))
+            {
+                if (!pSource->IsUsingNewSpawningSystem())
+                    if (flag & (FLAG_RESPAWN_ON_EVADE | FLAG_RESPAWN_ON_DEATH | FLAG_RESPAWN_ON_RESPAWN))
+                        pSource->GetMap()->GetSpawnManager().RespawnCreature((*slave_itr).first, 0);
+                ++slave_itr;
+                continue;
+            }
             slave_itr = slaveGuidList.erase(slave_itr);
             continue;
         }
@@ -549,6 +562,19 @@ void CreatureLinkingHolder::ProcessSlaveGuidList(CreatureLinkingEvent eventType,
         if (IsSlaveInRangeOfMaster(pSlave, pSource, searchRange))
             ProcessSlave(eventType, pSource, postprocessFlag, pSlave, pEnemy);
     }
+}
+
+// Helper to respawn a linked slave on linking respawn events.
+// Dynguid creatures (new spawning system) are (re)spawned by the SpawnManager,
+// which owns their respawn schedule (their m_respawnTime is max at death and
+// LoadFromDB rejects a future saved respawn time, so in-place Respawn() alone
+// cannot revive them); normal creatures revive in place.
+void CreatureLinkingHolder::RespawnLinkedSlave(Creature* pSlave, Creature* pSource) const
+{
+    if (pSlave->IsUsingNewSpawningSystem())
+        pSource->GetMap()->GetSpawnManager().RespawnCreature(pSlave->GetDbGuid(), 0);
+    else
+        pSlave->Respawn();
 }
 
 // Helper function, to process a single slave
@@ -577,7 +603,7 @@ void CreatureLinkingHolder::ProcessSlave(CreatureLinkingEvent eventType, Creatur
             if (flag & FLAG_DESPAWN_ON_EVADE && pSlave->IsAlive())
                 pSlave->ForcedDespawn();
             if (flag & FLAG_RESPAWN_ON_EVADE && !pSlave->IsAlive())
-                pSlave->Respawn();
+                RespawnLinkedSlave(pSlave, pSource);
             if (flag & FLAG_EVADE_ON_EVADE && pSlave->IsAlive())
                 pSlave->AI()->EnterEvadeMode();
             break;
@@ -587,14 +613,14 @@ void CreatureLinkingHolder::ProcessSlave(CreatureLinkingEvent eventType, Creatur
             if (flag & FLAG_DESPAWN_ON_DEATH && pSlave->IsAlive())
                 pSlave->ForcedDespawn();
             if (flag & FLAG_RESPAWN_ON_DEATH && !pSlave->IsAlive())
-                pSlave->Respawn();
+                RespawnLinkedSlave(pSlave, pSource);
             break;
         case LINKING_EVENT_RESPAWN:
             if (flag & FLAG_RESPAWN_ON_RESPAWN)
             {
                 // Additional check to prevent endless loops (in case whole group respawns on first respawn)
                 if (!pSlave->IsAlive() && (!pSlave->GetRespawnDelay() || pSlave->GetRespawnTime() > time(nullptr)))
-                    pSlave->Respawn();
+                    RespawnLinkedSlave(pSlave, pSource);
             }
             else if (flag & FLAG_DESPAWN_ON_RESPAWN && pSlave->IsAlive())
                 pSlave->ForcedDespawn();

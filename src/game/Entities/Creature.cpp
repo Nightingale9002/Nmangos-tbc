@@ -2010,6 +2010,18 @@ void Creature::SetDeathState(DeathState s)
 
 void Creature::Respawn()
 {
+    // Dynguid creatures (new spawning system) are (re)spawned by the SpawnManager,
+    // which owns their respawn schedule. In-place revive does not work for them:
+    // their m_respawnTime is set to max at death and LoadFromDB rejects a future
+    // saved respawn time, so any "revive now" must reset the schedule and let the
+    // SpawnManager materialize the spawn on its next update.
+    if (IsUsingNewSpawningSystem())
+    {
+        if (Map* map = GetMap())
+            map->GetSpawnManager().RespawnCreature(GetDbGuid(), 0);
+        return;
+    }
+
     RemoveCorpse();
     if (!IsInWorld())                                       // Could be removed as part of a pool (in which case respawn-time is handled with pool-system)
         return;

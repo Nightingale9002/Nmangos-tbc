@@ -2286,6 +2286,11 @@ Creature* WorldObject::SpawnCreature(uint32 dbGuid, Map* map, uint32 forcedEntry
     if (data->spawnMask && !map->CanSpawn(TYPEID_UNIT, dbGuid))
         return nullptr;
 
+    // Avoid duplicates when re-spawning a dynguid spawn slot whose old object is
+    // still in the world (e.g. dead object awaiting SpawnManager respawn).
+    if (Creature* old = map->GetCreature(dbGuid))
+        old->AddObjectToRemoveList();
+
     Creature* creature = new Creature;
     // DEBUG_LOG("Spawning creature %u",*itr);
     if (!creature->LoadFromDB(dbGuid, map, 0, forcedEntry))

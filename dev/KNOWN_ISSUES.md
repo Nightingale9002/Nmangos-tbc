@@ -949,3 +949,40 @@ EffectLeapForward（1953 实际走的）：
 - 需重新编译部署（本地 build_deploy_restart.bat；云端走凌晨 nightly_build_restart.sh 或 manual_deploy.sh）。
 - 验证：重启后 Northwind Cleft 该点应只见 1 只（Warrior 或 Mage 随机）；.npc info 查 guid 只剩被选中者。
 
+---
+
+## [机制] dynguid 生物链接组复活不全修复 — 2026-09-01（源码改动）
+
+### 现象（用户报告 + 实测）
+- 太阳之井 Sunblade 链接组（如 5800071：Sunblade Cabalist 头目 + 6 小怪）部分死亡后**脱战**，
+  RESPAWN_ON_EVADE 只复活了非 dynguid 成员（71/72/97/246），**dynguid 成员（104/119/133）复活不了，
+  GM .respawn 也无效**。
+- 运行时铁证（tbccharacters.creature_respawn，instance 2）：复活的 4 只无记录（已清零），
+  卡住的 3 只 respawntime=死亡+7200（未来）——即"立即复活"路径从未生效。
+
+### 根因（dynguid 复活必须走 SpawnManager，linking 却走原地复活）
+- dynguid 生物（CREATURE_EXTRA_FLAG_DYNGUID）死亡时（Creature.cpp:1951-1956）：
+  m_respawnTime = time_t::max()（自然复活路径永不触发），复活完全交给 SpawnManager 定时
+  （SaveRespawnTime 存的死亡+7200）。
+- **Creature.cpp:1753-1760**：dynguid 且持久化复活时间在未来时，LoadFromDB 直接 return false →
+  SpawnManager/网格/GM 一切生成路径都失败，直到定时到点。
+- **CreatureLinkingMgr 的 EVADE/DIE/RESPAWN 复活动作调 pSlave->Respawn()（原地复活）**——
+  只对非 dynguid 有效；dynguid 对象已不在世界/原地复活无效 → 该组 dynguid 成员永不复活。
+- 附带缺陷：ProcessSlaveGuidList 在 pSlave 不在世界时**把该 guid 从链接表永久擦除**（dynguid
+  对象由 SpawnManager 管理、暂不在世界属正常）→ 链接关系断裂。
+
+### 修复（本 commit，4 处）
+1. **Creature::Respawn()**：dynguid 走 GetSpawnManager().RespawnCreature(dbGuid, 0)
+   （先清复活时间再让 SpawnManager 立即生成），非 dynguid 保持原地复活。
+2. **CreatureLinkingMgr::RespawnLinkedSlave()**（新增）：EVADE/DIE/RESPAWN 三个复活动作统一
+   dynguid 走 SpawnManager、非 dynguid 走 Respawn()。
+3. **ProcessSlaveGuidList**：pSlave 不在世界时，有效 dynguid 槽位不再擦除，并把 RESPAWN_*
+   标志路由到 SpawnManager（非 dynguid 源事件也生效）。
+4. **WorldObject::SpawnCreature**：生成前若同 dbGuid 旧对象仍在世界则先移除（防重复）。
+- 影响面：所有"非 dynguid 主怪 + dynguid 从怪"的链接组（564/568/580/585 等实例大量存在）脱战复活修复。
+
+### 部署与验证
+- 需重新编译部署（本地 build_deploy_restart.bat；云端 manual_deploy.sh 或凌晨 nightly）。
+- 验证：太阳之井杀 5800071 组部分小怪 → 脱战 → 6 只应全部复活（含 Vindicator/Dusk&Dawn Priest）。
+
+
