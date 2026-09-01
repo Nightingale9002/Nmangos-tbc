@@ -21,6 +21,10 @@
 #include "Server/SQLStorages.h"
 #include "Server/DBCStores.h"
 #include "Util/ProgressBar.h"
+#ifdef BUILD_AHBOT
+#include "AuctionHouseBot/AuctionHouseBot.h"
+#include "Policies/Singleton.h"
+#endif
 
 #include "Accounts/AccountMgr.h"
 #include "Entities/Item.h"
@@ -976,6 +980,25 @@ void AuctionEntry::SaveToDB() const
 
 void AuctionEntry::AuctionBidWinning(Player* newbidder)
 {
+    // market-maker demand signal: a player won this auction (bidder != 0; the AHBot
+    // buys with bidder = 0 and must not count its own purchases as demand). Record the
+    // actual unit price paid so the AHBot can anchor its mid to the recent trade price.
+    if (bidder)
+        sAuctionMgr.RecordSoldItem(itemTemplate, sAuctionMgr.GetAuctionMapIndex(auctionHouseEntry), itemCount, bid / std::max<uint32>(1, itemCount));
+
+#ifdef BUILD_AHBOT
+    // market-maker inventory ledger, settled at this single chokepoint:
+    //  - player bought/won one of our listings (owner==0, bidder!=0) -> goods leave
+    //    our holdings, gold received from the economy
+    //  - the bot bought a player listing / won its bid (owner!=0, bidder==0, bid!=0)
+    //    -> goods enter our holdings at the price paid
+    uint32 houseIdx = sAuctionMgr.GetAuctionMapIndex(auctionHouseEntry);
+    if (!owner && bidder)
+        sAuctionHouseBot.DeductInventory(itemTemplate, houseIdx, itemCount, bid);
+    else if (owner && !bidder && bid)
+        sAuctionHouseBot.RecordBotPurchase(itemTemplate, houseIdx, itemCount, bid / std::max<uint32>(1, itemCount), bid);
+#endif
+
     sAuctionMgr.SendAuctionSalePendingMail(this);
     sAuctionMgr.SendAuctionSuccessfulMail(this);
     sAuctionMgr.SendAuctionWonMail(this);

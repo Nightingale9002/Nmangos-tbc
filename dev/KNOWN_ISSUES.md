@@ -985,4 +985,48 @@ EffectLeapForward（1953 实际走的）：
 - 需重新编译部署（本地 build_deploy_restart.bat；云端 manual_deploy.sh 或凌晨 nightly）。
 - 验证：太阳之井杀 5800071 组部分小怪 → 脱战 → 6 只应全部复活（含 Vindicator/Dusk&Dawn Priest）。
 
+---
+
+## [机制] ahbot 动态市场价格（商品类/Class 7）— 2026-09-01（源码改动，云端未部署）
+
+### 需求
+- 现状：ahbot 买卖价全用静态配置（AuctionHouseBot.Value.* + subclass 覆盖）。对"产出多、用量少"的
+  物资，真实市场价低于 ahbot 静态价，但 ahbot 仍按静态价无限收购 → 高价接盘过剩物资。
+- 目标：实时监控拍卖行每物品价格，让 ahbot 按市场价动态调整（先只作用于商品类 Class 7；
+  现代交易所式价格曲线功能留待后续）。
+
+### 实现（本 commit，本地编译通过）
+1. **市场价监控** AuctionHouseBot::UpdateMarketPrices()（每 DynamicRefresh 秒，默认 60s）：
+   扫描三个拍卖行的**玩家**上架（排除 ahbot 自己的），每物品×每拍卖行取**单价中位数**（buyout÷堆叠）
+   作为市场价；内存缓存 + **持久化到 tbccharacters.ahbot_price**（item, price, auction_house，
+   复用旧版未用表，仅价格变化时写库），重启/.ahbot reload 重读。
+2. **买卖动态封顶**（仅 ITEM_CLASS_TRADE_GOODS=7）：
+   itemWorth = min(静态价, 市场价) → 收购最多按市场价（不再按静态价接盘过剩物资）；
+   上架也按市场价（不再挂高于市场的死价）。ahbot_items 手动覆盖值优先级最高。
+3. **命令**：.ahbot item <id> 对商品类显示各拍卖行市场价。
+4. **配置**（写入运行中的 ahbot.conf，未动 dist，云端未改）：
+   AuctionHouseBot.Value.Dynamic = 1、AuctionHouseBot.Value.DynamicRefresh = 60。
+
+### 部署状态
+- 本地：代码已编译通过；x64_Debug/ahbot.conf 已加 Dynamic=1。
+- 云端：**按用户要求暂未动**（代码未 scp、配置未改、未重载）。待用户确认后再同步部署。
+
+
+### 做市商升级（本 commit，本地编译通过，云端未部署）
+- 明确不模拟 ahbot 持仓（虚拟、无邮箱），只模拟做市商报价行为。
+- **双边报价**：bid = mid×(1−spread)、ask = mid×(1+spread)，spread 半宽默认 5%（MarketMaker.Spread），
+  上限 20%（SpreadMax）。
+- **mid（报价中枢）**：玩家上架单价中位数的 EMA 平滑（Smoothing=50%，首帧用中位数播种），
+  持久化到 ahbot_price（数据库为价格源，改库 + .ahbot reload 生效）。
+- **价差自适应**：波动大（|中位数−mid|/mid 高）或市场薄（上架数 < ThinListings=3）→ 拉宽价差。
+- **买侧**：只收价格 ≤ bid 的挂单（不再按静态价无限接盘）；BuyPerCycle（默认 0=不限）
+  每物品每扫描周期买入配额。
+- **卖侧**：按 ask 上架（封顶静态价），不挂死价。
+- 命令：.ahbot item <id> 显示各拍卖行 mid/bid/ask/spread/上架数。
+- 影响范围仍限商品类（Class 7）；ahbot_items 手动覆盖优先级最高。
+
+### 后续规划（未实现）
+- 现代交易所式价格曲线：ahbot_price 升级为时间序列（记录历史快照），支持走势/均线/波动判定。
+
+
 

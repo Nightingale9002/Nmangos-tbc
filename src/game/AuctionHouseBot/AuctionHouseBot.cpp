@@ -30,6 +30,9 @@
 // for that day.
 #define AUCTIONHOUSEBOT_CONF_VERSION    2021011201
 
+// probe sell-order levels below the policy anchor (85% .. 45%)
+static const uint32 AHBOT_PROBE_PCTS[5] = {85, 75, 65, 55, 45};
+
 INSTANTIATE_SINGLETON_1(AuctionHouseBot);
 
 AuctionHouseBot::AuctionHouseBot() : m_configFileName(_AUCTIONHOUSEBOT_CONFIG), m_houseAction(-1)
@@ -87,6 +90,13 @@ void AuctionHouseBot::Initialize()
         // skinning loot
         ParseLootConfig("AuctionHouseBot.Loot.Skinning", m_skinningLootConfig);
         FillUintVectorFromQuery("SELECT DISTINCT entry FROM skinning_loot_template", m_skinningLootTemplates);
+
+        // item loot (openable items: clams -> meat/pearls, etc.) - these drops are
+        // NOT part of the market-maker catalog (e.g. Golden Pearl is class 3); they
+        // flow through the normal loot-table supply so gems from clams etc. still
+        // reach the AH
+        ParseLootConfig("AuctionHouseBot.Loot.Item", m_itemLootConfig);
+        FillUintVectorFromQuery("SELECT DISTINCT entry FROM item_loot_template", m_itemLootTemplates);
 
         // profession items (different than the loot above, but use similar config)
         ParseLootConfig("AuctionHouseBot.Items.Profession", m_professionItemsConfig);
@@ -181,17 +191,116 @@ void AuctionHouseBot::Initialize()
             }
             while (queryResult->NextRow());
         }
+
+        // market-maker ladder quoting (currently applies to trade goods / Class 7 only)
+        m_marketEnabled = m_ahBotCfg.GetBoolDefault("AuctionHouseBot.Value.Dynamic", false);
+        m_marketRefresh = m_ahBotCfg.GetIntDefault("AuctionHouseBot.Value.DynamicRefresh", 60);
+        // LadderStep is both the sell-tier spacing and the price-discovery move size:
+        // a big step (e.g. 50 or 100) finds the equilibrium price fast when tiers get
+        // bought out, a small step (1) gives a fine-grained book at the cost of slow
+        // price discovery.
+        m_mmLadderStep  = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.LadderStep", 50);
+        m_mmLadderDepth = std::min<uint32>(MARKET_MAKER_MAX_LADDER, std::max<uint32>(1, m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.LadderDepth", 10)));
+        m_mmBuyDepth    = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.BuyDepth", 10);
+        m_mmBuyPerCycle = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.BuyPerCycle", 0);
+        m_mmBidOnlyBuyout = m_ahBotCfg.GetBoolDefault("AuctionHouseBot.MarketMaker.BidOnlyBuyout", true);
+        m_mmSmoothing   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.Smoothing", 50);
+        m_mmIdleThreshold = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.IdleThreshold", 60);
+        m_mmIdleDecay   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.IdleDecay", 5);
+        m_mmRepriceThreshold = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.RepriceThreshold", 1);
+        m_mmMaxItemUnits = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MaxItemUnits", 200);
+        m_mmEatRatio     = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.EatRatio", 50);
+        m_mmProbeUnits   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.ProbeUnits", 5);
+        m_mmPriceFloor  = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.PriceFloor", 5);
+        m_mmPriceCeil   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.PriceCeil", 300);
+        // curated Class7 catalog + virtual inventory (world-supply refill)
+        m_catalogEnabled       = m_ahBotCfg.GetBoolDefault("AuctionHouseBot.MarketMaker.CatalogEnabled", true);
+        m_catalogTarget        = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.CatalogTarget", 50);
+        m_catalogCapacity      = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.CatalogCapacity", 200);
+        m_catalogRefillPerCycle = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.RefillPerCycle", 100);
+        m_catalogRefillBatch   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.RefillBatch", 25);
+        m_catalogListBatch     = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.ListBatch", 25);
+        m_catalogDemandBoostPct = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.DemandBoostPct", 50);
+        m_catalogIdleDecayPct  = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.IdleTargetDecayPct", 5);
+        m_flowRatio      = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowRatio", 150);
+        m_flowMoveDownPct = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowMoveDownPct", 5);
+        m_flowMoveUpPct  = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowMoveUpPct", 1);
+        m_flowMinUnits   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowMinUnits", 20);
+        m_flowSettleHours = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowSettleHours", 24);
+        m_depthHighPct   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.DepthTargetHighPct", 200);
+        m_depthLowPct    = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.DepthTargetLowPct", 50);
+        m_depthStepPct   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.DepthStepPct", 5);
+        m_transitionItemLevel = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.TransitionItemLevel", 40);
+        m_transitionTargetMult = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.TransitionTargetMult", 3);
+        LoadCatalogOverrides();
+        LoadInventory();
+        if (m_marketEnabled)
+        {
+            m_marketState.clear();
+            // load persisted quotes (the previous day's closing price) - the database
+            // is the price source; today's ladder is anchored on it
+            if (auto marketResult = CharacterDatabase.Query("SELECT item, price, auction_house FROM ahbot_price"))
+            {
+                do
+                {
+                    Field* mfields = marketResult->Fetch();
+                    uint32 itemId  = mfields[0].GetUInt32();
+                    uint32 price   = mfields[1].GetUInt32();
+                    uint32 house   = mfields[2].GetUInt32();
+                    if (house < MAX_AUCTION_HOUSE_TYPE)
+                    {
+                        AuctionHouseBotMarketState& state = m_marketState[itemId][house];
+                        // clamp stale persisted quotes into [floor, ceil] - historical
+                        // crash values (e.g. below the vendor buy-back price) must
+                        // not re-anchor the ladder on restart
+                        uint32 clamped = price;
+                        if (ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId))
+                        {
+                            uint32 staticPrice = CalculateBuyoutPrice(proto);
+                            uint32 lo = staticPrice ? (uint32)((uint64)staticPrice * std::min<uint32>(100, m_mmPriceFloor) / 100) : 0;
+                            if (proto->SellPrice > lo)
+                                lo = proto->SellPrice;
+                            uint32 hi = staticPrice ? (uint32)((uint64)staticPrice * std::max<uint32>(100, m_mmPriceCeil) / 100) : 0;
+                            if (lo && clamped < lo)
+                                clamped = lo;
+                            if (hi && clamped > hi)
+                                clamped = hi;
+                        }
+                        state.price = clamped;
+                        state.ref = clamped;
+                        state.median = clamped;
+                    }
+                }
+                while (marketResult->NextRow());
+            }
+        }
+
     }
 }
 
 void AuctionHouseBot::Update()
 {
+    // refresh real market prices on a timer (independent of the sell/buy cycle)
+    if (m_marketEnabled)
+    {
+        uint32 now = time(nullptr);
+        if (now - m_lastMarketUpdateTime >= m_marketRefresh)
+        {
+            UpdateMarketPrices();
+            m_lastMarketUpdateTime = now;
+        }
+    }
+
     if (++m_houseAction >= MAX_AUCTION_HOUSE_TYPE * 2)
         m_houseAction = 0;
 
     AuctionHouseType houseType = AuctionHouseType(m_houseAction % MAX_AUCTION_HOUSE_TYPE);
-    AuctionHouseObject* auctionHouse = sAuctionMgr.GetAuctionsMap(houseType);
-    if (m_houseAction < MAX_AUCTION_HOUSE_TYPE && urand(0, 99) < m_chanceSell)
+    // with linked auction houses (AllowTwoSide.Interaction.Auction=1) players only
+    // ever see the NEUTRAL map; routing supply/scan/buy to the faction maps would
+    // create listings that are invisible until the next restart
+    uint32 houseIdx = EffectiveHouseIndex(houseType);
+    AuctionHouseObject* auctionHouse = sAuctionMgr.GetAuctionsMap(AuctionHouseType(houseIdx));
+    if (m_houseAction < MAX_AUCTION_HOUSE_TYPE)
     {
 	// Lazy-refresh dynamic level
 	if (m_useDynamicMaxLevel)
@@ -204,7 +313,21 @@ void AuctionHouseBot::Update()
 		m_lastLevelUpdateTime = now;
 	    }
 	}
-        // Sell items
+        // ---- curated Class7 catalog: world-supply refill + inventory-backed quotes ----
+        // Book maintenance is NOT probabilistic: the market maker must keep its
+        // ladder quoted and its holdings refilled on every sell-phase action, so
+        // players always see a coherent bounded book. Only the legacy loot-table
+        // supply (below) keeps its chance gate.
+        if (m_marketEnabled && m_catalogEnabled)
+        {
+            RefillCatalog(houseIdx);
+            QuoteCatalog(auctionHouse, houseIdx);
+        }
+
+        // loot-table supply is chance-gated; the catalog book is already maintained
+        if (urand(0, 99) < m_chanceSell)
+        {
+        // Sell items - loot-table based supply for everything outside the catalog
         std::unordered_map<uint32, uint32> itemMap;
 
         AddLootToItemMap(&LootTemplates_Creature, m_creatureLootNormalConfig, m_creatureLootNormalTemplates, itemMap);       // normal creature loot
@@ -217,6 +340,7 @@ void AuctionHouseBot::Update()
         AddLootToItemMap(&LootTemplates_Fishing, m_fishingLootConfig, m_fishingLootTemplates, itemMap);                      // fishing loot
         AddLootToItemMap(&LootTemplates_Gameobject, m_gameobjectLootConfig, m_gameobjectLootTemplates, itemMap);             // gameobject loot
         AddLootToItemMap(&LootTemplates_Skinning, m_skinningLootConfig, m_skinningLootTemplates, itemMap);                   // skinning loot
+        AddLootToItemMap(&LootTemplates_Item, m_itemLootConfig, m_itemLootTemplates, itemMap);                                // item loot (clams, openable items)
 
         // profession items are a bit different (not looted)
         if (m_professionItemsConfig[1] > 0 && m_professionItemsConfig[3] > 0 && m_professionItems.size() > 0)
@@ -228,12 +352,10 @@ void AuctionHouseBot::Update()
                 {
                     uint32 item = m_professionItems[urand(0, m_professionItems.size() - 1)];
                     ItemPrototype const* prototype = ObjectMgr::GetItemPrototype(item);
-		    if (prototype &&
-			(prototype->RequiredLevel > m_maxRequiredLevel ||
-			 prototype->ItemLevel > m_maxItemLevel))
-		        continue; // skip items too high level
+                    if (prototype && (prototype->RequiredLevel > m_maxRequiredLevel || prototype->ItemLevel > m_maxItemLevel))
+                        continue; // skip items too high level
                     if (!prototype || prototype->Quality == 0 || urand(0, (convertEnumToFlag(prototype->Quality)) - 1) > 0)
-                        continue; // make it decreasingly likely that crafted items of higher quality is added to the auction house (white: 100%, green: 50%, blue: 25%, purple: 12.5%, ...)
+                        continue;
                     uint32 count = (uint32) round((uint64)prototype->GetMaxStackSize() * urand(m_professionItemsConfig[2], m_professionItemsConfig[3]) / 100.0);
                     if (count <= 0)
                         count = 1;
@@ -267,7 +389,37 @@ void AuctionHouseBot::Update()
                     continue; // item class/subclass is filtered out
             }
 
-            uint32 itemValue = ValueWithVariance(iterator != m_itemData.end() ? iterator->second.Value : CalculateBuyoutPrice(prototype));
+            bool isMM = (iterator == m_itemData.end() && m_marketEnabled && prototype->Class == ITEM_CLASS_TRADE_GOODS);
+            if (isMM && m_catalogEnabled)
+                continue; // Class7 supply is driven by the curated catalog (QuoteCatalog), not loot rolls
+            AuctionHouseBotMarketState* mmState = isMM ? GetMarketState(prototype->ItemId, AuctionHouseType(houseIdx)) : nullptr;
+            if (mmState && m_mmMaxItemUnits)
+            {
+                uint32 ownUnits = 0;
+                for (uint32 t = 0; t < MARKET_MAKER_MAX_LADDER; ++t)
+                    ownUnits += mmState->tierStock[t];
+                if (ownUnits >= m_mmMaxItemUnits)
+                    continue; // main book is full, stop adding supply for this item
+            }
+
+            uint32 itemWorth = iterator != m_itemData.end() ? iterator->second.Value : CalculateBuyoutPrice(prototype);
+            // market-maker sell quote: the MAIN ladder sits above the reference price
+            // (100%..150% of price, tier k = price*(100 + k*step)/100). Exact tier
+            // prices (no variance jitter).
+            bool ladderQuote = false;
+            if (mmState && mmState->price)
+            {
+                uint32 step = GetLadderStep(mmState->price);
+                uint32 mainDepth = std::min<uint32>(MARKET_MAKER_MAX_LADDER, (50 / std::max<uint32>(1, step)) + 1);
+                uint32 tier = urand(0, mainDepth - 1);
+                uint32 unitPrice = (uint32)(((uint64)mmState->price * (100 + tier * step) + 50) / 100);
+                if (unitPrice)
+                {
+                    itemWorth = unitPrice;
+                    ladderQuote = true;
+                }
+            }
+            uint32 itemValue = ladderQuote ? itemWorth : ValueWithVariance(itemWorth);
             for (uint32 stackCounter = 0; stackCounter < itemEntry.second; stackCounter += prototype->GetMaxStackSize())
             {
                 uint32 count = itemEntry.second - stackCounter > prototype->GetMaxStackSize() ? prototype->GetMaxStackSize() : itemEntry.second - stackCounter;
@@ -275,10 +427,35 @@ void AuctionHouseBot::Update()
                 Item* item = Item::CreateItem(itemEntry.first, count);
                 if (buyoutPrice == 0 || !item)
                     continue; // don't put up items we don't know the value of
-                uint32 bidPrice = buyoutPrice * (urand(m_auctionBidMin, m_auctionBidMax)) / 100;
+                uint32 bidPrice = std::min(buyoutPrice, buyoutPrice * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
                 if (item)
-                    auctionHouse->AddAuction(sAuctionHouseStore.LookupEntry(houseType == AUCTION_HOUSE_ALLIANCE ? 1 : (houseType == AUCTION_HOUSE_HORDE ? 6 : 7)), item, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, bidPrice, buyoutPrice);
+                    auctionHouse->AddAuction(sAuctionHouseStore.LookupEntry(houseIdx == AUCTION_HOUSE_ALLIANCE ? 1 : (houseIdx == AUCTION_HOUSE_HORDE ? 6 : 7)), item, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, bidPrice, buyoutPrice);
             }
+
+            // probe order: one small sell order below the reference, placed only when
+            // the current probe tier is empty and the cooldown elapsed - probes the
+            // demand level one tier at a time (85% -> 75% -> ... -> 45% of price)
+            if (mmState && mmState->price && m_mmProbeUnits)
+            {
+                static const uint32 PROBE_PCTS[5] = {85, 75, 65, 55, 45};
+                uint32 level = std::min<uint32>(4, mmState->probeLevel);
+                if (mmState->probeStock[level] < m_mmProbeUnits && mmState->probeCooldown == 0)
+                {
+                    uint32 probeUnitPrice = (uint32)(((uint64)mmState->price * PROBE_PCTS[level] + 50) / 100);
+                    if (probeUnitPrice)
+                    {
+                        uint32 probeCount = m_mmProbeUnits - mmState->probeStock[level];
+                        Item* probeItem = Item::CreateItem(prototype->ItemId, probeCount);
+                        if (probeItem)
+                        {
+                            uint32 probeBuyout = probeUnitPrice * probeCount;
+                            uint32 probeBid = std::min(probeBuyout, probeBuyout * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
+                            auctionHouse->AddAuction(sAuctionHouseStore.LookupEntry(houseIdx == AUCTION_HOUSE_ALLIANCE ? 1 : (houseIdx == AUCTION_HOUSE_HORDE ? 6 : 7)), probeItem, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, probeBid, probeBuyout);
+                        }
+                    }
+                }
+            }
+        }
         }
     } else if (m_houseAction >= MAX_AUCTION_HOUSE_TYPE && urand(0, 99) < m_chanceBuy)
     {
@@ -288,8 +465,8 @@ void AuctionHouseBot::Update()
         for (AuctionHouseObject::AuctionEntryMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
         {
             AuctionEntry* auction = itr->second;
-            if (auction->owner == 0 && auction->bid == 0)
-                continue; // ignore bidding/buying auctions that were created by ahbot and not bidded on by player
+            if (auction->owner == 0)
+                continue; // never trade with ourselves - a market maker does not buy its own sell orders
             Item* item = sAuctionMgr.GetAItem(auction->itemGuidLow);
             if (!item)
                 continue; // shouldn't happen, but apparently it does(?)
@@ -300,19 +477,834 @@ void AuctionHouseBot::Update()
             if (iterator != m_itemData.end() && iterator->second.Value == 0)
                 continue; // item is blacklisted
 
-            uint32 buyItemCheck = ValueWithVariance(iterator != m_itemData.end() ? iterator->second.Value : CalculateBuyoutPrice(prototype));
+            uint32 itemWorth = iterator != m_itemData.end() ? iterator->second.Value : CalculateBuyoutPrice(prototype);
+            bool isMMBuy = (iterator == m_itemData.end() && m_marketEnabled && prototype->Class == ITEM_CLASS_TRADE_GOODS);
+            // curated regulation scope: with the catalog enabled we only absorb items
+            // the operator chose to make a market in
+            if (isMMBuy && m_catalogEnabled && !IsCatalogItem(prototype->ItemId))
+                continue;
+            AuctionHouseBotMarketState* mmBuyState = isMMBuy ? GetMarketState(prototype->ItemId, AuctionHouseType(houseIdx)) : nullptr;
+            if (mmBuyState && mmBuyState->price)
+            {
+                // hidden buy cap = price * (100 - BuyDepth) / 100 (modern exchange
+                // style: the bid book is internal, not shown on the AH). This
+                // replaces the old static-value absorption - oversupplied items
+                // whose market price collapsed are no longer bought at the
+                // inflated static price.
+                uint32 bid = (uint32)((uint64)mmBuyState->price * (100 - m_mmBuyDepth) / 100);
+                if (bid)
+                    itemWorth = bid;
+            }
+            if (mmBuyState && !mmBuyState->capacity)
+                mmBuyState->capacity = m_catalogCapacity;
+            // inventory room: a market maker only buys what it can hold (capacity
+            // is the hard cap of the virtual ledger)
+            if (mmBuyState && mmBuyState->capacity && mmBuyState->inventory + item->GetCount() > mmBuyState->capacity)
+                continue; // warehouse full, stop absorbing this item
+            uint32 buyItemCheck = ValueWithVariance(itemWorth);
             buyItemCheck *= item->GetCount();
             uint32 bidPrice = auction->bid + auction->GetAuctionOutBid();
             if (auction->startbid > bidPrice)
                 bidPrice = auction->startbid;
             if (auction->buyout > 0 && buyItemCheck > auction->buyout)
+            {
+                // market-maker buy quota: limit absorbed volume per item per cycle
+                if (mmBuyState && m_mmBuyPerCycle)
+                {
+                    if (mmBuyState->buyoutsThisCycle + item->GetCount() > m_mmBuyPerCycle)
+                        continue; // quota exhausted, skip this listing
+                    mmBuyState->buyoutsThisCycle += item->GetCount();
+                }
                 buyoutAuctions.push_back(auction); // can't buyout item here as that modifies the AuctionEntryMap, invalidating the iterator
-            else if (buyItemCheck > bidPrice)
+            }
+            else if (!m_mmBidOnlyBuyout && buyItemCheck > bidPrice)
                 auction->UpdateBid(bidPrice);
         }
         for (auto auction : buyoutAuctions)
             auction->UpdateBid(auction->buyout);
     }
+}
+
+// Scan all auction houses for player listings and record the real per-unit market
+// price (median buyout) per item and house. Persisted into ahbot_price so prices
+// survive restarts and are visible/editable via the database.
+void AuctionHouseBot::UpdateMarketPrices()
+{
+    // scan only the maps players actually see: linked AHs collapse to NEUTRAL
+    uint32 effHouses[MAX_AUCTION_HOUSE_TYPE];
+    uint32 effCount = 0;
+    if (sWorld.getConfig(CONFIG_BOOL_ALLOW_TWO_SIDE_INTERACTION_AUCTION))
+        effHouses[effCount++] = AUCTION_HOUSE_NEUTRAL;
+    else
+        for (uint32 i = 0; i < MAX_AUCTION_HOUSE_TYPE; ++i)
+            effHouses[effCount++] = i;
+
+    for (uint32 hi = 0; hi < effCount; ++hi)
+    {
+        uint32 houseIndex = effHouses[hi];
+        AuctionHouseType houseType = AuctionHouseType(houseIndex);
+        AuctionHouseObject* auctionHouse = sAuctionMgr.GetAuctionsMap(houseType);
+
+        // item -> per-unit buyouts of ALL listings (players and ahbot: on this server
+        // the ahbot itself is the visible market), plus player listings separately,
+        // plus ahbot-owned AuctionEntry* per item for repricing
+        std::map<uint32, std::vector<uint32>> listings;
+        std::map<uint32, std::vector<uint32>> playerListings;
+        std::map<uint32, uint32> playerUnits; // player-listing supply depth per item
+        std::map<uint32, std::vector<AuctionEntry*>> ahbotListings;
+        AuctionHouseObject::AuctionEntryMapBounds bounds = auctionHouse->GetAuctionsBounds();
+        for (AuctionHouseObject::AuctionEntryMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
+        {
+            AuctionEntry* auction = itr->second;
+            if (auction->buyout == 0)
+                continue; // no buyout, not usable for quoting
+            Item* item = sAuctionMgr.GetAItem(auction->itemGuidLow);
+            if (!item)
+                continue;
+            uint32 count = std::max<uint32>(1, item->GetCount());
+            uint32 unitBuyout = auction->buyout / count;
+            listings[item->GetEntry()].push_back(unitBuyout);
+            if (auction->owner != 0)
+            {
+                playerListings[item->GetEntry()].push_back(unitBuyout);
+                playerUnits[item->GetEntry()] += count;
+            }
+            else
+                ahbotListings[item->GetEntry()].push_back(auction);
+        }
+
+        for (auto const& pair : listings)
+        {
+            uint32 itemId = pair.first;
+            std::vector<uint32> sorted(pair.second.begin(), pair.second.end());
+            std::sort(sorted.begin(), sorted.end());
+            uint32 medianAll = sorted[sorted.size() / 2]; // upper median, robust to outliers
+
+            AuctionHouseBotMarketState& state = m_marketState[itemId][houseIndex];
+            state.median = medianAll;
+            state.listingCount = uint32(pair.second.size()); // market depth (all listings)
+            state.buyoutsThisCycle = 0; // reset buy quota each refresh cycle
+
+            uint32 oldPrice = state.price;
+            uint32 staticPrice = 0;
+            if (ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId))
+                staticPrice = CalculateBuyoutPrice(proto);
+
+            // first-run seed and adaptive baseline
+            if (!state.price && staticPrice)
+                state.price = staticPrice;
+            if (!state.ref && staticPrice)
+                state.ref = staticPrice;
+
+            // demand-responsive holding targets (transition goods get xmult supply)
+            EnsureTargets(state, itemId);
+
+            uint32 floor = staticPrice ? (uint32)((uint64)staticPrice * std::min<uint32>(100, m_mmPriceFloor) / 100) : 0;
+            // the floor can never sit below the vendor buy-back price (SellPrice):
+            // below it players buy from the AH and vendor for a guaranteed profit
+            if (ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId))
+                if (proto->SellPrice > floor)
+                    floor = proto->SellPrice;
+            uint32 ceil  = staticPrice ? (uint32)((uint64)staticPrice * std::max<uint32>(100, m_mmPriceCeil) / 100) : 0;
+
+            // drain player sales since the last scan
+            uint32 soldUnits = 0, lastTradePrice = 0;
+            sAuctionMgr.DrainSoldItems(itemId, houseIndex, soldUnits, lastTradePrice);
+            state.soldUnits = soldUnits;
+
+            // lowest player listing unit price (sell pressure / lower-bound signal)
+            uint32 playerBestAsk = 0;
+            auto pitr = playerListings.find(itemId);
+            if (pitr != playerListings.end() && !pitr->second.empty())
+            {
+                playerBestAsk = pitr->second[0];
+                for (uint32 v : pitr->second)
+                    if (v < playerBestAsk)
+                        playerBestAsk = v;
+            }
+            state.playerBestAsk = playerBestAsk;
+
+            // current tier-0 stock (pre-reprice) for the net-depletion eaten check
+            uint32 tier0Now = 0;
+            if (state.price)
+            {
+                auto a0 = ahbotListings.find(itemId);
+                if (a0 != ahbotListings.end())
+                {
+                    for (AuctionEntry* auction : a0->second)
+                    {
+                        Item* it = sAuctionMgr.GetAItem(auction->itemGuidLow);
+                        if (!it)
+                            continue;
+                        uint32 unit = auction->buyout / std::max<uint32>(1, it->GetCount());
+                        if (unit >= state.price && unit < (uint64)state.price * (100 + GetLadderStep(state.price)) / 100)
+                            tier0Now += it->GetCount();
+                    }
+                }
+            }
+
+            // ---- central-bank price policy ----
+            // The fair value is UNKNOWN: it is discovered from the market maker's
+            // own order-flow imbalance (quantity, never inventory levels):
+            //   - players flooding us with supply (bought >> sold) -> our price is
+            //     too high -> nudge the anchor down so they stop dumping on us
+            //   - players consuming our supply (sold >> bought) -> our price is too
+            //     low -> nudge the anchor up
+            //   - balanced or quiet -> the price holds (stability first)
+            // The anchor moves at most FlowMovePct per FlowWindowScans scans and is
+            // bounded by [floor, ceil] - the SellPrice floor prevents arbitrage.
+            uint32 newPrice = oldPrice;
+            if (soldUnits > 0)
+            {
+                state.idleScans = 0;
+                // eaten check: the ask side is being consumed -> answer with more
+                // supply (target up); the price itself follows the flow rule below
+                if (state.prevTierStock[0] > 0 &&
+                    (soldUnits >= (uint64)state.prevTierStock[0] * std::min<uint32>(100, m_mmEatRatio) / 100 ||
+                     tier0Now < (uint64)state.prevTierStock[0] * (100 - std::min<uint32>(100, m_mmEatRatio)) / 100))
+                {
+                    state.probeLevel = 0;      // restart probing near the (higher) demand
+                    state.probeCooldown = 0;
+                    // demand response: restock more aggressively
+                    if (state.capacity)
+                        state.target = std::min<uint32>(state.capacity, state.target + state.target * std::min<uint32>(100, m_catalogDemandBoostPct) / 100);
+                }
+                // probe outcome (observation only): a below-quote sale is demand
+                // discovery - recorded for the operator, never a pricing input
+                if (lastTradePrice && lastTradePrice < (uint64)oldPrice * 95 / 100)
+                {
+                    int best = 0;
+                    uint64 bestDiff = ~0ull;
+                    for (int i = 0; i < 5; ++i)
+                    {
+                        uint64 target = (uint64)oldPrice * AHBOT_PROBE_PCTS[i] / 100;
+                        uint64 diff = lastTradePrice > target ? lastTradePrice - target : target - lastTradePrice;
+                        if (diff < bestDiff)
+                        {
+                            bestDiff = diff;
+                            best = i;
+                        }
+                    }
+                    state.probeDemandLevel = std::max<uint32>(state.probeDemandLevel, best);
+                    state.probeStaleScans = 0;
+                    // advance the probe one tier deeper (one level per scan max)
+                    if (state.probeCooldown)
+                        --state.probeCooldown;
+                    if (state.probeLevel < 4 && state.probeCooldown == 0)
+                    {
+                        state.probeLevel++;
+                        state.probeCooldown = m_mmProbeInterval;
+                    }
+                }
+            }
+            else
+            {
+                ++state.idleScans;
+                if (state.probeCooldown)
+                    --state.probeCooldown;
+                // supply contraction on idle (quantity, not a price cut): an unsold
+                // probe or a quiet book is NOT a reason to lower the price
+                if (state.idleScans >= m_mmIdleThreshold && state.target)
+                {
+                    uint32 baseline = GetBaselineTarget(itemId);
+                    if (state.target > baseline)
+                        state.target = std::max<uint32>(baseline, state.target - state.target * std::min<uint32>(100, m_catalogIdleDecayPct) / 100);
+                }
+            }
+            // stale probe demand evidence fades after ~10 minutes of no outcomes
+            if (++state.probeStaleScans > 60)
+            {
+                state.probeDemandLevel = 0xFF;
+                state.probeStaleScans = 0;
+            }
+
+            // ---- long-period flow settlement (price anchor moves) ----
+            // flowBought/flowSold accumulate across scans and restarts (persisted in
+            // ahbot_inventory). Once per FlowSettleHours the anchor moves if the flow
+            // is clearly one-sided; otherwise the price holds. The move is ASYMMETRIC:
+            // overpriced (players flood us with supply) corrects down fast (5%),
+            // underpriced (players consume us) rises very slowly (1%) - welfare
+            // protection: prices never run away upward, but bad prices get fixed.
+            {
+                uint32 now = time(nullptr);
+                if (oldPrice && (!state.lastSettleTime || now - state.lastSettleTime >= m_flowSettleHours * HOUR))
+                {
+                    uint32 flowTotal = state.flowBought + state.flowSold;
+                    if (flowTotal >= m_flowMinUnits)
+                    {
+                        if (state.flowBought > (uint64)state.flowSold * m_flowRatio / 100)
+                            newPrice = (uint32)(((uint64)oldPrice * (100 - std::min<uint32>(50, m_flowMoveDownPct)) + 50) / 100);
+                        else if (state.flowSold > (uint64)state.flowBought * m_flowRatio / 100)
+                            newPrice = (uint32)(((uint64)oldPrice * (100 + std::min<uint32>(50, m_flowMoveUpPct)) + 50) / 100);
+                    }
+                    state.flowBought = 0;
+                    state.flowSold = 0;
+                    state.lastSettleTime = now;
+                    CharacterDatabase.PExecute("UPDATE ahbot_inventory SET flow_bought = 0, flow_sold = 0 WHERE item = %u AND auction_house = %u", itemId, houseIndex);
+                }
+            }
+
+            // ---- player-listing-depth supply regulation (every scan) ----
+            // The supply we inject (target) is sized by how much supply players
+            // themselves provide: deep player listings -> shrink our injection (step
+            // down toward the baseline), thin player listings -> expand our injection
+            // (step up toward capacity). Quantity, not price.
+            {
+                auto pUnits = playerUnits.find(itemId);
+                uint32 depth = pUnits != playerUnits.end() ? pUnits->second : 0;
+                if (state.target && state.capacity)
+                {
+                    uint32 baseline = GetBaselineTarget(itemId);
+                    uint32 step = std::max<uint32>(1, state.target * std::min<uint32>(50, m_depthStepPct) / 100);
+                    if (depth >= (uint64)state.target * std::max<uint32>(100, m_depthHighPct) / 100)
+                        state.target = std::max<uint32>(baseline, state.target > step ? state.target - step : baseline);
+                    else if (depth <= (uint64)state.target * m_depthLowPct / 100)
+                        state.target = std::min<uint32>(state.capacity, state.target + step);
+                }
+            }
+
+            // last-trade EMA + rolling trade log (seed for future price-curve feature).
+            // Only at-quote (main ladder) sales feed the realized-price EMA: below-quote
+            // (probe/discount) sales are demand-discovery evidence (probeDemandLevel)
+            // but must NOT drag the quote down - otherwise the bot's own discounted
+            // probes would spiral the price toward the floor on a low-demand server.
+            if (lastTradePrice)
+            {
+                state.tradeLog.push_back(std::make_pair(lastTradePrice, soldUnits));
+                while (state.tradeLog.size() > 20)
+                    state.tradeLog.pop_front();
+                if (lastTradePrice >= (uint64)oldPrice * 95 / 100)
+                {
+                    if (state.lastTradeEMA)
+                        state.lastTradeEMA = (uint32)(((uint64)lastTradePrice * m_mmSmoothing + (uint64)state.lastTradeEMA * (100 - m_mmSmoothing)) / 100);
+                    else
+                        state.lastTradeEMA = lastTradePrice;
+                }
+            }
+            // adaptive baseline: only follows market signals down (never up on its own)
+            if (playerBestAsk && playerBestAsk < state.ref)
+                state.ref = playerBestAsk;
+            if (state.lastTradeEMA && state.lastTradeEMA < state.ref)
+                state.ref = state.lastTradeEMA;
+
+            // clamp: seed first (a fresh item with newPrice==0 must get the static
+            // anchor, not the floor), then bound into [floor, ceil]
+            if (!newPrice)
+                newPrice = oldPrice ? oldPrice : staticPrice;
+            if (floor && newPrice < floor)
+                newPrice = floor;
+            if (ceil && newPrice > ceil)
+                newPrice = ceil;
+            state.price = newPrice;
+            state.deviation = (float)std::abs((int64)medianAll - (int64)newPrice) / std::max<uint32>(1, newPrice);
+
+            // persist the closing quote (price) - the database is the price source
+            if (newPrice != oldPrice)
+            {
+                CharacterDatabase.PExecute("DELETE FROM ahbot_price WHERE item = %u AND auction_house = %u", itemId, houseIndex);
+                CharacterDatabase.PExecute("INSERT INTO ahbot_price (item, price, auction_house) VALUES (%u, %u, %u)", itemId, newPrice, houseIndex);
+            }
+
+            // ---- reprice existing ahbot listings on meaningful price moves ----
+            // (probe orders below the reference follow the price too)
+            static const uint32 PROBE_PCTS[5] = {85, 75, 65, 55, 45};
+            auto aitr = ahbotListings.find(itemId);
+            bool priceMoved = oldPrice && (uint32)std::abs((int64)newPrice - (int64)oldPrice) * 100 / oldPrice >= m_mmRepriceThreshold;
+            if (state.price && aitr != ahbotListings.end() && (oldPrice == 0 || priceMoved))
+            {
+                for (AuctionEntry* auction : aitr->second)
+                {
+                    Item* item = sAuctionMgr.GetAItem(auction->itemGuidLow);
+                    if (!item)
+                        continue;
+                    uint32 oldUnit = auction->buyout / std::max<uint32>(1, item->GetCount());
+                    uint32 newUnit;
+                    if (oldPrice && oldUnit < (uint64)oldPrice * 95 / 100)
+                    {
+                        // probe order: re-anchor to its probe level of the new price
+                        int best = 0;
+                        uint64 bestDiff = ~0ull;
+                        for (int i = 0; i < 5; ++i)
+                        {
+                            uint64 target = (uint64)state.price * PROBE_PCTS[i] / 100;
+                            uint64 diff = oldUnit > target ? oldUnit - target : target - oldUnit;
+                            if (diff < bestDiff)
+                            {
+                                bestDiff = diff;
+                                best = i;
+                            }
+                        }
+                        newUnit = (uint32)(((uint64)state.price * PROBE_PCTS[best] + 50) / 100);
+                    }
+                    else
+                    {
+                        // main ladder: preserve the tier position in the new ladder
+                        uint32 step = oldPrice ? GetLadderStep(oldPrice) : 1;
+                        uint32 tier = oldPrice ? (uint32)(((uint64)oldUnit * 100 / oldPrice - 100) / step) : 0;
+                        uint32 mainDepth = std::min<uint32>(MARKET_MAKER_MAX_LADDER, (50 / std::max<uint32>(1, GetLadderStep(state.price))) + 1);
+                        if (tier >= mainDepth)
+                            tier = mainDepth - 1;
+                        newUnit = (uint32)(((uint64)state.price * (100 + tier * GetLadderStep(state.price)) + 50) / 100);
+                    }
+                    if (!newUnit)
+                        newUnit = state.price;
+                    uint32 newBuyout = newUnit * item->GetCount();
+                    if (newBuyout && newBuyout != auction->buyout)
+                    {
+                        // keep bid/startbid within the buyout (no inverted bid > buyout)
+                        if (auction->bid > newBuyout)
+                            auction->bid = newBuyout;
+                        if (auction->startbid > newBuyout)
+                            auction->startbid = newBuyout;
+                        auction->buyout = newBuyout;
+                        CharacterDatabase.PExecute("UPDATE auction SET buyoutprice = %u, lastbid = %u, startbid = %u WHERE id = %u", newBuyout, auction->bid, auction->startbid, auction->Id);
+                    }
+                }
+            }
+
+            // ---- own main-tier stock + probe stock for the next scan ----
+            std::array<uint32, MARKET_MAKER_MAX_LADDER> nextTier = {};
+            std::array<uint32, 5> nextProbe = {};
+            if (state.price && aitr != ahbotListings.end())
+            {
+                for (AuctionEntry* auction : aitr->second)
+                {
+                    Item* item = sAuctionMgr.GetAItem(auction->itemGuidLow);
+                    if (!item)
+                        continue;
+                    uint32 unit = auction->buyout / std::max<uint32>(1, item->GetCount());
+                    if (unit < (uint64)state.price * 95 / 100)
+                    {
+                        // probe tier: nearest of 85/75/65/55/45%
+                        int best = 0;
+                        uint64 bestDiff = ~0ull;
+                        for (int i = 0; i < 5; ++i)
+                        {
+                            uint64 target = (uint64)state.price * PROBE_PCTS[i] / 100;
+                            uint64 diff = unit > target ? unit - target : target - unit;
+                            if (diff < bestDiff)
+                            {
+                                bestDiff = diff;
+                                best = i;
+                            }
+                        }
+                        nextProbe[best] += item->GetCount();
+                    }
+                    else
+                    {
+                        uint32 tier = (uint32)(((uint64)unit * 100 / state.price - 100) / GetLadderStep(state.price));
+                        if (tier < MARKET_MAKER_MAX_LADDER)
+                            nextTier[tier] += item->GetCount();
+                    }
+                }
+            }
+            state.prevTierStock = state.tierStock; // snapshot for next scan's eaten check
+            state.tierStock = nextTier;
+            state.probeStock = nextProbe;
+        }
+    }
+}
+
+// Market-maker quote state for an item on a house (nullptr if no data yet)
+AuctionHouseBotMarketState* AuctionHouseBot::GetMarketState(uint32 itemId, AuctionHouseType houseType)
+{
+    auto itr = m_marketState.find(itemId);
+    if (itr == m_marketState.end())
+        return nullptr;
+    return &itr->second[houseType];
+}
+
+// Effective ladder step % for a price level: low-price items use smaller
+// percentage steps so a tier jump stays meaningful. Pure percentage math;
+// tier prices are rounded to integers at the call sites.
+uint32 AuctionHouseBot::GetLadderStep(uint32 priceRef) const
+{
+    uint32 step = m_mmLadderStep;
+    if (priceRef < 100)
+        step = std::min(step, 5u);      // < 1s/unit: at most 5%
+    else if (priceRef < 500)
+        step = std::min(step, 10u);     // < 5s/unit: at most 10%
+    else if (priceRef < 2000)
+        step = std::min(step, 25u);     // < 20s/unit: at most 25%
+    return step;
+}
+
+// Effective in-memory auction-map index a house action operates on: with linked
+// auction houses every action collapses to the NEUTRAL map (the only one players
+// ever see). Kept per-house on servers without cross-faction auctions.
+uint32 AuctionHouseBot::EffectiveHouseIndex(uint32 houseType) const
+{
+    if (sWorld.getConfig(CONFIG_BOOL_ALLOW_TWO_SIDE_INTERACTION_AUCTION))
+        return AUCTION_HOUSE_NEUTRAL;
+    return houseType;
+}
+
+// Build the curated Class7 universe (droppable + priceable, no BoP/quest, no loot
+// containers) from world loot tables, then overlay operator overrides. Hot-reload
+// friendly: .ahbot reload re-runs this, so catalog changes apply without restart.
+void AuctionHouseBot::LoadCatalogOverrides()
+{
+    m_catalogUniverse.clear();
+    m_catalogOverrides.clear();
+
+    if (auto result = WorldDatabase.PQuery(
+        "SELECT DISTINCT l.item FROM "
+        "(SELECT item FROM creature_loot_template "
+        " UNION SELECT item FROM gameobject_loot_template "
+        " UNION SELECT item FROM fishing_loot_template "
+        " UNION SELECT item FROM skinning_loot_template "
+        " UNION SELECT item FROM disenchant_loot_template "
+        " UNION SELECT item FROM item_loot_template) l "
+        "JOIN item_template it ON it.entry = l.item "
+        "WHERE it.class = 7 AND it.quality > 0 "
+        "AND it.bonding NOT IN (1, 4) "
+        "AND (it.flags & 4) = 0 "
+        "AND (it.sellprice > 0 OR it.buyprice > 0) "
+        // the bot sells RAW MATERIALS only - exclude profession finished goods
+        // (craftable items with no genuine natural source: bolts of cloth, bars,
+        // cured leather, blasting powder...). Kept when the item has a real
+        // skinning/disenchant/fishing source or is a real world drop (>= 3
+        // creature sources), so e.g. Large Prismatic Shard / Arcane Dust stay.
+        "AND l.item NOT IN ("
+        "SELECT m.ei FROM ("
+        "SELECT EffectItemType1 AS ei FROM spell_template WHERE (Effect1 IN (24,43)) AND EffectItemType1 > 0 "
+        "UNION SELECT EffectItemType2 FROM spell_template WHERE (Effect2 IN (24,43)) AND EffectItemType2 > 0 "
+        "UNION SELECT EffectItemType3 FROM spell_template WHERE (Effect3 IN (24,43)) AND EffectItemType3 > 0"
+        ") m "
+        "WHERE m.ei NOT IN (SELECT item FROM skinning_loot_template) "
+        "AND m.ei NOT IN (SELECT item FROM disenchant_loot_template) "
+        "AND m.ei NOT IN (SELECT item FROM fishing_loot_template) "
+        "AND (SELECT COUNT(*) FROM creature_loot_template c WHERE c.item = m.ei) < 3"
+        ") "
+        // the precise instance rule: exclude ONLY materials that are BOTH used by
+        // Outland (301+) profession recipes AND dropped exclusively inside
+        // instances (no creature source on the normal maps 530/1/0/532) - i.e.
+        // Sunmote, Heart of Darkness, Nether Vortex, Primal Nether. Earth
+        // instance materials (Dark Iron Ore, Molten Core cores, Bloodvine...) are
+        // NOT 301+ recipe materials, so they stay - the bot supplies them.
+        "AND l.item NOT IN ("
+        "SELECT cl.item FROM creature_loot_template cl JOIN creature c ON c.id = cl.entry "
+        "WHERE cl.item IN ("
+        "SELECT DISTINCT x.reagent FROM ("
+        "SELECT st.Reagent1 AS reagent FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent1 > 0 "
+        "UNION ALL SELECT st.Reagent2 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent2 > 0 "
+        "UNION ALL SELECT st.Reagent3 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent3 > 0 "
+        "UNION ALL SELECT st.Reagent4 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent4 > 0 "
+        "UNION ALL SELECT st.Reagent5 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent5 > 0 "
+        "UNION ALL SELECT st.Reagent6 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent6 > 0 "
+        "UNION ALL SELECT st.Reagent7 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent7 > 0 "
+        "UNION ALL SELECT st.Reagent8 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent8 > 0"
+        ") x JOIN item_template itx ON itx.entry = x.reagent WHERE itx.class = 7"
+        ") "
+        "GROUP BY cl.item HAVING SUM(CASE WHEN c.map IN (530, 1, 0, 532) THEN 1 ELSE 0 END) = 0"
+        ")"))
+    {
+        do
+        {
+            uint32 itemId = result->Fetch()->GetUInt32();
+            if (itemId)
+                m_catalogUniverse.insert(itemId);
+        } while (result->NextRow());
+    }
+    m_catalogUniverseVec.assign(m_catalogUniverse.begin(), m_catalogUniverse.end());
+    std::sort(m_catalogUniverseVec.begin(), m_catalogUniverseVec.end());
+
+    if (auto result = CharacterDatabase.Query("SELECT item, enabled, target, capacity, policy FROM ahbot_catalog"))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            AuctionHouseBotCatalogEntry e;
+            e.enabled = fields[1].GetUInt32() != 0;
+            e.target = fields[2].GetUInt32();
+            e.capacity = fields[3].GetUInt32();
+            e.policy = fields[4].GetUInt32();
+            m_catalogOverrides[fields[0].GetUInt32()] = e;
+        } while (result->NextRow());
+    }
+    sLog.outString("AHBot market-maker catalog: %u items (%u operator overrides)", (uint32)m_catalogUniverse.size(), (uint32)m_catalogOverrides.size());
+}
+
+AuctionHouseBotCatalogEntry AuctionHouseBot::GetCatalogEntry(uint32 itemId) const
+{
+    AuctionHouseBotCatalogEntry e;
+    auto itr = m_catalogOverrides.find(itemId);
+    if (itr != m_catalogOverrides.end())
+    {
+        e.enabled = itr->second.enabled;
+        e.target = itr->second.target;
+        e.capacity = itr->second.capacity;
+    }
+    return e;
+}
+
+bool AuctionHouseBot::IsCatalogItem(uint32 itemId) const
+{
+    if (m_catalogUniverse.find(itemId) == m_catalogUniverse.end())
+        return false;
+    return GetCatalogEntry(itemId).enabled;
+}
+
+bool AuctionHouseBot::IsTransitionItem(uint32 itemId) const
+{
+    // operator marking wins (interface kept for policy tiers): policy=1 forces a
+    // market good, policy=2 forces a transition good
+    AuctionHouseBotCatalogEntry cat = GetCatalogEntry(itemId);
+    if (cat.policy == 1)
+        return false;
+    if (cat.policy == 2)
+        return true;
+    // auto tiering: ItemLevel is authoritative for materials in TBC data (no zero
+    // values in the catalog); values at or below the threshold - including the
+    // common default "1" - are low-level transition goods. Used only for ABUNDANT
+    // SUPPLY (target x TransitionTargetMult); prices are not tiered.
+    if (!m_transitionItemLevel)
+        return false;
+    ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId);
+    return proto && proto->ItemLevel <= m_transitionItemLevel;
+}
+
+uint32 AuctionHouseBot::GetBaselineTarget(uint32 itemId) const
+{
+    AuctionHouseBotCatalogEntry cat = GetCatalogEntry(itemId);
+    uint32 base = cat.target ? cat.target : m_catalogTarget;
+    if (IsTransitionItem(itemId))
+        base = std::min<uint32>(m_catalogCapacity, (uint64)base * m_transitionTargetMult / 100);
+    return base;
+}
+
+void AuctionHouseBot::EnsureTargets(AuctionHouseBotMarketState& state, uint32 itemId)
+{
+    if (state.target && state.capacity)
+        return;
+    AuctionHouseBotCatalogEntry cat = GetCatalogEntry(itemId);
+    uint32 target = cat.target ? cat.target : m_catalogTarget;
+    uint32 capacity = cat.capacity ? cat.capacity : m_catalogCapacity;
+    if (!capacity)
+        capacity = m_catalogCapacity;
+    if (IsTransitionItem(itemId))
+        target = std::min<uint32>(capacity, (uint64)target * m_transitionTargetMult / 100);
+    state.target = target;
+    state.capacity = capacity;
+}
+
+// Load the virtual inventory ledger (ahbot_inventory). States are created lazily by
+// the market scan; the ledger rows must survive restarts so holdings are keyed the
+// same way (item -> house array index).
+void AuctionHouseBot::LoadInventory()
+{
+    if (auto result = CharacterDatabase.Query("SELECT item, auction_house, qty, avg_cost, spent, earned, flow_bought, flow_sold FROM ahbot_inventory"))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            uint32 itemId = fields[0].GetUInt32();
+            uint32 house = fields[1].GetUInt32();
+            if (house >= MAX_AUCTION_HOUSE_TYPE)
+                continue;
+            AuctionHouseBotMarketState& state = m_marketState[itemId][house];
+            state.inventory = fields[2].GetUInt32();
+            state.avgCost = fields[3].GetUInt32();
+            state.spentGold = fields[4].GetUInt32();
+            state.earnedGold = fields[5].GetUInt32();
+            state.flowBought = fields[6].GetUInt32();
+            state.flowSold = fields[7].GetUInt32();
+        } while (result->NextRow());
+    }
+    // one-time reconciliation: ahbot listings that already exist in the auction
+    // table (from before the ledger, or restarts) back the ledger so the visible
+    // book stays continuous; items with a ledger row keep their exact holdings.
+    // houseid -> map index: 1/2/3 alliance, 4/5/6 horde, 7 neutral (linked AHs
+    // load everything into the neutral map, which the market scan resolves via
+    // EffectiveHouseIndex anyway).
+    if (auto result = CharacterDatabase.PQuery(
+        "SELECT item_template, houseid, SUM(item_count) FROM auction WHERE itemowner = 0 GROUP BY item_template, houseid"))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            uint32 itemId = fields[0].GetUInt32();
+            uint32 houseid = fields[1].GetUInt32();
+            uint32 listed = fields[2].GetUInt32();
+            uint32 h = houseid <= 3 ? AUCTION_HOUSE_ALLIANCE : (houseid <= 6 ? AUCTION_HOUSE_HORDE : AUCTION_HOUSE_NEUTRAL);
+            AuctionHouseBotMarketState& state = m_marketState[itemId][h];
+            if (state.inventory == 0 && listed)
+                state.inventory = listed;
+        } while (result->NextRow());
+    }
+}
+
+uint32 AuctionHouseBot::GetBookedUnits(AuctionHouseBotMarketState const& state) const
+{
+    uint32 booked = 0;
+    for (uint32 t = 0; t < MARKET_MAKER_MAX_LADDER; ++t)
+        booked += state.tierStock[t];
+    for (uint32 p = 0; p < 5; ++p)
+        booked += state.probeStock[p];
+    return booked;
+}
+
+// A player bought one of our listings (or won it at expiry): the goods leave our
+// holdings. goldReceived = final price paid (the gold the economy lost to our ask).
+void AuctionHouseBot::DeductInventory(uint32 itemId, uint32 houseIdx, uint32 count, uint32 goldReceived)
+{
+    if (houseIdx >= MAX_AUCTION_HOUSE_TYPE)
+        return;
+    AuctionHouseBotMarketState& state = m_marketState[itemId][houseIdx];
+    state.inventory = state.inventory > count ? state.inventory - count : 0;
+    state.earnedGold += goldReceived;
+    state.flowSold += count; // central-bank flow signal: players consumed our supply
+    CharacterDatabase.PExecute("UPDATE ahbot_inventory SET qty = %u, earned = %u, flow_sold = %u WHERE item = %u AND auction_house = %u",
+                               state.inventory, state.earnedGold, state.flowSold, itemId, houseIdx);
+}
+
+// The bot bought a player listing (buyout or won bid at expiry): the goods enter
+// our holdings at a weighted average cost; goldPaid = final price (gold created
+// into the economy). Spent/earned give the operator the gold regulation observable.
+void AuctionHouseBot::RecordBotPurchase(uint32 itemId, uint32 houseIdx, uint32 count, uint32 unitCost, uint32 goldPaid)
+{
+    if (houseIdx >= MAX_AUCTION_HOUSE_TYPE)
+        return;
+    AuctionHouseBotMarketState& state = m_marketState[itemId][houseIdx];
+    uint64 newQty = (uint64)state.inventory + count;
+    state.avgCost = (uint32)(((uint64)state.avgCost * state.inventory + (uint64)unitCost * count) / std::max<uint64>(1, newQty));
+    state.inventory = (uint32)newQty;
+    state.spentGold += goldPaid;
+    state.flowBought += count; // central-bank flow signal: players sold us supply
+    CharacterDatabase.PExecute("INSERT INTO ahbot_inventory (item, auction_house, qty, avg_cost, spent, earned, flow_bought, flow_sold) VALUES (%u, %u, %u, %u, %u, %u, %u, %u) AS new "
+                               "ON DUPLICATE KEY UPDATE qty = new.qty, avg_cost = new.avg_cost, spent = new.spent, flow_bought = new.flow_bought",
+                               itemId, houseIdx, state.inventory, state.avgCost, state.spentGold, state.earnedGold, state.flowBought, state.flowSold);
+}
+
+// World supply: refill a rotating batch of catalog items toward their target
+// holdings. RefillPerCycle bounds the mint rate so consumption can outpace it
+// (the bounded book that makes price discovery possible); RefillBatch rotates the
+// batch so every catalog item is topped up within a few minutes.
+void AuctionHouseBot::RefillCatalog(uint32 houseIdx)
+{
+    if (m_catalogUniverseVec.empty())
+        return;
+    uint32 batch = std::max<uint32>(1, m_catalogRefillBatch);
+    uint32 done = 0;
+    uint32 n = (uint32)m_catalogUniverseVec.size();
+    for (uint32 i = 0; i < n && done < batch; ++i)
+    {
+        uint32 itemId = m_catalogUniverseVec[(m_catalogRotate + i) % n];
+        if (!IsCatalogItem(itemId))
+            continue;
+        AuctionHouseBotMarketState& state = m_marketState[itemId][houseIdx];
+        EnsureTargets(state, itemId);
+        if (state.inventory >= state.target)
+            continue;
+        uint32 refill = std::min<uint32>(state.target - state.inventory, m_catalogRefillPerCycle);
+        if (!refill)
+            continue;
+        state.inventory += refill;
+        CharacterDatabase.PExecute("INSERT INTO ahbot_inventory (item, auction_house, qty, avg_cost, spent, earned) VALUES (%u, %u, %u, 0, 0, 0) AS new "
+                                   "ON DUPLICATE KEY UPDATE qty = new.qty",
+                                   itemId, houseIdx, state.inventory);
+        ++done;
+    }
+    m_catalogRotate = (m_catalogRotate + batch) % n;
+}
+
+// Inventory-backed ladder quote for a rotating batch of catalog items. The book is
+// topped up to the target exposure but only out of available holdings (inventory -
+// booked), so a drained book stays drained until world supply refills - that is the
+// bounded book that lets the eaten-tier check move the price. Probe orders below
+// the reference also draw from holdings.
+void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 houseIdx)
+{
+    if (m_catalogUniverseVec.empty())
+        return;
+    AuctionHouseType houseType = AuctionHouseType(houseIdx);
+    AuctionHouseEntry const* houseEntry = sAuctionHouseStore.LookupEntry(houseIdx == AUCTION_HOUSE_ALLIANCE ? 1 : (houseIdx == AUCTION_HOUSE_HORDE ? 6 : 7));
+    static const uint32 PROBE_PCTS[5] = {85, 75, 65, 55, 45};
+    // tier volume weights: cheaper (deeper) tiers carry more of the book so a
+    // sweep of tier 0 is a meaningful demand signal
+    static const uint32 TIER_WEIGHTS[6] = {40, 25, 15, 10, 5, 5};
+
+    uint32 batch = std::max<uint32>(1, m_catalogListBatch);
+    uint32 done = 0;
+    uint32 n = (uint32)m_catalogUniverseVec.size();
+    for (uint32 i = 0; i < n && done < batch; ++i)
+    {
+        uint32 itemId = m_catalogUniverseVec[(m_catalogRotate + i) % n];
+        if (!IsCatalogItem(itemId))
+            continue;
+        ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId);
+        if (!proto || proto->GetMaxStackSize() == 0)
+            continue;
+        AuctionHouseBotMarketState* state = GetMarketState(itemId, houseType);
+        if (!state || !state->price)
+            continue;
+        EnsureTargets(*state, itemId);
+        uint32 booked = GetBookedUnits(*state);
+        if (state->inventory <= booked)
+            continue; // nothing available to quote
+        uint32 available = state->inventory - booked;
+        uint32 toList = state->target > booked ? std::min<uint32>(available, state->target - booked) : 0;
+        if (!toList)
+            continue;
+        ++done;
+
+        uint32 step = GetLadderStep(state->price);
+        uint32 mainDepth = std::min<uint32>(MARKET_MAKER_MAX_LADDER, (50 / std::max<uint32>(1, step)) + 1);
+        uint32 listedThisCycle = 0;
+        uint32 remaining = toList;
+        for (uint32 t = 0; t < mainDepth && remaining > 0; ++t)
+        {
+            uint32 weight = t < 6 ? TIER_WEIGHTS[t] : 2;
+            uint32 tierUnits = std::max<uint32>(1, (uint64)remaining * weight / 100);
+            if (tierUnits > remaining)
+                tierUnits = remaining;
+            uint32 unitPrice = (uint32)(((uint64)state->price * (100 + t * step) + 50) / 100);
+            if (!unitPrice)
+                continue;
+            // stack-capped auctions at this tier price
+            uint32 stackMax = std::max<uint32>(1, proto->GetMaxStackSize());
+            uint32 unitsLeft = tierUnits;
+            while (unitsLeft > 0)
+            {
+                uint32 count = std::min<uint32>(stackMax, unitsLeft);
+                uint32 buyoutPrice = unitPrice * count;
+                Item* item = Item::CreateItem(itemId, count);
+                if (!item)
+                    break;
+                uint32 bidPrice = std::min(buyoutPrice, buyoutPrice * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
+                auctionHouse->AddAuction(houseEntry, item, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, bidPrice, buyoutPrice);
+                unitsLeft -= count;
+                listedThisCycle += count;
+                remaining -= count;
+            }
+        }
+        (void)listedThisCycle;
+
+        // probe order: one small sell order below the reference, placed only when
+        // the current probe tier is empty and the cooldown elapsed; draws from the
+        // same finite holdings so probes cannot mint supply out of thin air
+        if (m_mmProbeUnits && state->probeCooldown == 0)
+        {
+            uint32 level = std::min<uint32>(4, state->probeLevel);
+            if (state->probeStock[level] < m_mmProbeUnits &&
+                state->inventory >= booked + listedThisCycle + m_mmProbeUnits)
+            {
+                uint32 probeUnitPrice = (uint32)(((uint64)state->price * PROBE_PCTS[level] + 50) / 100);
+                if (probeUnitPrice)
+                {
+                    uint32 probeCount = m_mmProbeUnits - state->probeStock[level];
+                    Item* probeItem = Item::CreateItem(itemId, probeCount);
+                    if (probeItem)
+                    {
+                        uint32 probeBuyout = probeUnitPrice * probeCount;
+                        uint32 probeBid = std::min(probeBuyout, probeBuyout * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
+                        auctionHouse->AddAuction(houseEntry, probeItem, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, probeBid, probeBuyout);
+                    }
+                }
+            }
+        }
+    }
+    m_catalogRotate = (m_catalogRotate + batch) % n;
 }
 
 bool AuctionHouseBot::ReloadAllConfig()

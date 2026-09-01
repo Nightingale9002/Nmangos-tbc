@@ -191,10 +191,49 @@ class AuctionHouseMgr
 
         void Update();
 
+        // market-maker demand signal: record player-won sales (units and the actual
+        // unit price paid) per item+house so the AHBot can anchor its quote to the
+        // most recent trade price. houseId is the in-memory AuctionHouseType index
+        // (0/1/2) - must match the index used by the AHBot market scan (cross-faction
+        // AH collapses to NEUTRAL).
+        void RecordSoldItem(uint32 itemTemplate, uint32 houseId, uint32 count, uint32 unitPrice)
+        {
+            std::pair<uint32, uint32>& entry = m_soldItemCounts[std::make_pair(itemTemplate, houseId)];
+            entry.first += count;
+            entry.second = unitPrice; // most recent trade price wins
+        }
+        void DrainSoldItems(uint32 itemTemplate, uint32 houseId, uint32& count, uint32& lastPrice)
+        {
+            auto itr = m_soldItemCounts.find(std::make_pair(itemTemplate, houseId));
+            if (itr != m_soldItemCounts.end())
+            {
+                count = itr->second.first;
+                lastPrice = itr->second.second;
+                m_soldItemCounts.erase(itr);
+            }
+            else
+            {
+                count = 0;
+                lastPrice = 0;
+            }
+        }
+        // index (0/1/2) of the in-memory auction map a given house entry resolves to
+        uint32 GetAuctionMapIndex(AuctionHouseEntry const* house) const
+        {
+            AuctionHouseObject const* map = const_cast<AuctionHouseMgr*>(this)->GetAuctionsMap(house);
+            for (uint32 i = 0; i < MAX_AUCTION_HOUSE_TYPE; ++i)
+                if (&mAuctions[i] == map)
+                    return i;
+            return AUCTION_HOUSE_NEUTRAL;
+        }
+
     private:
         AuctionHouseObject  mAuctions[MAX_AUCTION_HOUSE_TYPE];
 
         ItemMap             mAitems;
+
+        // item+house -> (units bought, most recent unit price paid) since last AHBot scan
+        std::map<std::pair<uint32, uint32>, std::pair<uint32, uint32>> m_soldItemCounts;
 };
 
 #define sAuctionMgr MaNGOS::Singleton<AuctionHouseMgr>::Instance()

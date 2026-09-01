@@ -52,6 +52,7 @@ AuctionHouseBot.Loot.Disenchant =   10, 12,  1,  1
 AuctionHouseBot.Loot.Fishing    =    3,  5, 30, 40
 AuctionHouseBot.Loot.Gameobject =   13, 16,  7, 11
 AuctionHouseBot.Loot.Skinning   =    3,  5, 50, 50
+AuctionHouseBot.Loot.Item       =    5,  8,  1,  2
 
 ###################################################################################################################
 # Profession craftable items added to AH.
@@ -223,3 +224,82 @@ AuctionHouseBot.Time.Max = 24
 # Value must be in range 0-200. Default value is 80.
 ###################################################################################################################
 AuctionHouseBot.Buy.Value = 80
+###################################################################################################################
+# Market-maker dynamic pricing (trade goods / Class 7)
+#
+# AuctionHouseBot.Value.Dynamic enables the market-maker layer: prices follow the
+# real market (median buyout + player trades), the bot quotes an ask ladder above
+# its mid and keeps a hidden bid cap below it.
+###################################################################################################################
+AuctionHouseBot.Value.Dynamic = 0
+AuctionHouseBot.Value.DynamicRefresh = 60
+
+###################################################################################################################
+# Market-maker catalog + virtual inventory (curated Class7 supply)
+#
+# The catalog is derived at runtime from world loot tables (droppable + priceable
+# Class 7 items, no BoP/quest, no loot containers). ahbot_catalog (characters db)
+# holds operator overrides: disable an item or tune its target/capacity.
+#   CatalogEnabled   - master switch for the curated catalog supply channel
+#   CatalogTarget    - default desired holdings (units) per item
+#   CatalogCapacity  - default hard cap on holdings per item (bounded book)
+#   RefillPerCycle   - max units of world supply refilled per item per cycle
+#   RefillBatch      - how many catalog items are refilled per cycle (rotation)
+#   ListBatch        - how many catalog items are quoted per cycle (rotation)
+#   DemandBoostPct   - target holdings boost %% when the price tier gets eaten
+#   IdleTargetDecayPct - target holdings shrink %% per idle scan after IdleThreshold
+###################################################################################################################
+AuctionHouseBot.MarketMaker.CatalogEnabled = 1
+AuctionHouseBot.MarketMaker.CatalogTarget = 50
+AuctionHouseBot.MarketMaker.CatalogCapacity = 200
+AuctionHouseBot.MarketMaker.RefillPerCycle = 100
+AuctionHouseBot.MarketMaker.RefillBatch = 25
+AuctionHouseBot.MarketMaker.ListBatch = 25
+AuctionHouseBot.MarketMaker.DemandBoostPct = 50
+AuctionHouseBot.MarketMaker.IdleTargetDecayPct = 5
+AuctionHouseBot.MarketMaker.FlowRatio = 150
+AuctionHouseBot.MarketMaker.FlowMoveDownPct = 5
+AuctionHouseBot.MarketMaker.FlowMoveUpPct = 1
+AuctionHouseBot.MarketMaker.FlowMinUnits = 20
+AuctionHouseBot.MarketMaker.FlowSettleHours = 24
+AuctionHouseBot.MarketMaker.DepthTargetHighPct = 200
+AuctionHouseBot.MarketMaker.DepthTargetLowPct = 50
+AuctionHouseBot.MarketMaker.DepthStepPct = 5
+
+###################################################################################################################
+# Market-maker quoting parameters
+#
+#   LadderStep   - sell ladder tier spacing %% (also the price-discovery move size)
+#   LadderDepth  - number of ladder tiers (capped at 16)
+#   BuyDepth     - hidden buy cap = price * (100 - BuyDepth) / 100
+#   BuyPerCycle  - max buyout units per item per refresh cycle (0 = unlimited)
+#   BidOnlyBuyout - 1 = only buyout player listings (never bid: bot bidding is free
+#                   and mints gold to the seller), 0 = allow bidding up to the cap
+#   Smoothing    - EMA alpha %% for following trade prices
+#   IdleThreshold- consecutive scans with no sales before idle decline starts
+#   IdleDecay    - idle decline per scan in per-mille (5 = 0.5%%)
+#   RepriceThreshold - %% price move that triggers repricing existing listings
+#   MaxItemUnits - cap on ahbot's own MAIN ladder units per item+house (used when
+#                  the catalog is disabled; catalog capacity replaces it otherwise)
+#   EatRatio     - %% of the price tier sold in one window that counts as eaten
+#   ProbeUnits   - units per probe sell order below the reference
+#   ProbeInterval- scans to wait between probe placements
+#   PriceFloor   - hard price floor as %% of the static price
+#   PriceCeil    - hard price cap as %% of the static price
+###################################################################################################################
+AuctionHouseBot.MarketMaker.LadderStep = 50
+AuctionHouseBot.MarketMaker.LadderDepth = 10
+AuctionHouseBot.MarketMaker.BuyDepth = 10
+AuctionHouseBot.MarketMaker.BuyPerCycle = 0
+AuctionHouseBot.MarketMaker.BidOnlyBuyout = 1
+AuctionHouseBot.MarketMaker.Smoothing = 50
+AuctionHouseBot.MarketMaker.IdleThreshold = 60
+AuctionHouseBot.MarketMaker.IdleDecay = 5
+AuctionHouseBot.MarketMaker.RepriceThreshold = 1
+AuctionHouseBot.MarketMaker.MaxItemUnits = 200
+AuctionHouseBot.MarketMaker.EatRatio = 50
+AuctionHouseBot.MarketMaker.ProbeUnits = 5
+AuctionHouseBot.MarketMaker.ProbeInterval = 30
+AuctionHouseBot.MarketMaker.PriceFloor = 5
+AuctionHouseBot.MarketMaker.PriceCeil = 300
+

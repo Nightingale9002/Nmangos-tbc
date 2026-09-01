@@ -177,6 +177,33 @@ bool ChatHandler::HandleAHBotItemCommand(char* args)
         ss << "Item will be added using normal sources.";
     else
         ss << "Add chance: " << itemData.AddChance << "%, Min/Max amount: " << itemData.MinAmount << "/" << itemData.MaxAmount;
+    if (proto->Class == ITEM_CLASS_TRADE_GOODS)
+    {
+        bool anyMarket = false;
+        ss << " MM: ";
+        for (uint32 h = 0; h < MAX_AUCTION_HOUSE_TYPE; ++h)
+        {
+            AuctionHouseBotMarketState* st = sAuctionHouseBot.GetMarketState(itemId, AuctionHouseType(h));
+            if (st && st->price)
+            {
+                anyMarket = true;
+                uint32 buyDepth = sAuctionHouseBot.GetBuyDepth();
+                uint32 bid = (uint32)((uint64)st->price * (100 - buyDepth) / 100);
+                ss << (h == AUCTION_HOUSE_ALLIANCE ? "A:" : h == AUCTION_HOUSE_HORDE ? "H:" : "N:")
+                   << "px=" << st->price / 10000 << "g" << st->price / 100 % 100 << "s" << st->price % 100 << "c"
+                   << " ref=" << st->ref / 10000 << "g" << st->ref / 100 % 100 << "s" << st->ref % 100 << "c"
+                   << " bid=" << bid / 10000 << "g" << bid / 100 % 100 << "s" << bid % 100 << "c"
+                   << " n=" << st->listingCount << " sold=" << st->soldUnits
+                   << " flow=B" << st->flowBought << "/S" << st->flowSold
+                   << " probe=" << (st->probeDemandLevel != 0xFF ? std::to_string(85 - (int)st->probeDemandLevel * 10) + "%" : "-")
+                   << " inv=" << st->inventory << "/" << st->target << " cap=" << st->capacity
+                   << " avg=" << st->avgCost / 10000 << "g" << st->avgCost / 100 % 100 << "s" << st->avgCost % 100 << "c"
+                   << " PnL=" << (int64)st->earnedGold - (int64)st->spentGold << " ";
+            }
+        }
+        if (!anyMarket)
+            ss << "no data";
+    }
     PSendSysMessage(LANG_ITEM_LIST_CHAT, itemId, itemId, proto->Name1, ss.str().c_str());
     return true;
 }
