@@ -267,6 +267,31 @@ AuctionHouseBot.MarketMaker.DepthTargetLowPct = 50
 AuctionHouseBot.MarketMaker.DepthStepPct = 5
 
 ###################################################################################################################
+# Disabled consumable subclasses (crafted/welfare goods the bot must NOT supply)
+# GetItemValue = 0 makes the loot flow skip them entirely.
+# subclass map (this fork): 0=quest/misc 1=potion 2=elixir 3=flask 4=scroll(KEPT) 5=food&drink
+AuctionHouseBot.Value.Subclass.0.0.Normal = 0
+AuctionHouseBot.Value.Subclass.0.0.Uncommon = 0
+AuctionHouseBot.Value.Subclass.0.0.Rare = 0
+AuctionHouseBot.Value.Subclass.0.0.Epic = 0
+AuctionHouseBot.Value.Subclass.0.1.Normal = 0
+AuctionHouseBot.Value.Subclass.0.1.Uncommon = 0
+AuctionHouseBot.Value.Subclass.0.1.Rare = 0
+AuctionHouseBot.Value.Subclass.0.1.Epic = 0
+AuctionHouseBot.Value.Subclass.0.2.Normal = 0
+AuctionHouseBot.Value.Subclass.0.2.Uncommon = 0
+AuctionHouseBot.Value.Subclass.0.2.Rare = 0
+AuctionHouseBot.Value.Subclass.0.2.Epic = 0
+AuctionHouseBot.Value.Subclass.0.3.Normal = 0
+AuctionHouseBot.Value.Subclass.0.3.Uncommon = 0
+AuctionHouseBot.Value.Subclass.0.3.Rare = 0
+AuctionHouseBot.Value.Subclass.0.3.Epic = 0
+AuctionHouseBot.Value.Subclass.0.5.Normal = 0
+AuctionHouseBot.Value.Subclass.0.5.Uncommon = 0
+AuctionHouseBot.Value.Subclass.0.5.Rare = 0
+AuctionHouseBot.Value.Subclass.0.5.Epic = 0
+
+###################################################################################################################
 # Market-maker quoting parameters
 #
 #   LadderStep   - sell ladder tier spacing %% (also the price-discovery move size)

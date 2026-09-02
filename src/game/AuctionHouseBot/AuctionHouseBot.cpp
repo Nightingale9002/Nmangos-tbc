@@ -94,9 +94,15 @@ void AuctionHouseBot::Initialize()
         // item loot (openable items: clams -> meat/pearls, etc.) - these drops are
         // NOT part of the market-maker catalog (e.g. Golden Pearl is class 3); they
         // flow through the normal loot-table supply so gems from clams etc. still
-        // reach the AH
+        // reach the AH. ONLY openable items that drop from monsters/world are
+        // simulated (clams, low lockboxes...); exchange/reward containers like the
+        // Sunwell cache (34548 -> flasks) are NOT monster drops and stay closed.
         ParseLootConfig("AuctionHouseBot.Loot.Item", m_itemLootConfig);
-        FillUintVectorFromQuery("SELECT DISTINCT entry FROM item_loot_template", m_itemLootTemplates);
+        FillUintVectorFromQuery("SELECT DISTINCT entry FROM item_loot_template "
+            "WHERE entry IN (SELECT item FROM creature_loot_template "
+            "UNION SELECT item FROM gameobject_loot_template "
+            "UNION SELECT item FROM fishing_loot_template "
+            "UNION SELECT item FROM skinning_loot_template)", m_itemLootTemplates);
 
         // profession items (different than the loot above, but use similar config)
         ParseLootConfig("AuctionHouseBot.Items.Profession", m_professionItemsConfig);
@@ -961,10 +967,12 @@ void AuctionHouseBot::LoadCatalogOverrides()
         "AND (it.flags & 4) = 0 "
         "AND (it.sellprice > 0 OR it.buyprice > 0) "
         // the bot sells RAW MATERIALS only - exclude profession finished goods
-        // (craftable items with no genuine natural source: bolts of cloth, bars,
-        // cured leather, blasting powder...). Kept when the item has a real
+        // (craftable items with no genuine natural source: bolts of cloth, cured
+        // leather, blasting powder...). Kept when the item has a real
         // skinning/disenchant/fishing source or is a real world drop (>= 3
         // creature sources), so e.g. Large Prismatic Shard / Arcane Dust stay.
+        // Metal bars (class 7 subclass 7: Copper/Iron/Thorium/Mithril... Bar) are
+        // KEPT per operator policy - they are smelted ore, treated as raw material.
         "AND l.item NOT IN ("
         "SELECT m.ei FROM ("
         "SELECT EffectItemType1 AS ei FROM spell_template WHERE (Effect1 IN (24,43)) AND EffectItemType1 > 0 "
@@ -974,6 +982,7 @@ void AuctionHouseBot::LoadCatalogOverrides()
         "WHERE m.ei NOT IN (SELECT item FROM skinning_loot_template) "
         "AND m.ei NOT IN (SELECT item FROM disenchant_loot_template) "
         "AND m.ei NOT IN (SELECT item FROM fishing_loot_template) "
+        "AND m.ei NOT IN (SELECT entry FROM item_template WHERE class = 7 AND subclass = 7) "
         "AND (SELECT COUNT(*) FROM creature_loot_template c WHERE c.item = m.ei) < 3"
         ") "
         // the precise instance rule: exclude ONLY materials that are BOTH used by
