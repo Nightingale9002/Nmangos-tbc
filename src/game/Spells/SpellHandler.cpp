@@ -452,6 +452,14 @@ void WorldSession::HandleCancelCastOpcode(WorldPacket& recvPacket)
     if (!_player->IsClientControlled(_player))
         return;
 
+    // storm shield: ignore cancel-cast for the autorepeat spell while a fresh registration is still
+    // inside its first-shot window (see HandleCancelAutoRepeatSpellOpcode for rationale).
+    if (Spell const* arSpell = _player->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+    {
+        if (spellId == arSpell->m_spellInfo->Id && _player->IsAutoShotInFirstShotWindow(700))
+            return;
+    }
+
     if (_player->IsNonMeleeSpellCasted(false))
         _player->InterruptNonMeleeSpells(false, spellId);
 }
@@ -571,8 +579,18 @@ void WorldSession::HandleCancelGrowthAuraOpcode(WorldPacket& /*recvPacket*/)
 void WorldSession::HandleCancelAutoRepeatSpellOpcode(WorldPacket& /*recvPacket*/)
 {
     // cancel and prepare for deleting
-    // do not send SMSG_CANCEL_AUTO_REPEAT! client will send this Opcode again (loop)
-    _player->GetMover()->InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
+    // Storm shield: the (custom proxied) client, when auto shot is re-engaged very quickly after a
+    // cancel, auto-cancels each fresh cast ~30-250ms later - killing the slot inside its FirstCast
+    // windup (first shot needs ~500ms) and eventually freezing the client's auto-shot state (icon
+    // stays lit, presses stop being sent -> stuck until move/retarget). Ignore cancel-auto-repeat
+    // packets inside the first-shot window of a fresh registration so the first shot goes through
+    // and the client's state machine recovers.
+    if (Unit* mover = _player->GetMover())
+    {
+        if (mover->IsAutoShotInFirstShotWindow(700))
+            return;
+        mover->InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
+    }
 }
 
 void WorldSession::HandleCancelChanneling(WorldPacket& recv_data)

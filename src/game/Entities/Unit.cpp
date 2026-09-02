@@ -348,6 +348,7 @@ Unit::Unit() :
     m_attackTimer[BASE_ATTACK]   = 0;
     m_attackTimer[OFF_ATTACK]    = 0;
     m_attackTimer[RANGED_ATTACK] = 0;
+    m_AutoShotRegisterTime       = 0;
     m_modAttackSpeedPct[BASE_ATTACK] = 1.0f;
     m_modAttackSpeedPct[OFF_ATTACK] = 1.0f;
     m_modAttackSpeedPct[RANGED_ATTACK] = 1.0f;
@@ -4562,6 +4563,16 @@ void Unit::_UpdateAutoRepeatSpell()
     }
 }
 
+bool Unit::IsAutoShotInFirstShotWindow(uint32 maxAgeMs) const
+{
+    // True while a freshly registered autorepeat slot is still inside its first-shot window
+    // (FirstCast windup ~500ms + slack). Cancel-auto-repeat packets arriving in this window come
+    // from the client's rapid re-engagement toggle confusion and must be ignored so the first shot
+    // can fire; otherwise the slot is killed before firing and the client freezes.
+    return m_currentSpells[CURRENT_AUTOREPEAT_SPELL] &&
+           WorldTimer::getMSTimeDiff(m_AutoShotRegisterTime, WorldTimer::getMSTime()) < maxAgeMs;
+}
+
 void Unit::SetCurrentCastedSpell(Spell* newSpell)
 {
     MANGOS_ASSERT(newSpell);                                  // nullptr may be never passed here, use InterruptSpell or InterruptNonMeleeSpells
@@ -4631,6 +4642,7 @@ void Unit::SetCurrentCastedSpell(Spell* newSpell)
                 }
             }
             // special action: set first cast flag
+            m_AutoShotRegisterTime = WorldTimer::getMSTime();
             ResetAutoRepeatSpells();
         } break;
 

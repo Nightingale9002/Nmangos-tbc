@@ -2482,6 +2482,11 @@ class Unit : public WorldObject
 
         void ResetAutoRepeatSpells() { m_AutoRepeatFirstCast = true; }
 
+        // Storm shield: true while a fresh autorepeat registration is still inside its first-shot
+        // window (FirstCast windup). Cancel packets within this window are ignored so the first shot
+        // can fire; rapid re-engagement otherwise freezes the client's auto-shot state.
+        bool IsAutoShotInFirstShotWindow(uint32 maxAgeMs) const;
+
         const uint64& GetAuraUpdateMask() const { return m_auraUpdateMask; }
         void SetAuraUpdateMask(uint8 slot) { m_auraUpdateMask |= (uint64(1) << slot); }
         void ResetAuraUpdateMask() { m_auraUpdateMask = 0; }
@@ -2564,6 +2569,10 @@ class Unit : public WorldObject
         void _UpdateSpells(uint32 time);
         void _UpdateAutoRepeatSpell();
         bool m_AutoRepeatFirstCast;
+        // Storm shield: world-ms timestamp of the last autorepeat slot registration.
+        // HandleCancelAutoRepeatSpellOpcode ignores cancel packets while a fresh registration is
+        // still inside its first-shot window.
+        uint32 m_AutoShotRegisterTime;
 
         uint32 m_attackTimer[MAX_ATTACK];
 
