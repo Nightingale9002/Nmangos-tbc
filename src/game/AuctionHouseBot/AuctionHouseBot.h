@@ -38,17 +38,30 @@ struct AuctionHouseBotItemData
     uint32 MaxAmount = 0;
 };
 
-// Operator override for one catalog item (ahbot_catalog). target/capacity 0 mean
+// Operator override for one catalog item (ahbot_market_state). target/capacity 0 mean
 // "use the config default". enabled=0 removes the item from the curated universe.
-// policy: 0 = auto tiering by ItemLevel, 1 = force market good (normal supply
-// depth regulation), 2 = force transition good (abundant supply). Interface kept
-// for operator marking; prices are NOT tiered (asymmetric flow handles welfare).
+// (The legacy policy column was folded away; category below supersedes it.)
+//
+// category (operator model):
+//   0 = untouched: NOT in the market-maker book (no quote/refill/absorb); the
+//       original loot-table flow supplies it again (chance-gated).
+//   1 = market good: market-maker book with central-bank flow pricing (current
+//       behavior for the curated universe). Default when no catalog row exists.
+//   2 = low-level good: market-maker book, unit price FIXED at `price` (row is
+//       pre-filled with the vendor SellPrice); abundant supply.
+//   3 = never supplied by ahbot (ban): excluded from the market-maker book AND
+//       from the loot-table flow, regardless of universe membership - explicit
+//       operator-level ban for materials ahbot must not trade (instance-only
+//       301+ mats such as Sunmote / Heart of Darkness, crafted goods, ...).
+// price: category==2 fixed unit price (vendor SellPrice); 0 = unset (category 1
+// keeps flow pricing driven by ahbot_market_state.price_ref).
 struct AuctionHouseBotCatalogEntry
 {
     bool enabled = true;
     uint32 target = 0;
     uint32 capacity = 0;
-    uint32 policy = 0;
+    uint32 category = 1;    // default 1 = market book (no row behaves like today)
+    uint32 price = 0;       // category==2 fixed unit price
 };
 
 // Maximum ladder depth for the market-maker quote ladder (config caps below this).
@@ -59,11 +72,11 @@ struct AuctionHouseBotCatalogEntry
 // the (hidden) buy cap is price*(1-buyDepth). price rises a tier when the current
 // price tier is bought out, follows the market down smoothly, and declines slowly when
 // idle. ref is the adaptive baseline (min of static price and market signals) that the
-// idle decline targets. ahbot_price persists price (the day's closing quote).
+// idle decline targets. ahbot_market_state.price_ref persists price (the day's closing quote).
 struct AuctionHouseBotMarketState
 {
     uint32 median = 0;                      // median per-unit buyout of all listings (market depth)
-    uint32 price = 0;                       // current quote anchor (ladder base), persisted to ahbot_price
+    uint32 price = 0;                       // current quote anchor (ladder base), persisted to ahbot_market_state
     uint32 ref = 0;                         // adaptive baseline: min(static, market signals); idle decline target
     uint32 lastTradeEMA = 0;                // EMA-smoothed most recent player trade unit price
     uint32 playerBestAsk = 0;               // lowest player listing unit price (downward pressure)
@@ -83,7 +96,7 @@ struct AuctionHouseBotMarketState
     uint32 probeCooldown = 0;     // scans to wait before placing the next probe
     // rolling recent trade log (unit price, qty) - seed for future price-curve feature
     std::deque<std::pair<uint32, uint32>> tradeLog;
-    // ---- virtual inventory ledger (persisted to ahbot_inventory) ----
+    // ---- virtual inventory ledger (persisted to ahbot_market_state) ----
     // qty = total units held by the bot (listed + reserve). Availability to list
     // = qty - booked (booked = tierStock + probeStock from the last scan). Listing
     // and unsold expiry do not change qty; player buys deduct, bot purchases and
@@ -162,7 +175,7 @@ class AuctionHouseBot
         // ---- market-maker ladder quoting ----
         // Tracks the real per-unit market price and quotes a sell ladder around it,
         // with a hidden bid cap below the market. Inventory is a virtual ledger
-        // (ahbot_inventory): world-supply refills add, bot purchases add, player
+        // (ahbot_market_state): world-supply refills add, bot purchases add, player
         // buys of our listings deduct; availability to list = inventory - booked.
         void UpdateMarketPrices();
         // effective ladder step % for a price level: low-price items use smaller
@@ -173,15 +186,19 @@ class AuctionHouseBot
         // visible activity collapses to the NEUTRAL map - routing adds/scans to
         // the faction maps would create listings players cannot see
         uint32 EffectiveHouseIndex(uint32 houseType) const;
-        // load ahbot_catalog overrides + ahbot_inventory ledger from the DB
+        // load ahbot_market_state catalog/inventory/overrides from the DB
         void LoadCatalogOverrides();
         void LoadInventory();
         // resolved catalog entry for an item (override or config defaults)
         AuctionHouseBotCatalogEntry GetCatalogEntry(uint32 itemId) const;
         // true if the item is in the curated universe AND not disabled by override
+        // (category 0 = untouched -> NOT a book member)
         bool IsCatalogItem(uint32 itemId) const;
-        // true if the item is a low-level transition good (locked price, abundant supply)
+        // true if the item is a low-level transition good (abundant supply)
         bool IsTransitionItem(uint32 itemId) const;
+        // fixed unit price of a category-2 (vendor-price) good; 0 unless the item is
+        // marked category 2 with a price row (architecture: inert until marked)
+        uint32 GetCatalogFixedPrice(uint32 itemId) const;
         // transition-adjusted baseline holding target for an item
         uint32 GetBaselineTarget(uint32 itemId) const;
         // seed target/capacity for a state (transition goods get the multiplier)
@@ -295,10 +312,10 @@ class AuctionHouseBot
         uint32 m_transitionItemLevel = 40;  // ItemLevel <= this => transition good (0 = tiering off)
         uint32 m_transitionTargetMult = 3;  // transition goods hold target x this (abundant supply)
         // the curated universe: droppable + priceable Class 7 items (from world loot
-        // tables at Initialize/reload); operators prune/tune via ahbot_catalog
+        // tables at Initialize/reload); operators prune/tune via ahbot_market_state
         std::unordered_set<uint32> m_catalogUniverse;
         std::vector<uint32> m_catalogUniverseVec; // sorted, for batch rotation
-        // item -> operator override (ahbot_catalog)
+        // item -> operator override (ahbot_market_state)
         std::unordered_map<uint32, AuctionHouseBotCatalogEntry> m_catalogOverrides;
         // item -> per auction house market-maker state
         std::unordered_map<uint32, std::array<AuctionHouseBotMarketState, MAX_AUCTION_HOUSE_TYPE>> m_marketState;

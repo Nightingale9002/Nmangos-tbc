@@ -322,6 +322,12 @@ TargetedMovementGenerator.cpp +87  Chase 水下：跳过距离/LOS/z 检查直�
 - 货币类残留受限=0；被限任务物品 2514 个
 - 21100 Coin of Ancestry=5（农历新年任务 SpecialFlags=0 判不可重复，需确认是否额外排除）
 
+
+- **category=3（禁售）**：ahbot 永不供给/收购的材料——不进做市商 book，也不进 loot 掉落流程（宇宙 SQL 排除之外的显式操作员级硬禁）。示例：太阳之尘(34664)/黑暗之心(32428)/虚空漩涡(30183)/原始虚空(23572) 等仅副本掉落+301+ 配方材料已标 3，并清理历史 ahbot_inventory/ahbot_price 残留。
+- **Class7 供给路由规则**：book 成员(cat1/2)→仅 catalog；宇宙成员 cat0→回 loot 流程；cat3 与一切不在宇宙的 Class7(制成品/副本独占材料)→任何路径都不供给。
+
+- **只有制作来源的物品 → category=3**：[2026-09-03 已废弃] 原 059 判定把"有制作配方(Effect24/43)且无任何掉落来源"的物品一律标 3（历史本地结果：36 项 cat3 = 4 副本独占 + 32 纯制作：锭/布卷/棒/硬化件/原始系列(本库无掉落)/棱柱石/奥金转化器等）。该规则已从 `055_ahbot_做市商与商品分类_整合.sql` 第 5 段移除，改为：仅 4 顶级副本材料(34664/32428/30183/23572) 严格 category=3，其余 category=3 一律复位为 category=0 库存管理（见 055 新第 5 段 5a/5b）。
+
 ### 待办
 - [x] 云端执行 016（合并版，2026-08-20 已执行；014 已废弃删除）
 - [ ] 确认 21100 是否保留限制（农历新年任务 SpecialFlags=0 判不可重复，限 5）
@@ -1045,3 +1051,11 @@ EffectLeapForward（1953 实际走的）：
 - **验证**：本地快速开关 10+ 次 / 单次取消重按 / 移动打断自动恢复 —— 全部正常不再卡。
 - **待办**：push c908ca5b2 后在云端无人窗口跑 cloud_mm_deploy.sh 部署，用真实延迟场景复验
   （云端曾出现"单次取消即卡"，风暴盾同样覆盖：延迟取消包晚于重注册到达时会被窗口忽略）。
+
+### ahbot 商品三级分类架构（dev/055(整合版，原057-059)，架构先行：只铺框架不改行为）
+- **目标**：商品分三类——0=默认不动(不进做市商book, 仍走原有loot流程供给)；1=市场商品(做市商book+央行流动定价，现状)；2=低级商品(做市商book+单价固定=price列/卖店价，防"无限刷低级材料卖ahbot"印钞)。
+- **架构落点**：
+  - dev/057 SQL：ahbot_catalog 加 category(默认0) + price(默认0) 列；现有 107 行回填 category=1(保持现状)。
+  - 代码：LoadCatalogOverrides 读两新列；GetCatalogEntry 补拷 policy/category/price(顺带修复 policy 此前未拷出的缺陷)；IsCatalogItem 排除 category=0；loot 供给仅跳过 book 成员(category=0 回到 loot 流程)；GetCatalogFixedPrice() + QuoteCatalog/UpdateMarketPrices/买侧 的 category=2 固定价分支(当前无 category=2 行 → 全部惰性不生效)。
+  - MM 初始化/买卖不再依赖 Chance.Sell/Buy(可设 0 专注做市商)：Initialize 全量装载；买侧 chanceBuy||(market&&catalog) 进门、非 book 物品仍需 chance 掷点。
+- **用法(以后)**：把物品行 category 改为 0/2 + 填 price(SellPrice) → .ahbot reload 即生效；category=1 无需显式(无行默认即市场商品)。category=2 的 supply 充足沿用 transition ×3。

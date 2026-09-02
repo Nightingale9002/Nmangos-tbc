@@ -61,7 +61,9 @@ void AuctionHouseBot::Initialize()
     sLog.outString("AHBot selling items: %s", m_chanceSell > 0 ? "Enabled" : "Disabled");
     sLog.outString("AHBot buying items: %s", m_chanceBuy > 0 ? "Enabled" : "Disabled");
 
-    if (m_chanceSell > 0 || m_chanceBuy > 0)
+    // NOTE: config loading below runs ALWAYS (not gated on Chance.Sell/Buy): the curated
+    // market-maker catalog is driven by its own book, not by the legacy loot chances. The
+    // loot-table flow itself stays chance-gated at runtime (Update()).
     {
         // creature loot
         ParseLootConfig("AuctionHouseBot.Loot.Creature.Normal", m_creatureLootNormalConfig);
@@ -180,8 +182,11 @@ void AuctionHouseBot::Initialize()
         // buy item value
         m_buyValue = GetMinMaxConfig("AuctionHouseBot.Buy.Value", 0, 200, 90);
 
-        // overridden items
-        auto queryResult = CharacterDatabase.PQuery("SELECT item, value, add_chance, min_amount, max_amount FROM ahbot_items");
+        // overridden items (now folded into ahbot_market_state; only rows where an
+        // override is actually set are loaded - catalog defaults carry 0 and must
+        // NOT be interpreted as an operator override)
+        auto queryResult = CharacterDatabase.PQuery("SELECT DISTINCT item, override_base_price, override_add_chance, override_min_amount, override_max_amount FROM ahbot_market_state "
+                                                    "WHERE override_base_price != 0 OR override_add_chance != 0 OR override_min_amount != 0 OR override_max_amount != 0");
         if (queryResult)
         {
             do
@@ -245,7 +250,7 @@ void AuctionHouseBot::Initialize()
             m_marketState.clear();
             // load persisted quotes (the previous day's closing price) - the database
             // is the price source; today's ladder is anchored on it
-            if (auto marketResult = CharacterDatabase.Query("SELECT item, price, auction_house FROM ahbot_price"))
+            if (auto marketResult = CharacterDatabase.Query("SELECT item, price_ref AS price, auction_house FROM ahbot_market_state WHERE price_ref > 0"))
             {
                 do
                 {
@@ -306,6 +311,8 @@ void AuctionHouseBot::Update()
     // create listings that are invisible until the next restart
     uint32 houseIdx = EffectiveHouseIndex(houseType);
     AuctionHouseObject* auctionHouse = sAuctionMgr.GetAuctionsMap(AuctionHouseType(houseIdx));
+    // legacy Chance.Buy roll; the curated catalog book absorbs regardless of the roll
+    bool chanceBuy = m_chanceBuy > 0 && urand(0, 99) < m_chanceBuy;
     if (m_houseAction < MAX_AUCTION_HOUSE_TYPE)
     {
 	// Lazy-refresh dynamic level
@@ -397,7 +404,18 @@ void AuctionHouseBot::Update()
 
             bool isMM = (iterator == m_itemData.end() && m_marketEnabled && prototype->Class == ITEM_CLASS_TRADE_GOODS);
             if (isMM && m_catalogEnabled)
-                continue; // Class7 supply is driven by the curated catalog (QuoteCatalog), not loot rolls
+            {
+                // Class7 supply routing:
+                //  - book members (category 1/2, universe) are supplied ONLY by the curated catalog.
+                //  - universe members marked category 0 (untouched) fall through to the loot rolls.
+                //  - category 3 (ban) and any class7 NOT in the curated universe (crafted goods,
+                //    instance-only 301+ materials such as Sunmote/Heart of Darkness, banned
+                //    subclasses) are NEVER supplied by any path.
+                bool inUniverse = m_catalogUniverse.find(prototype->ItemId) != m_catalogUniverse.end();
+                uint32 cat = GetCatalogEntry(prototype->ItemId).category;
+                if (!(inUniverse && cat == 0))
+                    continue;
+            }
             AuctionHouseBotMarketState* mmState = isMM ? GetMarketState(prototype->ItemId, AuctionHouseType(houseIdx)) : nullptr;
             if (mmState && m_mmMaxItemUnits)
             {
@@ -463,9 +481,10 @@ void AuctionHouseBot::Update()
             }
         }
         }
-    } else if (m_houseAction >= MAX_AUCTION_HOUSE_TYPE && urand(0, 99) < m_chanceBuy)
+    } else if (m_houseAction >= MAX_AUCTION_HOUSE_TYPE && (chanceBuy || (m_marketEnabled && m_catalogEnabled)))
     {
-        // Buy items
+        // Buy items (chance-gated legacy absorption OR the curated catalog book; the MM
+        // absorbs its own book members regardless of Chance.Buy)
         AuctionHouseObject::AuctionEntryMapBounds bounds = auctionHouse->GetAuctionsBounds();
         std::vector<AuctionEntry*> buyoutAuctions;
         for (AuctionHouseObject::AuctionEntryMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
@@ -489,8 +508,18 @@ void AuctionHouseBot::Update()
             // the operator chose to make a market in
             if (isMMBuy && m_catalogEnabled && !IsCatalogItem(prototype->ItemId))
                 continue;
+            // legacy (non-MM book) absorption keeps the Chance.Buy roll; the MM book absorbs
+            // regardless of Chance.Buy (driven by the catalog, not by the loot chance)
+            if (!chanceBuy && !isMMBuy)
+                continue;
             AuctionHouseBotMarketState* mmBuyState = isMMBuy ? GetMarketState(prototype->ItemId, AuctionHouseType(houseIdx)) : nullptr;
-            if (mmBuyState && mmBuyState->price)
+            // category 2 (vendor-price good): buy at the FIXED price (no BuyDepth discount
+            // below it - a sub-vendor bid would just send players to the NPC vendor). Inert
+            // until rows are marked category 2 with a price.
+            uint32 fixedBuy = GetCatalogFixedPrice(prototype->ItemId);
+            if (fixedBuy)
+                itemWorth = fixedBuy;
+            else if (mmBuyState && mmBuyState->price)
             {
                 // hidden buy cap = price * (100 - BuyDepth) / 100 (modern exchange
                 // style: the bid book is internal, not shown on the AH). This
@@ -532,7 +561,7 @@ void AuctionHouseBot::Update()
 }
 
 // Scan all auction houses for player listings and record the real per-unit market
-// price (median buyout) per item and house. Persisted into ahbot_price so prices
+// price (median buyout) per item and house. Persisted into ahbot_market_state (price_ref) so prices
 // survive restarts and are visible/editable via the database.
 void AuctionHouseBot::UpdateMarketPrices()
 {
@@ -595,6 +624,21 @@ void AuctionHouseBot::UpdateMarketPrices()
             uint32 staticPrice = 0;
             if (ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId))
                 staticPrice = CalculateBuyoutPrice(proto);
+
+            // category 2 (vendor-price good): price is FIXED at the operator row price;
+            // the whole central-bank flow machinery below is bypassed (architecture:
+            // inert until rows are marked category 2 with a price).
+            if (uint32 fixedUnit = GetCatalogFixedPrice(itemId))
+            {
+                state.price = fixedUnit;
+                state.ref = fixedUnit;
+                state.median = medianAll ? medianAll : fixedUnit;
+                if (state.price != oldPrice)
+                {
+                    CharacterDatabase.PExecute("INSERT INTO ahbot_market_state (item, auction_house, price_ref, enabled, category, price, target, capacity) VALUES (%u, %u, %u, 1, 1, 0, 500, 1500) AS new ON DUPLICATE KEY UPDATE price_ref = new.price_ref", itemId, houseIndex, state.price);
+                }
+                continue;
+            }
 
             // first-run seed and adaptive baseline
             if (!state.price && staticPrice)
@@ -726,7 +770,7 @@ void AuctionHouseBot::UpdateMarketPrices()
 
             // ---- long-period flow settlement (price anchor moves) ----
             // flowBought/flowSold accumulate across scans and restarts (persisted in
-            // ahbot_inventory). Once per FlowSettleHours the anchor moves if the flow
+            // ahbot_market_state). Once per FlowSettleHours the anchor moves if the flow
             // is clearly one-sided; otherwise the price holds. The move is ASYMMETRIC:
             // overpriced (players flood us with supply) corrects down fast (5%),
             // underpriced (players consume us) rises very slowly (1%) - welfare
@@ -746,7 +790,7 @@ void AuctionHouseBot::UpdateMarketPrices()
                     state.flowBought = 0;
                     state.flowSold = 0;
                     state.lastSettleTime = now;
-                    CharacterDatabase.PExecute("UPDATE ahbot_inventory SET flow_bought = 0, flow_sold = 0 WHERE item = %u AND auction_house = %u", itemId, houseIndex);
+                    CharacterDatabase.PExecute("UPDATE ahbot_market_state SET flow_bought = 0, flow_sold = 0 WHERE item = %u AND auction_house = %u", itemId, houseIndex);
                 }
             }
 
@@ -807,8 +851,7 @@ void AuctionHouseBot::UpdateMarketPrices()
             // persist the closing quote (price) - the database is the price source
             if (newPrice != oldPrice)
             {
-                CharacterDatabase.PExecute("DELETE FROM ahbot_price WHERE item = %u AND auction_house = %u", itemId, houseIndex);
-                CharacterDatabase.PExecute("INSERT INTO ahbot_price (item, price, auction_house) VALUES (%u, %u, %u)", itemId, newPrice, houseIndex);
+                CharacterDatabase.PExecute("INSERT INTO ahbot_market_state (item, auction_house, price_ref, enabled, category, price, target, capacity) VALUES (%u, %u, %u, 1, 1, 0, 500, 1500) AS new ON DUPLICATE KEY UPDATE price_ref = new.price_ref", itemId, houseIndex, newPrice);
             }
 
             // ---- reprice existing ahbot listings on meaningful price moves ----
@@ -1018,7 +1061,7 @@ void AuctionHouseBot::LoadCatalogOverrides()
     m_catalogUniverseVec.assign(m_catalogUniverse.begin(), m_catalogUniverse.end());
     std::sort(m_catalogUniverseVec.begin(), m_catalogUniverseVec.end());
 
-    if (auto result = CharacterDatabase.Query("SELECT item, enabled, target, capacity, policy FROM ahbot_catalog"))
+    if (auto result = CharacterDatabase.Query("SELECT item, MAX(enabled), MAX(target), MAX(capacity), MAX(category), MAX(price) FROM ahbot_market_state GROUP BY item"))
     {
         do
         {
@@ -1027,7 +1070,8 @@ void AuctionHouseBot::LoadCatalogOverrides()
             e.enabled = fields[1].GetUInt32() != 0;
             e.target = fields[2].GetUInt32();
             e.capacity = fields[3].GetUInt32();
-            e.policy = fields[4].GetUInt32();
+            e.category = fields[4].GetUInt32();
+            e.price = fields[5].GetUInt32();
             m_catalogOverrides[fields[0].GetUInt32()] = e;
         } while (result->NextRow());
     }
@@ -1043,6 +1087,8 @@ AuctionHouseBotCatalogEntry AuctionHouseBot::GetCatalogEntry(uint32 itemId) cons
         e.enabled = itr->second.enabled;
         e.target = itr->second.target;
         e.capacity = itr->second.capacity;
+        e.category = itr->second.category;
+        e.price = itr->second.price;
     }
     return e;
 }
@@ -1051,26 +1097,27 @@ bool AuctionHouseBot::IsCatalogItem(uint32 itemId) const
 {
     if (m_catalogUniverse.find(itemId) == m_catalogUniverse.end())
         return false;
-    return GetCatalogEntry(itemId).enabled;
+    AuctionHouseBotCatalogEntry e = GetCatalogEntry(itemId);
+    // category 0 = untouched and category 3 = never supplied (ban): neither is a
+    // market-maker book member. category 0 items are supplied by the original
+    // loot-table flow (see Update() loot path); category 3 by no path at all.
+    return e.enabled && e.category != 0 && e.category != 3;
 }
 
 bool AuctionHouseBot::IsTransitionItem(uint32 itemId) const
 {
-    // operator marking wins (interface kept for policy tiers): policy=1 forces a
-    // market good, policy=2 forces a transition good
-    AuctionHouseBotCatalogEntry cat = GetCatalogEntry(itemId);
-    if (cat.policy == 1)
-        return false;
-    if (cat.policy == 2)
-        return true;
-    // auto tiering: ItemLevel is authoritative for materials in TBC data (no zero
-    // values in the catalog); values at or below the threshold - including the
-    // common default "1" - are low-level transition goods. Used only for ABUNDANT
-    // SUPPLY (target x TransitionTargetMult); prices are not tiered.
+    // policy is legacy and folded into the unified table (category supersedes it);
+    // only automated ItemLevel tiering remains.
     if (!m_transitionItemLevel)
         return false;
     ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId);
     return proto && proto->ItemLevel <= m_transitionItemLevel;
+}
+
+uint32 AuctionHouseBot::GetCatalogFixedPrice(uint32 itemId) const
+{
+    AuctionHouseBotCatalogEntry e = GetCatalogEntry(itemId);
+    return e.category == 2 ? e.price : 0;
 }
 
 uint32 AuctionHouseBot::GetBaselineTarget(uint32 itemId) const
@@ -1097,12 +1144,12 @@ void AuctionHouseBot::EnsureTargets(AuctionHouseBotMarketState& state, uint32 it
     state.capacity = capacity;
 }
 
-// Load the virtual inventory ledger (ahbot_inventory). States are created lazily by
+// Load the virtual inventory ledger (ahbot_market_state). States are created lazily by
 // the market scan; the ledger rows must survive restarts so holdings are keyed the
 // same way (item -> house array index).
 void AuctionHouseBot::LoadInventory()
 {
-    if (auto result = CharacterDatabase.Query("SELECT item, auction_house, qty, avg_cost, spent, earned, flow_bought, flow_sold FROM ahbot_inventory"))
+    if (auto result = CharacterDatabase.Query("SELECT item, auction_house, qty, avg_cost, spent, earned, flow_bought, flow_sold FROM ahbot_market_state"))
     {
         do
         {
@@ -1163,7 +1210,7 @@ void AuctionHouseBot::DeductInventory(uint32 itemId, uint32 houseIdx, uint32 cou
     state.inventory = state.inventory > count ? state.inventory - count : 0;
     state.earnedGold += goldReceived;
     state.flowSold += count; // central-bank flow signal: players consumed our supply
-    CharacterDatabase.PExecute("UPDATE ahbot_inventory SET qty = %u, earned = %u, flow_sold = %u WHERE item = %u AND auction_house = %u",
+    CharacterDatabase.PExecute("UPDATE ahbot_market_state SET qty = %u, earned = %u, flow_sold = %u WHERE item = %u AND auction_house = %u",
                                state.inventory, state.earnedGold, state.flowSold, itemId, houseIdx);
 }
 
@@ -1180,7 +1227,7 @@ void AuctionHouseBot::RecordBotPurchase(uint32 itemId, uint32 houseIdx, uint32 c
     state.inventory = (uint32)newQty;
     state.spentGold += goldPaid;
     state.flowBought += count; // central-bank flow signal: players sold us supply
-    CharacterDatabase.PExecute("INSERT INTO ahbot_inventory (item, auction_house, qty, avg_cost, spent, earned, flow_bought, flow_sold) VALUES (%u, %u, %u, %u, %u, %u, %u, %u) AS new "
+    CharacterDatabase.PExecute("INSERT INTO ahbot_market_state (item, auction_house, qty, avg_cost, spent, earned, flow_bought, flow_sold, enabled, category, target, capacity) VALUES (%u, %u, %u, %u, %u, %u, %u, %u, 1, 1, 500, 1500) AS new "
                                "ON DUPLICATE KEY UPDATE qty = new.qty, avg_cost = new.avg_cost, spent = new.spent, flow_bought = new.flow_bought",
                                itemId, houseIdx, state.inventory, state.avgCost, state.spentGold, state.earnedGold, state.flowBought, state.flowSold);
 }
@@ -1209,7 +1256,7 @@ void AuctionHouseBot::RefillCatalog(uint32 houseIdx)
         if (!refill)
             continue;
         state.inventory += refill;
-        CharacterDatabase.PExecute("INSERT INTO ahbot_inventory (item, auction_house, qty, avg_cost, spent, earned) VALUES (%u, %u, %u, 0, 0, 0) AS new "
+        CharacterDatabase.PExecute("INSERT INTO ahbot_market_state (item, auction_house, qty, avg_cost, spent, earned, enabled, category, target, capacity) VALUES (%u, %u, %u, 0, 0, 0, 1, 1, 500, 1500) AS new "
                                    "ON DUPLICATE KEY UPDATE qty = new.qty",
                                    itemId, houseIdx, state.inventory);
         ++done;
@@ -1244,8 +1291,13 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
         ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId);
         if (!proto || proto->GetMaxStackSize() == 0)
             continue;
+        // category 2 (vendor-price good): quote anchored at the fixed row price; only a
+        // single price tier (no ladder above, no probes below the fixed price). Inert
+        // until rows are marked category 2 with a price (state.price is then forced to
+        // the fixed price by UpdateMarketPrices as well).
+        uint32 fixedUnit = GetCatalogFixedPrice(itemId);
         AuctionHouseBotMarketState* state = GetMarketState(itemId, houseType);
-        if (!state || !state->price)
+        if (!state || (!state->price && !fixedUnit))
             continue;
         EnsureTargets(*state, itemId);
         uint32 booked = GetBookedUnits(*state);
@@ -1257,8 +1309,9 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
             continue;
         ++done;
 
-        uint32 step = GetLadderStep(state->price);
-        uint32 mainDepth = std::min<uint32>(MARKET_MAKER_MAX_LADDER, (50 / std::max<uint32>(1, step)) + 1);
+        uint32 quotePrice = fixedUnit ? fixedUnit : state->price;
+        uint32 step = GetLadderStep(quotePrice);
+        uint32 mainDepth = fixedUnit ? 1 : std::min<uint32>(MARKET_MAKER_MAX_LADDER, (50 / std::max<uint32>(1, step)) + 1);
         uint32 listedThisCycle = 0;
         uint32 remaining = toList;
         for (uint32 t = 0; t < mainDepth && remaining > 0; ++t)
@@ -1267,7 +1320,7 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
             uint32 tierUnits = std::max<uint32>(1, (uint64)remaining * weight / 100);
             if (tierUnits > remaining)
                 tierUnits = remaining;
-            uint32 unitPrice = (uint32)(((uint64)state->price * (100 + t * step) + 50) / 100);
+            uint32 unitPrice = (uint32)(((uint64)quotePrice * (100 + t * step) + 50) / 100);
             if (!unitPrice)
                 continue;
             // stack-capped auctions at this tier price
@@ -1292,7 +1345,8 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
         // probe order: one small sell order below the reference, placed only when
         // the current probe tier is empty and the cooldown elapsed; draws from the
         // same finite holdings so probes cannot mint supply out of thin air
-        if (m_mmProbeUnits && state->probeCooldown == 0)
+        // (fixed-price category-2 goods never probe below their fixed price)
+        if (!fixedUnit && m_mmProbeUnits && state->probeCooldown == 0)
         {
             uint32 level = std::min<uint32>(4, state->probeLevel);
             if (state->probeStock[level] < m_mmProbeUnits &&
@@ -1380,9 +1434,10 @@ void AuctionHouseBot::PrepareStatusInfos(AuctionHouseBotStatusInfo& statusInfo) 
 
 void AuctionHouseBot::SetItemData(uint32 item, AuctionHouseBotItemData& itemData, bool reset)
 {
-    static SqlStatementID delItem;
-    SqlStatement stmt = CharacterDatabase.CreateStatement(delItem, "DELETE FROM ahbot_items WHERE item = ?");
-    stmt.PExecute(item);
+    // ahbot_items is folded into ahbot_market_state keyed (item, auction_house).
+    // The legacy .ahbot item command is item-global; canonicalize new overrides on
+    // the auction_house=0 row while clearing stale values from every house row.
+    CharacterDatabase.PExecute("UPDATE ahbot_market_state SET override_base_price = 0, override_add_chance = 0, override_min_amount = 0, override_max_amount = 0 WHERE item = %u", item);
 
     if (reset)
     {
@@ -1405,14 +1460,8 @@ void AuctionHouseBot::SetItemData(uint32 item, AuctionHouseBotItemData& itemData
 
     m_itemData[item] = itemData;
 
-    static SqlStatementID addItem;
-    stmt = CharacterDatabase.CreateStatement(addItem, "INSERT INTO ahbot_items (item, value, add_chance, min_amount, max_amount) VALUES (?, ?, ?, ?, ?)");
-    stmt.addUInt32(item);
-    stmt.addUInt32(itemData.Value);
-    stmt.addUInt32(itemData.AddChance);
-    stmt.addUInt32(itemData.MinAmount);
-    stmt.addUInt32(itemData.MaxAmount);
-    stmt.Execute();
+    // Store item-wide override on the auction_house=0 (default/global) row.
+    CharacterDatabase.PExecute("INSERT INTO ahbot_market_state (item, auction_house, override_base_price, override_add_chance, override_min_amount, override_max_amount, enabled, category, price, target, capacity) VALUES (%u, %u, %u, %u, %u, %u, 1, 1, 0, 500, 1500) AS new ON DUPLICATE KEY UPDATE override_base_price = new.override_base_price, override_add_chance = new.override_add_chance, override_min_amount = new.override_min_amount, override_max_amount = new.override_max_amount", item, 0, itemData.Value, itemData.AddChance, itemData.MinAmount, itemData.MaxAmount);
 }
 
 AuctionHouseBotItemData AuctionHouseBot::GetItemData(uint32 item)
