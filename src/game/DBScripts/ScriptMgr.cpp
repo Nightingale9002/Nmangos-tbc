@@ -1739,6 +1739,16 @@ bool ScriptAction::HandleScriptStep()
             eligiblePairs.emplace_back(source, nullptr);
     }
 
+    // If the origin (source) creature despawned before a delayed
+    // script step fired, sources is empty and commands that only address a target
+    // object by dbguid (e.g. SCRIPT_COMMAND_RESPAWN_GAMEOBJECT with respawnGo.goGuid)
+    // would otherwise never execute. Allow such guid-addressed commands to run with
+    // a null source so respawns tied to a temp-summoned creature still take effect.
+    if (sources.empty() && eligiblePairs.empty() &&
+            ((m_script->command == SCRIPT_COMMAND_RESPAWN_GAMEOBJECT && m_script->respawnGo.goGuid) ||
+             ((m_script->command == SCRIPT_COMMAND_OPEN_DOOR || m_script->command == SCRIPT_COMMAND_CLOSE_DOOR) && m_script->changeDoor.goGuid)))
+        eligiblePairs.emplace_back(nullptr, nullptr);
+
     for (auto& data : eligiblePairs)
     {
         WorldObject* pSource = data.first;
