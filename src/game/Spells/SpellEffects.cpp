@@ -7465,49 +7465,66 @@ void Spell::EffectLeapForward(SpellEffectIndex /*eff_idx*/)
 
     float orientation = unitTarget->GetOrientation();
 
-    // [BLINK] Leap/Blink landing: the destination computed in Spell.cpp is a simple
-    // straight-line target. Decide which landing to use by asking navmesh FIRST:
-    //   - PATH (grounded / low jump): use the real navmesh walk-path landing - it
-    //     follows the terrain up/down to a far point instead of clipping into rolling
-    //     WMO/ADT ground.
-    //   - NO PATH (truly airborne / off-mesh - no navmesh under the origin): do NOT
-    //     block; correct the straight-line target with collision detection so the blink
-    //     still works and never clips through ADT or WMO:
-    //       * ADT: pure-ADT height sign-flip (d = pathZ - adtZ crossing) -> stop at
-    //         the previous sample (last point above the terrain).
-    //       * WMO: LOS first - if LOS is clear the relief is below the path and we keep
-    //         going; only a genuinely blocking model (LOS blocked) stops us via
-    //         GetHitPosition.
+    // 保存原始目标点（用于回退碰撞检测）
+    float origX = x, origY = y, origZ = z;
+
+    // [BLINK] Leap/Blink landing: 使用 NavMesh 寻路，并通过 LOS 校验防止穿墙。
+    // 流程：
+    //   1) NavMesh 寻路，获取 NavMesh 终点。
+    //   2) 如果 NavMesh 路径存在，检查起点到终点是否有视线（LOS）。
+    //   3) 如果 LOS 通过，使用 NavMesh 终点。
+    //   4) 如果 LOS 失败 或 NavMesh 无路径，进入回退碰撞检测（直线步进）。
     if (unitTarget->IsPlayer())
     {
         PathFinder path(static_cast<Unit*>(unitTarget));
         bool const calcOk = path.calculate(x, y, z, false, false);
         bool const navOk = calcOk && !(path.getPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH));
+
+        bool useNavMesh = false;
+
         if (navOk)
         {
-            // PATH: use the real navmesh landing.
+            // 取 NavMesh 终点
             Vector3 const& end = path.getActualEndPosition();
-            x = end.x;
-            y = end.y;
-            z = end.z;
-        }
-        else
-        {
-            // NO PATH: collide-correct the straight-line target (ADT + WMO) so the
-            // blink lands safely and never clips through the terrain.
 
+            // LOS 检查：起点（施法者位置）到 NavMesh 终点是否直线可达
             G3D::Vector3 const startPos(
                 unitTarget->GetPositionX(), unitTarget->GetPositionY(), unitTarget->GetPositionZ());
-            G3D::Vector3 const target(x, y, z);
+            G3D::Vector3 const navEnd(end.x, end.y, end.z);
+
+            // 使用现有 LOS 检测（带 0.5f 高度偏移，与原逻辑一致）
+            bool const losClear = unitTarget->GetMap()->IsInLineOfSight(
+                startPos.x, startPos.y, startPos.z + 0.5f, navEnd.x, navEnd.y, navEnd.z + 0.5f, false);
+
+            if (losClear)
+            {
+                // LOS 通过，使用 NavMesh 终点
+                x = end.x;
+                y = end.y;
+                z = end.z;
+                useNavMesh = true;
+            }
+            // 否则，LOS 失败，进入回退碰撞检测
+        }
+
+        if (!useNavMesh)
+        {
+            // ============================================================
+            // 回退碰撞检测：直线步进（ADT + WMO）
+            // 使用原始目标点 (origX, origY, origZ)，确保方向正确
+            // ============================================================
+            G3D::Vector3 const startPos(
+                unitTarget->GetPositionX(), unitTarget->GetPositionY(), unitTarget->GetPositionZ()+2.0f);
+            G3D::Vector3 const target(origX, origY, origZ+2.0f);
 
             float stepLen = 2.0f;
             float lineDist = (target - startPos).magnitude();
             uint32 steps = std::max<uint32>(1, uint32(ceil(lineDist / stepLen)));
             G3D::Vector3 dir = (target - startPos) / float(steps);
 
-            G3D::Vector3 res = target;     // default: full straight distance
+            G3D::Vector3 res = target; // 默认：全距离
 
-            // d for the origin: if no ADT grid loaded, treat as far above ground.
+            // 起点相对于 ADT 地面的高度差
             float terrainZ = unitTarget->GetMap()->GetTerrain()->GetHeightStatic(startPos.x, startPos.y, startPos.z, false);
             float prevD = (terrainZ > INVALID_HEIGHT_VALUE) ? startPos.z - terrainZ : 1000.0f;
 
@@ -7517,25 +7534,23 @@ void Spell::EffectLeapForward(SpellEffectIndex /*eff_idx*/)
             {
                 cur = startPos + dir * float(i);
 
-                // 1) ADT ground-plane crossing: pure ADT height (no vmap/WMO, no search
-                //    limit). d = pathZ - adtZ sign flip == line crossed the ADT surface.
+                // 1) ADT 地面交叉检测
                 terrainZ = unitTarget->GetMap()->GetTerrain()->GetHeightStatic(cur.x, cur.y, cur.z, false);
                 if (terrainZ > INVALID_HEIGHT_VALUE)
                 {
                     float d = cur.z - terrainZ;
                     if ((prevD > 0.0f && d <= 0.0f) || (prevD < 0.0f && d >= 0.0f))
                     {
-                        res = prevPoint;             // last point still above the ADT ground
+                        res = prevPoint; // 停在最后一个安全点
                         break;
                     }
                     prevD = d;
                 }
 
-                // 2) WMO collision: LOS first, GetHitPosition only if LOS blocked.
+                // 2) WMO 碰撞检测
                 {
                     bool const losClear = unitTarget->GetMap()->IsInLineOfSight(
-                        startPos.x, startPos.y, startPos.z + 0.5f,
-                        cur.x, cur.y, cur.z + 0.5f, false);
+                        startPos.x, startPos.y, startPos.z + 0.5f, cur.x, cur.y, cur.z + 0.5f, false);
                     if (!losClear)
                     {
                         float hitZ = cur.z;
@@ -7552,7 +7567,9 @@ void Spell::EffectLeapForward(SpellEffectIndex /*eff_idx*/)
 
             x = res.x;
             y = res.y;
-            z = res.z;
+            res.z -= 2.0f;
+            float finalZ = unitTarget->GetMap()->GetHeight(x, y, res.z);
+            z = finalZ;
         }
     }
 
