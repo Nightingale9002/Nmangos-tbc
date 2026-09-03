@@ -231,6 +231,8 @@ void AuctionHouseBot::Initialize()
         m_catalogRefillPerCycle = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.RefillPerCycle", 100);
         m_catalogRefillBatch   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.RefillBatch", 25);
         m_catalogListBatch     = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.ListBatch", 25);
+        m_catalogExposurePct   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.QuoteExposurePct", 25);
+        m_catalogExposurePct   = std::max<uint32>(1, std::min<uint32>(100, m_catalogExposurePct));
         m_catalogDemandBoostPct = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.DemandBoostPct", 50);
         m_catalogIdleDecayPct  = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.IdleTargetDecayPct", 5);
         m_flowRatio      = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowRatio", 150);
@@ -265,17 +267,25 @@ void AuctionHouseBot::Initialize()
                         // crash values (e.g. below the vendor buy-back price) must
                         // not re-anchor the ladder on restart
                         uint32 clamped = price;
-                        if (ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId))
+                        // [AHBOT-2026-09-04] operator-pinned goods (explicit price in the
+                        // new table): operator price is authoritative - never clamp it
+                        // into the legacy static BuyPrice-based [floor, ceil] band
+                        AuctionHouseBotCatalogEntry op = GetCatalogEntry(itemId);
+                        bool opPinned = op.enabled && op.price > 0 && (op.category == 1 || op.category == 2);
+                        if (!opPinned)
                         {
-                            uint32 staticPrice = CalculateBuyoutPrice(proto);
-                            uint32 lo = staticPrice ? (uint32)((uint64)staticPrice * std::min<uint32>(100, m_mmPriceFloor) / 100) : 0;
-                            if (proto->SellPrice > lo)
-                                lo = proto->SellPrice;
-                            uint32 hi = staticPrice ? (uint32)((uint64)staticPrice * std::max<uint32>(100, m_mmPriceCeil) / 100) : 0;
-                            if (lo && clamped < lo)
-                                clamped = lo;
-                            if (hi && clamped > hi)
-                                clamped = hi;
+                            if (ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId))
+                            {
+                                uint32 staticPrice = CalculateBuyoutPrice(proto);
+                                uint32 lo = staticPrice ? (uint32)((uint64)staticPrice * std::min<uint32>(100, m_mmPriceFloor) / 100) : 0;
+                                if (proto->SellPrice > lo)
+                                    lo = proto->SellPrice;
+                                uint32 hi = staticPrice ? (uint32)((uint64)staticPrice * std::max<uint32>(100, m_mmPriceCeil) / 100) : 0;
+                                if (lo && clamped < lo)
+                                    clamped = lo;
+                                if (hi && clamped > hi)
+                                    clamped = hi;
+                            }
                         }
                         state.price = clamped;
                         state.ref = clamped;
@@ -403,17 +413,24 @@ void AuctionHouseBot::Update()
             }
 
             bool isMM = (iterator == m_itemData.end() && m_marketEnabled && prototype->Class == ITEM_CLASS_TRADE_GOODS);
-            if (isMM && m_catalogEnabled)
+            if (m_marketEnabled && m_catalogEnabled)
             {
-                // Class7 supply routing:
-                //  - book members (category 1/2, universe) are supplied ONLY by the curated catalog.
-                //  - universe members marked category 0 (untouched) fall through to the loot rolls.
-                //  - category 3 (ban) and any class7 NOT in the curated universe (crafted goods,
-                //    instance-only 301+ materials such as Sunmote/Heart of Darkness, banned
-                //    subclasses) are NEVER supplied by any path.
+                // [2026-09-04] DB-managed goods never flow through the legacy loot supply:
+                //  - Class7 universe members with category != 0 (book members 1/2 and bans 3)
+                //    are supplied ONLY by the curated catalogue (or banned); only category-0
+                //    (untouched) universe members still fall through to the loot rolls.
+                //  - items the operator explicitly manages in ahbot_catalog (category != 0)
+                //    are excluded regardless of item class.
                 bool inUniverse = m_catalogUniverse.find(prototype->ItemId) != m_catalogUniverse.end();
                 uint32 cat = GetCatalogEntry(prototype->ItemId).category;
-                if (!(inUniverse && cat == 0))
+                auto opItr = m_operatorCatalog.find(prototype->ItemId);
+                uint32 opCat = opItr != m_operatorCatalog.end() ? opItr->second : 0;
+                if (prototype->Class == ITEM_CLASS_TRADE_GOODS)
+                {
+                    if (!(inUniverse && cat == 0))
+                        continue;
+                }
+                else if (opCat != 0)
                     continue;
             }
             AuctionHouseBotMarketState* mmState = isMM ? GetMarketState(prototype->ItemId, AuctionHouseType(houseIdx)) : nullptr;
@@ -640,6 +657,29 @@ void AuctionHouseBot::UpdateMarketPrices()
                 continue;
             }
 
+            // [AHBOT-2026-09-04] operator-pinned market good: the row in the new table
+            // (ahbot_market_state) carries an explicit operator price (e.g. 059
+            // enchanting materials 22449/22450/20725 = category 1 with price > 0).
+            // The operator price is authoritative for BOTH buy cap and sell ladder -
+            // no legacy static BuyPrice clamp, no central-bank drift. Everything else
+            // (non trade-goods, unpriced rows) keeps the old dynamic machinery.
+            {
+                AuctionHouseBotCatalogEntry op = GetCatalogEntry(itemId);
+                if (op.enabled && op.category == 1 && op.price > 0)
+                {
+                    EnsureTargets(state, itemId);
+                    if (state.price != op.price)
+                    {
+                        CharacterDatabase.PExecute("INSERT INTO ahbot_market_state (item, auction_house, price_ref, enabled, category, price, target, capacity) VALUES (%u, %u, %u, 1, 1, 0, 500, 1500) AS new ON DUPLICATE KEY UPDATE price_ref = new.price_ref", itemId, houseIndex, op.price);
+                    }
+                    state.price = op.price;
+                    state.ref = op.price;
+                    if (!state.median)
+                        state.median = medianAll ? medianAll : op.price;
+                    continue;
+                }
+            }
+
             // first-run seed and adaptive baseline
             if (!state.price && staticPrice)
                 state.price = staticPrice;
@@ -715,9 +755,10 @@ void AuctionHouseBot::UpdateMarketPrices()
                 {
                     state.probeLevel = 0;      // restart probing near the (higher) demand
                     state.probeCooldown = 0;
-                    // demand response: restock more aggressively
-                    if (state.capacity)
-                        state.target = std::min<uint32>(state.capacity, state.target + state.target * std::min<uint32>(100, m_catalogDemandBoostPct) / 100);
+                    // [2026-09-04] no demand-boost target growth: holdings stay at the
+                    // operator/DB target, so world-refill & quotes can never overflow
+                    // it (a warehouse at capacity is exactly what blocks player sales).
+                    // Fast quote turnover (QuoteExposurePct) already answers demand.
                 }
                 // probe outcome (observation only): a below-quote sale is demand
                 // discovery - recorded for the operator, never a pricing input
@@ -795,10 +836,10 @@ void AuctionHouseBot::UpdateMarketPrices()
             }
 
             // ---- player-listing-depth supply regulation (every scan) ----
-            // The supply we inject (target) is sized by how much supply players
-            // themselves provide: deep player listings -> shrink our injection (step
-            // down toward the baseline), thin player listings -> expand our injection
-            // (step up toward capacity). Quantity, not price.
+            // [2026-09-04] shrink-only: when players flood supply we step our target
+            // down toward the baseline; the target never expands upward (that caused
+            // warehouse overflow and blocked player sales). Expansion is handled by
+            // the operator rows (target/capacity in the DB), not by the bot.
             {
                 auto pUnits = playerUnits.find(itemId);
                 uint32 depth = pUnits != playerUnits.end() ? pUnits->second : 0;
@@ -808,8 +849,6 @@ void AuctionHouseBot::UpdateMarketPrices()
                     uint32 step = std::max<uint32>(1, state.target * std::min<uint32>(50, m_depthStepPct) / 100);
                     if (depth >= (uint64)state.target * std::max<uint32>(100, m_depthHighPct) / 100)
                         state.target = std::max<uint32>(baseline, state.target > step ? state.target - step : baseline);
-                    else if (depth <= (uint64)state.target * m_depthLowPct / 100)
-                        state.target = std::min<uint32>(state.capacity, state.target + step);
                 }
             }
 
@@ -995,6 +1034,7 @@ void AuctionHouseBot::LoadCatalogOverrides()
 {
     m_catalogUniverse.clear();
     m_catalogOverrides.clear();
+    m_operatorCatalog.clear();
 
     if (auto result = WorldDatabase.PQuery(
         "SELECT DISTINCT l.item FROM "
@@ -1076,6 +1116,18 @@ void AuctionHouseBot::LoadCatalogOverrides()
         } while (result->NextRow());
     }
     sLog.outString("AHBot market-maker catalog: %u items (%u operator overrides)", (uint32)m_catalogUniverse.size(), (uint32)m_catalogOverrides.size());
+
+    // items the operator explicitly manages in ahbot_catalog (category != 0): they
+    // must NEVER be (re)listed by the legacy loot-table supply - the new catalogue
+    // mechanism (or the ban) is their only source of listings
+    if (auto catResult = CharacterDatabase.Query("SELECT item, MAX(category) FROM ahbot_catalog WHERE category != 0 GROUP BY item"))
+    {
+        do
+        {
+            Field* cfields = catResult->Fetch();
+            m_operatorCatalog[cfields[0].GetUInt32()] = cfields[1].GetUInt32();
+        } while (catResult->NextRow());
+    }
 }
 
 AuctionHouseBotCatalogEntry AuctionHouseBot::GetCatalogEntry(uint32 itemId) const
@@ -1304,7 +1356,12 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
         if (state->inventory <= booked)
             continue; // nothing available to quote
         uint32 available = state->inventory - booked;
-        uint32 toList = state->target > booked ? std::min<uint32>(available, state->target - booked) : 0;
+        // [2026-09-04] concurrent listing exposure is capped at a fraction of target
+        // (QuoteExposurePct): keep the warehouse stocked (target) but only put a thin
+        // slice on the AH at any time - sold tiers restock quickly (per sell phase),
+        // so price discovery runs on fast turnover instead of a wall of sell orders.
+        uint32 exposure = std::max<uint32>(1, (uint32)(((uint64)state->target * m_catalogExposurePct + 50) / 100));
+        uint32 toList = exposure > booked ? std::min<uint32>(available, exposure - booked) : 0;
         if (!toList)
             continue;
         ++done;

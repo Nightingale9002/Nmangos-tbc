@@ -290,6 +290,7 @@ class AuctionHouseBot
         uint32 m_catalogRefillPerCycle = 100; // units refilled per item per cycle
         uint32 m_catalogRefillBatch = 25; // catalog items refilled per cycle (rotation)
         uint32 m_catalogListBatch = 25;   // catalog items quoted per cycle (rotation)
+        uint32 m_catalogExposurePct = 25; // % of target listed concurrently (rest stays stocked)
         uint32 m_catalogDemandBoostPct = 50; // target boost % when the price tier is eaten
         uint32 m_catalogIdleDecayPct = 5; // target decay % per idle scan after threshold
         uint32 m_catalogRotate = 0;       // rotating cursor for batch cycles
@@ -317,6 +318,10 @@ class AuctionHouseBot
         std::vector<uint32> m_catalogUniverseVec; // sorted, for batch rotation
         // item -> operator override (ahbot_market_state)
         std::unordered_map<uint32, AuctionHouseBotCatalogEntry> m_catalogOverrides;
+        // item -> category for rows the operator explicitly manages in ahbot_catalog
+        // (the "we manage this good" registry): such goods (category != 0) are never
+        // supplied by the legacy loot-table flow, regardless of item class
+        std::unordered_map<uint32, uint32> m_operatorCatalog;
         // item -> per auction house market-maker state
         std::unordered_map<uint32, std::array<AuctionHouseBotMarketState, MAX_AUCTION_HOUSE_TYPE>> m_marketState;
 };

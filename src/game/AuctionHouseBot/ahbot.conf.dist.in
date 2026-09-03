@@ -14,8 +14,8 @@ ConfVersion=2021011201
 # 40th second).
 # Values must be in range 0-100. Default values are Sell(10) and Buy(10).
 ###################################################################################################################
-AuctionHouseBot.Chance.Sell = 10
-AuctionHouseBot.Chance.Buy  = 10
+AuctionHouseBot.Chance.Sell = 25
+AuctionHouseBot.Chance.Buy  = 25
 
 ###################################################################################################################
 # AuctionHouseBot.Loot.<source>[.<rank>] = <minSources>,<maxSources>,<minLootings>,<maxLootings>
@@ -246,6 +246,9 @@ AuctionHouseBot.Value.DynamicRefresh = 60
 #   RefillPerCycle   - max units of world supply refilled per item per cycle
 #   RefillBatch      - how many catalog items are refilled per cycle (rotation)
 #   ListBatch        - how many catalog items are quoted per cycle (rotation)
+#   QuoteExposurePct - %% of target holdings listed on the AH concurrently (rest stays
+#                      stocked in the virtual warehouse): a thin book that restocks
+#                      every sell phase -> fast price discovery, few wall-of-orders
 #   DemandBoostPct   - target holdings boost %% when the price tier gets eaten
 #   IdleTargetDecayPct - target holdings shrink %% per idle scan after IdleThreshold
 ###################################################################################################################
@@ -255,6 +258,7 @@ AuctionHouseBot.MarketMaker.CatalogCapacity = 200
 AuctionHouseBot.MarketMaker.RefillPerCycle = 100
 AuctionHouseBot.MarketMaker.RefillBatch = 25
 AuctionHouseBot.MarketMaker.ListBatch = 25
+AuctionHouseBot.MarketMaker.QuoteExposurePct = 25
 AuctionHouseBot.MarketMaker.DemandBoostPct = 50
 AuctionHouseBot.MarketMaker.IdleTargetDecayPct = 5
 AuctionHouseBot.MarketMaker.FlowRatio = 150
@@ -297,6 +301,8 @@ AuctionHouseBot.Value.Subclass.0.5.Epic = 0
 #   LadderStep   - sell ladder tier spacing %% (also the price-discovery move size)
 #   LadderDepth  - number of ladder tiers (capped at 16)
 #   BuyDepth     - hidden buy cap = price * (100 - BuyDepth) / 100
+#                  0 = buy at the reference price (players can sell at/near ref)
+#                  (2026-09-04: 0 on cloud so player listings at ~ref price are absorbed)
 #   BuyPerCycle  - max buyout units per item per refresh cycle (0 = unlimited)
 #   BidOnlyBuyout - 1 = only buyout player listings (never bid: bot bidding is free
 #                   and mints gold to the seller), 0 = allow bidding up to the cap
@@ -312,9 +318,9 @@ AuctionHouseBot.Value.Subclass.0.5.Epic = 0
 #   PriceFloor   - hard price floor as %% of the static price
 #   PriceCeil    - hard price cap as %% of the static price
 ###################################################################################################################
-AuctionHouseBot.MarketMaker.LadderStep = 50
+AuctionHouseBot.MarketMaker.LadderStep = 5
 AuctionHouseBot.MarketMaker.LadderDepth = 10
-AuctionHouseBot.MarketMaker.BuyDepth = 10
+AuctionHouseBot.MarketMaker.BuyDepth = 0
 AuctionHouseBot.MarketMaker.BuyPerCycle = 0
 AuctionHouseBot.MarketMaker.BidOnlyBuyout = 1
 AuctionHouseBot.MarketMaker.Smoothing = 50

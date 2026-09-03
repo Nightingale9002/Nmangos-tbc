@@ -233,7 +233,9 @@ void AuctionHouseMgr::SendAuctionSuccessfulMail(AuctionEntry* auction)
 
         MailDraft(msgAuctionSuccessfulSubject.str(), auctionSuccessfulBody.str())
         .SetMoney(profit)
-        .SendMailTo(MailReceiver(owner, owner_guid), auction, MAIL_CHECK_MASK_COPIED, HOUR);
+        // [AH-2026-09-04] zero delivery delay: sale gold arrives in the mailbox
+        // immediately instead of the classic 1-hour staged delivery (HOUR)
+        .SendMailTo(MailReceiver(owner, owner_guid), auction, MAIL_CHECK_MASK_COPIED, 0);
     }
 }
 
@@ -999,7 +1001,10 @@ void AuctionEntry::AuctionBidWinning(Player* newbidder)
         sAuctionHouseBot.RecordBotPurchase(itemTemplate, houseIdx, itemCount, bid / std::max<uint32>(1, itemCount), bid);
 #endif
 
-    sAuctionMgr.SendAuctionSalePendingMail(this);
+    // [AH-2026-09-04] instant gold on sale: classic behaviour staged the gold with a
+    // "sale pending" placeholder mail + a 1h delivery delay on the money mail. Boss
+    // wants the sale gold sent immediately, so only the money mail and the winner's
+    // item mail are sent; SendAuctionSuccessfulMail now uses zero delivery delay.
     sAuctionMgr.SendAuctionSuccessfulMail(this);
     sAuctionMgr.SendAuctionWonMail(this);
 
