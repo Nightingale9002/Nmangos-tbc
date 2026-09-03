@@ -7465,67 +7465,58 @@ void Spell::EffectLeapForward(SpellEffectIndex /*eff_idx*/)
 
     float orientation = unitTarget->GetOrientation();
 
-    // ����ԭʼĿ��㣨���ڻ�����ײ��⣩
+    // 保存原始目标点（无 navmesh 时的直线目标）
     float origX = x, origY = y, origZ = z;
 
-    // [BLINK] Leap/Blink landing: ʹ�� NavMesh Ѱ·����ͨ�� LOS У���ֹ��ǽ��
-    // ���̣�
-    //   1) NavMesh Ѱ·����ȡ NavMesh �յ㡣
-    //   2) ��� NavMesh ·�����ڣ������㵽�յ��Ƿ������ߣ�LOS����
-    //   3) ��� LOS ͨ����ʹ�� NavMesh �յ㡣
-    //   4) ��� LOS ʧ�� �� NavMesh ��·�������������ײ��⣨ֱ�߲�������
+    // 落点方案（2026-09-04 定版，详见 dev/KNOWN_ISSUES.md）：
+    //   1) PathFinder 寻路（目标 = Spell.cpp 给的简单直线终点）
+    //   2) navmesh 有真实路径(NORMAL|INCOMPLETE) -> 目标点 = navmesh 终点（z 顺可行走表面）
+    //   3) navmesh 无路径(真高空/水面等)        -> 目标点 = 直线终点
+    //   4) 两种目标点都走同一条直线碰撞步进（ADT 符号翻转 + WMO LOS/命中），
+    //      最终落点由碰撞决定：不穿墙/不穿坡/不穿 WMO；WMO 命中停在表面不钻底
+    //   5) 采样线基于玩家实际高度(+2，跳起时即跳起高度)，不拉到 navmesh 地面高度；
+    //      直线可通行时 z 保持飞行高度，空中闪现不掉地
     if (unitTarget->IsPlayer())
     {
+        float const px = unitTarget->GetPositionX();
+        float const py = unitTarget->GetPositionY();
+        float const pz = unitTarget->GetPositionZ();
+        Map const* map = unitTarget->GetMap();
+        TerrainInfo const* terrain = map->GetTerrain();
+
         PathFinder path(static_cast<Unit*>(unitTarget));
         bool const calcOk = path.calculate(x, y, z, false, false);
         bool const navOk = calcOk && !(path.getPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH));
 
-        bool useNavMesh = false;
-
+        // 目标点：navmesh 有真实路径 -> navmesh 终点（x,y,z 顺可行走表面）；
+        // 无路径（空中/水面等） -> 直线终点
+        G3D::Vector3 target(origX, origY, origZ);
         if (navOk)
         {
-            // ȡ NavMesh �յ�
             Vector3 const& end = path.getActualEndPosition();
-
-            // LOS ��飺��㣨ʩ����λ�ã��� NavMesh �յ��Ƿ�ֱ�߿ɴ�
-            G3D::Vector3 const startPos(
-                unitTarget->GetPositionX(), unitTarget->GetPositionY(), unitTarget->GetPositionZ());
-            G3D::Vector3 const navEnd(end.x, end.y, end.z);
-
-            // ʹ������ LOS ��⣨�� 0.5f �߶�ƫ�ƣ���ԭ�߼�һ�£�
-            bool const losClear = unitTarget->GetMap()->IsInLineOfSight(
-                startPos.x, startPos.y, startPos.z + 0.5f, navEnd.x, navEnd.y, navEnd.z + 0.5f, false);
-
-            if (losClear)
-            {
-                // LOS ͨ����ʹ�� NavMesh �յ�
-                x = end.x;
-                y = end.y;
-                z = end.z;
-                useNavMesh = true;
-            }
-            // ����LOS ʧ�ܣ����������ײ���
+            target = G3D::Vector3(end.x, end.y, end.z);
         }
 
-        if (!useNavMesh)
         {
-            // ============================================================
-            // ������ײ��⣺ֱ�߲�����ADT + WMO��
-            // ʹ��ԭʼĿ��� (origX, origY, origZ)��ȷ��������ȷ
-            // ============================================================
-            G3D::Vector3 const startPos(
-                unitTarget->GetPositionX(), unitTarget->GetPositionY(), unitTarget->GetPositionZ()+2.0f);
-            G3D::Vector3 const target(origX, origY, origZ+2.0f);
+            // 碰撞逻辑（navmesh 目标与直线目标通用）：直线步进（ADT + WMO）
+            // 采样线 = 起点(玩家实际坐标 +2，跳起时即跳起高度 +2) -> 目标(+2)
+            // 逐点两层检测：
+            //   1) ADT 符号翻转：纯 ADT 面与采样线相交 -> 停前一个安全采样点
+            //   2) WMO：LOS 被挡(真墙/坡脊) -> GetHitPosition 取表面命中点即停
+            G3D::Vector3 const startPos(px, py, pz + 2.0f);
+            G3D::Vector3 const tgt(target.x, target.y, target.z + 2.0f);
 
             float stepLen = 2.0f;
-            float lineDist = (target - startPos).magnitude();
+            float lineDist = (tgt - startPos).magnitude();
             uint32 steps = std::max<uint32>(1, uint32(ceil(lineDist / stepLen)));
-            G3D::Vector3 dir = (target - startPos) / float(steps);
+            G3D::Vector3 dir = (tgt - startPos) / float(steps);
 
-            G3D::Vector3 res = target; // Ĭ�ϣ�ȫ����
+            G3D::Vector3 res = tgt;   // 默认：全距离
+            bool anyStop = false;     // 是否中途被挡停
+            bool wmoStop = false;     // 是否因 WMO 表面命中而停止（z 须保持表面高度）
 
-            // �������� ADT ����ĸ߶Ȳ�
-            float terrainZ = unitTarget->GetMap()->GetTerrain()->GetHeightStatic(startPos.x, startPos.y, startPos.z, false);
+            // 起点相对于 ADT 地面的高度差（采样线在玩家实际高度 +2，含跳跃高度）
+            float terrainZ = terrain->GetHeightStatic(startPos.x, startPos.y, startPos.z, false);
             float prevD = (terrainZ > INVALID_HEIGHT_VALUE) ? startPos.z - terrainZ : 1000.0f;
 
             G3D::Vector3 prevPoint = startPos;
@@ -7534,31 +7525,41 @@ void Spell::EffectLeapForward(SpellEffectIndex /*eff_idx*/)
             {
                 cur = startPos + dir * float(i);
 
-                // 1) ADT ���潻����
-                terrainZ = unitTarget->GetMap()->GetTerrain()->GetHeightStatic(cur.x, cur.y, cur.z, false);
+                // 1) ADT 地面交叉检测
+                terrainZ = terrain->GetHeightStatic(cur.x, cur.y, cur.z, false);
                 if (terrainZ > INVALID_HEIGHT_VALUE)
                 {
                     float d = cur.z - terrainZ;
                     if ((prevD > 0.0f && d <= 0.0f) || (prevD < 0.0f && d >= 0.0f))
                     {
-                        res = prevPoint; // ͣ�����һ����ȫ��
+                        res = prevPoint; // 停在最后一个安全点
+                        anyStop = true;
                         break;
                     }
                     prevD = d;
                 }
 
-                // 2) WMO ��ײ���
+                // 2) WMO 碰撞检测
                 {
-                    bool const losClear = unitTarget->GetMap()->IsInLineOfSight(
+                    bool const losClear = map->IsInLineOfSight(
                         startPos.x, startPos.y, startPos.z + 0.5f, cur.x, cur.y, cur.z + 0.5f, false);
                     if (!losClear)
                     {
                         float hitZ = cur.z;
-                        if (unitTarget->GetMap()->GetHitPosition(startPos.x, startPos.y, startPos.z + 0.5f, cur.x, cur.y, hitZ, -0.5f))
+                        // GetHitPosition 会把 cur.x/cur.y/hitZ 修正为命中点（沿射线回退 0.5）
+                        bool const hitOk = map->GetHitPosition(startPos.x, startPos.y, startPos.z + 0.5f, cur.x, cur.y, hitZ, -0.5f);
+                        if (hitOk)
                         {
                             res = G3D::Vector3(cur.x, cur.y, hitZ);
+                            anyStop = true;
+                            wmoStop = true; // z 取模型表面命中高度，避免 -2 下探钻到模型下
                             break;
                         }
+                        // 病态情形：LOS 被挡但拿不到命中点（起点贴/入模型等）。
+                        // 绝不放行继续向墙里走：停在上一个安全采样点，按 ADT 分支贴地处理
+                        res = prevPoint;
+                        anyStop = true;
+                        break;
                     }
                 }
 
@@ -7567,9 +7568,28 @@ void Spell::EffectLeapForward(SpellEffectIndex /*eff_idx*/)
 
             x = res.x;
             y = res.y;
-            res.z -= 2.0f;
-            float finalZ = unitTarget->GetMap()->GetHeight(x, y, res.z);
-            z = finalZ;
+            if (wmoStop)
+            {
+                // WMO 表面命中：z 保持命中高度直接落地。
+                // 不能 -2 再向下 GetHeight：会从坡壳下方向下搜到坡下更低层(ADT)导致穿模
+                z = res.z;
+            }
+            else if (!anyStop)
+            {
+                // 整条直线可通行：z = 直线飞行高度（采样线 -2）。
+                //   navmesh 目标：目标 z 即可行走表面高度 -> 顺地形落地
+                //   直线目标（空中/跳起/水面）：保持当前高度不掉地，
+                //   由物理自然下落 / 水面处理（水面目标 z 已由 Spell.cpp 吸附）
+                z = res.z - 2.0f;
+            }
+            else
+            {
+                // ADT 抬升挡路 / WMO-MISS：停在上一个安全采样点，从采样线上方
+                // 下探贴地（vmap 内部自 z+2 起向下搜，只会命中采样线正下方的
+                // 表面 WMO 顶或 ADT，不会钻到模型壳下）
+                res.z -= 2.0f;
+                z = map->GetHeight(x, y, res.z);
+            }
         }
     }
 
