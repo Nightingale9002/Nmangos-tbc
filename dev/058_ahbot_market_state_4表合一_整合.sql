@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS ahbot_items_backup AS SELECT * FROM ahbot_items;
 -- ---------------- 2) 创建新表结构 ----------------
 DROP TABLE IF EXISTS `ahbot_market_state`;
 
-CREATE TABLE `ahbot_market_state` (
+CREATE TABLE IF NOT EXISTS `ahbot_market_state` (
   `item` INT UNSIGNED NOT NULL,
   `auction_house` TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0=中立,1=联盟,6=部落',
 

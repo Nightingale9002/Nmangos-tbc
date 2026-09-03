@@ -18,7 +18,7 @@ WHERE Id IN (
 ) AND MaxCount = 1;
 
 -- 1) 改动前统计（应输出：MaxCount=1 -> 215 组）
-SELECT MaxCount, COUNT(*) AS groups
+SELECT MaxCount, COUNT(*) AS `groups`
 FROM spawn_group
 WHERE Id IN (
     SELECT DISTINCT sge.Id FROM spawn_group_entry sge
@@ -35,7 +35,7 @@ WHERE MaxCount = 1
 );
 
 -- 3) 改动后统计（应输出：MaxCount=2 -> 215 组，无 MaxCount=1）
-SELECT MaxCount, COUNT(*) AS groups
+SELECT MaxCount, COUNT(*) AS `groups`
 FROM spawn_group
 WHERE Id IN (
     SELECT DISTINCT sge.Id FROM spawn_group_entry sge
