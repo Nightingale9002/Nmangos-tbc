@@ -919,6 +919,16 @@ bool Creature::AIM_Initialize()
     return true;
 }
 
+// [TRIAGE-keepZ] one-shot: a summoner may pin the scripted Z for the very next
+// creature Create by calling SetNextCreatureSpawnKeepZ(true) right before
+// SummonCreature. The flag is consumed in Creature::Create below so the ground
+// snap (UpdateAllowedPositionZ) is skipped exactly once. Needed for NPCs lying on
+// client-side GO furniture whose top is absent from the server vmap - they must be
+// born at the scripted Z because dead/corpse-pose units ignore later position
+// packets. World updates are single-threaded, so the flag cannot race.
+static bool s_keepZOnce = false;
+void SetNextCreatureSpawnKeepZ(bool keepZ) { s_keepZOnce = keepZ; }
+
 bool Creature::Create(uint32 dbGuid, uint32 guidlow, CreatureCreatePos& cPos, CreatureInfo const* cinfo, const CreatureData* data /*= nullptr*/, GameEventCreatureData const* eventData /*= nullptr*/)
 {
     SetMap(cPos.GetMap());
@@ -927,7 +937,14 @@ bool Creature::Create(uint32 dbGuid, uint32 guidlow, CreatureCreatePos& cPos, Cr
     if (!CreateFromProto(dbGuid, guidlow, cinfo, data, eventData))
         return false;
 
-    cPos.SelectFinalPoint(this, data != nullptr);
+    // [TRIAGE-keepZ] one-shot hook: a summoner may pin the scripted Z for the very
+    // next creature Create, skipping the ground snap (SetNextCreatureSpawnKeepZ).
+    // Needed for NPCs lying on client-side GO furniture whose top is absent from the
+    // server vmap (they must be born at the scripted Z - dead-pose units ignore
+    // later position packets). Single-threaded world updates make the flag safe.
+    if (!s_keepZOnce)
+        cPos.SelectFinalPoint(this, data != nullptr);
+    s_keepZOnce = false;
 
     if (!cPos.Relocate(this))
         return false;

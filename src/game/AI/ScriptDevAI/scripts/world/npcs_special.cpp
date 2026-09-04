@@ -442,6 +442,12 @@ struct npc_doctorAI : public ScriptedAI
     void UpdateAI(const uint32 uiDiff) override;
 };
 
+// [TRIAGE-keepZ] engine hook (Creature.cpp): pin the scripted Z for the next
+// SummonCreature so the patient is BORN at the bed-top coordinate (the very first
+// create packet) instead of being snapped onto the server vmap floor (13.5, the
+// bed board) - dead/corpse-pose units ignore later position packets.
+void SetNextCreatureSpawnKeepZ(bool keepZ);
+
 /*#####
 ## npc_injured_patient (handles all the patients, no matter Horde or Alliance)
 #####*/
@@ -731,7 +737,21 @@ void npc_doctorAI::UpdateAI(const uint32 uiDiff)
                             return;
                     }
 
-                    if (Creature* Patient = m_creature->SummonCreature(patientEntry, (*itr)->x, (*itr)->y, (*itr)->z, (*itr)->o, TEMPSPAWN_TIMED_OOC_OR_CORPSE_DESPAWN, 5000))
+                    // [TRIAGE-FIX 2026-09-04] TEMPSPAWN_TIMED_OOC_OR_CORPSE_DESPAWN (5000,
+                    // from 27689e8c3) made patients vanish 5s after spawn while still alive
+                    // and out of combat - and that silent removal never fires PatientDied /
+                    // PatientSaved, so the summon coordinate was lost and the doctor event
+                    // eventually ran dry. Stock SD2 uses TEMPSPAWN_DEAD_DESPAWN: an alive
+                    // patient persists until healed (walks off, ForcedDespawn 5000) or dies
+                    // from the HP drain below (PatientDied -> coordinate recycled).
+                    //
+                    // The patient beds are client-side GO models: the server vmap floor
+                    // under them is the bed board (~13.5) while the visible bedding top is
+                    // ~14.0. SummonCreature would snap the body onto 13.5 (inside the
+                    // bed), and dead-pose units ignore later position packets - so pin
+                    // the scripted bed-top Z for the very first create packet instead.
+                    SetNextCreatureSpawnKeepZ(true);
+                    if (Creature* Patient = m_creature->SummonCreature(patientEntry, (*itr)->x, (*itr)->y, (*itr)->z, (*itr)->o, TEMPSPAWN_DEAD_DESPAWN, 0))
                     {
                         totalSpawned++;
 
@@ -747,6 +767,8 @@ void npc_doctorAI::UpdateAI(const uint32 uiDiff)
                             m_vPatientSummonCoordinates.erase(itr);
                         }
                     }
+                    else
+                        SetNextCreatureSpawnKeepZ(false); // summon failed - do not leak the one-shot flag
                 }
             }
 
