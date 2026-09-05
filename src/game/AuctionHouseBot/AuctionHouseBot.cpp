@@ -221,7 +221,8 @@ void AuctionHouseBot::Initialize()
         m_mmRepriceThreshold = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.RepriceThreshold", 1);
         m_mmMaxItemUnits = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MaxItemUnits", 200);
         m_mmEatRatio     = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.EatRatio", 50);
-        m_mmProbeUnits   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.ProbeUnits", 5);
+        // [2026-09-05] probes disabled (0): no sub-reference price-discovery orders
+        m_mmProbeUnits   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.ProbeUnits", 0);
         m_mmPriceFloor  = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.PriceFloor", 5);
         m_mmPriceCeil   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.PriceCeil", 300);
         // curated Class7 catalog + virtual inventory (world-supply refill)
@@ -1036,6 +1037,17 @@ void AuctionHouseBot::LoadCatalogOverrides()
     m_catalogOverrides.clear();
     m_operatorCatalog.clear();
 
+    // =====================================================================
+    // [catalog-speed 2026-09-05] universe is built entry-by-entry instead of the
+    // former single monster query (nested NOT IN + correlated COUNT/HAVING) which
+    // got very slow on .ahbot reload as the data grew. Same semantics:
+    //   universe = candidates - craftedOnly - instanceOnly301
+    // plus per-phase timing logs ([AHBTIMER]) for further profiling.
+    // =====================================================================
+    uint32 tAll = WorldTimer::getMSTime();
+
+    // 1) base candidates: droppable + priceable class7, no BoP/quest/loot-container
+    std::unordered_set<uint32> cand;
     if (auto result = WorldDatabase.PQuery(
         "SELECT DISTINCT l.item FROM "
         "(SELECT item FROM creature_loot_template "
@@ -1046,60 +1058,71 @@ void AuctionHouseBot::LoadCatalogOverrides()
         " UNION SELECT item FROM item_loot_template) l "
         "JOIN item_template it ON it.entry = l.item "
         "WHERE it.class = 7 AND it.quality > 0 "
-        "AND it.bonding NOT IN (1, 4) "
-        "AND (it.flags & 4) = 0 "
-        "AND (it.sellprice > 0 OR it.buyprice > 0) "
-        // the bot sells RAW MATERIALS only - exclude profession finished goods
-        // (craftable items with no genuine natural source: bolts of cloth, cured
-        // leather, blasting powder...). Kept when the item has a real
-        // skinning/disenchant/fishing source or is a real world drop (>= 3
-        // creature sources), so e.g. Large Prismatic Shard / Arcane Dust stay.
-        // Metal bars (class 7 subclass 7: Copper/Iron/Thorium/Mithril... Bar) are
-        // KEPT per operator policy - they are smelted ore, treated as raw material.
-        "AND l.item NOT IN ("
-        "SELECT m.ei FROM ("
-        "SELECT EffectItemType1 AS ei FROM spell_template WHERE (Effect1 IN (24,43)) AND EffectItemType1 > 0 "
-        "UNION SELECT EffectItemType2 FROM spell_template WHERE (Effect2 IN (24,43)) AND EffectItemType2 > 0 "
-        "UNION SELECT EffectItemType3 FROM spell_template WHERE (Effect3 IN (24,43)) AND EffectItemType3 > 0"
-        ") m "
-        "WHERE m.ei NOT IN (SELECT item FROM skinning_loot_template) "
-        "AND m.ei NOT IN (SELECT item FROM disenchant_loot_template) "
-        "AND m.ei NOT IN (SELECT item FROM fishing_loot_template) "
-        "AND m.ei NOT IN (SELECT entry FROM item_template WHERE class = 7 AND subclass = 7) "
-        "AND (SELECT COUNT(*) FROM creature_loot_template c WHERE c.item = m.ei) < 3"
-        ") "
-        // the precise instance rule: exclude ONLY materials that are BOTH used by
-        // Outland (301+) profession recipes AND dropped exclusively inside
-        // instances (no creature source on the normal maps 530/1/0/532) - i.e.
-        // Sunmote, Heart of Darkness, Nether Vortex, Primal Nether. Earth
-        // instance materials (Dark Iron Ore, Molten Core cores, Bloodvine...) are
-        // NOT 301+ recipe materials, so they stay - the bot supplies them.
-        "AND l.item NOT IN ("
-        "SELECT cl.item FROM creature_loot_template cl JOIN creature c ON c.id = cl.entry "
-        "WHERE cl.item IN ("
-        "SELECT DISTINCT x.reagent FROM ("
-        "SELECT st.Reagent1 AS reagent FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent1 > 0 "
-        "UNION ALL SELECT st.Reagent2 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent2 > 0 "
-        "UNION ALL SELECT st.Reagent3 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent3 > 0 "
-        "UNION ALL SELECT st.Reagent4 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent4 > 0 "
-        "UNION ALL SELECT st.Reagent5 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent5 > 0 "
-        "UNION ALL SELECT st.Reagent6 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent6 > 0 "
-        "UNION ALL SELECT st.Reagent7 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent7 > 0 "
-        "UNION ALL SELECT st.Reagent8 FROM (SELECT spellid_2 AS craft_spell FROM item_template WHERE class = 9 AND RequiredSkillRank >= 301 AND spellid_2 > 0) r JOIN spell_template st ON st.Id = r.craft_spell WHERE st.Reagent8 > 0"
-        ") x JOIN item_template itx ON itx.entry = x.reagent WHERE itx.class = 7"
-        ") "
-        "GROUP BY cl.item HAVING SUM(CASE WHEN c.map IN (530, 1, 0, 532) THEN 1 ELSE 0 END) = 0"
-        ")"))
+        "AND it.bonding NOT IN (1, 4) AND (it.flags & 4) = 0 "
+        "AND (it.sellprice > 0 OR it.buyprice > 0)"))
     {
-        do
-        {
-            uint32 itemId = result->Fetch()->GetUInt32();
-            if (itemId)
-                m_catalogUniverse.insert(itemId);
-        } while (result->NextRow());
+        do { uint32 i = result->Fetch()->GetUInt32(); if (i) cand.insert(i); } while (result->NextRow());
     }
+    sLog.outError("[AHBTIMER] catalog candidates=%u took %ums", (uint32)cand.size(), WorldTimer::getMSTime() - tAll);
+
+    // 2) crafted product items (spell Effect 24/43) that have NO genuine natural
+    //    source are removed (bolts of cloth, cured leather, blasting powder...).
+    //    Kept: skinning/disenchant/fishing sources, smelted bars (subclass 7),
+    //    and items with >= 3 creature sources.
+    uint32 tCraft = WorldTimer::getMSTime();
+    std::unordered_set<uint32> crafted;
+    if (auto result = WorldDatabase.PQuery(
+        "SELECT DISTINCT ei FROM ("
+        "SELECT EffectItemType1 AS ei FROM spell_template WHERE Effect1 IN (24,43) AND EffectItemType1 > 0 "
+        "UNION ALL SELECT EffectItemType2 FROM spell_template WHERE Effect2 IN (24,43) AND EffectItemType2 > 0 "
+        "UNION ALL SELECT EffectItemType3 FROM spell_template WHERE Effect3 IN (24,43) AND EffectItemType3 > 0) t"))
+    {
+        do { uint32 i = result->Fetch()->GetUInt32(); if (i) crafted.insert(i); } while (result->NextRow());
+    }
+    if (auto result = WorldDatabase.PQuery(
+        "SELECT item FROM skinning_loot_template "
+        "UNION SELECT item FROM disenchant_loot_template "
+        "UNION SELECT item FROM fishing_loot_template "
+        "UNION SELECT entry FROM item_template WHERE class = 7 AND subclass = 7"))
+    {
+        do { uint32 i = result->Fetch()->GetUInt32(); if (i) crafted.erase(i); } while (result->NextRow());
+    }
+    if (auto result = WorldDatabase.PQuery(
+        "SELECT item FROM creature_loot_template GROUP BY item HAVING COUNT(*) >= 3"))
+    {
+        do { uint32 i = result->Fetch()->GetUInt32(); if (i) crafted.erase(i); } while (result->NextRow());
+    }
+    for (uint32 i : crafted)
+        cand.erase(i);
+    sLog.outError("[AHBTIMER] crafted-excluded=%u took %ums", (uint32)crafted.size(), WorldTimer::getMSTime() - tCraft);
+
+    // 3) ANY class7 loot item whose creature drops exist ONLY inside instances
+    //    (no source spawn on the open maps 530/1/0/532) is excluded - instance-only
+    //    materials (Soul Essence, Dark Iron Ore, Fiery Core, ...) must not be listed
+    //    by the bot (operator policy 2026-09-07, previously only 301+ was covered).
+    uint32 t301 = WorldTimer::getMSTime();
+    std::unordered_set<uint32> instLooted;  // class7 items with creature drops
+    if (auto result = WorldDatabase.PQuery(
+        "SELECT DISTINCT cl.item FROM creature_loot_template cl JOIN item_template it ON it.entry = cl.item WHERE it.class = 7"))
+    {
+        do { uint32 i = result->Fetch()->GetUInt32(); if (i) instLooted.insert(i); } while (result->NextRow());
+    }
+    std::unordered_set<uint32> openSourced; // subset with at least one open-map spawn
+    if (auto result = WorldDatabase.PQuery(
+        "SELECT DISTINCT cl.item FROM creature_loot_template cl JOIN creature c ON c.id = cl.entry "
+        "WHERE c.map IN (530, 1, 0, 532)"))
+    {
+        do { uint32 i = result->Fetch()->GetUInt32(); if (i) openSourced.insert(i); } while (result->NextRow());
+    }
+    for (uint32 i : instLooted)
+        if (openSourced.find(i) == openSourced.end())
+            cand.erase(i);
+    sLog.outError("[AHBTIMER] instance-only-excluded=%u took %ums", (uint32)instLooted.size() - (uint32)openSourced.size(), WorldTimer::getMSTime() - t301);
+
+    m_catalogUniverse.swap(cand);
     m_catalogUniverseVec.assign(m_catalogUniverse.begin(), m_catalogUniverse.end());
     std::sort(m_catalogUniverseVec.begin(), m_catalogUniverseVec.end());
+    sLog.outError("[AHBTIMER] catalog universe=%u total=%ums", (uint32)m_catalogUniverse.size(), WorldTimer::getMSTime() - tAll);
 
     if (auto result = CharacterDatabase.Query("SELECT item, MAX(enabled), MAX(target), MAX(capacity), MAX(category), MAX(price) FROM ahbot_market_state GROUP BY item"))
     {
@@ -1217,6 +1240,17 @@ void AuctionHouseBot::LoadInventory()
             state.earnedGold = fields[5].GetUInt32();
             state.flowBought = fields[6].GetUInt32();
             state.flowSold = fields[7].GetUInt32();
+            // [init-to-target 2026-09-07] managed book members start with inventory
+            // AT the operator target (quality-based full stock) - never from a stale
+            // low qty that has to be slowly refilled from zero. Purchases/sales still
+            // move it afterwards.
+            AuctionHouseBotCatalogEntry e = GetCatalogEntry(itemId);
+            if (e.enabled && e.category != 0 && e.category != 3 && e.target > 0)
+            {
+                state.inventory = e.target;
+                if (e.capacity > state.capacity)
+                    state.capacity = e.capacity;
+            }
         } while (result->NextRow());
     }
     // one-time reconciliation: ahbot listings that already exist in the auction
@@ -1321,9 +1355,15 @@ void AuctionHouseBot::RefillCatalog(uint32 houseIdx)
 // booked), so a drained book stays drained until world supply refills - that is the
 // bounded book that lets the eaten-tier check move the price. Probe orders below
 // the reference also draw from holdings.
+// [rebuild-guard] while .ahbot rebuild runs its rapid Update() loop the market scan
+// cannot refresh the booked snapshot, so quoting there would pile listings up again
+// (the wall). Rebuild only expires; quoting resumes at normal scan pace afterwards.
+static bool s_ahbotRebuildSuppressQuote = false;
 void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 houseIdx)
 {
     if (m_catalogUniverseVec.empty())
+        return;
+    if (s_ahbotRebuildSuppressQuote)
         return;
     AuctionHouseType houseType = AuctionHouseType(houseIdx);
     AuctionHouseEntry const* houseEntry = sAuctionHouseStore.LookupEntry(houseIdx == AUCTION_HOUSE_ALLIANCE ? 1 : (houseIdx == AUCTION_HOUSE_HORDE ? 6 : 7));
@@ -1335,6 +1375,18 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
     uint32 batch = std::max<uint32>(1, m_catalogListBatch);
     uint32 done = 0;
     uint32 n = (uint32)m_catalogUniverseVec.size();
+
+    // [booked-guard 2026-09-07] the "booked" (currently listed) count is refreshed
+    // by the periodic market scan (UpdateMarketPrices). Between scans a stale
+    // booked==0 would let every sell phase add the full exposure again, piling up
+    // thousands of lots. If the last scan is older than 150s (or never ran), hold
+    // all new quotes until the scan refreshes the snapshot.
+    {
+        uint32 now = time(nullptr);
+        if (now > m_lastMarketUpdateTime + 150)
+            return;
+    }
+
     for (uint32 i = 0; i < n && done < batch; ++i)
     {
         uint32 itemId = m_catalogUniverseVec[(m_catalogRotate + i) % n];
@@ -1349,7 +1401,7 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
         // the fixed price by UpdateMarketPrices as well).
         uint32 fixedUnit = GetCatalogFixedPrice(itemId);
         AuctionHouseBotMarketState* state = GetMarketState(itemId, houseType);
-        if (!state || (!state->price && !fixedUnit))
+        if (!state)
             continue;
         EnsureTargets(*state, itemId);
         uint32 booked = GetBookedUnits(*state);
@@ -1367,21 +1419,67 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
         ++done;
 
         uint32 quotePrice = fixedUnit ? fixedUnit : state->price;
+        if (!quotePrice)
+        {
+            // [MM-seed] book member without a market anchor yet (fresh row, price 0,
+            // never scanned because it was never listed): seed the ladder from the
+            // static valuation so the item is quoted instead of staying invisible.
+            // UpdateMarketPrices takes over once it trades.
+            ItemPrototype const* anchorProto = ObjectMgr::GetItemPrototype(itemId);
+            if (anchorProto)
+                quotePrice = CalculateBuyoutPrice(anchorProto);
+            if (!quotePrice)
+                continue;
+            state->price = quotePrice;
+            state->ref = quotePrice;
+        }
         uint32 step = GetLadderStep(quotePrice);
         uint32 mainDepth = fixedUnit ? 1 : std::min<uint32>(MARKET_MAKER_MAX_LADDER, (50 / std::max<uint32>(1, step)) + 1);
         uint32 listedThisCycle = 0;
+
+        // [group-listing 2026-09-05] stackable goods are packed into FULL stacks
+        // (maxstack) so a handfull of rows carries the book instead of hundreds of
+        // 1-unit tail lots. When not even one full stack is available we only keep a
+        // single partial "presence" lot if nothing of the item is currently listed -
+        // otherwise the units are held until they form a full stack (never invisible
+        // while stocked, never spamming tiny rows).
+        uint32 stackMax = std::max<uint32>(1, proto->GetMaxStackSize());
         uint32 remaining = toList;
+        if (stackMax > 1)
+        {
+            uint32 wholeGroups = remaining / stackMax;
+            if (wholeGroups == 0)
+            {
+                if (booked > 0 || available == 0)
+                    continue;              // hold the partial until it forms a stack
+                Item* partial = Item::CreateItem(itemId, std::min<uint32>(stackMax, remaining));
+                if (!partial)
+                    continue;
+                uint32 buyoutPrice = quotePrice * partial->GetCount();
+                uint32 bidPrice = std::min(buyoutPrice, buyoutPrice * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
+                auctionHouse->AddAuction(houseEntry, partial, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, bidPrice, buyoutPrice);
+                listedThisCycle += partial->GetCount();
+                ++done;
+                (void)listedThisCycle;
+                continue;                  // next catalog item
+            }
+            remaining = wholeGroups * stackMax;   // full stacks only
+        }
+
         for (uint32 t = 0; t < mainDepth && remaining > 0; ++t)
         {
             uint32 weight = t < 6 ? TIER_WEIGHTS[t] : 2;
-            uint32 tierUnits = std::max<uint32>(1, (uint64)remaining * weight / 100);
+            uint32 tierUnits = (uint32)((uint64)remaining * weight / 100);
             if (tierUnits > remaining)
                 tierUnits = remaining;
+            // [group-listing] tier volume is a whole number of stacks
+            if (stackMax > 1)
+                tierUnits = (tierUnits / stackMax) * stackMax;
+            if (!tierUnits)
+                continue;
             uint32 unitPrice = (uint32)(((uint64)quotePrice * (100 + t * step) + 50) / 100);
             if (!unitPrice)
                 continue;
-            // stack-capped auctions at this tier price
-            uint32 stackMax = std::max<uint32>(1, proto->GetMaxStackSize());
             uint32 unitsLeft = tierUnits;
             while (unitsLeft > 0)
             {
@@ -1436,6 +1534,7 @@ bool AuctionHouseBot::ReloadAllConfig()
 void AuctionHouseBot::Rebuild(bool all)
 {
     sLog.outString("AHBot: Rebuilding auction house items");
+    s_ahbotRebuildSuppressQuote = true; // expire-only: no quoting during the rapid Update() loop
     for (uint32 i = 0; i < MAX_AUCTION_HOUSE_TYPE; ++i)
     {
         AuctionHouseObject::AuctionEntryMapBounds bounds = sAuctionMgr.GetAuctionsMap(AuctionHouseType(i))->GetAuctionsBounds();
@@ -1458,6 +1557,7 @@ void AuctionHouseBot::Rebuild(bool all)
             m_houseAction = -1; // this prevents AHBot from buying items when refilling
         Update();
     }
+    s_ahbotRebuildSuppressQuote = false;
 }
 
 void AuctionHouseBot::PrepareStatusInfos(AuctionHouseBotStatusInfo& statusInfo) const
