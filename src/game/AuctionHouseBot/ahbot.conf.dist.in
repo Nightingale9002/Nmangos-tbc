@@ -313,7 +313,8 @@ AuctionHouseBot.Value.Subclass.0.5.Epic = 0
 #   MaxItemUnits - cap on ahbot's own MAIN ladder units per item+house (used when
 #                  the catalog is disabled; catalog capacity replaces it otherwise)
 #   EatRatio     - %% of the price tier sold in one window that counts as eaten
-#   ProbeUnits   - units per probe sell order below the reference
+#   ProbeUnits   - units per probe sell order below the reference (0 = probes disabled,
+#                  the default: sub-reference price discovery is turned off, 2026-09-05)
 #   ProbeInterval- scans to wait between probe placements
 #   PriceFloor   - hard price floor as %% of the static price
 #   PriceCeil    - hard price cap as %% of the static price
@@ -329,7 +330,7 @@ AuctionHouseBot.MarketMaker.IdleDecay = 5
 AuctionHouseBot.MarketMaker.RepriceThreshold = 1
 AuctionHouseBot.MarketMaker.MaxItemUnits = 200
 AuctionHouseBot.MarketMaker.EatRatio = 50
-AuctionHouseBot.MarketMaker.ProbeUnits = 5
+AuctionHouseBot.MarketMaker.ProbeUnits = 0
 AuctionHouseBot.MarketMaker.ProbeInterval = 30
 AuctionHouseBot.MarketMaker.PriceFloor = 5
 AuctionHouseBot.MarketMaker.PriceCeil = 300

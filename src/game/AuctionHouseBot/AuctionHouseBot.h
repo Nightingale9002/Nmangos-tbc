@@ -60,7 +60,7 @@ struct AuctionHouseBotCatalogEntry
     bool enabled = true;
     uint32 target = 0;
     uint32 capacity = 0;
-    uint32 category = 1;    // default 1 = market book (no row behaves like today)
+    uint32 category = 0;    // no operator row => category 0 (untouched / NOT a book member)
     uint32 price = 0;       // category==2 fixed unit price
 };
 
@@ -96,19 +96,16 @@ struct AuctionHouseBotMarketState
     uint32 probeCooldown = 0;     // scans to wait before placing the next probe
     // rolling recent trade log (unit price, qty) - seed for future price-curve feature
     std::deque<std::pair<uint32, uint32>> tradeLog;
-    // ---- virtual inventory ledger (persisted to ahbot_market_state) ----
-    // qty = total units held by the bot (listed + reserve). Availability to list
-    // = qty - booked (booked = tierStock + probeStock from the last scan). Listing
-    // and unsold expiry do not change qty; player buys deduct, bot purchases and
-    // world-supply refills add. spentGold/earnedGold give the operator the gold
-    // regulation observable (net flow = spent - earned).
-    uint32 inventory = 0;
-    uint32 avgCost = 0;        // weighted average purchase unit cost (copper)
+    // [v3 2026-09-07] virtual inventory is ABANDONED: no inventory/avgCost fields, no
+    // qty ledger semantics. The book is quoted straight to its exposure slice and
+    // supply is the market-maker mint, so restarts/expiries cannot corrupt a stock
+    // count. spentGold/earnedGold/flow* remain as gold-regulation observables
+    // (persisted in ahbot_market_state) feeding the price machinery.
     uint32 spentGold = 0;      // gold paid out to players for bot purchases
     uint32 earnedGold = 0;     // gold received from players for bot sales
-    // demand-responsive holding targets (seeded from catalog/config)
-    uint32 target = 0;         // desired holdings; refill stops here
-    uint32 capacity = 0;       // hard cap; buy room = capacity - inventory
+    // quote exposure driver (seeded from catalog/config / static 055 rows)
+    uint32 target = 0;         // desired concurrent exposure = target x QuoteExposurePct
+    uint32 capacity = 0;       // (reserved; kept for the DB row mirror)
     // ---- central-bank price discovery ----
     // The fair value is UNKNOWN and is discovered from the bot's own order-flow
     // imbalance over a LONG settle period (default 24h, persisted so it survives
@@ -153,9 +150,12 @@ class AuctionHouseBot
         AuctionHouseBotMarketState* GetMarketState(uint32 itemId, AuctionHouseType houseType);
         // hidden buy depth % (for the quote command display)
         uint32 GetBuyDepth() const { return m_mmBuyDepth; }
-        // inventory hooks (called from AuctionHouseMgr when an auction settles):
-        // a player bought one of our listings (qty -= count) or the bot bought a
-        // player listing / won its bid (qty += count, avg cost updated)
+        // concurrent listing exposure % of target (v3: the book quotes straight to it)
+        uint32 GetExposurePct() const { return m_catalogExposurePct; }
+        // flow hooks (called from AuctionHouseMgr when an auction settles; v3 keeps
+        // only the demand/supply signals + gold observables, no stock movement):
+        // a player bought one of our listings (flow_sold/earned) or the bot bought a
+        // player listing / won its bid (flow_bought/spent)
         void DeductInventory(uint32 itemId, uint32 houseIdx, uint32 count, uint32 goldReceived);
         void RecordBotPurchase(uint32 itemId, uint32 houseIdx, uint32 count, uint32 unitCost, uint32 goldPaid);
 
@@ -194,6 +194,12 @@ class AuctionHouseBot
         // true if the item is in the curated universe AND not disabled by override
         // (category 0 = untouched -> NOT a book member)
         bool IsCatalogItem(uint32 itemId) const;
+        // [v2 2026-09-07] market-making scope is DATA-driven: an item is a book member
+        // only when it has an operator row (ahbot_market_state, house 2) with
+        // category == 1 (enabled). No hard-coded item class decides market-making
+        // scope. (Unlike GetCatalogEntry - whose no-row default category is 0 - this
+        // first requires the row to EXIST.)
+        bool IsMmBookItem(uint32 itemId) const;
         // true if the item is a low-level transition good (abundant supply)
         bool IsTransitionItem(uint32 itemId) const;
         // fixed unit price of a category-2 (vendor-price) good; 0 unless the item is
@@ -205,9 +211,8 @@ class AuctionHouseBot
         void EnsureTargets(AuctionHouseBotMarketState& state, uint32 itemId);
         // units currently listed by us for this state (tierStock + probeStock)
         uint32 GetBookedUnits(AuctionHouseBotMarketState const& state) const;
-        // world supply: refill a rotating batch of catalog items toward target
-        void RefillCatalog(uint32 houseIdx);
-        // inventory-backed ladder quote + probe orders for a rotating catalog batch
+        // [v3] exposure-slice ladder quote + probe orders for a rotating catalog batch
+        // (virtual inventory removed; RefillCatalog deleted)
         void QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 houseIdx);
 
         std::string m_configFileName;
@@ -283,12 +288,10 @@ class AuctionHouseBot
         uint32 m_mmPriceFloor = 5;        // hard price floor as % of original static price
         uint32 m_mmPriceCeil = 300;       // hard price cap as % of original static price
         uint32 m_lastMarketUpdateTime = 0;
-        // ---- curated Class7 catalog + virtual inventory (market-maker supply) ----
-        bool m_catalogEnabled = true;     // curated catalog drives Class7 supply
-        uint32 m_catalogTarget = 50;      // default target holdings (units) per item
-        uint32 m_catalogCapacity = 200;   // default capacity (units) per item
-        uint32 m_catalogRefillPerCycle = 100; // units refilled per item per cycle
-        uint32 m_catalogRefillBatch = 25; // catalog items refilled per cycle (rotation)
+        // ---- curated catalog book (v3: exposure-slice quoting, no virtual inventory) ----
+        bool m_catalogEnabled = true;     // curated catalog drives book supply
+        uint32 m_catalogTarget = 50;      // default target exposure driver (units) per item
+        uint32 m_catalogCapacity = 200;   // (reserved; kept for row mirror)
         uint32 m_catalogListBatch = 25;   // catalog items quoted per cycle (rotation)
         uint32 m_catalogExposurePct = 25; // % of target listed concurrently (rest stays stocked)
         uint32 m_catalogDemandBoostPct = 50; // target boost % when the price tier is eaten
@@ -318,10 +321,6 @@ class AuctionHouseBot
         std::vector<uint32> m_catalogUniverseVec; // sorted, for batch rotation
         // item -> operator override (ahbot_market_state)
         std::unordered_map<uint32, AuctionHouseBotCatalogEntry> m_catalogOverrides;
-        // item -> category for rows the operator explicitly manages in ahbot_catalog
-        // (the "we manage this good" registry): such goods (category != 0) are never
-        // supplied by the legacy loot-table flow, regardless of item class
-        std::unordered_map<uint32, uint32> m_operatorCatalog;
         // item -> per auction house market-maker state
         std::unordered_map<uint32, std::array<AuctionHouseBotMarketState, MAX_AUCTION_HOUSE_TYPE>> m_marketState;
 };

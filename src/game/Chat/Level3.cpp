@@ -196,8 +196,8 @@ bool ChatHandler::HandleAHBotItemCommand(char* args)
                    << " n=" << st->listingCount << " sold=" << st->soldUnits
                    << " flow=B" << st->flowBought << "/S" << st->flowSold
                    << " probe=" << (st->probeDemandLevel != 0xFF ? std::to_string(85 - (int)st->probeDemandLevel * 10) + "%" : "-")
-                   << " inv=" << st->inventory << "/" << st->target << " cap=" << st->capacity
-                   << " avg=" << st->avgCost / 10000 << "g" << st->avgCost / 100 % 100 << "s" << st->avgCost % 100 << "c"
+                   << " tgt=" << st->target << " (exposure "
+                   << sAuctionHouseBot.GetExposurePct() << "%)"
                    << " PnL=" << (int64)st->earnedGold - (int64)st->spentGold << " ";
             }
         }
