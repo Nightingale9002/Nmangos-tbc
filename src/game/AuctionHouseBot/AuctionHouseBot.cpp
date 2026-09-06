@@ -1114,10 +1114,14 @@ void AuctionHouseBot::LoadCatalogOverrides()
     {
         do { uint32 i = result->Fetch()->GetUInt32(); if (i) openSourced.insert(i); } while (result->NextRow());
     }
+    uint32 instanceExcluded = 0;
     for (uint32 i : instLooted)
         if (openSourced.find(i) == openSourced.end())
+        {
             cand.erase(i);
-    sLog.outError("[AHBTIMER] instance-only-excluded=%u took %ums", (uint32)instLooted.size() - (uint32)openSourced.size(), WorldTimer::getMSTime() - t301);
+            ++instanceExcluded;
+        }
+    sLog.outError("[AHBTIMER] instance-only-excluded=%u took %ums", instanceExcluded, WorldTimer::getMSTime() - t301);
 
     m_catalogUniverse.swap(cand);
     m_catalogUniverseVec.assign(m_catalogUniverse.begin(), m_catalogUniverse.end());
