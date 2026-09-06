@@ -1125,6 +1125,19 @@ void AuctionHouseBot::LoadCatalogOverrides()
     {
         do { uint32 i = result->Fetch()->GetUInt32(); if (i) openSourced.insert(i); } while (result->NextRow());
     }
+    // gameobject drops count as sources too (e.g. Old Dark Iron Ore 11099 via
+    // instance mining nodes/chests has no open-map spawn and must be excluded)
+    if (auto result = WorldDatabase.PQuery(
+        "SELECT DISTINCT gl.item FROM gameobject_loot_template gl JOIN item_template it ON it.entry = gl.item WHERE it.class = 7"))
+    {
+        do { uint32 i = result->Fetch()->GetUInt32(); if (i) instLooted.insert(i); } while (result->NextRow());
+    }
+    if (auto result = WorldDatabase.PQuery(
+        "SELECT DISTINCT gl.item FROM gameobject_loot_template gl JOIN gameobject g ON g.id = gl.entry "
+        "WHERE g.map IN (530, 1, 0, 532)"))
+    {
+        do { uint32 i = result->Fetch()->GetUInt32(); if (i) openSourced.insert(i); } while (result->NextRow());
+    }
     uint32 instanceExcluded = 0;
     for (uint32 i : instLooted)
         if (openSourced.find(i) == openSourced.end())
