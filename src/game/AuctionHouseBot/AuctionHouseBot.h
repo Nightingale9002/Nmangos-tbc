@@ -318,10 +318,6 @@ class AuctionHouseBot
         std::vector<uint32> m_catalogUniverseVec; // sorted, for batch rotation
         // item -> operator override (ahbot_market_state)
         std::unordered_map<uint32, AuctionHouseBotCatalogEntry> m_catalogOverrides;
-        // item -> category for rows the operator explicitly manages in ahbot_catalog
-        // (the "we manage this good" registry): such goods (category != 0) are never
-        // supplied by the legacy loot-table flow, regardless of item class
-        std::unordered_map<uint32, uint32> m_operatorCatalog;
         // item -> per auction house market-maker state
         std::unordered_map<uint32, std::array<AuctionHouseBotMarketState, MAX_AUCTION_HOUSE_TYPE>> m_marketState;
 };

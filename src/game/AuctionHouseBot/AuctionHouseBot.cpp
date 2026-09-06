@@ -420,19 +420,15 @@ void AuctionHouseBot::Update()
                 //  - Class7 universe members with category != 0 (book members 1/2 and bans 3)
                 //    are supplied ONLY by the curated catalogue (or banned); only category-0
                 //    (untouched) universe members still fall through to the loot rolls.
-                //  - items the operator explicitly manages in ahbot_catalog (category != 0)
-                //    are excluded regardless of item class.
+                // (ahbot_market_state is the single source of truth since 2026-09-07;
+                //  the old ahbot_catalog table was merged/dropped.)
                 bool inUniverse = m_catalogUniverse.find(prototype->ItemId) != m_catalogUniverse.end();
                 uint32 cat = GetCatalogEntry(prototype->ItemId).category;
-                auto opItr = m_operatorCatalog.find(prototype->ItemId);
-                uint32 opCat = opItr != m_operatorCatalog.end() ? opItr->second : 0;
                 if (prototype->Class == ITEM_CLASS_TRADE_GOODS)
                 {
                     if (!(inUniverse && cat == 0))
                         continue;
                 }
-                else if (opCat != 0)
-                    continue;
             }
             AuctionHouseBotMarketState* mmState = isMM ? GetMarketState(prototype->ItemId, AuctionHouseType(houseIdx)) : nullptr;
             if (mmState && m_mmMaxItemUnits)
@@ -1035,7 +1031,6 @@ void AuctionHouseBot::LoadCatalogOverrides()
 {
     m_catalogUniverse.clear();
     m_catalogOverrides.clear();
-    m_operatorCatalog.clear();
 
     // =====================================================================
     // [catalog-speed 2026-09-05] universe is built entry-by-entry instead of the
@@ -1143,18 +1138,6 @@ void AuctionHouseBot::LoadCatalogOverrides()
         } while (result->NextRow());
     }
     sLog.outString("AHBot market-maker catalog: %u items (%u operator overrides)", (uint32)m_catalogUniverse.size(), (uint32)m_catalogOverrides.size());
-
-    // items the operator explicitly manages in ahbot_catalog (category != 0): they
-    // must NEVER be (re)listed by the legacy loot-table supply - the new catalogue
-    // mechanism (or the ban) is their only source of listings
-    if (auto catResult = CharacterDatabase.Query("SELECT item, MAX(category) FROM ahbot_catalog WHERE category != 0 GROUP BY item"))
-    {
-        do
-        {
-            Field* cfields = catResult->Fetch();
-            m_operatorCatalog[cfields[0].GetUInt32()] = cfields[1].GetUInt32();
-        } while (catResult->NextRow());
-    }
 }
 
 AuctionHouseBotCatalogEntry AuctionHouseBot::GetCatalogEntry(uint32 itemId) const
