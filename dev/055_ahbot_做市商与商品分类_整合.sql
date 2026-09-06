@@ -124,3 +124,7 @@ WHERE c.category = 1 AND it.class = 7;
 
 -- 此操作不会影响 category=3 的禁售物品（如太阳之尘等）。
 -- 执行后，配合配置文件中提高 RefillPerCycle/ListBatch，即可保证拍卖行挂单量充足。
+
+-- [2026-09-07] legacy duplicate tables no longer used (single source = ahbot_market_state)
+DROP TABLE IF EXISTS ahbot_catalog, ahbot_inventory;
+

@@ -186,7 +186,7 @@ void AuctionHouseBot::Initialize()
         // override is actually set are loaded - catalog defaults carry 0 and must
         // NOT be interpreted as an operator override)
         auto queryResult = CharacterDatabase.PQuery("SELECT DISTINCT item, override_base_price, override_add_chance, override_min_amount, override_max_amount FROM ahbot_market_state "
-                                                    "WHERE override_base_price != 0 OR override_add_chance != 0 OR override_min_amount != 0 OR override_max_amount != 0");
+                                                    "WHERE auction_house = 2 AND (override_base_price != 0 OR override_add_chance != 0 OR override_min_amount != 0 OR override_max_amount != 0)");
         if (queryResult)
         {
             do
@@ -300,6 +300,12 @@ void AuctionHouseBot::Initialize()
     }
 }
 
+// [rebuild-guard] while .ahbot rebuild runs its rapid Update() loop the market scan
+// cannot refresh the booked snapshot, so quoting (catalog AND legacy loot supply)
+// there would pile listings up again (the wall). Rebuild only expires; supply
+// resumes at normal scan pace afterwards.
+static bool s_ahbotRebuildSuppressQuote = false;
+
 void AuctionHouseBot::Update()
 {
     // refresh real market prices on a timer (independent of the sell/buy cycle)
@@ -348,8 +354,8 @@ void AuctionHouseBot::Update()
             QuoteCatalog(auctionHouse, houseIdx);
         }
 
-        // loot-table supply is chance-gated; the catalog book is already maintained
-        if (urand(0, 99) < m_chanceSell)
+        // loot-table supply is chance-gated; suppressed entirely during .ahbot rebuild
+        if (!s_ahbotRebuildSuppressQuote && urand(0, 99) < m_chanceSell)
         {
         // Sell items - loot-table based supply for everything outside the catalog
         std::unordered_map<uint32, uint32> itemMap;
@@ -392,7 +398,13 @@ void AuctionHouseBot::Update()
         for (auto& itemData : m_itemData)
         {
             if (itemData.second.AddChance > 0) // replace normal loot sources with custom chance of adding item
+            {
+                // [level-guard] overridden items still honour the max-level filters
+                if (ItemPrototype const* op = ObjectMgr::GetItemPrototype(itemData.first))
+                    if (op->RequiredLevel > m_maxRequiredLevel || op->ItemLevel > m_maxItemLevel)
+                        continue;
                 itemMap[itemData.first] = urand(0, 99) < itemData.second.AddChance ? urand(itemData.second.MinAmount, itemData.second.MaxAmount) : 0;
+            }
         }
 
         for (auto& itemEntry : itemMap)
@@ -461,7 +473,8 @@ void AuctionHouseBot::Update()
             for (uint32 stackCounter = 0; stackCounter < itemEntry.second; stackCounter += prototype->GetMaxStackSize())
             {
                 uint32 count = itemEntry.second - stackCounter > prototype->GetMaxStackSize() ? prototype->GetMaxStackSize() : itemEntry.second - stackCounter;
-                uint32 buyoutPrice = itemValue * count;
+                // [overflow-guard] uint64 math, clamp to sane max buyout (200k gold)
+                uint32 buyoutPrice = (uint32)std::min<uint64>((uint64)itemValue * count, 2000000000ull);
                 Item* item = Item::CreateItem(itemEntry.first, count);
                 if (buyoutPrice == 0 || !item)
                     continue; // don't put up items we don't know the value of
@@ -486,9 +499,13 @@ void AuctionHouseBot::Update()
                         Item* probeItem = Item::CreateItem(prototype->ItemId, probeCount);
                         if (probeItem)
                         {
-                            uint32 probeBuyout = probeUnitPrice * probeCount;
+                            uint32 probeBuyout = (uint32)std::min<uint64>((uint64)probeUnitPrice * probeCount, 2000000000ull);
                             uint32 probeBid = std::min(probeBuyout, probeBuyout * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
                             auctionHouse->AddAuction(sAuctionHouseStore.LookupEntry(houseIdx == AUCTION_HOUSE_ALLIANCE ? 1 : (houseIdx == AUCTION_HOUSE_HORDE ? 6 : 7)), probeItem, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, probeBid, probeBuyout);
+                            // [probe-guard] mark the tier filled immediately so a probe is
+                            // not re-placed every sell phase until the next market scan
+                            if (mmState)
+                                mmState->probeStock[level] += probeCount;
                         }
                     }
                 }
@@ -550,8 +567,7 @@ void AuctionHouseBot::Update()
             // is the hard cap of the virtual ledger)
             if (mmBuyState && mmBuyState->capacity && mmBuyState->inventory + item->GetCount() > mmBuyState->capacity)
                 continue; // warehouse full, stop absorbing this item
-            uint32 buyItemCheck = ValueWithVariance(itemWorth);
-            buyItemCheck *= item->GetCount();
+            uint32 buyItemCheck = (uint32)std::min<uint64>((uint64)ValueWithVariance(itemWorth) * item->GetCount(), 0xFFFFFFFFull);
             uint32 bidPrice = auction->bid + auction->GetAuctionOutBid();
             if (auction->startbid > bidPrice)
                 bidPrice = auction->startbid;
@@ -1123,7 +1139,7 @@ void AuctionHouseBot::LoadCatalogOverrides()
     std::sort(m_catalogUniverseVec.begin(), m_catalogUniverseVec.end());
     sLog.outError("[AHBTIMER] catalog universe=%u total=%ums", (uint32)m_catalogUniverse.size(), WorldTimer::getMSTime() - tAll);
 
-    if (auto result = CharacterDatabase.Query("SELECT item, MAX(enabled), MAX(target), MAX(capacity), MAX(category), MAX(price) FROM ahbot_market_state GROUP BY item"))
+    if (auto result = CharacterDatabase.Query("SELECT item, MAX(enabled), MAX(target), MAX(capacity), MAX(category), MAX(price) FROM ahbot_market_state WHERE auction_house = 2 GROUP BY item"))
     {
         do
         {
@@ -1342,10 +1358,6 @@ void AuctionHouseBot::RefillCatalog(uint32 houseIdx)
 // booked), so a drained book stays drained until world supply refills - that is the
 // bounded book that lets the eaten-tier check move the price. Probe orders below
 // the reference also draw from holdings.
-// [rebuild-guard] while .ahbot rebuild runs its rapid Update() loop the market scan
-// cannot refresh the booked snapshot, so quoting there would pile listings up again
-// (the wall). Rebuild only expires; quoting resumes at normal scan pace afterwards.
-static bool s_ahbotRebuildSuppressQuote = false;
 void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 houseIdx)
 {
     if (m_catalogUniverseVec.empty())
@@ -1442,11 +1454,10 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
                 Item* partial = Item::CreateItem(itemId, std::min<uint32>(stackMax, remaining));
                 if (!partial)
                     continue;
-                uint32 buyoutPrice = quotePrice * partial->GetCount();
+                uint32 buyoutPrice = (uint32)std::min<uint64>((uint64)quotePrice * partial->GetCount(), 2000000000ull);
                 uint32 bidPrice = std::min(buyoutPrice, buyoutPrice * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
                 auctionHouse->AddAuction(houseEntry, partial, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, bidPrice, buyoutPrice);
                 listedThisCycle += partial->GetCount();
-                ++done;
                 (void)listedThisCycle;
                 continue;                  // next catalog item
             }
@@ -1471,7 +1482,7 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
             while (unitsLeft > 0)
             {
                 uint32 count = std::min<uint32>(stackMax, unitsLeft);
-                uint32 buyoutPrice = unitPrice * count;
+                uint32 buyoutPrice = (uint32)std::min<uint64>((uint64)unitPrice * count, 2000000000ull);
                 Item* item = Item::CreateItem(itemId, count);
                 if (!item)
                     break;
@@ -1501,9 +1512,11 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
                     Item* probeItem = Item::CreateItem(itemId, probeCount);
                     if (probeItem)
                     {
-                        uint32 probeBuyout = probeUnitPrice * probeCount;
+                        uint32 probeBuyout = (uint32)std::min<uint64>((uint64)probeUnitPrice * probeCount, 2000000000ull);
                         uint32 probeBid = std::min(probeBuyout, probeBuyout * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
                         auctionHouse->AddAuction(houseEntry, probeItem, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, probeBid, probeBuyout);
+                        // [probe-guard] mark tier filled immediately (see loot probe)
+                        state->probeStock[level] += probeCount;
                     }
                 }
             }
@@ -1537,7 +1550,7 @@ void AuctionHouseBot::Rebuild(bool all)
         }
     }
     // refill auction house with items, simulating typical max amount of items available after some time
-    uint32 updateCounter = ((m_auctionTimeMax - m_auctionTimeMin) / 2 + m_auctionTimeMin) * 90;
+    uint32 updateCounter = std::min<uint32>(600, ((m_auctionTimeMax - m_auctionTimeMin) / 2 + m_auctionTimeMin) * 90);
     for (uint32 i = 0; i < updateCounter; ++i)
     {
         if (m_houseAction >= MAX_AUCTION_HOUSE_TYPE - 1)
@@ -1655,7 +1668,7 @@ void AuctionHouseBot::ParseLootConfig(char const* fieldname, std::vector<int32>&
     {
         if (lootConfig[index] < 0)
         {
-            sLog.outError("AHBot error: %s value (%d) for field %s should not be a negative number, setting value to 0.", (index == 1 ? "Second" : (index == 2 ? "Third" : "Fourth")), lootConfig[1], fieldname);
+            sLog.outError("AHBot error: %s value (%d) for field %s should not be a negative number, setting value to 0.", (index == 1 ? "Second" : (index == 2 ? "Third" : "Fourth")), lootConfig[index], fieldname);
             lootConfig[index] = 0;
         }
     }
