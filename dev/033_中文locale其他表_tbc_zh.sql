@@ -7478,7 +7478,7 @@ INSERT INTO locales_item(entry,name_loc4) VALUES (12063,'Monster - Trident, Wick
 INSERT INTO locales_item(entry,name_loc4) VALUES (12064,'GM的面罩') ON DUPLICATE KEY UPDATE name_loc4='GM的面罩';
 INSERT INTO locales_item(entry,name_loc4) VALUES (12065,'元素屏障') ON DUPLICATE KEY UPDATE name_loc4='元素屏障';
 INSERT INTO locales_item(entry,name_loc4) VALUES (12066,'页岩斗篷') ON DUPLICATE KEY UPDATE name_loc4='页岩斗篷';
-INSERT INTO locales_item(entry,name_loc4) VALUES (12082,'龙皮肩铠') ON DUPLICATE KEY UPDATE name_loc4='龙皮肩铠';
+INSERT INTO locales_item(entry,name_loc4) VALUES (12082,'蟒皮护肩') ON DUPLICATE KEY UPDATE name_loc4='蟒皮护肩';
 INSERT INTO locales_item(entry,name_loc4) VALUES (12083,'火山腰带') ON DUPLICATE KEY UPDATE name_loc4='火山腰带';
 INSERT INTO locales_item(entry,name_loc4) VALUES (12102,'贵族之戒') ON DUPLICATE KEY UPDATE name_loc4='贵族之戒';
 INSERT INTO locales_item(entry,name_loc4) VALUES (12103,'秘术之星') ON DUPLICATE KEY UPDATE name_loc4='秘术之星';
@@ -24715,7 +24715,7 @@ INSERT INTO locales_item(entry,name_loc4) VALUES (35370,'投机者的皮甲外�
 INSERT INTO locales_item(entry,name_loc4) VALUES (35371,'蟒皮手套') ON DUPLICATE KEY UPDATE name_loc4='蟒皮手套';
 INSERT INTO locales_item(entry,name_loc4) VALUES (35372,'蟒皮头盔') ON DUPLICATE KEY UPDATE name_loc4='蟒皮头盔';
 INSERT INTO locales_item(entry,name_loc4) VALUES (35373,'蟒皮护腿') ON DUPLICATE KEY UPDATE name_loc4='蟒皮护腿';
-INSERT INTO locales_item(entry,name_loc4) VALUES (35374,'龙皮肩铠') ON DUPLICATE KEY UPDATE name_loc4='龙皮肩铠';
+INSERT INTO locales_item(entry,name_loc4) VALUES (35374,'蟒皮护肩') ON DUPLICATE KEY UPDATE name_loc4='蟒皮护肩';
 INSERT INTO locales_item(entry,name_loc4) VALUES (35375,'蟒皮长袍') ON DUPLICATE KEY UPDATE name_loc4='蟒皮长袍';
 INSERT INTO locales_item(entry,name_loc4) VALUES (35376,'追猎者的链甲护胸') ON DUPLICATE KEY UPDATE name_loc4='追猎者的链甲护胸';
 INSERT INTO locales_item(entry,name_loc4) VALUES (35377,'追猎者的链甲手套') ON DUPLICATE KEY UPDATE name_loc4='追猎者的链甲手套';

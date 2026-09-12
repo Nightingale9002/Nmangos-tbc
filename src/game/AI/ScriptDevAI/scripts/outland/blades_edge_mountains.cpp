@@ -1579,7 +1579,7 @@ struct RinasDiminutionPowder : public SpellScript
     SpellCastResult OnCheckCast(Spell* spell, bool /*strict*/) const override
     {
         Unit* target = spell->m_targets.getUnitTarget();
-        if (!target->IsCreature() || target->GetEntry() != NPC_BLOODMAUL_DIRE_WOLF)
+        if (!target || !target->IsCreature() || target->GetEntry() != NPC_BLOODMAUL_DIRE_WOLF)
             return SPELL_FAILED_BAD_TARGETS;
         return SPELL_CAST_OK;
     }
@@ -1590,10 +1590,16 @@ struct RinasDiminutionPowder : public SpellScript
             return;
 
         Creature* target = dynamic_cast<Creature*>(spell->GetUnitTarget());
+        if (!target)
+            return;
+
         if (target->HasAura(SPELL_RINAS_DIMINUTION_POWDER))
             return;
 
         Unit* caster = spell->GetCaster();
+        if (!caster)
+            return;
+
         // give kill credit, change to friendly and inform the creautre about the reset timer
         if (caster->IsPlayer())
             static_cast<Player*>(caster)->KilledMonsterCredit(NPC_DIRE_WOLF_TRIGGER);
@@ -3522,4 +3528,5 @@ void AddSC_blades_edge_mountains()
     RegisterSpellScript<Soaring>("spell_soaring");
     RegisterSpellScript<CoaxMarmot>("spell_coax_marmot");
     RegisterSpellScript<ProtovoltaicMagnetoCollector>("spell_protovoltaic_magneto_collector");
+    RegisterSpellScript<RinasDiminutionPowder>("spell_rinas_diminution_powder");
 }
