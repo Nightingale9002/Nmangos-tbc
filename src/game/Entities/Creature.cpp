@@ -782,7 +782,17 @@ void Creature::Update(const uint32 diff)
             if (m_loot)
                 m_loot->Update();
 
-            if (IsCorpseExpired())
+            // [RESPAWN-AT-TIME] The respawn timer is authoritative: once it has passed, the corpse
+            // must be removed so that the creature can be revived on the next tick. Otherwise a
+            // corpse timer that got extended beyond the respawn delay (loot inspection grants at
+            // least MINIMUM_LOOTING_TIME, scripts may raise the corpse delay) would postpone the
+            // respawn by minutes although the configured respawn time already elapsed.
+            // Only Database spawns are affected (static and dynguid ones): summoned/temporary
+            // creatures keep the old corpse-gated revival, their 25s default respawn delay is not
+            // a real spawn timer. Creatures whose corpse must persist on purpose
+            // (FOREVER_CORPSE_DURATION) are never touched either.
+            if (IsCorpseExpired() ||
+                (HasStaticDBSpawnData() && m_respawnTime && m_respawnTime <= time(nullptr) && !GetSettings().HasFlag(CreatureStaticFlags3::FOREVER_CORPSE_DURATION)))
                 RemoveCorpse();
 
             break;
@@ -1958,6 +1968,11 @@ void Creature::SetDeathState(DeathState s)
         if (m_settings.HasFlag(CreatureStaticFlags3::FOREVER_CORPSE_DURATION))
             m_corpseExpirationTime = GetMap()->GetCurrentClockTime() + std::chrono::hours(24*7);
         else
+            // NOTE: corpse decay time is intentionally NOT capped here. An earlier [RESPAWN-AT-TIME] patch
+            // reduced it to 90% of the respawn delay, which also swallowed corpse delays set explicitly by
+            // templates/scripts (e.g. SetCorpseDelay(3600) on bosses with a short respawn time) and made
+            // corpses vanish too fast for looting/skinning. The invariant "the corpse never outlives the
+            // respawn" is already guaranteed by the CORPSE branch in Creature::Update.
             m_corpseExpirationTime = GetMap()->GetCurrentClockTime() + std::chrono::seconds(m_corpseDelay); // the max/default time for corpse decay (before creature is looted/AllLootRemovedFromCorpse() is called)
         m_respawnTime = time(nullptr) + m_respawnDelay; // respawn delay (spawntimesecs)
 
@@ -2381,10 +2396,13 @@ void Creature::SaveRespawnTime()
     if (IsPet() || !HasStaticDBSpawnData())
         return;
 
-    if (m_respawnTime > time(nullptr) || IsUsingNewSpawningSystem()) // dead (no corpse)
+    // [RESPAWN-AT-TIME] Never persist a corpse-derived time as respawn time: the corpse decay
+    // timer can be far longer than the respawn delay (Corpse.Decay.* config, +MINIMUM_LOOTING_TIME
+    // per loot inspection), and writing it into the respawn slot made the spawn come back minutes
+    // later than configured - also after a grid unload or a restart. The respawn timer itself is
+    // authoritative, a corpse still lying around does not postpone it (see Creature::Update).
+    if (m_respawnTime > time(nullptr) || IsUsingNewSpawningSystem() || !IsCorpseExpired())
         GetMap()->GetPersistentState()->SaveCreatureRespawnTime(GetDbGuid(), m_respawnTime);
-    else if (!IsCorpseExpired())                               // dead (corpse)
-        GetMap()->GetPersistentState()->SaveCreatureRespawnTime(GetDbGuid(), std::chrono::system_clock::to_time_t(m_corpseExpirationTime));
 }
 
 CreatureDataAddon const* Creature::GetCreatureAddon() const
@@ -2915,6 +2933,14 @@ void Creature::InspectingLoot()
     // check if player have enough time to inspect loot
     if (m_corpseExpirationTime < GetMap()->GetCurrentClockTime() + std::chrono::milliseconds(m_corpseAccelerationDecayDelay))
         m_corpseExpirationTime = GetMap()->GetCurrentClockTime() + std::chrono::milliseconds(m_corpseAccelerationDecayDelay);
+
+    // [RESPAWN-AT-TIME] the loot window may never outlive the respawn delay - the creature returns on time
+    if (m_respawnTime > time(nullptr))
+    {
+        TimePoint respawnTimePoint = TimePoint(std::chrono::seconds(m_respawnTime));
+        if (m_corpseExpirationTime > respawnTimePoint)
+            m_corpseExpirationTime = respawnTimePoint;
+    }
 }
 
 // reduce decay timer for corpse if need (for a corpse without loot)

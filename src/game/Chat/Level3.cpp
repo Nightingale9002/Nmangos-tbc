@@ -3705,7 +3705,12 @@ bool ChatHandler::HandleNpcInfoCommand(char* /*args*/)
         curRespawnDelay = 0;
     std::string curRespawnDelayStr = secsToTimeString(curRespawnDelay, true);
     std::string defRespawnDelayStr = secsToTimeString(target->GetRespawnDelay(), true);
-    std::string curCorpseDecayStr = secsToTimeString(std::chrono::system_clock::to_time_t(target->GetCorpseDecayTimer()), true);
+    // [DISPLAY-FIX] show the remaining corpse decay time - the old code printed the absolute
+    // expiry timestamp as a duration (e.g. "20712d12h43m12s"), which was plain misleading
+    time_t curCorpseDecay = std::chrono::system_clock::to_time_t(target->GetCorpseDecayTimer()) - time(nullptr);
+    if (curCorpseDecay < 0)
+        curCorpseDecay = 0;
+    std::string curCorpseDecayStr = secsToTimeString(curCorpseDecay, true);
 
     // Send information dependend on difficulty mode
     CreatureInfo const* baseInfo = ObjectMgr::GetCreatureTemplate(Entry);
