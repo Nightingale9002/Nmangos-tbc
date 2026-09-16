@@ -109,6 +109,7 @@ enum
 struct HalaaSoldiersSpawns
 {
     float x, y, z, o;
+    ObjectGuid guid;        // spawn of the guard that died (permanent DB spawn, or a summon)
 };
 
 static const uint32 nagrandRoostsAlliance[MAX_NA_ROOSTS]                = {GO_WYVERN_ROOST_ALLIANCE_SOUTH,          GO_WYVERN_ROOST_ALLIANCE_NORTH,         GO_WYVERN_ROOST_ALLIANCE_EAST,          GO_WYVERN_ROOST_ALLIANCE_WEST};
@@ -163,12 +164,19 @@ class OutdoorPvPNA : public OutdoorPvP
         // handle soldier respawn on timer
         void RespawnSoldier();
 
+        // team the permanent (DB) vendor spawns belong to
+        Team GetVendorTeam(uint32 entry) const;
+
         Team m_zoneOwner;
         uint32 m_soldiersRespawnTimer;
         uint32 m_zoneWorldState;
         uint32 m_zoneMapState;
         uint32 m_roostWorldState[MAX_NA_ROOSTS];
-        uint8 m_guardsLeft;
+        uint32 m_guardsLeft;
+
+        // guards already counted as alive: grid unload/reload re-creates every spawn, so the
+        // counter must be idempotent per spawn instead of being incremented on every creation
+        GuidSet m_aliveGuards;
 
         bool m_isUnderSiege;
 
@@ -181,6 +189,7 @@ class OutdoorPvPNA : public OutdoorPvP
         ObjectGuid m_wagonsHorde[MAX_NA_ROOSTS];
 
         GuidList m_teamVendors;
+        GuidList m_foreignVendors;      // vendors of the other team, kept despawned while it loses
 
         std::queue<HalaaSoldiersSpawns> m_deadSoldiers;
 };

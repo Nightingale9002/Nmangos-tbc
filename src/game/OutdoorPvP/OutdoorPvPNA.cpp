@@ -26,6 +26,8 @@
 #include "Entities/Player.h"
 #include "Tools/Language.h"
 
+#include <algorithm>
+
 OutdoorPvPNA::OutdoorPvPNA() : OutdoorPvP(),
     m_zoneOwner(TEAM_NONE),
     m_soldiersRespawnTimer(0),
@@ -116,12 +118,37 @@ void OutdoorPvPNA::HandleCreatureCreate(Creature* creature)
         case NPC_MERCHANT_COREIEL:
         case NPC_VENDOR_EMBELAR:
         case NPC_AMMUNITIONER_TASALDAN:
-            m_teamVendors.push_back(creature->GetObjectGuid());
+        {
+            // The vendors of both teams are permanent DB spawns, so they are re-created (=
+            // respawned) on every grid unload/reload while the owner state is not persisted.
+            // Re-apply the owner state here every time, otherwise every vendor despawned on
+            // capture simply comes back as soon as the zone is unloaded and loaded again.
+            const ObjectGuid vendorGuid = creature->GetObjectGuid();
+            if (m_zoneOwner != TEAM_NONE && GetVendorTeam(creature->GetEntry()) != m_zoneOwner)
+            {
+                if (std::find(m_foreignVendors.begin(), m_foreignVendors.end(), vendorGuid) == m_foreignVendors.end())
+                    m_foreignVendors.push_back(vendorGuid);
+
+                creature->ForcedDespawn();
+                break;
+            }
+
+            if (std::find(m_teamVendors.begin(), m_teamVendors.end(), vendorGuid) == m_teamVendors.end())
+                m_teamVendors.push_back(vendorGuid);
             break;
+        }
         case NPC_HORDE_HALAANI_GUARD:
         case NPC_ALLIANCE_HANAANI_GUARD:
+        {
+            // Guard spawns are re-created on every grid unload/reload (and on every summon), so
+            // a guard may only be counted once while it is alive. Counting every creation made
+            // the counter drift upwards on each reload - "Guards Left" lied, Halaa could never
+            // be captured again and the old uint8 counter even wrapped around to 0.
+            if (!creature->IsAlive() || !m_aliveGuards.insert(creature->GetObjectGuid()).second)
+                return;
+
             // prevent updating guard counter on owner take over
-            if (m_guardsLeft == MAX_NA_GUARDS)
+            if (m_guardsLeft >= MAX_NA_GUARDS)
                 return;
 
             if (m_guardsLeft == 0)
@@ -137,6 +164,7 @@ void OutdoorPvPNA::HandleCreatureCreate(Creature* creature)
             ++m_guardsLeft;
             SendUpdateWorldState(WORLD_STATE_NA_GUARDS_LEFT, m_guardsLeft);
             break;
+        }
     }
 }
 
@@ -148,15 +176,17 @@ void OutdoorPvPNA::HandleCreatureDeath(Creature* creature)
     // get the location of the dead guard for future respawn
     float x, y, z, o;
     creature->GetRespawnCoord(x, y, z, &o);
-    HalaaSoldiersSpawns location = {x, y, z, o};
+    HalaaSoldiersSpawns location = {x, y, z, o, creature->GetObjectGuid()};
     m_deadSoldiers.push(location);
 
     // set the respawn timer after the last guard died - 5 min for the first time, or 1 hour if the city is under siege
     if (!m_soldiersRespawnTimer)
         m_soldiersRespawnTimer = m_isUnderSiege ? HOUR * IN_MILLISECONDS : 5 * MINUTE * IN_MILLISECONDS;
 
-    // decrease the counter
-    --m_guardsLeft;
+    // decrease the counter, but only for a guard that was counted as alive, and never below
+    // zero: a death of an uncounted guard used to underflow the counter (= instant capture)
+    if (m_aliveGuards.erase(creature->GetObjectGuid()) && m_guardsLeft > 0)
+        --m_guardsLeft;
     SendUpdateWorldState(WORLD_STATE_NA_GUARDS_LEFT, m_guardsLeft);
 
     if (m_guardsLeft == 0)
@@ -328,12 +358,27 @@ void OutdoorPvPNA::ProcessCaptureEvent(GameObject* go, Team team)
 
     LockHalaa(go);
     m_guardsLeft = MAX_NA_GUARDS;
+    m_aliveGuards.clear();      // every guard counts as alive again after the take over
 
     m_isUnderSiege = false;
     m_soldiersRespawnTimer = 0;
 
     UpdateWorldState(WORLD_STATE_REMOVE);
     DespawnVendors(go);
+
+    // The vendors of the team that just took over were kept despawned while the other team
+    // owned Halaa (see HandleCreatureCreate): bring them back, otherwise the town would only
+    // get them back after the next grid reload.
+    for (GuidList::const_iterator itr = m_foreignVendors.begin(); itr != m_foreignVendors.end(); ++itr)
+    {
+        if (Creature* vendor = go->GetMap()->GetCreature(*itr))
+        {
+            if (!vendor->IsAlive())
+                vendor->Respawn();
+        }
+    }
+    m_foreignVendors.clear();
+
     SetGraveYardLinkTeam(GRAVEYARD_ID_HALAA, GRAVEYARD_ZONE_ID_HALAA, m_zoneOwner, 530);
 
     if (m_zoneOwner == ALLIANCE)
@@ -385,6 +430,29 @@ void OutdoorPvPNA::HandleFactionObjects(const WorldObject* objRef)
             m_roostWorldState[i] = nagrandRoostStatesAllianceNeutral[i];
         }
     }
+}
+
+// Team the permanent (DB) vendors of Halaa belong to
+Team OutdoorPvPNA::GetVendorTeam(uint32 entry) const
+{
+    switch (entry)
+    {
+        case NPC_RESEARCHER_KARTOS:
+        case NPC_QUARTERMASTER_DAVIAN:
+        case NPC_MERCHANT_ALDRAAN:
+        case NPC_VENDOR_CENDRII:
+        case NPC_AMMUNITIONER_BANRO:
+            return ALLIANCE;
+
+        case NPC_RESEARCHER_AMERELDINE:
+        case NPC_QUARTERMASTER_NORELIQE:
+        case NPC_MERCHANT_COREIEL:
+        case NPC_VENDOR_EMBELAR:
+        case NPC_AMMUNITIONER_TASALDAN:
+            return HORDE;
+    }
+
+    return TEAM_NONE;
 }
 
 // Handle vendors despawn when the city is captured by the other faction
@@ -504,7 +572,7 @@ void OutdoorPvPNA::Update(uint32 diff)
             RespawnSoldier();
 
             // if all the guards are respawned, stop the timer, else resume the timer depending on the siege state
-            if (m_guardsLeft == MAX_NA_GUARDS)
+            if (m_guardsLeft >= MAX_NA_GUARDS)
                 m_soldiersRespawnTimer = 0;
             else
                 m_soldiersRespawnTimer = m_isUnderSiege ? HOUR * IN_MILLISECONDS : 5 * MINUTE * IN_MILLISECONDS;
@@ -532,10 +600,34 @@ void OutdoorPvPNA::RespawnSoldier()
             if (m_deadSoldiers.empty())
                 return;
 
-            // summon a soldier replacement in the order they were set in the deque. delete the element after summon
+            // respawn a soldier replacement in the order they were set in the deque, and drop the
+            // entry only once the replacement really exists - a failed attempt used to drop the
+            // position and the guard was lost for good.
             const HalaaSoldiersSpawns& location = m_deadSoldiers.front();
-            player->SummonCreature(m_zoneOwner == ALLIANCE ? NPC_ALLIANCE_HANAANI_GUARD : NPC_HORDE_HALAANI_GUARD, location.x, location.y, location.z, location.o, TEMPSPAWN_DEAD_DESPAWN, 0, true);
-            m_deadSoldiers.pop();
+            if (Creature* soldier = player->GetMap()->GetCreature(location.guid))
+            {
+                // The dead guard is a permanent DB spawn: respawn it instead of summoning a
+                // temporary copy, because a summoned guard is deleted as soon as its grid is
+                // unloaded (temporary spawns are not saved) and was then missing forever.
+                if (!soldier->IsAlive())
+                {
+                    soldier->Respawn();
+
+                    // Respawn() does not go through HandleCreatureCreate: sync the counter here
+                    if (m_aliveGuards.insert(soldier->GetObjectGuid()).second && m_guardsLeft < MAX_NA_GUARDS)
+                    {
+                        ++m_guardsLeft;
+                        SendUpdateWorldState(WORLD_STATE_NA_GUARDS_LEFT, m_guardsLeft);
+                    }
+                }
+
+                m_deadSoldiers.pop();
+            }
+            else if (player->SummonCreature(m_zoneOwner == ALLIANCE ? NPC_ALLIANCE_HANAANI_GUARD : NPC_HORDE_HALAANI_GUARD, location.x, location.y, location.z, location.o, TEMPSPAWN_DEAD_DESPAWN, 0, true))
+            {
+                // fall back to a temporary summon while the spawn itself is not loaded
+                m_deadSoldiers.pop();
+            }
             break;
         }
     }
