@@ -28,6 +28,20 @@
 #include "AI/ScriptDevAI/ScriptDevAIMgr.h"
 #include "SystemConfig.h"
 #include "revision.h"
+
+// [TEST] test/mem-diag-3 需要的头（内存/对象计数诊断）
+#include <iterator>
+#include <cstdio>
+#include "Log/Log.h"
+#include "Maps/MapManager.h"
+#include "Maps/Map.h"
+#include "Entities/Creature.h"
+#include "Entities/Pet.h"
+#include "Entities/GameObject.h"
+#include "Entities/DynamicObject.h"
+#ifdef __linux__
+#include <malloc.h>
+#endif
 #include "Util/Util.h"
 
 bool ChatHandler::HandleHelpCommand(char* args)
@@ -106,6 +120,80 @@ bool ChatHandler::HandleServerInfoCommand(char* /*args*/)
     PSendSysMessage(LANG_CONNECTED_USERS, activeClientsNum, maxActiveClientsNum, queuedClientsNum, maxQueuedClientsNum);
     PSendSysMessage(LANG_UPTIME, str.c_str());
 
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// [TEST] 分支 test/mem-diag-3（2026-09-17）：内存 / 对象计数诊断
+//
+// 目的：把 mangosd 的内存增长拆成两部分看 ——
+//   · 对象数量在涨  → 是"对象泄漏"（某类对象只增不减，要去查它为什么没被释放）
+//   · 对象数量不涨  → 是分配器/碎片问题（该还但没还，靠 MALLOC_ARENA_MAX / 关闭 THP 缓解）
+// 用法：GM 命令 `.server memstat` 手动打印；或由 World::Update 每 5 分钟自动写一行到 Server.log。
+// 输出：Server.log 里形如
+//   [MEMSTAT][auto] maps=12 creatures=48213 pets=7 gameobjects=33120 dynobjs=3 players=3 heap_inuse=812MB heap_free=190MB
+// 注意：临时诊断代码，不并入生产分支。
+// ---------------------------------------------------------------------------
+namespace
+{
+#ifdef __linux__
+    struct HeapInfo
+    {
+        uint64 inUseMb;
+        uint64 freeMb;
+        uint64 arenaMb;
+    };
+
+    // glibc 堆信息：inUse=已分配在用、free=分配器手里空着（＝已经 free 但没还给 OS 的部分）
+    HeapInfo GetHeapInfo()
+    {
+        HeapInfo h;
+        struct mallinfo mi = mallinfo();
+        h.inUseMb  = uint64(mi.uordblks) / (1024 * 1024);
+        h.freeMb   = uint64(mi.fordblks) / (1024 * 1024);
+        h.arenaMb  = uint64(mi.arena) / (1024 * 1024);
+        return h;
+    }
+#endif
+}
+
+void LogServerMemStat(const char* tag)
+{
+    uint32 maps = 0, creatures = 0, pets = 0, gameobjects = 0, dynobjects = 0, players = 0;
+    char buf[512];
+
+    sMapMgr.DoForAllMaps([&](Map* map)
+    {
+        if (!map)
+            return;
+
+        ++maps;
+        Map::MapStoredObjectTypesContainer& store = map->GetObjectsStore();
+        creatures   += uint32(store.GetSize<Creature>());
+        pets        += uint32(store.GetSize<Pet>());
+        gameobjects += uint32(store.GetSize<GameObject>());
+        dynobjects  += uint32(store.GetSize<DynamicObject>());
+        players     += uint32(map->GetPlayers().getSize());
+    });
+
+#ifdef __linux__
+    HeapInfo h = GetHeapInfo();
+    snprintf(buf, sizeof(buf), "[MEMSTAT][%s] maps=%u creatures=%u pets=%u gameobjects=%u dynobjs=%u players=%u heap_inuse=" UI64FMTD "MB heap_free=" UI64FMTD "MB heap_arena=" UI64FMTD "MB",
+             tag ? tag : "-", maps, creatures, pets, gameobjects, dynobjects, players, h.inUseMb, h.freeMb, h.arenaMb);
+#else
+    snprintf(buf, sizeof(buf), "[MEMSTAT][%s] maps=%u creatures=%u pets=%u gameobjects=%u dynobjs=%u players=%u",
+             tag ? tag : "-", maps, creatures, pets, gameobjects, dynobjects, players);
+#endif
+
+    // 控制台/屏幕日志（screen 日志）各写一份，另外写进 CustomLogFile（本分支建议设为 MemStat.log）
+    sLog.outString("%s", buf);
+    sLog.outCustomLog("%s", buf);
+}
+
+bool ChatHandler::HandleServerMemStatCommand(char* /*args*/)
+{
+    LogServerMemStat("cmd");
+    SendSysMessage("[MEMSTAT] 已记录一行到 Server.log（详见 [MEMSTAT] 行）");
     return true;
 }
 

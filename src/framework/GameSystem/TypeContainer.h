@@ -84,6 +84,14 @@ class TypeUnorderedMapContainer
             return i_elements._elements._element.end();
         }
 
+        /// [TEST] test/mem-diag-3：统计容器中某个具体类型的元素个数
+        /// （原有的 begin<T>()/end<T>() 只对 typelist 里第一个类型有效，不能用来数 Pet/GameObject 等）
+        template<class SPECIFIC_TYPE>
+        size_t GetSize() const
+        {
+            return TypeUnorderedMapContainer::GetSize(i_elements, (SPECIFIC_TYPE*)nullptr);
+        }
+
     private:
 
         ContainerUnorderedMap<OBJECT_TYPES, KEY_TYPE> i_elements;
@@ -177,6 +185,32 @@ class TypeUnorderedMapContainer
         {
             bool ret = TypeUnorderedMapContainer::erase(elements._elements, handle, (SPECIFIC_TYPE*)nullptr);
             return ret ? ret : TypeUnorderedMapContainer::erase(elements._TailElements, handle, (SPECIFIC_TYPE*)nullptr);
+        }
+
+        // [TEST] test/mem-diag-3: count helpers（与 find/erase 同构的 typelist 递归分发）
+        template<class SPECIFIC_TYPE>
+        static size_t GetSize(ContainerUnorderedMap<SPECIFIC_TYPE, KEY_TYPE> const& elements, SPECIFIC_TYPE* /*obj*/)
+        {
+            return elements._element.size();
+        }
+
+        template<class SPECIFIC_TYPE>
+        static size_t GetSize(ContainerUnorderedMap<TypeNull, KEY_TYPE> const& /*elements*/, SPECIFIC_TYPE* /*obj*/)
+        {
+            return 0;
+        }
+
+        template<class SPECIFIC_TYPE, class T>
+        static size_t GetSize(ContainerUnorderedMap<T, KEY_TYPE> const& /*elements*/, SPECIFIC_TYPE* /*obj*/)
+        {
+            return 0;
+        }
+
+        template<class SPECIFIC_TYPE, class H, class T>
+        static size_t GetSize(ContainerUnorderedMap< TypeList<H, T>, KEY_TYPE > const& elements, SPECIFIC_TYPE* obj)
+        {
+            size_t ret = TypeUnorderedMapContainer::GetSize(elements._elements, obj);
+            return ret ? ret : TypeUnorderedMapContainer::GetSize(elements._TailElements, obj);
         }
 };
 

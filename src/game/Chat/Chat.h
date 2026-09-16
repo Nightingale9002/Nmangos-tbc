@@ -47,6 +47,11 @@ class Pet;
 class Player;
 class Unit;
 
+// [TEST] 分支 test/mem-diag-3：内存/对象计数诊断（实现见 Chat/Level0.cpp）
+// 目的：区分"对象数量在涨（对象泄漏）"与"对象不涨但堆在涨（分配器/碎片）"。
+// 由 GM 命令 `.server memstat` 手动打印，或由 World::Update 每 5 分钟自动写 Server.log。
+void LogServerMemStat(const char* tag);
+
 class ChatCommand
 {
     public:
@@ -646,6 +651,7 @@ class ChatHandler
         bool HandleServerIdleRestartCommand(char* args);
         bool HandleServerIdleShutDownCommand(char* args);
         bool HandleServerInfoCommand(char* args);
+        bool HandleServerMemStatCommand(char* args);        // [TEST] test/mem-diag-3
         bool HandleServerLogFilterCommand(char* args);
         bool HandleServerLogLevelCommand(char* args);
         bool HandleServerMotdCommand(char* args);

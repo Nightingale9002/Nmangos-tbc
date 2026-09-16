@@ -1620,6 +1620,17 @@ void World::Update(uint32 diff)
     if (m_gameTime > m_NextMonthlyQuestReset)
         ResetMonthlyQuests();
 
+    /// [TEST] test/mem-diag-3：每 5 分钟记录一次内存/对象计数（诊断内存增长，勿并入生产分支）
+    {
+        static time_t nextMemStatLog = 0;
+        time_t nowMemStat = time(nullptr);
+        if (nowMemStat >= nextMemStatLog)
+        {
+            nextMemStatLog = nowMemStat + 300;
+            LogServerMemStat("auto");
+        }
+    }
+
     /// <ul><li> Handle auctions when the timer has passed
     if (m_timers[WUPDATE_AUCTIONS].Passed())
     {
