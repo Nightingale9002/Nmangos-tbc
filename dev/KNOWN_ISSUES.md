@@ -1514,3 +1514,47 @@ UPDATE spawn_group SET MaxCount = 2 WHERE Id IN (...矿脉组...);
   用户重新提交 9c3f59674 解决，云端已部署；其后针对登录异常只加了**观测手段**（realmd 单 IP >5 条 3724 连接的僵尸连接计数写日志，不做自动重启），
   根因是崩溃夜客户端会话错乱，靠临时自愈。
 - **反作弊现状**：Movement 检测全部为 Inform（不踢人）；Warden 在云端关闭。详见《功能更新手册》第三部分。
+
+
+## [任务] 10911「开火！」物品 31807（自然能量炮弹）使用无效：魅惑 aura 被"免疫玩家增益"丢弃 — 2026-09-16 已修（本地，待推云）
+
+- **现象**：玩家对死亡之门邪能火炮使用物品 **31807 Naturalized Ammunition**，只看到"火炮转了一下头"（= `npc_fel_cannon::SpellHit` 里的 `SetFacingToObject`），之后毫无反应：没有控制权、没有动作条。
+- **完整链路**：31807 既是任务 10911 的**起始物品**（`quest_template.SrcItemId`）也是**必需物品**（`ReqItemId3` ×1）→ 使用触发法术 **39219**（`Effect1=APPLY_AURA`、`EffectApplyAuraName1=6` = `SPELL_AURA_MOD_CHARM`、目标 = `TARGET_UNIT_SCRIPT_NEAR_CASTER`）→ 经 `spell_script_target 39219 → 22443`（Death's Door Fel Cannon）→ 才是"控制火炮"。
+- **根因（实测确认）**：火炮 `creature_template.StaticFlags3 = 2097216 = 0x200040`，含 **`0x200000` = `IMMUNE_TO_PLAYER_BUFFS`**（`CreatureDefines.h:126`）→ `Spell::EffectApplyAura`（`SpellEffects.cpp:3149-3152`）判定"玩家控制的施法者 + 生物目标 + 免疫玩家增益 + 该 aura 为增益"→ **直接 return，aura 根本不创建** → `Aura::HandleModCharm`/`Unit::TakeCharmOf`/`Player::CharmSpellInitialize` 一步都不执行。
+  - 为何 39219 被判为"增益"：`IsPositiveAuraEffect`（`SpellMgr.h:1489`）——该法术 AttributesEx4 无 `AURA_IS_BUFF`、Attributes 无 `AURA_IS_DEBUFF`，且目标 38 = `TARGET_UNIT_SCRIPT_NEAR_CASTER`（`SpellTargetDefines.h:62`）不属于负面目标 → 返回 true。
+- **定位证据（本地打点，2026-09-16 19:04~19:05）**：
+  `[CANNONDBG] 39219 landed on Creature (Entry: 22443 ...): charmer=none hasAura39219=0`，且**没有任何魅惑链路日志**（法术命中回调跑了、aura 没落地）。
+- **修复**：`dev/069_任务10911邪能火炮可被魅惑修复.sql`（幂等）：`StaticFlags3 = StaticFlags3 & ~2097152` → 2097216(0x200040) → 64(0x40，保留 `NO_FRIENDLY_AREA_AURAS`)。
+  - 副作用：该炮从此可被玩家的增益/治疗 aura 命中（原本"免疫玩家增益"）；它是任务交互对象，可接受。若要保持该语义，可改为代码层放行 charm/possess（`SpellEffects.cpp:3149` 条件里排除 `SPELL_AURA_MOD_CHARM` / `MOD_POSSESS` / `MOD_POSSESS_PET`）。
+  - 修复后实测（19:07:30）：`HandleModCharm aura=39219 apply=1` → `TakeCharmOf … hasCharmer=1` → `[CANNONDBG] … charmer=Player Asggd hasAura39219=1` ✅
+- **附注（已验证"正常"，勿改）**：火炮两技能 **39221 Artillery on the Warp-Gate / 39222 Anti-Demon Flame Thrower 共享 15 秒 CD** —— `Category=1152`、`CategoryRecoveryTime=15000`，**客户端 `Spell.dbc` 同一份值**（实测 field1=1152 / field24=15000），即暴雪原始设计（要么轰门、要么烧小鬼）。服务端改无效（客户端会继续按自己的 DBC 灰图标、不发施法包），要改只能改客户端 DBC，不建议。
+
+## [机制] 召唤物被吸附到 vmap 地板 → 全局改为"只向上兜底"（不再向下吸）— 2026-09-16 已改（本地，待推云）
+
+- **现象（同一类问题的第 3 起）**：动态生成的单位被引擎**向下吸附**到 vmap 地面，落到可见地板之下：
+  1. WMO 平台悬于露天 ADT 之上被吸到远处 ADT 层（见 `Unit.cpp:12597` 原 `[BOUNDED-HEIGHT]` 注释，map530 -1154,1907）；
+  2. **急救任务**患者被吸进床里（床是客户端 GO，服务端 vmap 没有它）→ commit `81a1018d04`；
+  3. 本次**不稳定邪能小鬼**：脚本点 z=155.07/156.60（门内可见地板），被吸到 vmap 地板 **153.9**（玩家 `.gps` 实测 GroundZ=FloorZ=153.9），于是卡在传送门里。
+- **定性（上游 vs 我们）**：`CreatureCreatePos::SelectFinalPoint`（含 `else if (!staticSpawn) cr->UpdateAllowedPositionZ(...)`）与 `Creature::Create` 里的调用点**上游逐字节相同** → "生成时吸附"是 **cmangos 主分支既有设计**；`SetNextCreatureSpawnKeepZ` 才是本 fork 加的（上游无）。差别只在 `Unit::UpdateAllowedPositionZ` 实现：上游无条件吸（`if (z > maxZ) z = maxZ; else if (z < groundZ) z = groundZ;`），本 fork 已收窄（水中豁免 / `GetHeightInRange` 4 码有界 / 落差 ≤10 码护栏）。
+- **修法（站长定案"方案 B"）**：`Unit::UpdateAllowedPositionZ` 里**删除向下吸附**，只保留向上兜底：
+  `if (z < groundZ && groundZ - z <= 10.0f) z = groundZ;`
+  - 语义：脚本/DB 给的 Z 高于地面时**信任它**；低于地面仍被提起（防掉地下/穿地照旧）；10 码护栏照旧（防 GetHeight 回退到错误层导致无限下坠抖动）。
+  - 影响面：只影响**动态生成**（`staticSpawn=false`：召唤/宠物/图腾/脚本 spawn）；DB 静态刷点本来就不走吸附。风险：脚本故意生成在半空的怪不再被拉下来（会悬空）。
+  - `SetNextCreatureSpawnKeepZ`（一次性钩子）保留，供急救等"必须钉死 Z"的场景使用。
+
+## [机制] 不稳定邪能小鬼（22474）出生成后卡闪避：拴绳半径 30 码 < 门到炮 40~50 码 — 2026-09-16 已修（本地，待推云）
+
+- **现象**：小鬼从传送门出来就"卡在门里、反复卡闪避"。
+- **证据（本地日志）**：`[LEASH] EVADE guid=5860258…5860287` 每 3 秒整批刷（临时 guid 段即召唤出来的小鬼）。
+- **根因**：`CombatManager.cpp:117-118` —— "距上次续期位置 > **LeashRadius（默认 30 码，`World.cpp:713`）** 且 15 秒（`Pursuit`）未续期" → 强制 EVADE。小鬼在门边生成（北 2188.34/5476.63、南 1981.73/5315.39），而被魅惑的火炮在 **39.7 码（北）/ 49.8 码（南）** 外 → 一出生长距离超限，EVADE 把它拉回出生点（= 传送门），再 AttackStart → 再超限 → 死循环。（打到目标会续期，但它当时动不了。）
+- **修复**：`npc_warp_gate::JustSummoned` 里对 22474 加 **`GetCombatManager().SetLeashingDisable(true)`**（与同文件被魅惑火炮自己的做法一致）。
+- 相关：小鬼的出生 Z 问题见上一条（vmap 吸附 / `SetNextCreatureSpawnKeepZ`）。
+
+## [机制] 标记"禁止战斗移动"的单位仍会追击：HandleMovementOnAttackStart 未查 IsCombatMovement — 2026-09-16 已改（本地，待推云）
+
+- **触发**：玩家对被魅惑的火炮使用**宠物攻击指令**时，火炮会移动（`PetHandler.cpp:252-254`：`AttackStop() → MotionMaster()->Clear() → AI()->AttackStart(target)`）。
+- **根因**：`UnitAI::HandleMovementOnAttackStart`（`UnitAI.cpp:345`）只挡 `UNIT_STAT_CAN_NOT_REACT` / `UNIT_STAT_PROPELLED`，**没有检查 `IsCombatMovement()`**（即 `UNIT_STAT_NO_COMBAT_MOVEMENT`），于是无条件 `MoveChase(...)`。而火炮是 `Scripted_NoMovementAI`（`sc_creature.h:229-237`，构造里 `SetCombatMovement(false)`），本就该站桩。
+- **修法**：`if (!m_unit->hasUnitState(UNIT_STAT_CAN_NOT_REACT) && IsCombatMovement())` → 让 `SetCombatMovement(false)` 在攻击启动路径上也生效（同时覆盖 EventAI 的 `NO_COMBAT_MOVEMENT` 动作与所有 `Scripted_NoMovementAI` 脚本）。
+- **确认（站长 2026-09-16）**：「宠物攻击指令会让火炮移动」**确为问题**——火炮应当站桩。同批被提到的另一条"自动还击"现象经判定为**小鬼自爆**（`SPELL_UNSTABLE_EXPLOSION` / `SPELL_UNSTABLE_FEL_IMP_TRANSFORM`），与火炮无关，**非 bug**。
+- **同类路径核对**：宠物指令的**跟随/停留**分支（`PetHandler.cpp:176-193`）只改 `CharmInfo` 命令状态、不发移动指令；"被魅惑单位跟着玩家跑"是 `PetAI` 的行为，而火炮因 `StaticFlags2` 带 `ACTION_TRIGGERS_WHILE_CHARMED` 会保留自己的脚本 AI（`SetCharmState("")` → `nullptr`，`Unit.cpp:10080-10098` 不换 AI），故不会跟随移动 ✅。
+- **未改的同类点（留档）**：`UnitAI::DoStartMovement`（`UnitAI.cpp:818`）同样不查 `IsCombatMovement()`，但只在"逃跑结束重新追击"等少数路径被调用，暂无实际症状，故未动。

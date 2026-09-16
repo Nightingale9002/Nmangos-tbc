@@ -12597,15 +12597,17 @@ void Unit::UpdateAllowedPositionZ(float x, float y, float& z, Map* atMap /*=null
         }
         if (maxZ > INVALID_HEIGHT)
         {
-            // Never snap the unit to a floor layer more than 10 yd away - a
-            // bigger gap means GetHeight fell back to a wrong terrain layer
-            // (pit edge: vmap raycast misses, .map surface is a step far
-            // below), which dragged creatures layer by layer down to the
-            // bottom of Hellfire Citadel pits and back - endless bobbing.
-            // Normal stairs/slopes are < 10 yd and still work.
-            if (z > maxZ && z - maxZ <= 10.0f)
-                z = maxZ;
-            else if (z < groundZ && groundZ - z <= 10.0f)
+            // [KEEP-SCRIPTED-Z] 2026-09-16: the DOWNWARD snap (z > maxZ -> z = maxZ) is removed -
+            // a scripted Z above the floor is now trusted. Three incidents were caused by it:
+            //   1) WMO platform over open ADT ground pulled down to the far ADT layer
+            //      (see the [BOUNDED-HEIGHT] note above, map530 -1154,1907);
+            //   2) first-aid patients snapped into the bed (bed is a client-side GO) - 81a1018d04;
+            //   3) Death's Door fel-imps summoned at the client-side warp gate: 155.07/156.60 was
+            //      snapped down to the vmap floor 153.9 and they stayed stuck inside the gate.
+            // The UPWARD part is kept, so a unit below the floor is still lifted (classic
+            // "sink through the ground" protection unchanged), including the 10 yd guard: a bigger
+            // gap means GetHeight fell back to a wrong terrain layer (pit edges, endless bobbing).
+            if (z < groundZ && groundZ - z <= 10.0f)
                 z = groundZ;
         }
     }

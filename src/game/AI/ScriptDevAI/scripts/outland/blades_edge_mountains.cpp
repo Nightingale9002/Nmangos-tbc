@@ -1910,6 +1910,11 @@ UnitAI* GetAI_npc_fel_cannon(Creature* pCreature)
 ## npc_warp_gate
 ######*/
 
+// [TRIAGE-keepZ] engine hook declared in Creature.cpp: pins the scripted Z for the very next
+// SummonCreature so the creature is BORN at that Z instead of being snapped onto the vmap floor.
+// Same mechanism used for the first-aid patients (commit 81a1018d04).
+void SetNextCreatureSpawnKeepZ(bool keepZ);
+
 static float impSpawns[2][4] = 
 {
     { 2188.340f, 5476.629f, 155.069f, 5.259f }, // north
@@ -2044,6 +2049,10 @@ struct npc_warp_gate : public Scripted_NoMovementAI
             m_vImpGuids.push_back(pSummoned->GetObjectGuid());
             pSummoned->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_UNINTERACTIBLE);
             pSummoned->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PLAYER);
+            // The imp is summoned at the warp gate but has to run to the charmed fel cannon, which is
+            // ~40y (north) / ~50y (south) away - beyond the global LeashRadius of 30y (World.cpp).
+            // Without this it evades home into the gate every few seconds in an endless loop.
+            pSummoned->GetCombatManager().SetLeashingDisable(true);
             if (Creature* cannon = m_creature->GetMap()->GetCreature(m_guidFelCannon))
             {
                 pSummoned->AI()->AttackStart(cannon);
@@ -2065,8 +2074,15 @@ struct npc_warp_gate : public Scripted_NoMovementAI
             if (m_uiSpawnImpTimer <= uiDiff)
             {
                 uint32 i = m_creature->GetEntry() - NPC_DEATHS_DOOR_NORTH_WARP_GATE;
+                // [TRIAGE-keepZ] the warp gate is client-side decoration absent from the server vmap,
+                // so a plain SummonCreature snaps the imp DOWN onto the vmap floor (153.9 here) - i.e.
+                // below the visible gate floor (155.07 / 156.60) - and it then ends up stuck inside the
+                // gate structure. Pin the scripted Z for this one create.
+                SetNextCreatureSpawnKeepZ(true);
                 if (m_creature->SummonCreature(NPC_UNSTABLE_FEL_IMP, impSpawns[i][0], impSpawns[i][1], impSpawns[i][2], impSpawns[i][3], TEMPSPAWN_TIMED_OOC_OR_DEAD_DESPAWN, 20000, true, true))
                     m_uiSpawnImpTimer = 3000;
+                else
+                    SetNextCreatureSpawnKeepZ(false); // summon failed - do not leak the one-shot flag
             }
             else
                 m_uiSpawnImpTimer -= uiDiff;

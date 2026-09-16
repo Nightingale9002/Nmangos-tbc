@@ -344,7 +344,11 @@ bool UnitAI::IsCombatMovement() const
 
 void UnitAI::HandleMovementOnAttackStart(Unit* victim, bool targetChange) const
 {
-    if (!m_unit->hasUnitState(UNIT_STAT_CAN_NOT_REACT))
+    // [NO-MOVE] honor "no combat movement" (UNIT_STAT_NO_COMBAT_MOVEMENT, set by SetCombatMovement(false)
+    // - Scripted_NoMovementAI / EventAI action 57 type 0). Without this check the pet-attack command path
+    // (PetHandler.cpp COMMAND_ATTACK -> CreatureAI::AttackStart -> here) issued MoveChase unconditionally:
+    // the charmed Death's Door Fel Cannon (quest 10911) then walked to its target instead of staying put.
+    if (!m_unit->hasUnitState(UNIT_STAT_CAN_NOT_REACT) && IsCombatMovement())
     {
         if (m_dismountOnAggro)
             m_unit->Unmount(); // all ais should unmount here
