@@ -18320,13 +18320,22 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
     // taximaster case
     if (npc)
     {
-        // not let cheating with start flight mounted
+        // Takeoff pre-check for EVERY flight master: drop the mount aura and any form that blocks
+        // flying instead of refusing the flight (previously answered ERR_TAXIPLAYERALREADYMOUNTED /
+        // ERR_TAXIPLAYERSHAPESHIFTED and aborted) - mirrors the spell/scripted case below.
+        RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
+
+        // still mounted by a non-aura source: keep the old refusal as a safety net
         if (GetMountID())
         {
             GetSession()->SendActivateTaxiReply(ERR_TAXIPLAYERALREADYMOUNTED);
             return false;
         }
 
+        if (IsInDisallowedMountForm())
+            RemoveSpellsCausingAura(SPELL_AURA_MOD_SHAPESHIFT);
+
+        // form that could not be removed: keep the old refusal as a safety net
         if (IsInDisallowedMountForm())
         {
             GetSession()->SendActivateTaxiReply(ERR_TAXIPLAYERSHAPESHIFTED);

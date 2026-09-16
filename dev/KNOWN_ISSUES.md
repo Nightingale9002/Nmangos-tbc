@@ -1111,3 +1111,406 @@ navmesh 无路径(真高空/水面等)        -> 目标点 = 直线终点
   - 代码：LoadCatalogOverrides 读两新列；GetCatalogEntry 补拷 policy/category/price(顺带修复 policy 此前未拷出的缺陷)；IsCatalogItem 排除 category=0；loot 供给仅跳过 book 成员(category=0 回到 loot 流程)；GetCatalogFixedPrice() + QuoteCatalog/UpdateMarketPrices/买侧 的 category=2 固定价分支(当前无 category=2 行 → 全部惰性不生效)。
   - MM 初始化/买卖不再依赖 Chance.Sell/Buy(可设 0 专注做市商)：Initialize 全量装载；买侧 chanceBuy||(market&&catalog) 进门、非 book 物品仍需 chance 掷点。
 - **用法(以后)**：把物品行 category 改为 0/2 + 填 price(SellPrice) → .ahbot reload 即生效；category=1 无需显式(无行默认即市场商品)。category=2 的 supply 充足沿用 transition ×3。
+
+## [任务] 10607「乌鸦之神的低语」预言神殿中文名错译 — 2026-09-16 已修（本地，待推云）
+
+- **现象**：玩家反馈四座预言神殿的 GameObject 中文名不对。
+- **定位**：真正的神殿是 GO **184950 / 184967 / 184968 / 184969**（type 10 GOOBER，`data1=10607`=questId），已 spawn 在格里施纳（3784.6/6729.0、3625.7/6541.7、3734.6/6639.5、3575.5/6666.4）。
+  `locales_gameobject` 里 **184968、184969 都写成「第一个预言」**，应为「第三个预言」「第四个预言」（184950/184967 原本正确）。
+- **修复**：`dev/066_任务10607预言神殿中文名修复.sql`（幂等，只改 locales_gameobject）。
+- ⚠️ **顺带纠正一个极易误判的点（别再"修"错）**：`quest_template.10607.ReqCreatureOrGOId1..4 = 22798/22799/22800/22801` 是**正确**的。
+  cmangos 规则是「**正数＝生物入口、负数＝-GO 入口**」（`Player.cpp:14456-14469` `CastedCreatureOrGO`：isCreature 时匹配 `>0`，GO 时匹配 `<0`；另有 `Player.cpp:20170` `HasQuestForGO` 用 `-1)*GOId` 判定），
+  而这四个 entry 在 `creature_template` 里是 **`[DND]Prophecy 1~4 Quest Credit`**（隐形计数体），spawn 坐标与四座神殿一一对应。
+  GO 命名空间里同号的 22798~22801 是 Wooden Chair / High Back Chair（type 7），纯属**撞号**。
+  → 所以「走到神殿不互动就自动完成」是设计行为，**不要**把 GO 目标改成负数或改 QuestCredit。
+- **生效**：locales 在启动时载入 → 需重启 mangosd（上云后随夜间重启生效）。
+
+## [战术] 拜龙教徒 NPC 21382 停在远程距离却不攻击 — 2026-09-16 已修（本地，待推云）
+
+- **现象**：Wyrmcult Zealot(21382) 战斗中停在 35 码处站桩，不出手（玩家反馈"没有远程攻击却停在远程攻击范围"）。
+- **根因**：`creature_ai_scripts` **2138201**（aggro 事件）action1 = **57 `ACTION_T_SET_RANGED_MODE`**，param1=**2**（`RangeModeType TYPE_PROXIMITY`，见 `UnitAI.h:100`）、param2=**35** → `SetRangedMode(true, 35, TYPE_PROXIMITY)`（`UnitAI.cpp:986`）→ 追击停在 35 码。
+  该模式还依赖「main spell」，而 `AddMainSpell` **只取第一个**法术（`UnitAI.cpp:972` "only for first"）：21382 法术表(`creature_template_spells` setId=0) 首位是近战技 **32009 Cutdown**，真正远程的 Fireball(20714 / EventAI 用的 9053) 只在 EventAI 的 range 事件（event 9，0~40 码）里 → 站位正确但输出为 0。
+- **旁证（运行日志）**：2026-09-16 16:11:30 `Server.log` / `DBErrors.log`：
+  `ERROR:EventAI: Creature entry 21492 has ranged mode action but no main spell.`（`CreatureEventAI.cpp:1336` 的守卫：没有 main spell 时该 action **只写日志、什么都不做**；21492 = Wyrmcult Blessed，同营地同类）。
+- **修复（站长定案 A：按近战怪处理）**：`dev/067_NPC21382改为近战模式.sql`，把 `action1_param1` 由 2 改为 **0**（TYPE_NONE＝近战模式；参照 2163703 注释里的 "Enable Melee Mode"）。21492 的可选同改留在该 SQL 注释中备用。
+
+## [机制] 试飞任务（10712 / 10711 / 10557）坐骑状态不会被送上试飞平台 — 2026-09-16 已修（本地，待推云）
+
+- **现象**：骑着坐骑与试飞管理员对话选试飞，玩家不会被正确送上试飞平台（玩家反馈）。
+- **完整链路（已核实）**：
+  1. `gossip_menu_option` menu **8304**（**21461 Rally Zapnabber**，站位 1920.3/5581.3）→ option 0/2/3 分别绑 `dbscripts_on_gossip` **10557 / 10711 / 10712**；
+  2. 脚本第一步用命令 15（CAST_SPELL）对玩家施放 **36801 "Cannon Charging (Port)"** —— 它是**传送法术**（落点在 `spell_target_position`：id=36801 → map530 **1920.13 / 5581.9 / 270.426**）＝"送上平台"那一步；
+  3. 同时给炮台 NPC 21393/21394 灌 charging aura（36785/36790/36792/36795/36800，0/3/6/9 秒）；
+  4. **12 秒后**施放 **Soaring**（Ruuan Weald=**37968** / Razaan's Landing=37910 / Singing Ridge=36812），其数据为 `Effect1=98 KNOCK_BACK`(+misc 100/200/300) + `Effect2=6/aura 105(飞行)` → **"发射"是击退+飞行 aura，不是 taxi 航线**；
+  5. C++ 侧只有一处脚本：`src/game/AI/ScriptDevAI/scripts/outland/blades_edge_mountains.cpp` 的 `struct Soaring`（`spell_scripts` 里 36812/37910/37968 → `spell_soaring`），施放时 `RemoveAurasDueToSpell(36801)`，注释写明"避免 root 影响击退"。
+- **根因判断**：36801 自带 root，且**坐骑状态同样会压制击退/这类位移** → 骑坐骑时传送/发射不生效。
+- **修复**：ScriptDev 新增 `npc_rally_zapnabberAI` + `GossipSelect_npc_rally_zapnabber`（同文件）：
+  对话时 `IsMounted() → Unmount()`；遍历 `GetAurasByType(SPELL_AURA_MOD_SHAPESHIFT)` 逐个 `RemoveAurasDueToSpell(aura->GetId(), nullptr, AURA_REMOVE_BY_CANCEL)`（`Aura::GetId()` 在 `SpellAuras.h:119`）；随后 **return false** 交回 `Player::OnGossipSelect()` 继续执行 DB gossip/dbscript（`NPCHandler.cpp:438-439`）。
+  配套 `dev/068_试飞任务对话自动下坐骑.sql`：`creature_template.ScriptName = 'npc_rally_zapnabber'`（**必须**，`ScriptDevAIMgr::OnGossipSelect` 按 `GetScriptId()` 取脚本，不绑则钩子不触发）。
+- ⚠️ **踩坑记录**：本 fork **没有** `RemoveAurasByType()`（只有 `GetAurasByType()`），别照抄 WotLK/AC 的写法，否则编译报 `error C2039: 不是 "Player" 的成员`。
+
+
+## [寻路] 本 fork 寻路/地形生成相对上游 cmangos 的全部改动 — 原 dev/寻路系统修改总结_vs_cmangos主分支.md（2026-09-16 整合，标题降一级）
+
+
+> 对比基准：fork 分叉点 `3e69c84c9`（2026-08-05，上游 master）；对比对象：上游最新 master `6904884e4`（本地 mangos-tbc 仓库）。
+> 统计：27 个文件，**+1332 / -97** 行（`git diff 6904884e4..HEAD -- src/game/MotionGenerators src/game/vmap src/game/Maps/GridMap.cpp src/game/Maps/Map.cpp src/game/Movement src/game/Entities/Unit.cpp src/game/Entities/Creature.cpp contrib/mmap dep/recastnavigation`）。
+> 整理时间：2026-08-27。历史演变细节见《KNOWN_ISSUES.md》寻路章节（时间线 8-14 ~ 8-27）。
+> ⚠️ Unit.cpp/Creature.cpp 内还混有**非寻路改动**（黑兔仇恨协议、圣印舞、死怪攻击防御、辅助呼叫返回值），本文不展开。
+
+---
+
+### 〇、总览：fork 的三个设计取向 vs 上游
+
+| 问题 | 上游 CMaNGOS 行为 | 本 fork 行为 |
+|---|---|---|
+| vmap 高度查询 | 射线全向，任何面（含垂直墙/天花板背面/悬挑）都算"地面" | 高度查询只认 **60° 内的朝上面**（frontFacesOnly），墙/天花板背面不算地板 |
+| 多层地形（地表+洞穴/地堡） | 无限向下搜索，射线穿透洞口命中地下层，浮点微差会把单位拉进地下 | **接近性判定**：vmap 高必须靠近单位 z(≤1.0码) 或 .map 地表(≤3.0码)，否则用 .map 地表；地表上方搜索封顶 |
+| 山体/建筑坡度（mmap 生成） | ≥60° 三角形直接清除 → 墙上"空洞"，怪可穿墙 | WMO ≥60° 标 **STEEP 障碍**（保留在 navmesh 里挡路）；ADT 仍 60° 清除（防顶点超限） |
+| M2 装饰物 | 按 60° 斜坡判定，柱子/大石可爬 | 按**高度分类**：>1.07码（walkableClimb×0.2667）全障碍；矮模型仅当下方 0.5~4.5 码内有真实地面才可走 |
+| 终点处理 | 原样使用请求终点 | 陆地终点一律 `closestPointOnPoly` 吸附 navmesh 表面（防穿模/飘顶） |
+| 水中移动 | 游泳状态按出生点静态；水中路径用 GetWaterOrGroundLevel(浅水=贴底) | 游泳状态**动态迟滞判定** + `UNIT_FIELD_FLAGS` 客户端锚定；统一水中路径重写 `[底+0.5, 水面-1.5]` |
+| 生成器规则版本 | — | `MMAP_VERSION=8`（曾试 9 定回 8，与云端 mmaps 一致） |
+
+---
+
+### 一、mmap 生成器（contrib/mmap + dep/recastnavigation）——数据侧
+
+> 规则的改动需要**重新生成 mmtile**。本地已全量生成 v8（2764 tile + 72 个 .mmap，云端已部署）。`MoveMapGen` 部署注意：复制到 `x64_Debug/Extractors/MoveMapGen.exe`。
+
+#### 1. 三角形来源标记（TerrainBuilder + MapBuilder）
+- `MeshData` 新增 `triSource`（每个三角形 0=ADT / 1=WMO / 2=矮M2 / 3=高M2），随 solidTris 同步生成。
+- 按来源分别光栅化：**先 WMO（室内真地板）→ 再 ADT（洞/入口真表面）→ 最后 M2**（矮装饰需下方有实地面，否则 STEEP）。
+
+#### 2. 坡度规则（确定稿，v8）
+- **ADT 地形**：保持上游 `rcClearUnwalkableTriangles` 60° 清除（曾试 89° 全可走 → 虚空 tile 顶点超 0xffff → 改回 60°）。
+- **WMO 建筑**：`MarkSteepTrianglesAsSteep`——≥60° 标 `NAV_AREA_GROUND_STEEP`（障碍）而非清除；**向下朝的面（天花板底面，n.y<0）也必须 STEEP**（2026-08-24 修，fabsf 会让天花板变可走地板）。
+- **M2 装饰**：高模型（> 4×walkableClimb×0.2667 ≈ 1.07码）全 STEEP（柱子/墙/大石不可爬）；矮模型默认待定，经 `HasSpanInWindow`（下方 0.5~4.5 码内有 span）判为可踩地面（箱子/车/桶）或 STEEP（悬空台阶）。
+- **移除 WMO 覆盖 ADT 检查**（曾加 cy-15..cy-0.5 窗口判断，误删洞口 ADT → 门口缝隙 → 卡闪避）。
+- **移除 `rcMedianFilterWalkableArea`**（中值滤波）。
+
+#### 3. 孤立 polygon 清理（MapBuilder buildTile）
+- 对每个 navmesh poly：无内部邻居（neis=0）且无 EXT portal 的 GROUND poly，清掉 GROUND 标志 → 寻路过滤直接跳过。防 `findNearestPoly/getPolyHeight` 报幽灵高度（掉坑/飘顶根源）。
+- 注意 neis 解码：`nei = raw & 0x8000 ? 0 : raw - 1`（存储为邻居索引+1，bit15=border）。
+
+#### 4. 侵蚀保留薄墙（RecastArea.cpp `rcErodeWalkableArea`，recast 库改动）
+- STEEP（area 10）span 当作**侵蚀边界**（邻居是 STEEP 即 break），且 **STEEP 自身永不侵蚀**——薄墙/薄柱不再被蚀掉消失，保留为障碍。
+
+---
+
+### 二、运行时 vmap 高度模型（防"选错层"）
+
+#### 1. frontFacesOnly（MapTree / ModelInstance / WorldModel）
+- 高度查询链路 `getIntersectionTime(..., frontFacesOnly=true)` 只接受**与射线方向夹角 ≤60° 的朝上面**（`n·rayDir <= -cos60` 才命中），墙/天花板背面/悬挑不再被当作地板。
+- 其他用途（LOS、相交检测）不受影响（默认 false）。
+
+#### 2. `TerrainInfo::GetHeightStatic` 多层取层修复（GridMap.cpp）
+- **[FIX-1] 限制无限搜索**：mapHeight 有效且调用者在地表上方（z2 > mapHeight）时，vmap 兜底搜索距离封顶 `z2 - mapHeight + 2.0f`；在地表下方（洞内怪）保留 10000 穿透找洞底。
+- **[FIX-2] 接近性判定**：
+  ```
+  vmapCloseToZ   = |vmapHeight - z|        <= 1.0f   // 单位贴自己那层的地面（实测差 0.00~0.06）
+  vmapCloseToMap = |vmapHeight - mapHeight| <= 3.0f  // 同层差 <1，跨层（表层/地下）差 >20
+  两者都不满足 → 用 mapHeight（.map 地表），拒绝远层 vmap
+  ```
+- 这是 `.go name` / 宠物跟随 / `UpdateAllowedPositionZ` 共用入口，修好后地表单位不再被吸进地下墓穴层。
+
+---
+
+### 三、PathFinder（运行时寻路，+313 行）
+
+#### 1. 无 tile / 无 poly 的链式策略（防"卡闪避"）
+- **无 tile**：`calculate` 一律 `BuildShortcut`（上游行为），不再对地面单位标 NOPATH（无 navmesh tile 的地面怪会冻住卡闪避）。
+- **INVALID_POLY（起点/终点无 poly）**：游泳快捷路径**要求两端都位于可游水域** + 直线 LOS 可见；否则 NOPATH（防水面怪追岸上/空中目标被直线"抬升出水面"、防浅水直线穿过楼板）。
+- **farFromPoly（终点距 poly 表面 >7 码，如玩家在二楼）**：陆地单位 LOS 可见 → `NORMAL|NOT_USING` 直线追（不穿空气）；LOS 被挡 → NOPATH（宁停不穿楼板）；飞行/游泳保持上游 INCOMPLETE。
+
+#### 2. 终点贴面（根因修复：穿模/飘顶）
+- 陆地（非飞、非水）终点无条件 `closestPointOnPoly` 吸附到 navmesh 表面（两端都做：起点下方模型面会被拉回，玩家跳坑上方不会再让怪垂直升空）。
+- **同 poly**：水中→直接 shortcut（不贴面防拖下海床）；飞行→LOS 校验后 shortcut；陆地→两点必须都在 poly 表面 **1.5 码内**，否则 NOPATH（跨层桥接 poly 直线穿空气被禁），通过后终点吸附到面上。
+
+#### 3. 平滑路径（findSmoothPath）
+- iterPos/targetPos 补 `getPolyHeight`（closestPointOnPolyBoundary 不改高度）。
+- **ZSnap 兜底已移除**（2026-08-24）：`|z-unitZ|>10 → z=unitZ+0.5` 会把 >10 码下坡压成水平线（怪飞着走，如 58284 z=67.59 地面 47）；信任 navmesh poly 高度。
+
+#### 4. 随机漫步点生成（ComputePathToRandomPoint）
+- **深水分支**（CanSwim && IsInSwimmableWater）：目的地水柱校验 `[底+0.5, 水面-0.5]` 内保持当前深度，沿途 4 点采样地形，任何一点高于游深 → NOPATH 重掷（防钻地/浮空）；浅水不再当游泳走（浅水怪之前永远不移动）。
+- **陆地分支**：随机点必须落在自己那层的地面上（floorZ 误差 ≤1.0），且到目标直线 **LOS 可见**（防随机点选在树根/岩石/建筑里卡住）。
+
+#### 5. 其他
+- `PathFinder::setPathType` 新增（供追击器改写类型）。
+- `[PFDBG]` 日志（aura 10909 门控，见第七章）。
+
+---
+
+### 四、追击 / 跟随（TargetedMovementGenerator，+362 行）
+
+#### 1. Chase（追击）
+- **下水/上岸状态切换强制重寻路**（`m_lastSwimState`），避免旧陆地路径卡闪避。
+- **自身在水中 → 一律直线游向目标**（跳过距离/LOS/z 差/非水检查）：
+  - canSwim && !walkInWater：清空路径，直接 start→目标**实际位置**（水下 navmesh=海床，走廊路径会让怪潜水到底够不到目标）；
+  - NOPATH/INCOMPLETE 退化 start→end 直游；
+  - 直线必须 LOS 可见（魔导师平台 24560 浅水→二楼直线穿楼板 → NOPATH）；
+  - 陆地单位**不再走短距直线**（BuildPointPath straightLine 会把终点吸附到坑 poly，z=-65.7 掉坑往返）。
+- **RefineWaterPath**（泳线细分）：按 `SMOOTH_PATH_STEP_SIZE` 细分，每点夹在 `[floor+0.5, 水面]`；**纯游泳怪（CanWalk=false）在浅水(深≤1.5)/岸边截断路径**（停深水边缘不上岸）；陆地/WMO 边缘 10 码保护（GetHeight 与 navmesh z 差 >10 不覆盖，防 WMO 边缘穿透到 ADT 深坑）。
+- 陆地路径**不再被 RefineWaterPath 重采样**（曾致 WMO 边缘点掉坑 z=-65.7）。
+- normalize-z 只对非水生效（水下直线 z 跨度天然 >1 码）。
+- `_getLocation` 删除手动楼层吸附（终点由 PathFinder 贴面处理）。
+
+#### 2. Follow（跟随）
+- **水中跟随**：canSwim && IsInWater → 直线到主人位置（无论主人在水中还是岸上），type 置 NORMAL。
+- 陆地路径点 `GetHeight` floorZ 修正：vmap floor 比 navmesh 低 **2 码以上**视为错层，跳过不拉低；否则贴地。
+- **相邻点 z 差 >3 码且 LOS 不通 → 路径非法拦截**（防宠物穿墙/穿洞）。
+- Relocation 类型修复：`TypeId()==UNIT` 才 `CreatureRelocation`（防 Player 下转型 UB）。
+- 下水/上岸状态切换重寻路（同 Chase）。
+
+---
+
+### 五、水移动系统（游泳状态 + 路径 + 客户端呈现）
+
+#### 1. 动态游泳状态（Unit.cpp `Update`）
+- 迟滞式判定：`z < 水面-0.5` → SetSwim(true)；`z > 水面+0.5` → SetSwim(false)；中间带保持原状态；**跳过 WALK_IN_WATER**（螃蟹贴底）。
+- `SetSwim` 同步写 **`UNIT_FIELD_FLAGS` 的 `UNIT_FLAG_SWIMMING`(0x8000)**——客户端游泳动画的持久锚定（0x30B 单发 ~2s 衰减、重建对象无效，仅此方案一直有效）。
+
+#### 2. 统一水中路径重写（MoveSplineInit.cpp）
+- **GATE：只在单位确实在水中（IsInWater）时才重写路径 z**（曾对所有 spline 生效：GetHeight 穿透 WMO 缝隙到海底 z=-92.4，把陆地怪拖进地下室）。
+- walkInWater 或不会游泳 → 贴 `groundZ+0.5`；会游泳 → clamp 到 `[groundZ+0.5, 水面-1.5]`（完全没入水中）；路径点在水面上（岸/船甲板）→ 跳过不拉低。
+- 覆盖所有移动类型（chase/follow/wander/waypoint/home）。
+
+#### 3. 其他移动相关（Unit.cpp）
+- `UpdateAllowedPositionZ`：**水中单位跳过 z 修正**（防水面/水底弹跳）；陆地 z 拉回上限 **10 码**（防 GetHeight 错层一帧帧拉下深坑）。
+- `UpdateSplinePosition`：spline 移动后同步 `m_movementInfo.ChangePosition`（防 movement 包带陈旧出生点位置）。
+- `MoveSpline.cpp`：零长度 spline 不再刷 `zero length spline` 错误日志（强制 1ms 原地停留）。
+
+---
+
+### 六、其他运行时改动
+
+#### 1. MoveMap（mmap 内存与按需加载）
+- **`TrimMmapMemory()`**：三处卸载路径（tile / .mmap / instance）后 30 秒节流 `_heapmin()`(Win) / `malloc_trim(0)`(Linux)，解决卸载后 RSS 不降。
+- **`loadMap` 崩溃修复**：遇到未预加载的 map 改为**自动 `loadMapData`**（而非 `MANGOS_ASSERT`）——修复启动期 `RespawnEmeraldDragons → IsSwimmable → GetHeightStatic → loadMap(530)` 直接 SIGABRT（与 v8 mmap 缺 72 个 .mmap 文件叠加导致）。
+
+#### 2. 网格/内存（Map.cpp，与寻路交互）
+- `ForceLoadGrid` 去掉 `setUnloadExplicitLock(true)` 永久锁；`ActiveObjectsNearGrid` 只查玩家+transport（active 怪不再阻止卸载）→ 网格完全懒加载，启动内存 -50%（详见 KNOWN_ISSUES [内存] 章）。
+- 附带 UAF 修复（ObjectGridLoader 卸载前 RemoveFromActive）见 KNOWN_ISSUES [宕机根因]。
+
+#### 3. 随机/巡逻地面吸附
+- `RandomMovementGenerator::_setLocation`：非飞行/悬浮/水中单位路径每点 `GetHeightInRange` 吸地（b82434357 引入；GetHeightStatic 修复后不再误伤）。
+- `WaypointMovementGenerator`：**已移除** GetHeightInRange 吸附（08-24，注释说明信任 navmesh poly 高度，重吸附会把巡逻怪拖进错误层）。
+
+#### 4. 冲锋（MotionMaster::MoveCharge）
+- 改为 navmesh 路径（`MoveTo(..., generatePath=true)`）：终点落 navmesh 表面，不再直线穿墙/飘顶（曾试直线冲锋，08-24 移除）。
+
+---
+
+### 七、调试设施：PfDebug.h（新增）
+
+- 统一寻路调试日志：`IsPfDbg(unit)` = 单位且带 **aura 10909（心灵视界）** 才打印，前缀 `[PFDBG]`，sLog.outError 级。
+- 覆盖 PathFinder（calculate/FINAL/BuildPolyPath/随机点）、TargetedMovementGenerator（Dispatch/SPLINE）、MoveSplineInit（water gate）等；**保留在代码中**（本地+云端），排查穿模/掉坑时给 GM 目标怪上 10909 即可定点抓日志。
+- 云端 Server.log 的 `[PFDBG]` 即此设施产物（须有 aura 10909 才刷）。
+
+---
+
+### 八、Commit 映射（本地 release，倒序）
+
+| Commit | 内容 |
+|---|---|
+| 3c5fed4c1 | 修复mmap加载失败（loadMap 按需加载） |
+| 17884f7dd | 修复空中寻路（INVALID_POLY 两端可游判定） |
+| 3e341792a | 修复鱼类上岸（RefineWaterPath 纯游泳怪截断） |
+| ec714992c | 修复水下寻路（RefineWaterPath/MoveSplineInit water gate） |
+| c93437ad3 | 浅水区怪不移动修复 + PFDBG 加 GPS |
+| a8ed20b45 | 添加寻路日志（PFDBG）+ 寻路修复 |
+| 1998b2d3c | 更新mmap生成规则（M2 高度/STEEP/侵蚀） |
+| 99626db1a | 修复寻路：掉坑/卡闪避/洞口断连 |
+| fd57f8f24 | 水下随机行走 + 修复地图退加载 |
+| b83f0804e / d64379342 / 290bac9b8 | 水下路径修复（早期迭代） |
+| 2be9e7c28 | 修复随机移动路径 |
+| dbec01ae2 | 修改mmap卸载（TrimMmapMemory） |
+| 8499927c2 | 修复内存泄漏（网格卸载链路，见 KNOWN_ISSUES） |
+| 2b3a9839b / 3e3173fd7 | 修复寻路（终点贴面/同 poly 校验/射线 frontFacesOnly） |
+| b82434357 | 防止怪物掉到地下（随机/巡逻点 GetHeightInRange） |
+| 973ba7ae2 | 修复怪物走空气（→ e3d85ffd9 已 Revert，见 KNOWN_ISSUES） |
+| fbe6ca863 | 添加 leash-link（战斗链接） |
+| f47c6a05e | 圣印舞（Spell/Unit，非寻路但同文件） |
+
+> 另有一批 **upstream 合并**（f0168395c 等，战斗/拾取/副本/法术/Warden），不属本 fork 原创寻路改动；与上游冲突处已在合并时解决。
+
+---
+
+### 九、已知权衡与遗留（结论）
+
+1. **多层地形穿模（Duskwood 洞穴案）**：GCC vs MSVC 浮点差异导致 findSmoothPath 插值判层不同，本地平滑/云端跳变；已接受现状，拒绝 z 斜率限制（会引入卡闪避/新穿模）。仅多层地形区偶发。
+2. **湿地维尔加挖掘场桥**：宠物绕桥下的 vmap 多层未命中问题，待办中（见 KNOWN_ISSUES [地图]）。
+3. **PFDBG 日志保留**（aura 10909 门控，无 GM 操作不刷屏），供后续排障；GRIDDBG/HEIGHTDBG 等亦保留但限区域/防刷屏。
+4. **mmap v8**：云端已部署（2764 .mmtile + 72 .mmap）；`MMAP_VERSION=8` 与云端一致，改规则必须升版本或手动删旧 tile。
+5. 大原则：**服务端逻辑向客户端靠拢**，导航网格（navmesh poly 高度）是移动可走性的唯一权威，vmap/.map 高度只做接近性兜底。
+
+
+## [资源] 矿点三方对比分析（原始数据：Questie / pfQuest / 本服）— 原 dev/050_矿点三方对比分析.md（2026-09-16 整合）
+
+
+> 日期：2026-08-29　目的：回答"矿脉太少"的根因，对比三方矿点数据给出完整说明
+> 结论先行：**矿少不是数据缺失，是 spawn_group 动态生成机制 + MaxCount=1 导致的**。数据库内容与原版 tbcmangos_orig 逐项一致，未删过矿。
+
+---
+
+### 一、三方数据口径
+
+#### 1. Questie（tbcObjectDB.lua）
+坐标点数 = **所有可能生成位置（含备用/潜在点位）**，无刷新时间字段。
+
+| 矿种 | Questie 点数 |
+|---|---|
+| 铜矿脉 | 2637 |
+| 锡矿脉 | 2598 |
+| 银矿脉 | 3524 |
+| 金矿脉 | ~1000+ |
+| 铁矿脉 | ~1000+ |
+| 秘银矿脉 | ~1500+ |
+| 真银矿脉 | ~1000+ |
+| 瑟银矿脉 | ~1000+ |
+| 富瑟银矿 | 539 |
+
+#### 2. pfQuest（objects-tbc.lua）
+坐标点数 + 第 4 值 = 刷新秒数：普通矿 45s、Ooze 矿 360s。
+
+| 矿种 | pfQuest 点数 | 刷新 |
+|---|---|---|
+| 铜矿脉 | 2180 | 45s |
+| 富瑟银矿 | 539 | 45s |
+| 其余矿种 | ~1000+ | 45s |
+
+#### 3. 当前服务器（tbcmangos）
+**gameobject 表静态矿实体**（真正常驻、直接可见）：
+
+| 矿种 | gameobject 数量 |
+|---|---|
+| 铜矿脉 | 1843 |
+| 秘银矿脉 | 25 |
+| 富瑟银矿 | 9 |
+| 铁矿脉 | 6 |
+| 锡矿脉 | 5 |
+| 金矿脉 | 3 |
+| 真银矿脉 | 1 |
+| 银矿脉 | **0** |
+| 瑟银矿脉 | **0** |
+
+**spawn_group 动态矿组**（265 组，与原版逐项一致）：
+- spawn_group_spawn：3149 个占位 guid（gameobject 表中这些 guid 的 id=0，仅作**位置载体**）
+- spawn_group_entry：633 条随机矿种（带 Chance 权重，见下）
+- 刷新机制：整组空才刷，RespawnOverride 45/90s 后整组重生
+
+---
+
+### 二、为什么实际看到的矿少
+
+#### 1. 高价值矿几乎全靠动态组，静态实体极少
+静态实体只有铜矿 1843 个；银/瑟银静态为 0，真银/金/铁/锡静态为个位数。
+银、金、真银、秘银、瑟银这些矿 **不存在于 gameobject 静态表**，全部通过 spawn_group 动态随机生成。
+
+#### 2. MaxCount 决定"同时存在的矿数"（核心原因）
+spawn_group.MaxCount = 该组同一时间最多存活的实体数。
+
+| MaxCount | 组数 | 占比 |
+|---|---|---|
+| 1 | 215 | 81.1% |
+| 2 | 15 | 5.7% |
+| 3 | 2 | 0.8% |
+| 4~9 | 5 | 1.9% |
+| 10~19 | 23 | 8.7% |
+| 22~27 | 5 | 1.9% |
+| **合计** | **265** | 100% |
+
+**动态矿同时存在上限 = 721 个**（各组 MaxCount 求和）。
+215 个组 MaxCount=1：即使该组有多个位置，同一时间也只有 1 个位置有矿，
+被采后必须等整组空 + 45~90s 才在随机位置重生 1 个。
+
+#### 3. Chance 权重进一步压低高价值矿出现率
+spawn_group_entry 中每种矿的 Chance（权重，同一组内按权重随机选种）：
+
+| 矿种 | 条目数 | Chance 范围 | Chance 总和 |
+|---|---|---|---|
+| 锡矿脉 | 52 | 0~90 | 1170 |
+| 真银矿脉 | 142 | 5~10 | 765 |
+| 金矿脉 | 122 | 5~10 | 695 |
+| 银矿脉 | 109 | 5~10 | 675 |
+| 铁矿脉 | 52 | 0~80 | 720 |
+| 秘银矿脉 | 70 | 0~80 | 630 |
+| 富瑟银矿 | 21 | 0~90 | 180 |
+| 瑟银矿脉 | 51 | 0~90 | 90 |
+| 铜矿脉 | 14 | 0 | 0 |
+
+注意：同一组内通常 3~4 个候选矿种（如 Id=391 组：Ooze 富瑟 Chance 20、金 5、真银 5、秘银 0），
+Chance 越低的矿种在同一组被选中的概率越低；加上 MaxCount=1，高价值矿实际出现率被双重压缩。
+
+#### 4. 刷新机制放大"矿少"感受
+- 矿被采 → 组内该位置消失 → **整组全空**才调度刷新 → 45~90s 后整组重生（位置随机）
+- 重生后若还是 MaxCount=1，仍只出 1 个矿
+- 人多时多个位置被采空，地图上长期大片无矿
+
+---
+
+### 三、与原版一致性验证（矿少不是我们改出来的）
+
+| 检查项 | 原版 tbcmangos_orig | 我们 tbcmangos |
+|---|---|---|
+| 矿脉组数 | 265 | 265 |
+| spawn_group_entry 矿条目 | 633 | 633 |
+| MaxCount 分布 | 215/15/2/1/1/1/1/1/3/3/2/4/5/2/3/2/1/1/1 | 完全一致 |
+| gameobject 静态矿 | 同我们 | 同原版 |
+| spawn_group_spawn 矿组 guid | 3149 | 3149 |
+
+→ 数据库层面我们与原版 **100% 一致**，矿少是 CMaNGOS spawn_group 机制的原生设计，非数据缺失。
+
+---
+
+### 四、可选的修复方向（按性价比排序）
+
+#### 方案 A：提高动态组 MaxCount（最直接，SQL 可热加载）
+把 215 个 MaxCount=1 的矿脉组改为 2~3：
+```sql
+UPDATE spawn_group SET MaxCount = 2 WHERE Id IN (...矿脉组...);
+```
+- 优点：不动位置数据，`.reload` 热加载即生效；同时存在的矿立即可翻倍
+- 影响：可能改变"稀有矿稀有"的原版平衡；改前备份
+
+#### 方案 B：提高高价值矿 Chance / 加快刷新
+- 把瑟银（90）、富瑟（180）的 Chance 总和调高（如 ×3）
+- 或把矿脉组 RespawnOverride 45/90s 调低（如 20~30s），配合 pfQuest 45s 口径更接近
+- 已有草稿：`_agent_tmp/mine_fix_pfq.sql`（普通矿 45/90、Ooze 360 对齐 pfQuest）
+
+#### 方案 C：按 Questie 坐标补静态矿点（根治但工作量大）
+- Questie 是"所有潜在位置"口径，直接照抄会过量
+- 需要：解析 tbcObjectDB.lua → 去重/按地图校验 → 生成 gameobject 静态矿行
+- 工作量最大，且会改变世界资源布局，不建议直接全量照搬
+
+#### 建议
+先做 **方案 A（MaxCount 1→2）+ 方案 B（Chance 微调）**，热加载观察 1~2 天，
+不够再评估方案 C。所有改动以 SQL 存档到 dev/，由站长手动执行/提交。
+
+
+## [稳定性] 服务器宕机根因：Map::Update 活动对象列表 use-after-free — 2026-08-23 已修复并验证（云端已部署）
+
+> 原记录在仓库根 `SERVER_TODOS.md`，2026-09-16 整合进本手册。
+
+- **现象**：云端 mangosd 每隔 1~13 分钟必崩。
+- **根因**：此前"修复内存泄漏（让有活动生物的网格也可卸载）"的改动引入 UAF ——
+  `ObjectGridUnloader::Visit` 直接 `delete` 生物却没有调用 `RemoveFromActive`，
+  活动列表里残留已释放指针，下一帧 `Map::Update` 的 `objToUpdate` 循环对已释放对象调虚函数崩溃。
+- **定位证据**：7b2bcf50a 版本 core dump —— `Map::Update+1096`，崩在虚表调用跳转 `0x4032`。
+- **修复**：`ObjectGridLoader.cpp` 在 `delete` 之前先 `RemoveFromActive`（+9 行）。
+- **验证**：修复版 7b2bcf50a 在云端 **58+ 分钟零崩溃**（修复前 1~13 分钟必崩），已部署。
+- **相关**：同批部署的还有「水中随机移动修复（PathFinder.cpp +33：目的地水柱校验 + 沿途地形采样）」、
+  「放弃任务物品清理修复（QuestHandler.cpp：只删本任务需求量 + 跳过 SrcItemId）」；另见本手册 [内存] 与 [水移动] 章节。
+
+## [待办] 尚未落地的改动与待定项 — 2026-09-16（原 SERVER_TODOS.md 整合）
+
+- **水中怪追岸上修复（Chase/Follow 直接线）**：本地已改（不再要求 targetInWater），
+  **未提交、未部署云端**（云端二进制仍为 9c3f59674）。部署后需实测"水中怪追岸上目标"不再卡。
+- **普通攻击伤害数字延迟**：客户端显示的伤害数字比服务端实际计算晚 —— 待定是否改成延迟伤害计算。
+  253 客户端已测，**243 客户端待测**。
+- **双手武器平衡**：搁置。分析结论：惩戒骑/武器战在双手下 AP 系数都偏低；
+  可选方案 A 标准化系数 3.3→3.4、方案 B 伤害系数 1.03~1.05，**未定案**。
+- **登录异常与攻击计时（历史记录）**：b11c9b79d（调整攻击计时）导致"进不了世界"，
+  用户重新提交 9c3f59674 解决，云端已部署；其后针对登录异常只加了**观测手段**（realmd 单 IP >5 条 3724 连接的僵尸连接计数写日志，不做自动重启），
+  根因是崩溃夜客户端会话错乱，靠临时自愈。
+- **反作弊现状**：Movement 检测全部为 Inform（不踢人）；Warden 在云端关闭。详见《功能更新手册》第三部分。
