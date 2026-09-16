@@ -248,7 +248,7 @@ Creature* ScriptedInstance::GetSingleCreatureFromStorage(uint32 entry, bool skip
 
     // Output log, possible reason is not added GO to map, or not yet loaded;
     if (!skipDebugLog)
-        script_error_log("Script requested creature with entry %u, but no npc of this entry was created yet, or it was not stored by script for map %u.", entry, instance->GetId());
+        DEBUG_LOG("SD2: Script requested creature with entry %u, but no npc of this entry was created yet, or it was not stored by script for map %u.", entry, instance->GetId());
 
     return nullptr;
 }

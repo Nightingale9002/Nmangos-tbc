@@ -248,7 +248,7 @@ void CreatureEventAIMgr::LoadCreatureEventAI_Scripts()
                 temp.creature_guid = -keyField;
                 if (!sObjectMgr.GetCreatureData(temp.creature_guid)) // guid does not exist in database
                 {
-                    sLog.outErrorEventAI("Event %u have missing dbguid (%u), skipping.", eventId, temp.creature_guid);
+                    DEBUG_FILTER_LOG(LOG_FILTER_EVENT_AI_DEV, "Event %u have missing dbguid (%u), skipping.", eventId, temp.creature_guid);
                     continue;
                 }
             }

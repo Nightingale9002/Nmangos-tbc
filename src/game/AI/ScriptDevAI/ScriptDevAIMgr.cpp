@@ -151,7 +151,7 @@ void Script::RegisterSelf(bool bReportError)
     else
     {
         if (bReportError)
-            script_error_log("Script registering but ScriptName %s is not assigned in database. Script will not be used.", Name.c_str());
+            DEBUG_LOG("SD2: Script registering but ScriptName %s is not assigned in database. Script will not be used.", Name.c_str());
 
         delete this;
     }

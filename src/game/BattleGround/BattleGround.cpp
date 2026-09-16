@@ -2179,7 +2179,7 @@ Creature* BattleGround::GetSingleCreatureFromStorage(uint32 entry, bool skipDebu
 
     // Output log, possible reason is not added GO to map, or not yet loaded;
     if (!skipDebugLog)
-        script_error_log("BattleGround requested creature with entry %u, but no npc of this entry was created yet, or it was not stored by script for map %u.", entry, GetBgMap()->GetId());
+        DEBUG_LOG("BG: BattleGround requested creature with entry %u, but no npc of this entry was created yet, or it was not stored by script for map %u.", entry, GetBgMap()->GetId());
 
     return nullptr;
 }

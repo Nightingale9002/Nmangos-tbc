@@ -117,7 +117,7 @@ void CombatManager::Update(const uint32 diff)
                             else if (GetLastLeashExtension() + (time_t)(m_owner->GetPursuit() / 1000) < time(nullptr) &&
                                      m_owner->GetVictim()->GetDistance2d(m_lastRefreshPos.GetPositionX(), m_lastRefreshPos.GetPositionY()) > sWorld.getConfig(CONFIG_FLOAT_LEASH_RADIUS))
                             {
-                                sLog.outError("[LEASH] EVADE guid=%u val=%ld now=%ld", m_owner->GetGUIDLow(), (long)GetLastLeashExtension(), (long)time(nullptr));
+                                DEBUG_FILTER_LOG(LOG_FILTER_AI_AND_MOVEGENSS, "[LEASH] EVADE guid=%u val=%ld now=%ld", m_owner->GetGUIDLow(), (long)GetLastLeashExtension(), (long)time(nullptr));
                                 m_owner->HandleExitCombat(false);
                             }
                         }

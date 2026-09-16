@@ -329,10 +329,10 @@ void WorldSession::DeleteMovementPackets()
 /// Logging helper for unexpected opcodes
 void WorldSession::LogUnexpectedOpcode(WorldPacket const& packet, const char* reason) const
 {
-    sLog.outError("SESSION: received unexpected opcode %s (0x%.4X) %s",
-                  packet.GetOpcodeName(),
-                  packet.GetOpcode(),
-                  reason);
+    DEBUG_LOG("SESSION: received unexpected opcode %s (0x%.4X) %s",
+              packet.GetOpcodeName(),
+              packet.GetOpcode(),
+              reason);
 }
 
 /// Logging helper for unexpected opcodes
