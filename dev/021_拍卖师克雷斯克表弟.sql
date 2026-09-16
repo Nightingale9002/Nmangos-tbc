@@ -21,3 +21,27 @@ FROM tbcmangos.creature_template WHERE entry=9858 AND @exists=0;
 
 -- 4. 藏宝海湾旧点(guid 568)切换到表弟
 UPDATE tbcmangos.creature SET id=29096 WHERE guid=568;
+
+-- 5. 外域刷新点(map530 沙塔斯城·贫民窟)位置微调（2026-09-16）
+--    背景：原先该刷新点是手工直接入库、未进 SQL（库/脚本漂移），此处补录为幂等语句。
+--    目标坐标来自站内 .gps：X -1923.665649 Y 5164.205566 Z -37.795090 O 1.573792
+--    （原坐标 X -1925.56 Y 5167.69 Z -40.2094 O 1.30439：向东北约 4 码、抬高约 2.4 码）
+--    ⚠️ 不要硬编码 guid：云端该刷新点占用了 5850237，但本地库 5850237 已被
+--       Nal'taszar(4066, map0) 占用——直接 INSERT 会覆盖别人的刷新点。
+
+-- 5.1 已有克雷斯克外域刷新点 → 就地改坐标（云端 guid 5850237 走这条）
+UPDATE tbcmangos.creature
+   SET `position_x` = -1923.665649,
+       `position_y` = 5164.205566,
+       `position_z` = -37.795090,
+       `orientation` = 1.573792
+ WHERE `id` = 9858 AND `map` = 530;
+
+-- 5.2 该刷新点缺失 → 用空闲 guid 新建（不占用可能被他人使用的 guid）
+SET @kresky_exists = (SELECT COUNT(*) FROM tbcmangos.creature WHERE `id` = 9858 AND `map` = 530);
+SET @kresky_guid   = (SELECT IFNULL(MAX(`guid`), 0) + 1 FROM tbcmangos.creature);
+INSERT INTO tbcmangos.creature
+  (`guid`,`id`,`map`,`spawnMask`,`position_x`,`position_y`,`position_z`,`orientation`,`spawntimesecsmin`,`spawntimesecsmax`,`spawndist`,`MovementType`)
+SELECT @kresky_guid, 9858, 530, 1, -1923.665649, 5164.205566, -37.795090, 1.573792, 25, 25, 0, 0
+  FROM DUAL
+ WHERE @kresky_exists = 0;
