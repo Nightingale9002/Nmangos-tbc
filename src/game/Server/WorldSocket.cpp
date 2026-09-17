@@ -531,8 +531,22 @@ bool WorldSocket::HandleAuthSession(WorldPacket& recvPacket)
             // Session exist so player is reconnecting
             // check if we can request a new socket
             if (!session->RequestNewSocket(self.get()))
-                return;
+            {
+                // [2026-09-18] 原来这里直接 return：**一个字节都不回、也不关连接** →
+                // 客户端会一直卡在"读取角色列表"上干等（掉线后客户端自动重连正好走这条路径，
+                // 也就是玩家反馈的"mangosd 掉线后再上线卡在读取角色"）。
+                // 现在明确告诉客户端失败并断开连接，客户端会立刻重新登录，不再干等。
+                sLog.outError("[AUTH] reconnect REFUSED (a socket is already pending on this session) account='%s' (id %u) from %s -> AUTH_FAILED + close",
+                    account.c_str(), id, address.c_str());
 
+                WorldPacket failPacket(SMSG_AUTH_RESPONSE, 1);
+                failPacket << uint8(AUTH_FAILED);
+                self->SendPacket(failPacket);
+                self->Close();
+                return;
+            }
+
+            sLog.outBasic("[AUTH] reconnect accepted: account='%s' (id %u) from %s", account.c_str(), id, address.c_str());
             DEBUG_LOG("WorldSocket::HandleAuthSession reconnect loading data for account '%s' from %s", account.c_str(), address.c_str());
             session->SetGameBuild(ClientBuild);
             session->SetOS(clientOS);
@@ -544,8 +558,15 @@ bool WorldSocket::HandleAuthSession(WorldPacket& recvPacket)
             WorldPacket addonPacket; // yes its copypasted atm cos of reconnect
             if (!anticheat->ReadAddonInfo(const_cast<WorldPacket*>(&recvPacket), addonPacket))
             {
-                sLog.outBasic("WorldSocket::HandleAuthSession: Account %s (id %u) IP %s sent bad addon info.  Kicking.",
+                // [2026-09-18] 同上：原来是 outBasic（默认日志级别下看不到）+ 静默 return →
+                // 客户端同样会卡死在"读取角色列表"。改成 error 级（必定落盘）+ 明确断开。
+                sLog.outError("[AUTH] bad addon info on reconnect: account='%s' (id %u) from %s -> AUTH_FAILED + close",
                     account.c_str(), id, address.c_str());
+
+                WorldPacket failPacket(SMSG_AUTH_RESPONSE, 1);
+                failPacket << uint8(AUTH_FAILED);
+                self->SendPacket(failPacket);
+                self->Close();
                 return;
             }
             else
@@ -579,6 +600,9 @@ bool WorldSocket::HandleAuthSession(WorldPacket& recvPacket)
         if (!(m_session = new WorldSession(id, this, AccountTypes(security), expansion, mutetime, locale, account, accountFlags, otherRaf, isRecruiter)))
             return false;
 
+        // [2026-09-18] 握手留痕：认证成功 → 新建世界会话（下面 UPDATE() 里还会打"发送 AuthOk"）
+        sLog.outBasic("[AUTH] new world session created: account='%s' (id %u) from %s", account.c_str(), id, address.c_str());
+
         m_session->LoadGlobalAccountData();
         m_session->LoadTutorialsData();
         m_session->SetGameBuild(ClientBuild);
@@ -590,7 +614,9 @@ bool WorldSocket::HandleAuthSession(WorldPacket& recvPacket)
         WorldPacket addonPacket;
         if (!m_session->GetAnticheat()->ReadAddonInfo(&recvPacket, addonPacket))
         {
-            sLog.outBasic("WorldSocket::HandleAuthSession: Account %s (id %u) IP %s sent bad addon info.  Kicking.",
+            // [2026-09-18] 这里返回 false 时调用方会 Close()，客户端至少能收到断开而不是干等；
+            // 但仍用 error 级记录下来（原来 outBasic 在默认日志级别下看不到）。
+            sLog.outError("[AUTH] bad addon info on new session: account='%s' (id %u) from %s -> close",
                 account.c_str(), id, address.c_str());
             return false;
         }

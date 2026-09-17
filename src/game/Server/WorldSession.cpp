@@ -511,6 +511,12 @@ bool WorldSession::Update(uint32 /*diff*/)
                 sLog.outDetail("New Session key %s", m_socket->GetSessionKey().AsHexStr());
             }
             
+            // [2026-09-18] 握手留痕：这里是"卡在读取角色列表"的最后一个环节 ——
+            // 确认到底有没有把 SMSG_AUTH_RESPONSE 发出去、socket 是开是关。
+            // 配合 WorldSocket 里的 [AUTH] 日志，一次复现就能定位卡在哪一步。
+            sLog.outBasic("[AUTH] sending AUTH_RESPONSE(ok/queued) to account id %u (state=CREATED, socket=%s, inQueue=%u)",
+                GetAccountId(), (m_socket && !m_socket->IsClosed()) ? "open" : "closed", uint32(m_inQueue));
+
             if (m_inQueue)
                 SendAuthQueued();
             else
