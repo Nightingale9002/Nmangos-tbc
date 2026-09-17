@@ -5609,16 +5609,21 @@ UPDATE locales_quest SET Title_loc4 = '甜美的平静' WHERE entry = 8869 AND (
 UPDATE locales_quest SET Title_loc4 = '冰川手套' WHERE entry = 9239 AND (Title_loc4 IS NULL OR Title_loc4 <> '冰川手套');
 UPDATE locales_quest SET Title_loc4 = '寒鳞护腕' WHERE entry = 9244 AND (Title_loc4 IS NULL OR Title_loc4 <> '寒鳞护腕');
 UPDATE locales_quest SET Title_loc4 = '寒鳞护手' WHERE entry = 9245 AND (Title_loc4 IS NULL OR Title_loc4 <> '寒鳞护手');
--- 站长判定（2026-09-17）：Aurel Goldleaf = 奥蕾尔・金叶（原版音译对，整包的「奥莉尔」错）
-UPDATE locales_quest SET Title_loc4 = '奥蕾尔・金叶' WHERE entry = 8331 AND (Title_loc4 IS NULL OR Title_loc4 <> '奥蕾尔・金叶');
+-- 站长判定（2026-09-17）：Aurel Goldleaf = 奥蕾尔·金叶（原版音译对，整包的「奥莉尔」错）
+-- ⚠️ 中点已修正为半角 ·（原写全角 ・ 会显示成方块，见第 12 段说明与 dev/080）
+UPDATE locales_quest SET Title_loc4 = '奥蕾尔·金叶' WHERE entry = 8331 AND (Title_loc4 IS NULL OR Title_loc4 <> '奥蕾尔·金叶');
 
 -- ============================================================
 -- 第 12 段：中文中点统一为全角（原 dev/081，2026-09-17）
--- 规则：中文人名/地名里的中点一律用全角 ・(U+30FB)；本段放在最后，归一化前面所有段的结果
+-- ⚠️⚠️【规则已作废，2026-09-17 晚，站长游戏内实测】
+--     客户端字体**没有 U+30FB 字形**，全角 ・ 在游戏里显示成"方块"（NPC/物品/任务名里的点）。
+--     正确写法是**半角 · (U+00B7)**；本段全角规则由 dev/080_中文中点回退为半角点.sql 推翻。
+--     本段保留只为历史可复现：080 编号更大、必然在其后执行，会把这里的全角全部改回半角。
+--     新装/全新导入请按编号顺序执行 079 → 080（不要单独执行本段）。
 -- ============================================================
 -- 081_中文中点统一为全角.sql（2026-09-17）
 --
--- 规则（站长）：中文人名/地名里的中点用【全角 ・ (U+30FB)】，不用半角 ·（U+00B7）。
+-- 规则（原站长要求，已作废）：中文人名/地名里的中点用【全角 ・ (U+30FB)】，不用半角 ·（U+00B7）。
 -- 幂等：REPLACE + 目标值判断，可重复执行。生效：locale 需重启 mangosd 或 .reload。
 
 UPDATE locales_quest SET Title_loc4 = REPLACE(Title_loc4, '·', '・') WHERE Title_loc4 LIKE '%·%';

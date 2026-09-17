@@ -378,8 +378,10 @@ DB 指向 Windows 上的 MySQL（`wow@%` 用户），用 `screen` 起进程（**
   `dev/078` / `080` / `081` 已并入并**移出 dev/**（留档 `_agent_tmp/merged_sources/`）。本地已应用 + **幂等复跑 0 错误** ✓；
   抽查：`715 赫米特・奈辛瓦里二世` / `18180 赫米特・奈辛瓦里` ✓、`9853 侵占者古罗克` ✓、`8331 奥蕾尔・金叶` ✓；
   残留"戈隆克" = 0 ✓、残留半角中点 = 0 ✓。
-- **新规则（本次定）**：**中文人名/地名里的中点一律用全角 `・`(U+30FB)**，半角 `·`(U+00B7) 视为错；
-  核对脚本里必须做这条归一化，否则会把"只差全半角"的行误判成"不一致"。
+- **新规则（本次定）**：~~**中文人名/地名里的中点一律用全角 `・`(U+30FB)**，半角 `·`(U+00B7) 视为错；~~
+  ⚠️ **该规则已于 2026-09-17 晚作废**（站长游戏内实测：客户端字体**没有 U+30FB 字形**，全角点显示成"方块"）：
+  **正确写法是半角 `·`(U+00B7)**。回退脚本：`dev/080_中文中点回退为半角点.sql`（9,960 行 / 12 列，
+  必须排在 079 之后执行；本地已应用、残留全角 = 0）。核对脚本仍要做全半角归一化，但基准值改成半角 `·`。
 - ⚠️ **`mysql source` 打不开含中文的路径**（`Failed to open file ... error: 42`）→ 应用本文件时先
   `Copy-Item` 到 ASCII 路径再喂给 mysql（本次已踩）。
 
@@ -2130,3 +2132,63 @@ UPDATE spawn_group SET MaxCount = 2 WHERE Id IN (...矿脉组...);
   - 说明：`1756 暴风城皇家卫兵` rank=0 → 按普通怪 300；事件守卫（rank1 但 1–10 秒，如安其拉开门用）因属于真实活动/事件而**排除在外**未动。
 
 - **待办**：①云端按 nightly 应用 **`071_刷新时间整改_整合版.sql`（唯一文件，18 条语句）** —— 云端只读预演已完成、条数已核对（见补记 4），今晚 04:06 自动应用后需**再跑一次残留缺口查询确认 0**；②线上抽查 `.npc info`；③新手区（幼狼/霜鬃等）体感若变化过大，可按备份表按 entry 回滚；④"事件/脚本 NPC 的 5 秒值"（孤儿周、安其拉/太阳井事件兵等）按证据保留未动；⑤（已作废）原"还差一个覆盖第 2/3 批（近 300 档 + 中立怪）的 dev SQL"—— 已由 `071_刷新时间整改_整合版.sql` 覆盖，无需再做。
+
+---
+
+## [修复] 副本里尸体"点一下就消失 / 拾取不了"（2026-09-17，**真因已更正**）
+
+**症状（站长报）**：副本里打怪后，一打开拾取窗口（点尸体）尸体立刻消失、捡不到东西；副本外的怪正常。副本怪刷新时间本身是 2 小时，与此无关。
+
+**真因（代码，09-16 引入）**：commit `6b4fd8eb1`（"修改刷新时间"）在 `Creature::InspectingLoot()` 里加了"尸体不能超过刷新时间"：
+
+```cpp
+if (m_respawnTime > time(nullptr))
+{
+    TimePoint respawnTimePoint = TimePoint(std::chrono::seconds(m_respawnTime));  // ← 整数溢出点
+    if (m_corpseExpirationTime > respawnTimePoint)
+        m_corpseExpirationTime = respawnTimePoint;
+}
+```
+
+`InspectingLoot()` 由 `Loot::ShowContentTo()` 在**玩家打开拾取窗口时**调用。而"新刷新系统"的生物（`WorldObject::IsUsingNewSpawningSystem()` = `GetDbGuid() != GetGUIDLow()`，即**刷怪组成员 / dynguid**）在死亡时会把 `m_respawnTime` 设成 `std::numeric_limits<time_t>::max()`（`Creature::SetDeathState`：刷新交给 SpawnManager 管）。把 max() 转成 `TimePoint`（纳秒计数）会**整数溢出**，得到一个落在过去的垃圾时间点 → `m_corpseExpirationTime` 被改到过去 → 下一个 tick `IsCorpseExpired()` 为真 → `RemoveCorpse()`。玩家视角就是"一点尸体就没了、拾取不到"。
+
+**为什么只有副本必现**：副本杂兵基本都在刷怪组里（本地库 `spawn_group_spawn` 共 28,279 个成员，覆盖地狱火城墙/奥金顿/幽暗沼泽/生态船/暗影迷宫等），静态世界刷点则是 `m_respawnTime = 现在 + 刷新`，是正常时间戳、不会溢出。
+
+**修复**：只对"真实的、一年以内的刷新时间戳"做收紧，`max()` 这类哨兵值跳过。
+
+```cpp
+if (m_respawnTime > time(nullptr) && m_respawnTime - time(nullptr) < 366LL * 24 * 3600)
+```
+
+**影响面**：只改 `InspectingLoot()` 这一个收紧分支。刷新时间（含副本 2 小时）仍由 SpawnManager 按原值管理，尸体照常保留 `Corpse.Decay.*`（普通 300 / 精英 600 秒）供拾取。
+
+**排查教训（重要）**：
+- 第一轮误判根因为"`spawntimesecs = 0`（全库 88 个刷点）→ 尸体时间 = 刷新×0.9 = 0"，据此加的守卫（`Creature::Update` 的 CORPSE/DEAD 分支 + `[CORPSE-DBG]` 诊断日志 + `Loot::IsBeingLooted()`）**对本次症状无效**，已按站长要求**全部回滚**（回滚后 `src` 下只剩 `Creature.cpp` 一处改动；附带好处：不再改头文件，增量编译只重编这一个文件，云端也不会再出现"动头文件引发几百个文件全量重编"）。
+- 关键线索是**本地日志里 `[CORPSE-DBG]` 一条都没有** → 尸体不是走"刷新规则 / Respawn / 强制消失"，而是走 `IsCorpseExpired()`。**凡排查"提前删尸体"，必须覆盖 `IsCorpseExpired()` 这条路径**（当时的诊断函数特意跳过了"已到期"的情况，正好漏掉了真凶）。
+- 其它排查过但**不是**病因的项：`creature_template.CorpseDecay`（与上游零差异）、`creature_addon` 的召唤物 `corpseDespawnTime`、`Rate.Corpse.Decay.Looted = 0.0`（本 fork 已不使用该配置）、`spawn_group` 覆盖值（我们改过的 417 个组全是旧世界矿脉组，副本组与上游一致，副本 2 小时刷新未被改动）。
+
+**次级问题（真实但影响面小，2026-09-17 未单独处理）**：`Creature::LoadFromDB` 的 `m_corpseDelay = std::min(m_respawnDelay * 9 / 10, m_corpseDelay)` 对 **`spawntimesecs = 0`** 的刷点会算出尸体时间 0。这类刷点全库共 88 个（map 580 太阳井 Shadowsword 杂兵与双子 BOSS、map 509 安其拉 Ossirian 水晶触发、map 530 外域无尽虚空幽魂等），**上游 `tbcmangos_orig` 同样为 0**，属原版数据。commit `9eb768fd7` 在新代码里加了 `&& m_respawnDelay` 守卫。
+
+**部署与回滚记录**：
+- 2026-09-17 21:48–21:51：上线 md5 `e80e2e40…`（基于含 09-16 溢出 bug 的树 + `9eb768fd7`），停机 2 分 15 秒。
+- 2026-09-17 22:12–22:13：站长要求回滚 → **git 树与二进制一起退回 `07281ebe4`（Sep 7 13:44 编译的版本）**，云端已稳定；该版本不含 09-16 的溢出代码，因此**没有此 bug**。
+- 溢出修复目前只在**本地**（本地树 `b46f74d52` + `Creature.cpp` 一处改动），本地服务 22:27 已重启待站长实测。
+
+---
+
+## [本地化] 中文中点：全角 ・ 改回半角 ·（2026-09-17 晚，站长游戏内实测）
+
+- **现象（站长报）**：游戏里 NPC / 物品 / 任务名中间的那个点显示成**方块**（豆腐块）。
+- **原因**：`079` 第 12 段（原 `dev/081`）按当时定下的规则，把半角 `·`(U+00B7) 统一成了全角 `・`(U+30FB)。
+  但**客户端字体没有 U+30FB 的字形**（U+30FB 是日文片假名中点，中文客户端字体通常不收录）→ 缺字渲染成方块。
+  数据库内容本身没错，问题在"选了客户端渲染不了的码位"。
+- **定案**：中文中点一律使用**半角 `·`(U+00B7)**；079 第 12 段的"全角 ・"规则**作废**（已在 079 文件内加警告注释）。
+- **修复**：新增 `dev/080_中文中点回退为半角点.sql`（幂等；自动枚举覆盖全部 `locales_*` 的 40 个 `_loc4` 列）。
+  实际改动 **9,960 行 / 12 列**：`locales_creature.name` 2,474、`locales_npc_text.Text0_0` 2,771 + `Text0_1` 1,544、
+  `locales_quest.Objectives` 1,914 / `Details` 815 / `Title` 137 / `OfferRewardText` 115 / `RequestItemsText` 50 / `EndText` 33、
+  `locales_item.name` 56、`locales_gameobject.name` 34、`locales_page_text.Text` 17。
+  **必须排在 079 之后执行**（编号顺序天然保证）；本地已应用，残留全角 = **0**。
+- **生效方式**：locale 数据在 mangosd 启动时载入 → 应用后需重启（本地已重启待实测）。
+- **教训**：字符（尤其是标点）的选择**不能只看参考资料里是哪个码位，必须以客户端字体能否渲染为准** ——
+  U+00B7 属 Latin-1，几乎所有字体都有；U+30FB 属日文标点，中文客户端常缺字形。
+  以后遇到"某个标点/生僻字符显示成方块"，先怀疑字形缺失，再看数据。

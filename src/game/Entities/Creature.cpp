@@ -2939,7 +2939,14 @@ void Creature::InspectingLoot()
         m_corpseExpirationTime = GetMap()->GetCurrentClockTime() + std::chrono::milliseconds(m_corpseAccelerationDecayDelay);
 
     // [RESPAWN-AT-TIME] the loot window may never outlive the respawn delay - the creature returns on time
-    if (m_respawnTime > time(nullptr))
+    // [CORPSE-VANISH-FIX 2026-09-17] 但新刷新系统（刷怪组成员 / dynguid：GetDbGuid() != GetGUIDLow()）在死亡时
+    // 把 m_respawnTime 设成 std::numeric_limits<time_t>::max()（刷新交给 SpawnManager 管）。把它转成
+    // TimePoint（纳秒计数）会整数溢出成一个落在过去的垃圾时间点，随后 `m_corpseExpirationTime > respawnTimePoint`
+    // 成立 → 尸体到期时间被改成过去 → 玩家一打开拾取窗口（本函数由 Loot::ShowContentTo 调用），下一个 tick
+    // 尸体就被 RemoveCorpse()，表现是"副本里的怪点一下就消失、拾取不到"（副本杂兵基本都在刷怪组里，
+    // 所以只有副本必现；世界静态刷点 m_respawnTime = 现在+刷新，正常）。
+    // 修复：只对"真实的、一年以内的刷新时间戳"做这个收紧，max() 这类哨兵值一律跳过。
+    if (m_respawnTime > time(nullptr) && m_respawnTime - time(nullptr) < 366LL * 24 * 3600)
     {
         TimePoint respawnTimePoint = TimePoint(std::chrono::seconds(m_respawnTime));
         if (m_corpseExpirationTime > respawnTimePoint)
