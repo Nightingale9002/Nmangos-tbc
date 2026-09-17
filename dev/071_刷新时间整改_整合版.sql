@@ -62,3 +62,40 @@ UPDATE creature SET spawntimesecsmin = 300, spawntimesecsmax = 300 WHERE id = 30
 -- 核对方式：把云端与本地整张 creature 表逐行比对（guid 相同者），差异行里凡 entry 不在 071 列表内的 = 110 行，
 --           正好是上述 12 个 entry；补入本语句后云端残留缺口 = 0（实测）。
 UPDATE creature SET spawntimesecsmin = 300, spawntimesecsmax = 300 WHERE id IN (212,730,818,889,892,1251,1756,2949,6846,16964,21195,22252) AND map IN (0,1,530) AND (spawntimesecsmin <> 300 OR spawntimesecsmax <> 300);
+
+-- ============ 9) 180/300（半统一写法）→ 300/300（原 dev/082，2026-09-17）============
+-- 071/075 之后库里仍有 min=180/max=300 这种原版遗留写法（表现为偶尔 3 分钟就回来）。
+-- 范围同 071：世界地图 0/1/530；云端实测 62 个刷点（23586 阿曼尼斥候、21859 被杀死的沙塔尔守备官、
+-- 26398/24520 桃丽丝・沃兰休斯、23447 吉恩中士、14581 军士霍斯・雷角 等）。
+-- ⚠️ 副本里的 36 个（map 449/450/568）按既定范围不动。2026-09-17 已在云端执行（62 行，残留 0）。
+
+-- 082_刷新180_300统一为300.sql（2026-09-17）
+--
+-- 背景：071/075 统一了普通怪(300)与精英(600)，但库里还存在 `min=180 / max=300` 这种"半统一"的刷点
+--       （原版遗留写法），表现为"有些怪偶尔 3 分钟就回来了"。站长要求一并统一为 300/300。
+--
+-- 范围（与 071/075 一致）：**世界地图 map IN (0,1,530)**。
+--   云端实测：0/1/530 上共 **62 个刷点**（涉及 entry：23586 阿曼尼斥候、21859 被杀死的沙塔尔守备官、
+--   26398/24520 桃丽丝・沃兰休斯、23447 吉恩中士、14581 军士霍斯・雷角 等）。
+--   ⚠️ 副本里的 36 个刷点（map 449 = 15、450 = 16、568 = 5）**按既定范围未动**；
+--      要一起统一请另行确认（副本刷新通常由副本机制/重置控制）。
+--
+-- 幂等：带目标值判断，可重复执行。生效：需重启 mangosd（creature 表启动时载入）。
+-- 执行记录：2026-09-17 已在云端直接执行（62 行），残留 180/300 = 0。
+
+UPDATE creature
+   SET spawntimesecsmin = 300, spawntimesecsmax = 300
+ WHERE map IN (0, 1, 530)
+   AND spawntimesecsmin = 180
+   AND spawntimesecsmax = 300;
+
+-- 校验：世界图上不应再有 180/300
+SELECT COUNT(*) AS leftover_180_300
+  FROM creature
+ WHERE map IN (0, 1, 530) AND spawntimesecsmin = 180 AND spawntimesecsmax = 300;
+
+-- 参考：副本里剩余的 180/300（本次不动）
+SELECT map, COUNT(*) AS rows_left_in_instances
+  FROM creature
+ WHERE map NOT IN (0, 1, 530) AND spawntimesecsmin = 180 AND spawntimesecsmax = 300
+ GROUP BY map;
