@@ -18379,7 +18379,14 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
     }
 
     // check node starting pos data set case if provided
-    if (node->x != 0.0f || node->y != 0.0f || node->z != 0.0f)
+    // [TAXI-FIX 2026-09-17] 通过飞行管理员（npc != nullptr）启动时**跳过**这个坐标校验：
+    //   走到这里之前，TaxiHandler 已经用 GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_FLIGHTMASTER)
+    //   校验过"玩家确实站在该飞行管理员身边"（内部含 INTERACTION_DISTANCE 距离检查），并且
+    //   节点必须已解锁（IsTaximaskNodeKnown）。再拿服务端 DBC(TaxiNodes) 的坐标与玩家坐标比对，
+    //   会因**客户端/服务端 DBC 版本差异**（例：2.5.3 客户端 + 2.4.3 服务端 DBC）频繁误判为
+    //   ERR_TAXITOOFARAWAY —— 客户端显示"离空运站太远"，表现为站得好好地点飞行却飞不了。
+    //   法术/脚本启动的飞行（npc == nullptr）仍保留原校验以拦截异常请求。
+    if (!npc && (node->x != 0.0f || node->y != 0.0f || node->z != 0.0f))
     {
         if (node->map_id != GetMapId() ||
                 (node->x - GetPositionX()) * (node->x - GetPositionX()) +
@@ -18387,15 +18394,20 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
                 (node->z - GetPositionZ()) * (node->z - GetPositionZ()) >
                 (2 * INTERACTION_DISTANCE) * (2 * INTERACTION_DISTANCE) * (2 * INTERACTION_DISTANCE))
         {
+            DEBUG_FILTER_LOG(LOG_FILTER_AI_AND_MOVEGENSS, "TAXI: node %u pos (%.1f %.1f %.1f map %u) vs player (%.1f %.1f %.1f map %u) - too far, rejected",
+                             sourcenode, node->x, node->y, node->z, node->map_id,
+                             GetPositionX(), GetPositionY(), GetPositionZ(), GetMapId());
             GetSession()->SendActivateTaxiReply(ERR_TAXITOOFARAWAY);
             return false;
         }
     }
     // node must have pos if taxi master case (npc != nullptr)
-    else if (npc)
+    else if (npc && node->x == 0.0f && node->y == 0.0f && node->z == 0.0f)
     {
-        GetSession()->SendActivateTaxiReply(ERR_TAXIUNSPECIFIEDSERVERERROR);
-        return false;
+        // [TAXI-FIX] 节点没有坐标数据时不再直接报错（同上：DBC 版本差异会导致误判），
+        // 只记一条 debug 日志，让飞行照常进行（起点由服务端 TaxiPathNodes 决定）。
+        DEBUG_FILTER_LOG(LOG_FILTER_AI_AND_MOVEGENSS, "TAXI: source node %u has no position data (npc %u) - continue anyway",
+                         sourcenode, npc->GetEntry());
     }
 
     // Prepare to flight start now

@@ -1773,7 +1773,11 @@ bool Creature::LoadFromDB(uint32 dbGuid, Map* map, uint32 newGuid, uint32 forced
 
     m_respawnDelay = data->GetRandomRespawnTime();
     bool isUsingNewSpawningSystem = IsUsingNewSpawningSystem();
-    if (!isUsingNewSpawningSystem)
+    // [CORPSE-FIX 2026-09-17] spawntimesecs = 0 表示"不自动刷新"（由脚本/副本管理，见本文件 1986 行的
+    // `m_respawnDelay &&` 守卫）。此前无条件按"尸体 = 刷新×0.9"计算，导致刷新为 0 的怪（太阳井杂兵
+    // Shadowsword 系列、Unending Voidwraith 等）尸体时间被压成 0 → 尸体一出现/刚拾取就消失。
+    // 现在只在刷新时间 > 0 时才做这个收紧。
+    if (!isUsingNewSpawningSystem && m_respawnDelay)
         m_corpseDelay = std::min(m_respawnDelay * 9 / 10, m_corpseDelay); // set corpse delay to 90% of the respawn delay
     m_deathState = ALIVE;
 
