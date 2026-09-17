@@ -2192,3 +2192,59 @@ if (m_respawnTime > time(nullptr) && m_respawnTime - time(nullptr) < 366LL * 24 
 - **教训**：字符（尤其是标点）的选择**不能只看参考资料里是哪个码位，必须以客户端字体能否渲染为准** ——
   U+00B7 属 Latin-1，几乎所有字体都有；U+30FB 属日文标点，中文客户端常缺字形。
   以后遇到"某个标点/生僻字符显示成方块"，先怀疑字形缺失，再看数据。
+
+---
+
+## [修复] 登录握手：mangosd 掉线后再上线"卡在读取角色列表"（2026-09-18）
+
+- **站长报告**："mangosd下线导致的掉线，再次上线就会卡在读取角色"；这也是之前反复出现的
+  "上线时卡在角色选择界面、每次重启 realmd 就好了"的同一个问题。
+- **现场证据（云端，03:02 重启后）**：
+  | 观测 | 数据 |
+  |---|---|
+  | 世界认证**每次都成功** | `authentification failed` / `unknown account` / `version mismatch` 全为 **0** |
+  | 客户端在**反复重试** | 同一账号 4 次世界认证：03:02:46 → 03:03:08 → 03:03:19 → 03:03:21 |
+  | 最后进去了 | 03:04:05 `Login Character`（从掉线到进去约 80 秒）|
+  → **卡点在"世界认证成功之后、角色列表下发之前"**：认证没问题，是握手后半段没走完。
+- **根因（`src/game/Server/WorldSocket.cpp` 的【重连分支】，523-556 行）**：
+  掉线后客户端自动重连走的正是这条分支，而它里面有**两处"什么都不回、也不关连接"的静默失败**：
+  1. `if (!session->RequestNewSocket(self.get())) return;` —— 会话上已有一个待处理 socket 时被拒，
+     直接 return（**连日志都没有**）；
+  2. `if (!anticheat->ReadAddonInfo(...)) { sLog.outBasic("... bad addon info. Kicking."); return; }` ——
+     addon 校验失败同样静默 return，而且日志是 `outBasic`（默认日志级别下看不到）。
+  两者都会让客户端**收不到任何响应、连接也不断** → 就卡在"读取角色列表"干等，
+  十几秒后自己超时重试 ✓ 与观测到的重试节奏完全吻合。
+- **修法（最小、且不再静默）**：
+  - 两处都改成 **`outError` 日志 + 回 `SMSG_AUTH_RESPONSE(AUTH_FAILED)` + `Close()`** →
+    客户端立刻失败并重新登录，不再干等；
+  - 新建世界会话、以及 `WorldSession::Update()` 发送 `AUTH_RESPONSE` 时各加一条 `[AUTH]` 日志
+    （**站长要求长期保留到线上，方便下次定位**）。
+  - 注：`LogFileLevel = 0` 的语义是 `0 = Minimum`（Server.log 里能看到 `[AUTH]`/`ADDON:` 这类 basic 行），
+    为稳妥起见关键路径一律用 `outError` 或 `outBasic`。
+- **本地验证**（03:07 部署本地 → 只重启 mangosd、realmd 保持不动，精确复现"mangosd 下线导致掉线"）：
+  ```
+  03:08:46 [AUTH] new world session created: account='NYMPH' (id 6) from 127.0.0.1
+  03:08:46 [AUTH] sending AUTH_RESPONSE(ok/queued) to account id 6 (state=CREATED, socket=open, inQueue=0)
+  03:08:46 WARDEN: Account - 6 get opcode 01 ...（客户端当场恢复）
+  ```
+- **上线**：03:12 云端编译部署（只重编 `WorldSocket.cpp` + `WorldSession.cpp`）。
+
+## [运维] 教训：常驻进程会继承 `flock` 锁，导致锁永不释放（2026-09-18）
+
+- **现象**：`flock -n /var/lock/nightly_build.lock` 一直失败（rc=1），
+  `fuser -v` 显示 **锁被 `realmd` 持有**（`/proc/<pid>/fd/3 -> /run/lock/nightly_build.lock`）。
+- **根因**：util-linux 的 `flock <file> <cmd>` 用的是 **fd3**，且会随 exec 传给子进程；
+  而 nightly 是**在 `flock` 里**运行的，它调用的 `realmd_restart_verify.sh` 用
+  `nohup ./realmd ... &` 启动 realmd —— realmd 属于**常驻进程**，于是 fd3 一直开着，
+  **锁永不释放**。后果很严重：crontab 里的 `flock -w 5400 /root/nightly_build_restart.sh`
+  会空等 90 分钟然后**直接跳过整轮**（编译、部署、dev SQL 全都不做），且不留明显报错。
+- **修法**：启动常驻进程前显式关闭继承 fd：
+  ```bash
+  nohup setsid bash -c "exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-; exec ./realmd -c $BINDIR/realmd.conf" > /tmp/realmd_run.log 2>&1 &
+  ```
+  同样处理 nightly 里两处 `screen -dmSL mangosd ... bash -c 'cd ... && exec 3>&- ...; MALLOC_ARENA_MAX=2 exec ./mangosd ...'`。
+  备份：`realmd_restart_verify.sh.bak_lockfd_20260918_0312` / `nightly_build_restart.sh.bak_lockfd_20260918_0312`。
+- **验证**：重启 realmd（用修好的脚本）后，`flock -n` **立刻可以拿到锁**，
+  且 realmd 常驻运行期间锁保持空闲 ✓。
+- ⚠️ **通用教训**：**任何在 `flock` 段内启动的常驻进程，都必须关闭继承的锁 fd**；
+  否则锁泄漏、后续所有依赖该锁的定时任务静默失效。
