@@ -1112,6 +1112,11 @@ DB 指向 Windows 上的 MySQL（`wow@%` 用户），用 `screen` 起进程（**
 
 ## [资源] 飞行生物"待机悬空 vs 移动贴地"观感 — 2026-08-30（分析，未改）
 
+> 状态：**服务器侧结论不变（生物 spawn z 本来就贴地，服务器坐标没错）**；
+> **客户端侧的重力/悬停表现 2026-09-19 已修** —— 见本文件「[核心] 生物重力 flag：飞行怪被客户端重力拉回地面」：
+> 现在按"生物实际是否在空中"给 create 块与每条移动路径补 `MOVEFLAG_LEVITATING`，大风鹏（17129）/野生雀鹰（22979）
+> 等实测不再被客户端重力拉回地面；本机实测通过。
+
 > 状态：**仅分析，未改代码**。影响疑似有限，暂缓修改；本文档供备查。
 
 ### 现象
@@ -2525,3 +2530,206 @@ AHBot 结构性上不了架的，才用掉落补。实测（云端角色库 bot 
 再跑合并文件 → A 21@1.25 且 12 行 20% 不动、B 30@0.25 + 1,869@0.5、C 无残留 + 1,983@1.25 + 60346 40 行全部符合预期；
 连跑第二次结果完全一致（幂等）。
 云端 `/root/Nmangos-tbc/dev/` 已只留这一份，干跑队列 `083 → 087`，随夜间一起应用 + 重启生效。
+
+---
+
+## [核心] 生物重力 flag：飞行怪被客户端重力拉回地面
+
+### 现象
+
+- 有些飞行怪（大风鹏、雀鹰、狮鹫骑士、龙骑士等）在客户端里 **从空中掉到地面**：
+  服务器坐标没变、只是表现不对，静止悬空的怪尤其明显（2026-09-18 站长报告）。
+
+### 成因
+
+- 客户端对一个 unit 的重力只看 create 块里的 `MOVEFLAG_LEVITATING (0x400)`：
+  没有它，客户端就按重力把模型往下拉，一直拉到地形上，直到服务器发下一个移动包。
+- 本端只在 `Creature::Create` 里按 **模板** `InhabitType & INHABIT_AIR` 设这个 flag，
+  而 DB 里大量飞行怪的 InhabitType 是 地面(1)/地面+水(3)：
+
+  | entry | 名字 | InhabitType | 刷点高于地面 |
+  |---|---|---|---|
+  | 20237 | 荣耀堡狮鹫骑士 | 3 | +489 |
+  | 21719 | 龙喉龙骑士 | 1 | +31 |
+  | 25236 | 脱缰的龙鹰 | 1 | +42 |
+  | 17129 | 大风鹏 | 1 | +5.6 |
+  | 22979 | 野生雀鹰 | 3 | +17.7 |
+
+- 还有一类更隐蔽：**刷点在地面、靠运动路径飞到天上**的巡逻怪 —— 20502 日蚀龙鹰（35 个刷点全部贴地，
+  最大 +0.4）、21721 被奴役的虚空之翼雏龙、15649 野性龙鹰雏鸟、4012/4107 翼龙。
+  模板和刷点都看不出它会飞，**只有运动路径能看出来**。
+- 因此只改"加载时"不够，必须同时按"运动情况"判断 —— 这正是 `Creature.cpp:456` 那行老 TODO
+  （"movement flags should be computed automatically at each movement"）说的事。
+
+### 改动（提交 `e550a28da`）
+
+- `Creature::IsAirbornePosition(x, y, z)`：先用高度图（`GetHeightStatic(..., false)`）廉价预筛，
+  可疑点再用 vmap 确认真实地板（含 WMO）；**水面也算地板** → 船甲板、游泳者不会被误判成空中。
+- `Creature::Create()` 末尾：刷点悬空（且模板/脚本没给 flag）→ `SetLevitate(true)`，让 create 块带上 flag。
+- `MoveSplineInit::Launch()`：新增 `[FLY-FLAG]`，与已有 `[SWIM-FLAG]` 对称 —— 路径终点在空中就补 flag
+  （spline 同时按飞行插值、播飞行动画），终点回到地面就撤销；**只撤销核心自己设的**
+  （`Creature::IsAirborneFlagAutomatic()`），脚本/模板设的（夜之魇、卡雷苟斯等）不碰。
+- 阈值 **4yd**：取 2yd 时，16945 Mo'arg Engineer(+2.7)、17131 Talbuk Thorngrazer(+3.6) 这两个
+  **贴地刷点**（本来靠客户端重力落到地面道具上）也被标成空中 → 会浮空，故抬高阈值。
+
+### 验证
+
+- 本地重启后日志（临时 `[GRAVFLAG]`，验完已降级为 `DEBUG_LOG`）命中 6 个悬空刷点：
+  18842 Garadar Credit Marker +4.1、17129 大风鹏 +5.6、17131 Talbuk Thorngrazer +3.6（阈值 4 后不再命中）、
+  16945 Mo'arg Engineer +2.7（同前）、19212 Fel Cannon: Hate Target +4.9、22979 野生雀鹰 +17.7。
+- 站长本地实测：飞行怪正常悬停，地面怪走路姿势正常。
+
+### 状态
+
+提交 `e550a28da`，已 push + 同步云端 `/root/Nmangos-tbc`，随夜间编译生效。
+
+---
+
+## [核心] Unit::GetSpellRank 少乘 5：生物按等级缩放的法术弱了 5 倍
+
+### 现象
+
+- 刀锋山 **雷神饿狼(5781) 胁迫低吼**：描述 -32 敏捷，实际只降约 6 —— "降低的属性和描述不符"（2026-09-18）。
+
+### 排查
+
+- `spell_template` 5781：Effect 6(APPLY_AURA) + Aura 29(MOD_STAT)，带 **per-level 缩放**
+  （`EffectRealPointsPerLevel` / `baseDice`）。
+- `WorldObject::CalculateSpellEffectValue()` 里 `level = GetSpellRank(spell) / 5`，再
+  `basePoints += level * EffectRealPointsPerLevel`；`Spell::CheckPower` 的 manaCostPerlevel 同样除以 5。
+- `Player::GetSpellRank()` 返回 `GetSkillValue()`（= 等级 * 5），封顶写成 `maxLevel * 5`；
+  **只有 `Unit::GetSpellRank()` 返回裸 `GetLevel()`** → 生物的 per-level 缩放只有 1/5。
+  （上游 `ac1267cc2` 给调用方加了 `/5`，却没同步改 `Unit::GetSpellRank`；
+  `2aae6842a` 那条线动的是 CLS 伤害缩放，不是这里。）
+
+### 改动
+
+- `Unit::GetSpellRank()`：`GetLevel()` → `GetLevel() * 5`（封顶 `maxLevel * 5` 不变）。
+- 影响面：全库 1,693 个带 per-level 缩放的 spell（648 个伤害类、1,045 个光环类）；玩家侧不受影响。
+
+### 验证
+
+- 本地实测 5781 数值与描述一致（STR -22 / AGI -32），玩家技能数值不变。
+
+### 状态
+
+提交 `b1577d224`（站长本人提交），已 push + 同步云端，随夜间编译生效。
+
+---
+
+## [技术] CLS 曲线对比：本端 / cmangos WotLK / TrinityCore / AzerothCore
+
+> 2026-09-18 站长提问"这个 cls 曲线在别的端是怎么样的"的完整答案（含数值），
+> 以后不用再重新查。数据来源：本端 `tbcmangos`、本地 cmangos WotLK 库 `wotlkmangos`、
+> `trinitycore_ref\sql\old\3.3.5a\TDB52_to_TDB53_updates\world\2013_12_2*_world_creature_classlevelstats.sql`、
+> AzerothCore master 源码（`CreatureData.h` / `Creature.cpp` / `ObjectMgr.cpp`，2026-09-18 拉取）。
+
+### 1. 表结构 / 取值方式
+
+| 核心 | 表 | 每个 (level,class) 的伤害从哪来 |
+|---|---|---|
+| **本端** cmangos TBC | `creature_template_classlevelstats`；固定列 Class/Level/BaseMana/AP/RAP/BaseArmor/五维 + **每组扩张三列 `(BaseHealthExp{i}, BaseDamageExp{i}, BaseDamageExp{i}OLD)`**，`MAX_EXPANSION = 1` → 只有经典(0)/TBC(1) | 直接查表：按 `creature_template.Expansion` 选组，取 `BaseDamage` |
+| cmangos WotLK | 同名同布局，多一组 Exp2（`MAX_EXPANSION = 2`） | 同上 |
+| TC 3.3.5a / AC 3.3.5a | `creature_classlevelstats(level, class, basehp0/1/2, basemana, basearmor, attackpower, rangedattackpower, damage_base, damage_exp1, damage_exp2, Str/Agi/Sta/Int/Spi)`；后 5 列是 **2013-12-28 TDB52→53 才 ALTER 加的**（3.2.2a 时代只有 `exp, class, level, basehp, basemana`） | `CreatureBaseStats::BaseDamage[MAX_EXPANSIONS]`，`GenerateBaseDamage(info) = BaseDamage[info->expansion]`；然后 `weaponBaseMinDamage = basedamage; weaponBaseMaxDamage = basedamage * 1.5`（AC `Creature.cpp:1555-1570`） |
+| TC master（11.x） | `creature_classlevelstats` 只剩 `level, class, basemana, attackpower, rangedattackpower, comment` —— **没有生命/伤害曲线** | `sDB2Manager.EvaluateExpectedStat(CreatureHealth / CreatureAutoAttackDps / CreatureArmor, level, expansion, contentTuning, class)` × `HealthModifier/DamageModifier`（宠物再 × `GetHealthMod(classification)`）；曲线交给客户端 DB2 |
+
+### 2. 关键结论：TC/AC 的三列 = 本端的 `...OLD` 列（同一份暴雪数据）
+
+逐值对得上（class 1 战士 / class 8 法师，举例）：
+
+| 数据点 | 本端 | TC/AC |
+|---|---|---|
+| class 1 lvl 55 `damage_base` | BaseDamageExp0OLD = **30.7177** | **30.7177** |
+| class 1 lvl 60 `damage_base` | BaseDamageExp0OLD = 33.9625 | 33.6577 |
+| class 1 lvl 70 `damage_exp1` | BaseDamageExp1OLD = 104.527 | 104.3456 |
+| class 1 lvl 80 `damage_exp2` | (WotLK) Exp2OLD = **164.924** | **164.9240** |
+| class 8 lvl 70 `damage_exp1` / `exp2` | 88.3402 / (WotLK) 114.496 | 87.7526 / 114.4956 |
+
+而本端**实际生效**的是另一列（非 OLD）：`Creature::SelectLevel` 里 `cinfo->DamageMultiplier >= 0` 就走
+`BaseDamage`，`BaseDamageOLD` 只在 `Object.cpp:3198`（法术按 CLS 缩放那条比较）里被读，基本是死数据。
+
+### 3. 数值差（本端激活列 ÷ TC/AC 同列）
+
+| class | lvl 60 | lvl 65 | lvl 70 | (WotLK lvl 80) |
+|---|---|---|---|---|
+| 1 战士 | 66.84 / 56.49 = **1.18×** | 132.17 / 80.42 = **1.64×** | 261.32 / 104.35 = **2.50×** | 412.31 / 164.92 = **2.50×** |
+| 2 圣骑 | 1.18× | 1.64× | 261.32 / 96.74 = **2.70×** | 2.50× |
+| 4 盗贼 | 1.18× | 1.64× | 104.53 / 104.35 = **1.00×** | 1.00× |
+| 8 法师 | 1.21× | 1.80× | 241.72 / 87.75 = **2.75×** | 2.51× |
+
+即：**TBC 段 61-70 级的曲线是条指数曲线**（战士 60→70：66.84 → 76.61 → 87.80 → … → 261.32，约 ×1.146/级），
+而 OLD/TC/AC 那条是近似线性（53.48 → 104.53）。盗贼（class 4）两列完全相同，所以盗贼怪不受影响。
+
+### 4. 换算成每击伤害（示例）
+
+以 `23344 Corlok the Vet`（70 级 · class 1 · 普通 · DamageMultiplier 0.969 · DamageVariance 0.4 ·
+攻速 2.0s · CLS AP 304；不含护甲/减伤）：
+
+| | 计算 | 每击（min..max） |
+|---|---|---|
+| 本端（现生效） | `261.316 × (1∓0.2) × 0.969` + `AP/14×2.0` | **≈ 245..346**（均值 ≈295） |
+| AC / TC 3.3.5a 同参数 | `104.3456 × (1.0 … 1.5) × 0.969` + 同上 AP 项 | **≈ 143..194**（均值 ≈169） |
+
+→ 同参数下**本端约为 AC/TC 的 1.75 倍**（战士类）。若想要与 AC/TC 对齐，改法很简单：把生效列换成 OLD 列
+（`Creature.cpp:1447/1449` 的 `cCLS->BaseDamage` → `cCLS->BaseDamageOLD`），一行级别；但注意那是 cmangos
+"老模型"的数值，是否更接近 TBC 零售体感需要站长定夺（本端的非 OLD 列更像是按嗅探到的每击伤害直接落库）。
+
+### 5. 附带发现
+
+- `Creature::SelectLevel` 里 `modifiedMainMinDmg / modifiedMainMaxDmg` 两个局部变量算了但没用（`DamageMultiplier`
+  实际是在 `StatSystem.cpp:900-901` 乘到武器伤害上的），属历史残留，不是 bug。
+- AC 的 `creature_template.DamageModifier` 在 `ObjectMgr.cpp:1216` 已乘上 `_GetDamageMod(rank)`；
+  本端对应 `DamageMultiplier × _GetDamageMod(rank)`（`Creature.cpp:1419`）→ 两边都有这一层，不影响上面的比值比较。
+- AC 也有和本次「生物重力 flag」同类的机制（`ac_Creature.cpp:60-63`：wandering 生物按位移距离刷新
+  swim/fly/hover 移动 flag，`Map::CreatureRelocation()` 里立即刷新）。
+
+---
+
+## [运维] 云端 CPU 打满：一条遗留的临时表分析查询跑了 1h54m — 2026-09-19 已处置
+
+> ### 铁律（站长 P0）
+> **不能在云端数据库做逻辑查询，只能在本地做。**
+> 云端库只跑「静态、幂等、秒级」的写操作（改数据用**写死值**，不做计算/判断）；
+> 分析型查询（关联子查询、临时表、聚合统计、按条件推导）**一律在本地库（3306）跑**。
+
+### 现象
+
+- 站长反馈"云端 CPU 还是很高"（当时在线玩家 3 人）。`uptime` load **6.0~7.0**，而机器**只有 2 vCPU**；
+  `vmstat` 显示 `us 65% / id 28%`。
+
+### 定位
+
+- ⚠️ **判断"谁在吃 CPU"不能用 `ps -eo pcpu`**：那是**进程生存期均值**——当时它显示 mangosd 21%、mysqld 12%，
+  完全看不出问题（mysqld 已跑 18.5 小时，瞬时 88% 被平均成 12%）。
+  正确姿势：`top -b -n 2 -d 1` 取**第 2 个采样**看瞬时值 + `SHOW FULL PROCESSLIST` 看正在跑的语句。
+- 瞬时采样：**mysqld 88.1%**（2 vCPU 里的整整一个核）+ mangosd 35.6%。
+- PROCESSLIST 一眼看到真凶：连接 1818，`Time=6858`（**1 小时 54 分**）、`State=executing`：
+  `CREATE TEMPORARY TABLE cls AS SELECT x.entry, x.ItemLevel, x.class,
+   (SELECT COUNT(DISTINCT c.id) FROM creature c WHERE c.id IN (… creature_loot_template … UNION … reference_loot_template …))
+   FROM it141 x`
+  —— 当天为 CLS / 掉落覆盖分析在云端跑、跑完没人管的那条**相关子查询**（每一行都去扫 ~20 万行掉落表）。
+- `performance_schema.events_statements_summary_by_digest` 在本实例是空的（未启用）→ "按总耗时排序找慢 SQL"
+  这条路在云端走不通，**PROCESSLIST 是唯一可靠入口**。
+
+### 处置
+
+- `KILL 1818`（该语句只写临时表，**没有任何永久数据改动**）→ 即时采样 mysqld **88.1% → 4.0%**、
+  CPU idle **31% → 74%**。
+- load average 是 1/5/15 分钟均值，会滞后十几分钟（7.0 → 4.15 是 2 分钟后的值），**别被它误导**。
+- ⚠️ PROCESSLIST 里 Sleep 状态的 `tbcmangos / tbccharacters / tbcrealmd / tbclogs` 连接是 mangosd
+  与平台自己的连接池，**不要 KILL**（会白掉线一次）。
+
+### 教训
+
+1. **分析型/逻辑查询只能在本地库跑**，绝不留在云端；云端只跑静态幂等 SQL（对应既定规则：云端 SQL 用静态 update
+   而不是逻辑判断）。本次一条查询就把 2 vCPU 的一整个核占满近两小时，全程影响在线玩家。
+2. 云端排查 CPU 的固定套路：`uptime` → `top -b -n 2 -d 1`（第二个采样）→ `SHOW FULL PROCESSLIST`
+   （找 `Time` 大且 `Command=Query` 的行）。**不要用 `ps` 的 `%CPU` 下结论。**
+
+### 残留风险
+
+- 机器 **2 vCPU / 1.87 GB RAM**：mangosd RES 1.1 GB（61%）、swap 已用 ~250 MB，资源本就紧张
+  （另见 `[内存]` 章，以及 P0 的"严禁在运行时段在 2GB 机器上编译"）。
+
+
+
