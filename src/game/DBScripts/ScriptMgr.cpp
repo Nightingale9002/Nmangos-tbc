@@ -2813,6 +2813,11 @@ bool ScriptAction::ExecuteDbscriptCommand(WorldObject* pSource, WorldObject* pTa
             }
 
             float x, y, z;
+            // [MOVEZ] z 必须给初值：下面 SCRIPT_FLAG_COMMAND_ADDITIONAL 分支只用 GetNearPoint2dAt()
+            // 算 x,y，z 原来是不确定的（Release 构建下常读到 0.0）→ 目标被送到 (x, y, 0)，也就是
+            // 地图下方 140+ 码，怪于是"自己走进地下"（Netherstorm 法力熔炉那片 relay 18022/18023/
+            // 18025/18038/18041 全中）。用目标自身的高度当起点，后面 UpdateAllowedPositionZ 再贴到地板。
+            z = pTarget->GetPositionZ();
             if (m_script->moveDynamic.maxDist == 0)         // Move to pTarget
             {
                 if (pTarget == source)

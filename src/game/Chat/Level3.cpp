@@ -3734,6 +3734,17 @@ bool ChatHandler::HandleNpcInfoCommand(char* /*args*/)
     PSendSysMessage(LANG_NPCINFO_LOOT,  cInfo->LootId, cInfo->PickpocketLootId, cInfo->SkinningLootId);
     PSendSysMessage(LANG_NPCINFO_DUNGEON_ID, target->GetInstanceId());
     PSendSysMessage(LANG_NPCINFO_POSITION, float(target->GetPositionX()), float(target->GetPositionY()), float(target->GetPositionZ()));
+    // [NPCHEIGHT] 这个生物脚下的"地板"到底在哪：groundZ = 查最高面（ADT 地形），floorZ = 从它自己的
+    //   z 往下查到的面（WMO/地形）。z 明显高于 floorZ = 它悬在真实地板之上（客户端重力会把模型拽下去，
+    //   看起来"掉到地下"）；两者接近 = 它确实站在那一层上。
+    {
+        float const gz = target->GetMap()->GetHeight(target->GetPositionX(), target->GetPositionY(), MAX_HEIGHT);
+        float const fz = target->GetMap()->GetHeight(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+        PSendSysMessage("Height check: groundZ=%.4f floorZ=%.4f (z-floor=%+.4f) movegen=%u levitate=%s",
+                        gz, fz, target->GetPositionZ() - fz,
+                        uint32(target->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+                        target->IsLevitating() ? "yes" : "no");
+    }
     PSendSysMessage("Combat timer: %u", target->GetCombatManager().GetCombatTimer());
     PSendSysMessage("Is in evade mode: %s", target->GetCombatManager().IsInEvadeMode() ? "true" : "false");
 

@@ -17,6 +17,7 @@
  */
 
 #include "MotionGenerators/MotionMaster.h"
+#include "MotionGenerators/PfDebug.h"   // [PFDBG]
 #include "HomeMovementGenerator.h"
 #include "IdleMovementGenerator.h"
 #include "MotionGenerators/PathMovementGenerator.h"
@@ -403,7 +404,28 @@ void MotionMaster::MoveStay(float x, float y, float z, float o, bool asMain)
 
 void MotionMaster::MovePoint(uint32 id, Position const& position, ForcedMovement forcedMovement/* = FORCED_MOVEMENT_NONE*/, float speed/* = 0.f*/, bool generatePath/* = true*/, ObjectGuid guid/* = ObjectGuid()*/, uint32 relayId/* = 0*/)
 {
-    Mutate(new PointMovementGenerator(id, position.x, position.y, position.z, position.o, generatePath, forcedMovement, speed, guid, relayId));
+    // [MOVETO-FLOOR-GUARD] "点移动"是唯一一条绕过寻路、直接把怪送到指定坐标的方式。目的点若落在该处
+    //   真实地板(WMO/地形)以下超过 5 码 —— 例如 relay 脚本让它"移动到一只被 dynguid 池生成在 z=0 的
+    //   标记怪身边"（Netherstorm 法力熔炉那片，19421/19437）—— 怪就会一路走进地下。这里把 z 夹到地板：
+    //   x,y 照旧（标记怪的 x,y 是真实的），只把高度纠正回来。洞穴/水下取的是它们自己的地板，不受影响。
+    Position dest = position;
+    if (m_owner->IsInWorld())
+    {
+        float const floorZ = m_owner->GetMap()->GetHeight(position.x, position.y, position.z);
+        if (floorZ > INVALID_HEIGHT && position.z - floorZ < -5.0f)
+        {
+            sLog.outError("[MOVETO-BELOWFLOOR] %s entry=%u MovePoint id=%u dest(%.2f,%.2f,%.2f) floor=%.2f diff=%+.2f movegen=%u target=%s relay=%u -> z clamped to floor",
+                          m_owner->GetGuidStr().c_str(), m_owner->GetEntry(), id,
+                          position.x, position.y, position.z, floorZ, position.z - floorZ,
+                          uint32(GetCurrentMovementGeneratorType()), guid.GetString().c_str(), relayId);
+            dest.z = floorZ;
+        }
+        PFDBG_MSG(m_owner, "MovePoint id=%u dest(%.2f,%.2f,%.2f) floor=%.2f diff=%+.2f movegen=%u target=%s relay=%u",
+                  id, position.x, position.y, position.z, floorZ, position.z - floorZ,
+                  uint32(GetCurrentMovementGeneratorType()), guid.GetString().c_str(), relayId);
+    }
+
+    Mutate(new PointMovementGenerator(id, dest.x, dest.y, dest.z, dest.o, generatePath, forcedMovement, speed, guid, relayId));
 }
 
 void MotionMaster::MovePoint(uint32 id, float x, float y, float z, ForcedMovement forcedMovement/* = FORCED_MOVEMENT_NONE*/, bool generatePath/* = true*/)

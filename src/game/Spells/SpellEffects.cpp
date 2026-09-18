@@ -3044,6 +3044,14 @@ void Spell::EffectTriggerMissileSpell(SpellEffectIndex effect_idx)
     }
     else if (gameObjTarget)
         targets.setGOTarget(gameObjTarget);
+    // [INFERNAL-RAIN] 33242 "summon Infernal Invader" is the payload of 32785 Infernal Rain and
+    // has to land on the point that cast was aimed at - the waypoint script of the airborne
+    // dummy 18729 aims it at one of the *grounded* 18729 dummies. Its own target is
+    // TARGET_LOCATION_CASTER_DEST, so the generic branch below would drop that destination and
+    // the invader would be created at the caster, 28.8y up in the air. SetTargetMap only fills a
+    // LOCATION_CASTER_DEST when the cast brought none, so the aim point survives.
+    else if (spellInfo->Id == 33242 && (m_targets.m_targetMask & TARGET_FLAG_DEST_LOCATION))
+        targets.setDestination(m_targets.m_destPos.x, m_targets.m_destPos.y, m_targets.m_destPos.z);
     else if (spellInfo->EffectImplicitTargetA[0] != TARGET_LOCATION_CASTER_DEST) // TODO: Add a proper filling mechanism
         targets.setDestination(m_targets.m_destPos.x, m_targets.m_destPos.y, m_targets.m_destPos.z);
     m_caster->CastSpell(targets, spellInfo, TRIGGERED_OLD_TRIGGERED, m_CastItem, nullptr, m_originalCasterGUID, m_spellInfo);
