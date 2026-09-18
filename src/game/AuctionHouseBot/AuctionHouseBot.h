@@ -120,6 +120,11 @@ struct AuctionHouseBotMarketState
     uint32 lastSettleTime = 0;    // time of the last flow settlement (price anchor move)
     uint32 probeDemandLevel = 0xFF; // deepest probe level (0=85% .. 4=45%) with a sale (observation)
     uint32 probeStaleScans = 0;     // scans since the last probe outcome (evidence decay)
+    // [2026-09-18] 报价"每日上下移动限额"窗口：dayPrice = 本窗口开始时的报价，
+    // dayStart = 窗口起始时间戳。窗口内报价被夹在 dayPrice ± MaxDailyMovePct 之间，
+    // 满 24h 后窗口重置。两个值都持久化在 ahbot_market_state（day_price / day_start）。
+    uint32 dayPrice = 0;
+    uint32 dayStart = 0;
 };
 
 struct AuctionHouseBotStatusInfoPerType
@@ -275,6 +280,25 @@ class AuctionHouseBot
         uint32 m_mmLadderDepth = 10;      // number of ladder tiers (each tier carries 100/depth % of volume)
         uint32 m_mmBuyDepth = 10;         // hidden buy cap = price * (100 - BuyDepth) / 100
         uint32 m_mmBuyPerCycle = 0;       // max buyout units per item per refresh cycle (0 = unlimited)
+        // [2026-09-18] 熔断②：每个刷新周期【全局】最多释放多少金币（铜）。0 = 不限制。
+        // 起因：云端实测 bot 一次从玩家手里吃下 1218 个大块棱光碎片、释放 11,394 金
+        // （净投放 11,905 金进经济），而原来只限额"件数/项"，没有任何金币总闸。
+        uint64 m_mmMaxGoldPerCycle = 0;
+        uint64 m_cycleGoldSpent = 0;      // 本周期已释放的金币（每次 Update 周期开始时清零）
+        bool m_cycleBreakerTripped = false; // 本周期的熔断是否已触发（只记一次日志）
+        // [2026-09-18] 熔断③（主闸，站长定案）：每 **24 小时** 全局最多释放多少金币（铜）。
+        //   目标规模 50 人在线；在线时间不均匀 → 用"天"做硬限制，而不是"周期"。
+        //   硬上限 5000 金/天（= 50000000 铜）。跨重启连续（持久化在 ahbot_daily_budget 表），
+        //   否则每晚重启会把预算重置 → 等于没有闸。
+        //   站长口径：真有人找到漏洞钻，那也算他的奖励，所以不设更多限制。
+        uint64 m_mmMaxGoldPerDay = 0;
+        uint64 m_dayGoldSpent = 0;        // 本 24h 窗口已释放的金币
+        uint32 m_dayGoldStart = 0;        // 本窗口起点（unix）
+        bool m_dayBreakerTripped = false; // 本窗口是否已触发熔断（只记一次日志）
+        void RollDailyBudgetWindow();     // 窗口滚动（满 24h 重置）
+        void PersistDailyBudget();        // 落库（跨重启连续）
+        // [2026-09-18] 报价每日上下移动限额（百分比，0 = 不限制）。窗口 24h，见 state.dayPrice/dayStart。
+        uint32 m_mmMaxDailyMovePct = 0;
         bool m_mmBidOnlyBuyout = true;   // only buyout player listings (bot bidding is free
                                          // - UpdateBid with no bidder mints gold to the seller)
         uint32 m_mmSmoothing = 50;        // EMA alpha % for following trade prices

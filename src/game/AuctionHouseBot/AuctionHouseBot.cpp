@@ -222,6 +222,12 @@ void AuctionHouseBot::Initialize()
         m_mmLadderDepth = std::min<uint32>(MARKET_MAKER_MAX_LADDER, std::max<uint32>(1, m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.LadderDepth", 10)));
         m_mmBuyDepth    = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.BuyDepth", 10);
         m_mmBuyPerCycle = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.BuyPerCycle", 0);
+        // [2026-09-18] 熔断②：每周期全局金币上限（铜）；0 = 不限制
+        m_mmMaxGoldPerCycle = uint64(m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MaxGoldPerCycle", 0));
+        // [2026-09-18] 熔断③（主闸）：每 24h 全局金币上限（铜）；0 = 不限制。云端 = 5000 金。
+        m_mmMaxGoldPerDay = uint64(m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MaxGoldPerDay", 0));
+        // [2026-09-18] 报价每日上下移动限额（%）；0 = 不限制
+        m_mmMaxDailyMovePct = uint32(std::max<int32>(0, m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MaxDailyMovePct", 0)));
         m_mmBidOnlyBuyout = m_ahBotCfg.GetBoolDefault("AuctionHouseBot.MarketMaker.BidOnlyBuyout", true);
         m_mmSmoothing   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.Smoothing", 50);
         m_mmIdleThreshold = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.IdleThreshold", 60);
@@ -579,6 +585,38 @@ void AuctionHouseBot::Update()
                 bidPrice = auction->startbid;
             if (auction->buyout > 0 && buyItemCheck > auction->buyout)
             {
+                // [2026-09-18] 熔断③（主闸）：每 24 小时全局金币上限。站长定案：
+                //   按 50 人在线规模，每天最多释放 5000 金；在线时间不均匀 → 用"天"而不是"周期"。
+                //   跨重启连续（RollDailyBudgetWindow + PersistDailyBudget）。
+                RollDailyBudgetWindow();
+                if (m_mmMaxGoldPerDay && m_dayGoldSpent + auction->buyout > m_mmMaxGoldPerDay)
+                {
+                    if (!m_dayBreakerTripped)
+                    {
+                        m_dayBreakerTripped = true;
+                        sLog.outError("[AHBOT] BUY BREAKER TRIPPED (daily): 24h budget %llu copper (%.0f gold) exhausted, spent %llu copper (%.0f gold) - no more player buyouts in this window",
+                            (unsigned long long)m_mmMaxGoldPerDay, double(m_mmMaxGoldPerDay) / 10000.0,
+                            (unsigned long long)m_dayGoldSpent, double(m_dayGoldSpent) / 10000.0);
+                    }
+                    continue;
+                }
+
+                // [2026-09-18] 熔断②：每周期【全局】金币上限（站长定案 = 100 金）。
+                //   站长口径：某个物品被抬到 100 金/组 → 说明供给很有限，**不应该继续收购**。
+                //   所以这里是纯硬闸：单件挂单价格超过周期预算就永远不会被收（而不是推迟）。
+                //   被跳过的挂单下一周期仍会重新扫到，但价格不掉下来就一直不买。
+                if (m_mmMaxGoldPerCycle && m_cycleGoldSpent + auction->buyout > m_mmMaxGoldPerCycle)
+                {
+                    if (!m_cycleBreakerTripped)
+                    {
+                        m_cycleBreakerTripped = true;
+                        sLog.outError("[AHBOT] BUY BREAKER TRIPPED (per-cycle): cycle budget %llu copper (%.0f gold) exhausted (spent %llu) - remaining player buyouts this cycle deferred",
+                            (unsigned long long)m_mmMaxGoldPerCycle, double(m_mmMaxGoldPerCycle) / 10000.0,
+                            (unsigned long long)m_cycleGoldSpent);
+                    }
+                    continue;
+                }
+
                 // market-maker buy quota: limit absorbed volume per item per cycle
                 if (mmBuyState && m_mmBuyPerCycle)
                 {
@@ -586,6 +624,9 @@ void AuctionHouseBot::Update()
                         continue; // quota exhausted, skip this listing
                     mmBuyState->buyoutsThisCycle += item->GetCount();
                 }
+                m_cycleGoldSpent += auction->buyout;
+                m_dayGoldSpent += auction->buyout;
+                PersistDailyBudget();
                 buyoutAuctions.push_back(auction); // can't buyout item here as that modifies the AuctionEntryMap, invalidating the iterator
             }
             else if (!m_mmBidOnlyBuyout && buyItemCheck > bidPrice)
@@ -601,6 +642,10 @@ void AuctionHouseBot::Update()
 // survive restarts and are visible/editable via the database.
 void AuctionHouseBot::UpdateMarketPrices()
 {
+    // [2026-09-18] 熔断②：本刷新周期的【全局】金币预算从 0 起算（周期 ≈ m_marketRefresh）
+    m_cycleGoldSpent = 0;
+    m_cycleBreakerTripped = false;
+
     // scan only the maps players actually see: linked AHs collapse to NEUTRAL
     uint32 effHouses[MAX_AUCTION_HOUSE_TYPE];
     uint32 effCount = 0;
@@ -922,6 +967,30 @@ void AuctionHouseBot::UpdateMarketPrices()
                 newPrice = floor;
             if (ceil && newPrice > ceil)
                 newPrice = ceil;
+
+            // [2026-09-18] 报价"每日上下移动限额"（站长定案：一天最多 ±10%）。
+            // 窗口 24h，窗口基准 day_price 持久化；窗口到期后用当前报价重设基准。
+            // 作用：流水结算/探测再灵敏，报价一天也不会跳超过这个幅度（防止价格被一次性操作打飞）。
+            if (m_mmMaxDailyMovePct && newPrice)
+            {
+                uint32 now = time(nullptr);
+                if (!state.dayStart || now - state.dayStart >= 24 * HOUR)
+                {
+                    state.dayPrice = newPrice;
+                    state.dayStart = now;
+                    CharacterDatabase.PExecute("UPDATE ahbot_market_state SET day_price = %u, day_start = %u WHERE item = %u AND auction_house = %u",
+                        state.dayPrice, state.dayStart, itemId, houseIndex);
+                }
+                if (state.dayPrice)
+                {
+                    uint32 cap = std::min<uint32>(100, m_mmMaxDailyMovePct);
+                    uint32 lo = (uint32)((uint64)state.dayPrice * (100 - cap) / 100);
+                    uint32 hi = (uint32)((uint64)state.dayPrice * (100 + cap) / 100);
+                    if (newPrice < lo) newPrice = lo;
+                    if (newPrice > hi) newPrice = hi;
+                }
+            }
+
             state.price = newPrice;
             state.deviation = (float)std::abs((int64)medianAll - (int64)newPrice) / std::max<uint32>(1, newPrice);
 
@@ -1188,7 +1257,7 @@ void AuctionHouseBot::EnsureTargets(AuctionHouseBotMarketState& state, uint32 it
 // restored so price settlement and the operator log stay continuous across restarts.
 void AuctionHouseBot::LoadInventory()
 {
-    if (auto result = CharacterDatabase.Query("SELECT item, auction_house, spent, earned, flow_bought, flow_sold FROM ahbot_market_state"))
+    if (auto result = CharacterDatabase.Query("SELECT item, auction_house, spent, earned, flow_bought, flow_sold, day_price, day_start FROM ahbot_market_state"))
     {
         do
         {
@@ -1202,8 +1271,46 @@ void AuctionHouseBot::LoadInventory()
             state.earnedGold = fields[3].GetUInt32();
             state.flowBought = fields[4].GetUInt32();
             state.flowSold = fields[5].GetUInt32();
+            // [2026-09-18] 报价每日限额窗口（day_price/day_start）
+            state.dayPrice = fields[6].GetUInt32();
+            state.dayStart = fields[7].GetUInt32();
         } while (result->NextRow());
     }
+
+    // [2026-09-18] 熔断③（日预算）跨重启连续：读回 24h 窗口已释放的金币
+    if (auto budget = CharacterDatabase.Query("SELECT day_start, gold_spent FROM ahbot_daily_budget WHERE id = 1"))
+    {
+        Field* f = budget->Fetch();
+        m_dayGoldStart = f[0].GetUInt32();
+        m_dayGoldSpent = f[1].GetUInt64();
+        sLog.outError("[AHBOT] daily gold budget loaded: window_start=%u spent=%llu copper (%.0f gold), limit=%llu copper",
+            m_dayGoldStart, (unsigned long long)m_dayGoldSpent, double(m_dayGoldSpent) / 10000.0,
+            (unsigned long long)m_mmMaxGoldPerDay);
+    }
+}
+
+// [2026-09-18] 熔断③：日预算窗口 —— 满 24h 重置（跨重启连续，持久化在 ahbot_daily_budget）
+void AuctionHouseBot::RollDailyBudgetWindow()
+{
+    uint32 now = time(nullptr);
+    if (m_dayGoldStart && now - m_dayGoldStart < 24 * HOUR)
+        return;
+
+    m_dayGoldStart = now;
+    m_dayGoldSpent = 0;
+    m_dayBreakerTripped = false;
+    PersistDailyBudget();
+    sLog.outError("[AHBOT] daily gold budget window ROLLED: new window starts %u, daily limit %llu copper (%.0f gold)",
+        now, (unsigned long long)m_mmMaxGoldPerDay, double(m_mmMaxGoldPerDay) / 10000.0);
+}
+
+// [2026-09-18] 把日预算窗口落库（每次收购后调用一次；收购频率很低，开销可忽略）
+void AuctionHouseBot::PersistDailyBudget()
+{
+    CharacterDatabase.PExecute("INSERT INTO ahbot_daily_budget (id, day_start, gold_spent) VALUES (1, %u, %llu) "
+                               "ON DUPLICATE KEY UPDATE day_start = %u, gold_spent = %llu",
+        m_dayGoldStart, (unsigned long long)m_dayGoldSpent,
+        m_dayGoldStart, (unsigned long long)m_dayGoldSpent);
 }
 
 uint32 AuctionHouseBot::GetBookedUnits(AuctionHouseBotMarketState const& state) const

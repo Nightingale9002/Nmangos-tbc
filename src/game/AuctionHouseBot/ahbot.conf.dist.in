@@ -323,6 +323,14 @@ AuctionHouseBot.MarketMaker.LadderStep = 5
 AuctionHouseBot.MarketMaker.LadderDepth = 10
 AuctionHouseBot.MarketMaker.BuyDepth = 0
 AuctionHouseBot.MarketMaker.BuyPerCycle = 0
+# [2026-09-18] 熔断②：每个刷新周期(约 Value.DynamicRefresh 秒)【全局】最多释放多少金币（单位：铜）。
+#   0 = 不限制（旧行为）。云端设为 2000000 = 200 金/周期。
+#   起因：原来只限额"件数/项"，实测 bot 一次从玩家手里吃下 1218 个大块棱光碎片、释放 11,394 金。
+AuctionHouseBot.MarketMaker.MaxGoldPerCycle = 0
+# [2026-09-18] 报价每 24 小时上下最多移动的百分比（0 = 不限制）。
+#   窗口基准 day_price/day_start 持久化在 ahbot_market_state；窗口满 24h 用当前报价重设基准。
+#   云端设为 10（站长要求"报价一天上下移动限额 10%"）。
+AuctionHouseBot.MarketMaker.MaxDailyMovePct = 0
 AuctionHouseBot.MarketMaker.BidOnlyBuyout = 1
 AuctionHouseBot.MarketMaker.Smoothing = 50
 AuctionHouseBot.MarketMaker.IdleThreshold = 60
