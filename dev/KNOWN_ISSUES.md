@@ -2339,6 +2339,52 @@ if (m_respawnTime > time(nullptr) && m_respawnTime - time(nullptr) < 366LL * 24 
 
 ---
 
+## [任务] 10961《觉醒之戒》：沼泽花不炸飞玩家 —— 已修 + 玩家实测通过（2026-09-19）
+
+### 1. 设计链路（数据都在，没缺）
+
+| 环节 | 数据 | 说明 |
+|---|---|---|
+| 花本体 | 地物 **185497**（chest，loot 22011 → 任务物品 31950）/ **185500**（goober，questId 10961） | 由 **spawn_group 29999「Zangarmarsh - Bogblossom (185497,185500)」MaxCount=123** 动态刷，247 个刷点（`spawn_group_spawn`）；所以游戏里看得到花（刷点是 guid 级，模板由组决定；那些刷点的 `gameobject.id` 存的是 0，模板由组的 entry 决定） |
+| 联动陷阱 | goober 185500 的 `linkedTrapId = 185499`；chest 185497 的 `linkedTrapId = 185502`（无害版） | 185499 是 trap，`charges=1` |
+| 花粉法术 | **39558**：Effect1/2 = APPLY_AURA，Effect3 = 28(SUMMON) misc = **23104** | 召唤 Bogblossom Bunny |
+| 击飞 | Bunny **23104** 的 EventAI `id=2310401`：EVENT_T_SPAWNED(11) → ACTION_T_CAST 施放 **40532** | Effect=98 KNOCK_BACK，misc 300 / basepoints 274 |
+
+### 2. 两个断点（缺一不可，所以之前完全没反应）
+
+1. **联动陷阱从没被"用"过**：`GameObject::TriggerLinkedGameObject()`（GameObject.cpp:1287）只在**已存在**、同 entry、**半径 0.5 码内**的陷阱地物上调用 `Use()`；而 185499 全库没有任何实例（`gameobject` 0 行、也不在 29999 组里，上游 tbcdb_ref / FullDB 同样如此）→ 搜索永远失败 → 花粉根本不会施放。
+   （`linkedTrapId` 在代码里只有 ObjectMgr 的校验用到，运行时就这一个触发点；trap 的 `diameter=0` 也意味着不会靠走近触发。）
+2. **兔子那条 EventAI 打不到人**：`creature_ai_scripts.id=2310401` 的 `action1_param2 = 15`，在 EventAI 目标枚举里 **15 = `TARGET_T_NONE`（无目标）** → 40532 以 nullptr 为目标施放，而 `Spell::EffectKnockBack()` 第一行 `if (!unitTarget) return;` 直接返回。
+   → 即便把断点①修好（花粉施放、兔子召唤出来），玩家依然不会被弹。这条 AI 数据本身有问题。
+
+### 3. 修法（数据 dev/091 + 核心兜底）
+
+- **数据 `dev/091_任务10961沼泽花击飞修复.sql`**：陷阱 185499 的法术 `data3` 由 39558（花粉）改成 **40532（击飞）** —— 绕开出问题的"花粉→兔子→AI"链。
+  **明确不改**：宝箱版 185497（掉任务物品 31950 的那朵）的联动陷阱保持 **185502「无害版」**（无 spell）—— 站长确认"**宝箱版不会击飞是对的**"，所以只有 goober 版（185500）那朵会弹人。
+- **核心 `src/game/Entities/GameObject.cpp` → `TriggerLinkedGameObject()` 兜底**：找不到已放置的联动陷阱时，按模板把它的法术打在使用者身上（以花为 original caster），这样陷阱没被摆进世界也能生效：
+
+```cpp
+    if (trapGO)
+        trapGO->Use(target);
+    else if (trapInfo->trap.spellId)
+        const_cast<GameObject*>(this)->CastSpell(target, target, trapInfo->trap.spellId,
+                                                 TRIGGERED_OLD_TRIGGERED, nullptr, nullptr, GetObjectGuid());
+```
+
+影响面严格限于"联动陷阱缺失"这一种情况（以前是静默无操作）→ 零回归风险，顺带修好其它"陷阱没摆出来"的联动地物。
+
+### 4. 验证
+
+- 本地 build1 已 Release 编译 + 部署，站长进游戏实测：**现在有击飞** ✓；
+- 当时埋的临时诊断日志（已删除）留下了证据：
+  ```
+  [GOTRAP]  go 185497 used by Player ... -> linked trap 185499 (spell 40532) placed=1
+  [KNOCKBACK] spell 40532 caster Player ... target Player ... misc 300 dmg 27.5
+  ```
+- 源码（GameObject.cpp / SpellEffects.cpp）与 `dev/091` 均已同步到云端 `/root/Nmangos-tbc`，夜间 04:06 自动编译+重启生效。
+
+---
+
 ## [经济] AHBot 开放紫装（史诗）上架 + 去掉材料钉价 —— 2026-09-19
 
 ### 1. 生效的配置文件（容易搞错）

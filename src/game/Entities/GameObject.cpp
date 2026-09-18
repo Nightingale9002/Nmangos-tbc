@@ -1314,6 +1314,17 @@ void GameObject::TriggerLinkedGameObject(Unit* target) const
     // found correct GO
     if (trapGO)
         trapGO->Use(target);
+    else if (trapInfo->trap.spellId)
+    {
+        // [10961] Most linked traps are placed in the world right next to the GO that uses them,
+        // but some are missing from the map data (e.g. goober 185500 "Bogblossom" -> pollen trap
+        // 185499, which is not spawned anywhere). In that case the linked effect would silently
+        // never happen; do what the trap itself would have done on use: cast its spell on the
+        // user, with this GO as the original caster. For quest 10961 this is what knocks the
+        // player into the air when picking a Bogblossom.
+        const_cast<GameObject*>(this)->CastSpell(target, target, trapInfo->trap.spellId,
+                                                 TRIGGERED_OLD_TRIGGERED, nullptr, nullptr, GetObjectGuid());
+    }
 }
 
 GameObject* GameObject::LookupFishingHoleAround(float range) const
