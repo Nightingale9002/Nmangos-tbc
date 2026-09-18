@@ -26,9 +26,10 @@
 #include "Entities/Player.h"
 #include "Tools/Language.h"
 
+#include <algorithm>
+
 OutdoorPvPNA::OutdoorPvPNA() : OutdoorPvP(),
     m_zoneOwner(TEAM_NONE),
-    m_soldiersRespawnTimer(0),
     m_zoneWorldState(0),
     m_zoneMapState(WORLD_STATE_NA_HALAA_NEUTRAL),
     m_guardsLeft(0),
@@ -116,16 +117,55 @@ void OutdoorPvPNA::HandleCreatureCreate(Creature* creature)
         case NPC_MERCHANT_COREIEL:
         case NPC_VENDOR_EMBELAR:
         case NPC_AMMUNITIONER_TASALDAN:
-            m_teamVendors.push_back(creature->GetObjectGuid());
-            RememberFactionNpc(creature->GetObjectGuid());
+        {
+            // The vendors of both teams are permanent DB spawns, so they are re-created (=
+            // respawned) on every grid unload/reload while the owner state is not persisted.
+            // Re-apply the owner state here every time, otherwise every vendor despawned on
+            // capture simply comes back as soon as the zone is unloaded and loaded again.
+            const ObjectGuid vendorGuid = creature->GetObjectGuid();
+            // [2026-09-19] 中立（TEAM_NONE）时也不显示任何商人 —— 镇子是空的，点旗帜就能占领。
+            if (m_zoneOwner == TEAM_NONE || GetVendorTeam(creature->GetEntry()) != m_zoneOwner)
+            {
+                if (std::find(m_foreignVendors.begin(), m_foreignVendors.end(), vendorGuid) == m_foreignVendors.end())
+                    m_foreignVendors.push_back(vendorGuid);
+
+                creature->ForcedDespawn();
+                break;
+            }
+
+            if (std::find(m_teamVendors.begin(), m_teamVendors.end(), vendorGuid) == m_teamVendors.end())
+                m_teamVendors.push_back(vendorGuid);
             break;
+        }
         case NPC_HORDE_HALAANI_GUARD:
         case NPC_ALLIANCE_HANAANI_GUARD:
-            // [2026-09-18] 记下 guid：网格卸载后要靠它判断"镇里还有没有人"，避免重复补召唤
-            RememberFactionNpc(creature->GetObjectGuid());
+        {
+            // [2026-09-19] 卫兵同样是永久 DB 刷点（双方各 15 个、同位置成对）：只显示当前占领方那一半，
+            //   中立时全部隐藏（镇子空着，点旗帜即可占领）。
+            //   与商人同一套思路：非当方的先 ForcedDespawn 并记进 m_foreignGuards，易主时再 Respawn 回来。
+            const ObjectGuid guardGuid = creature->GetObjectGuid();
+            if (m_zoneOwner == TEAM_NONE || GetGuardTeam(creature->GetEntry()) != m_zoneOwner)
+            {
+                if (!creature->IsAlive())
+                    return;
+
+                if (std::find(m_foreignGuards.begin(), m_foreignGuards.end(), guardGuid) == m_foreignGuards.end())
+                    m_foreignGuards.push_back(guardGuid);
+
+                creature->ForcedDespawn();
+                return;
+            }
+
+            // Guard spawns are re-created on every grid unload/reload (and on every summon), so
+            // a guard may only be counted once while it is alive. Counting every creation made
+            // the counter drift upwards on each reload - "Guards Left" lied, Halaa could never
+            // be captured again and the old uint8 counter even wrapped around to 0.
+            // （静态刷点的 guid 跨网格卸载/重载是稳定的，所以这个去重集合现在真正有效。）
+            if (!creature->IsAlive() || !m_aliveGuards.insert(guardGuid).second)
+                return;
 
             // prevent updating guard counter on owner take over
-            if (m_guardsLeft == MAX_NA_GUARDS)
+            if (m_guardsLeft >= MAX_NA_GUARDS)
                 return;
 
             if (m_guardsLeft == 0)
@@ -141,41 +181,8 @@ void OutdoorPvPNA::HandleCreatureCreate(Creature* creature)
             ++m_guardsLeft;
             SendUpdateWorldState(WORLD_STATE_NA_GUARDS_LEFT, m_guardsLeft);
             break;
+        }
     }
-}
-
-// [2026-09-18] 记住当前占领方在镇里的 NPC（去重）
-void OutdoorPvPNA::RememberFactionNpc(ObjectGuid guid)
-{
-    for (ObjectGuid const& g : m_factionNpcs)
-        if (g == guid)
-            return;
-
-    m_factionNpcs.push_back(guid);
-}
-
-// [2026-09-18] 让当前占领方在原版坐标上的商人/卫兵重新出现。
-// 只跑原版 DB 事件脚本（11503/11504），不走 HandleEvent —— 因此不会重复触发"占领"播报、
-// 不会重置守卫计数；归属、坐标、触发条件全部保持原版不变。
-// 调用点：哈兰旗帜所在的网格重新加载时（见 HandleGameObjectCreate）。
-//
-// ⚠️ 幂等性（重要）：必须【确认镇里当前占领方的 NPC 真的都不在了】才补召唤，
-//    否则每加载一次网格就会多刷一批（第一次实现漏了这个判断，本地测试出现大量重复 NPC）。
-void OutdoorPvPNA::RespawnFactionNpcs(GameObject* go) const
-{
-    if (m_zoneOwner == TEAM_NONE)
-        return;
-
-    // 只要还有一个当年记下的 NPC 仍在图里（活着/尸体都算），就说明没被网格卸载清掉 → 不补
-    for (ObjectGuid const& guid : m_factionNpcs)
-        if (go->GetMap()->GetCreature(guid))
-            return;
-
-    uint32 eventId = (m_zoneOwner == ALLIANCE) ? EVENT_HALAA_BANNER_WIN_ALLIANCE : EVENT_HALAA_BANNER_WIN_HORDE;
-    // [2026-09-18] 可观测日志：网格重新加载 + 有占领方时才会打，用于验证"NPC 消失"修复是否生效
-    sLog.outBasic("[HALAA] grid reload while owner=%s -> re-running original summon script %u (NPC-persistence fix)",
-        m_zoneOwner == ALLIANCE ? "Alliance" : "Horde", eventId);
-    go->GetMap()->ScriptsStart(SCRIPT_TYPE_EVENT, eventId, go, go, Map::SCRIPT_EXEC_PARAM_UNIQUE_BY_SOURCE);
 }
 
 void OutdoorPvPNA::HandleCreatureDeath(Creature* creature)
@@ -183,25 +190,22 @@ void OutdoorPvPNA::HandleCreatureDeath(Creature* creature)
     if (creature->GetEntry() != NPC_HORDE_HALAANI_GUARD && creature->GetEntry() != NPC_ALLIANCE_HANAANI_GUARD)
         return;
 
-    // get the location of the dead guard for future respawn
-    float x, y, z, o;
-    creature->GetRespawnCoord(x, y, z, &o);
-    HalaaSoldiersSpawns location = {x, y, z, o};
-    m_deadSoldiers.push(location);
+    // [2026-09-19] 战死的卫兵【不再补回来】：这一版彻底去掉了"临时召唤那套"（死亡位置队列 + 复活计时器 +
+    //   RespawnSoldier 在原位临时召回一名卫兵）。理由：卫兵现在是永久 DB 刷点，复活这件事交给刷点本身
+    //   （dev/093 把 spawntimesecs 设成 2592000 = 30 天，等价于"核心不复活"），所以谁死谁就永久消失，
+    //   小镇被慢慢打空 = 可被占领，这正是原版攻城玩法的意图；不再有"临时召唤"参与，也就没有
+    //   "网格卸载丢卫兵 / 网格重载多卫兵 / 计数器和实际人数对不上"这些问题。
 
-    // set the respawn timer after the last guard died - 5 min for the first time, or 1 hour if the city is under siege
-    if (!m_soldiersRespawnTimer)
-        m_soldiersRespawnTimer = m_isUnderSiege ? HOUR * IN_MILLISECONDS : 5 * MINUTE * IN_MILLISECONDS;
-
-    // decrease the counter
-    --m_guardsLeft;
+    // decrease the counter, but only for a guard that was counted as alive, and never below
+    // zero: a death of an uncounted guard used to underflow the counter (= instant capture)
+    if (m_aliveGuards.erase(creature->GetObjectGuid()) && m_guardsLeft > 0)
+        --m_guardsLeft;
     SendUpdateWorldState(WORLD_STATE_NA_GUARDS_LEFT, m_guardsLeft);
 
     if (m_guardsLeft == 0)
     {
-        // set the zone under siege and increase the respawn timer
+        // no guards left: the town is defenseless and can be captured
         m_isUnderSiege = true;
-        m_soldiersRespawnTimer = HOUR * IN_MILLISECONDS;
 
         // make capturable
         UnlockHalaa(creature);
@@ -224,18 +228,6 @@ void OutdoorPvPNA::HandleGameObjectCreate(GameObject* go)
         case GO_HALAA_BANNER:
             m_capturePoint = go->GetObjectGuid();
             go->SetGoArtKit(GetBannerArtKit(m_zoneOwner));
-
-            // [2026-09-18] 修复"走开再回来哈兰 NPC 消失"：
-            //   占领时由原版 DB 脚本（dbscripts_on_event 11503 部落 / 11504 联盟）召唤的商人/卫兵是
-            //   【临时召唤】，网格卸载时会被一并删除，而那条脚本只在占领那一刻跑过一次 →
-            //   玩家离开一段时间、哈兰所在网格卸载又重新加载后，镇里就只剩旗帜了。
-            //   这里在【旗帜所在网格重新加载】且【已有占领方】时，把原版那条召唤脚本再跑一次：
-            //     · 不改归属规则、不改坐标、不改触发条件 —— 用的还是那 20 行原版数据；
-            //     · 只跑 DB 脚本（不经 HandleEvent），所以不会重复播报"占领"、不会重置守卫计数；
-            //     · 网格没卸载就走不到这里（同一网格里旗帜在，NPC 就还在）；
-            //     · 即使重复创建，守卫计数也不会算错（HandleCreatureCreate 里有
-            //       "m_guardsLeft == MAX_NA_GUARDS 就 return" 的保护）。
-            RespawnFactionNpcs(go);
             break;
 
         case GO_WYVERN_ROOST_ALLIANCE_SOUTH:
@@ -377,16 +369,79 @@ void OutdoorPvPNA::ProcessCaptureEvent(GameObject* go, Team team)
     m_zoneOwner = team;
 
     LockHalaa(go);
-    m_guardsLeft = MAX_NA_GUARDS;
+    m_guardsLeft = MAX_NA_GUARDS;   // 新占领方满编（他们的卫兵刷点是 DB 常驻的）
+
+    // [2026-09-19] 旧占领方的卫兵此刻还站在镇上（m_aliveGuards 里记的就是他们）→ 全部藏掉，
+    //   并把 guid 收进候选名单：他们现在是输方，下次易主时要能整体放回来
+    //   （不收的话要等到下一次网格重载才轮到 HandleCreatureCreate 重新判定 → 会有一段空窗）。
+    GuidList candidatesGuards;
+    for (GuidSet::const_iterator itr = m_aliveGuards.begin(); itr != m_aliveGuards.end(); ++itr)
+    {
+        if (Creature* soldier = go->GetMap()->GetCreature(*itr))
+            soldier->ForcedDespawn();
+
+        candidatesGuards.push_back(*itr);
+    }
+    m_aliveGuards.clear();
+    candidatesGuards.insert(candidatesGuards.end(), m_foreignGuards.begin(), m_foreignGuards.end());
 
     m_isUnderSiege = false;
-    m_soldiersRespawnTimer = 0;
 
     UpdateWorldState(WORLD_STATE_REMOVE);
+
+    // 旧占领方的商人：DespawnVendors 会清空 m_teamVendors，先把 guid 收进候选名单
+    GuidList candidatesVendors(m_teamVendors.begin(), m_teamVendors.end());
     DespawnVendors(go);
-    // [2026-09-18] 占领方换了 → 之前记下的 NPC 属于旧阵营，清空记录，
-    // 否则网格重新加载时会因为"旧阵营的家伙还在"而拒绝给新阵营补召唤
-    m_factionNpcs.clear();
+    candidatesVendors.insert(candidatesVendors.end(), m_foreignVendors.begin(), m_foreignVendors.end());
+
+    // [2026-09-19] 候选里**只有属于新占领方的那批**放回来。
+    //   ⚠️ 不能整表放：owner == TEAM_NONE（中立）期间双方 NPC 都会被记进 m_foreign*，
+    //      整表放回来会让两个阵营的 NPC 同时站在镇上（2026-09-19 站长用
+    //      `.debug script command capturehalaa` 实测到：联盟占领，部落 NPC 也刷了）。
+    //   仍然属于对方的那些写回 m_foreign*（保持隐藏），等下一次易主再放。
+    m_teamVendors.clear();
+    m_foreignVendors.clear();
+    for (GuidList::const_iterator itr = candidatesVendors.begin(); itr != candidatesVendors.end(); ++itr)
+    {
+        Creature* vendor = go->GetMap()->GetCreature(*itr);
+        if (!vendor)
+            continue;                                       // 网格卸载：重载时 HandleCreatureCreate 会重新判定
+
+        if (GetVendorTeam(vendor->GetEntry()) != m_zoneOwner)
+        {
+            if (std::find(m_foreignVendors.begin(), m_foreignVendors.end(), *itr) == m_foreignVendors.end())
+                m_foreignVendors.push_back(*itr);
+            continue;
+        }
+
+        if (!vendor->IsAlive())
+            vendor->Respawn();
+
+        if (std::find(m_teamVendors.begin(), m_teamVendors.end(), *itr) == m_teamVendors.end())
+            m_teamVendors.push_back(*itr);
+    }
+
+    m_aliveGuards.clear();
+    m_foreignGuards.clear();
+    for (GuidList::const_iterator itr = candidatesGuards.begin(); itr != candidatesGuards.end(); ++itr)
+    {
+        Creature* soldier = go->GetMap()->GetCreature(*itr);
+        if (!soldier)
+            continue;
+
+        if (GetGuardTeam(soldier->GetEntry()) != m_zoneOwner)
+        {
+            if (std::find(m_foreignGuards.begin(), m_foreignGuards.end(), *itr) == m_foreignGuards.end())
+                m_foreignGuards.push_back(*itr);
+            continue;
+        }
+
+        if (!soldier->IsAlive())
+            soldier->Respawn();
+
+        m_aliveGuards.insert(soldier->GetObjectGuid());
+    }
+
     SetGraveYardLinkTeam(GRAVEYARD_ID_HALAA, GRAVEYARD_ZONE_ID_HALAA, m_zoneOwner, 530);
 
     if (m_zoneOwner == ALLIANCE)
@@ -438,6 +493,43 @@ void OutdoorPvPNA::HandleFactionObjects(const WorldObject* objRef)
             m_roostWorldState[i] = nagrandRoostStatesAllianceNeutral[i];
         }
     }
+}
+
+// Team the permanent (DB) vendors of Halaa belong to
+Team OutdoorPvPNA::GetVendorTeam(uint32 entry) const
+{
+    switch (entry)
+    {
+        case NPC_RESEARCHER_KARTOS:
+        case NPC_QUARTERMASTER_DAVIAN:
+        case NPC_MERCHANT_ALDRAAN:
+        case NPC_VENDOR_CENDRII:
+        case NPC_AMMUNITIONER_BANRO:
+            return ALLIANCE;
+
+        case NPC_RESEARCHER_AMERELDINE:
+        case NPC_QUARTERMASTER_NORELIQE:
+        case NPC_MERCHANT_COREIEL:
+        case NPC_VENDOR_EMBELAR:
+        case NPC_AMMUNITIONER_TASALDAN:
+            return HORDE;
+    }
+
+    return TEAM_NONE;
+}
+
+// [2026-09-19] Team the permanent (DB) guards of Halaa belong to
+Team OutdoorPvPNA::GetGuardTeam(uint32 entry) const
+{
+    switch (entry)
+    {
+        case NPC_ALLIANCE_HANAANI_GUARD:
+            return ALLIANCE;
+        case NPC_HORDE_HALAANI_GUARD:
+            return HORDE;
+    }
+
+    return TEAM_NONE;
 }
 
 // Handle vendors despawn when the city is captured by the other faction
@@ -548,51 +640,11 @@ bool OutdoorPvPNA::HandleGameObjectUse(Player* player, GameObject* go)
     return false;
 }
 
-void OutdoorPvPNA::Update(uint32 diff)
-{
-    if (m_soldiersRespawnTimer)
-    {
-        if (m_soldiersRespawnTimer < diff)
-        {
-            RespawnSoldier();
-
-            // if all the guards are respawned, stop the timer, else resume the timer depending on the siege state
-            if (m_guardsLeft == MAX_NA_GUARDS)
-                m_soldiersRespawnTimer = 0;
-            else
-                m_soldiersRespawnTimer = m_isUnderSiege ? HOUR * IN_MILLISECONDS : 5 * MINUTE * IN_MILLISECONDS;
-        }
-        else
-            m_soldiersRespawnTimer -= diff;
-    }
-}
-
-// Handle soldiers respawn on timer - this will summon a replacement for the dead soldier
-void OutdoorPvPNA::RespawnSoldier()
-{
-    for (GuidZoneMap::const_iterator itr = m_zonePlayers.begin(); itr != m_zonePlayers.end(); ++itr)
-    {
-        // Find player who is in main zone (Nagrand) to get correct map reference
-        if (!itr->second)
-            continue;
-
-        if (Player* player = sObjectMgr.GetPlayer(itr->first))
-        {
-            // Guard against an empty queue: the timer can still fire after the
-            // queue was drained (e.g. SummonCreature failed silently), and
-            // front() on an empty queue is undefined behaviour that corrupts
-            // the heap and crashes later in unrelated STL code.
-            if (m_deadSoldiers.empty())
-                return;
-
-            // summon a soldier replacement in the order they were set in the deque. delete the element after summon
-            const HalaaSoldiersSpawns& location = m_deadSoldiers.front();
-            player->SummonCreature(m_zoneOwner == ALLIANCE ? NPC_ALLIANCE_HANAANI_GUARD : NPC_HORDE_HALAANI_GUARD, location.x, location.y, location.z, location.o, TEMPSPAWN_DEAD_DESPAWN, 0, true);
-            m_deadSoldiers.pop();
-            break;
-        }
-    }
-}
+// [2026-09-19] 这里原来是"卫兵复活"那一套（Update 计时器 + RespawnSoldier 在原位把死掉的卫兵
+//   复活/临时召回）。按站长要求【整段删除】：战死的卫兵不再补回来 —— 卫兵是永久 DB 刷点
+//   （dev/093，spawntimesecs = 2592000 = 30 天），谁死谁就没，直到有阵营重新占领。
+//   删掉它的同时也就带走了"临时召唤"这套机制（TEMPSPAWN + 死亡位置队列 + 复活计时器），
+//   于是不再有"网格卸载丢卫兵 / 网格重载多卫兵 / 计数器与实际人数对不上"这些问题。
 
 // Lock Halaa when captured
 void OutdoorPvPNA::LockHalaa(const WorldObject* objRef)

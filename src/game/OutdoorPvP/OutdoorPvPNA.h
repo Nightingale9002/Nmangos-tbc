@@ -106,11 +106,6 @@ enum
     ZONE_HALAA                              = 3628,
 };
 
-struct HalaaSoldiersSpawns
-{
-    float x, y, z, o;
-};
-
 static const uint32 nagrandRoostsAlliance[MAX_NA_ROOSTS]                = {GO_WYVERN_ROOST_ALLIANCE_SOUTH,          GO_WYVERN_ROOST_ALLIANCE_NORTH,         GO_WYVERN_ROOST_ALLIANCE_EAST,          GO_WYVERN_ROOST_ALLIANCE_WEST};
 static const uint32 nagrandRoostsHorde[MAX_NA_ROOSTS]                   = {GO_WYVERN_ROOST_HORDE_SOUTH,             GO_WYVERN_ROOST_HORDE_NORTH,            GO_WYVERN_ROOST_HORDE_EAST,             GO_WYVERN_ROOST_HORDE_WEST};
 static const uint32 nagrandRoostsBrokenAlliance[MAX_NA_ROOSTS]          = {GO_DESTROYED_ROOST_ALLIANCE_SOUTH,       GO_DESTROYED_ROOST_ALLIANCE_NORTH,      GO_DESTROYED_ROOST_ALLIANCE_EAST,       GO_DESTROYED_ROOST_ALLIANCE_WEST};
@@ -142,7 +137,7 @@ class OutdoorPvPNA : public OutdoorPvP
 
         void HandlePlayerKillInsideArea(Player* player) override;
         bool HandleGameObjectUse(Player* player, GameObject* go) override;
-        void Update(uint32 diff) override;
+        // [2026-09-19] 不再覆写 Update()：原来那里只有"卫兵复活计时器"，已随临时召唤那套一起删除。
 
     private:
         // world states handling
@@ -160,20 +155,20 @@ class OutdoorPvPNA : public OutdoorPvP
         void LockHalaa(const WorldObject* objRef);
         void UnlockHalaa(const WorldObject* objRef);
 
-        // handle soldier respawn on timer
-        void RespawnSoldier();
-
-        // [2026-09-18] 网格重新加载时按当前占领方补召唤商人/卫兵（只跑原版 DB 事件脚本）
-        void RespawnFactionNpcs(GameObject* go) const;
-        // [2026-09-18] 记录/清理"当前占领方在镇里的 NPC"，用于判断是否需要补召唤
-        void RememberFactionNpc(ObjectGuid guid);
+        // team the permanent (DB) vendor spawns belong to
+        Team GetVendorTeam(uint32 entry) const;
+        // [2026-09-19] team the permanent (DB) guard spawns belong to
+        Team GetGuardTeam(uint32 entry) const;
 
         Team m_zoneOwner;
-        uint32 m_soldiersRespawnTimer;
         uint32 m_zoneWorldState;
         uint32 m_zoneMapState;
         uint32 m_roostWorldState[MAX_NA_ROOSTS];
-        uint8 m_guardsLeft;
+        uint32 m_guardsLeft;
+
+        // guards already counted as alive: grid unload/reload re-creates every spawn, so the
+        // counter must be idempotent per spawn instead of being incremented on every creation
+        GuidSet m_aliveGuards;
 
         bool m_isUnderSiege;
 
@@ -186,13 +181,9 @@ class OutdoorPvPNA : public OutdoorPvP
         ObjectGuid m_wagonsHorde[MAX_NA_ROOSTS];
 
         GuidList m_teamVendors;
-
-        std::queue<HalaaSoldiersSpawns> m_deadSoldiers;
-
-        // [2026-09-18] 当前占领方在镇里的 NPC（守卫+商人）guid。
-        // 网格卸载会把临时召唤的 NPC 删掉（原版"走开再回来没 NPC"的根因），
-        // 这里记下来，网格重新加载时先查"是否真的都不在了"再补召唤，避免重复叠加。
-        GuidList m_factionNpcs;
+        GuidList m_foreignVendors;      // vendors of the other team, kept despawned while it loses
+        // [2026-09-19] guards of the other team (permanent DB spawns too), kept despawned while it loses
+        GuidList m_foreignGuards;
 };
 
 #endif
