@@ -12631,7 +12631,15 @@ void Unit::AdjustZForCollision(float x, float y, float& z, float halfHeight) con
 
 uint32 Unit::GetSpellRank(SpellEntry const* spellInfo) const
 {
-    uint32 spellRank = GetLevel();
+    // [RANK-FIX] Rank units are level * 5 for creatures:
+    //  - the cap below is expressed in those units (maxLevel * 5),
+    //  - Player::GetSpellRank() returns GetSkillValue() (also level * 5),
+    //  - every caller divides by 5 to get a level (WorldObject::CalculateSpellEffectValue,
+    //    manaCostPerlevel in Spell::CheckPower).
+    // Returning the bare level made per-level spell scaling 5x too weak for creatures: e.g.
+    // Thunderlord Dire Wolf's Threatening Growl (5781) applied ~6 agility instead of the 32
+    // the client advertises for that spell.
+    uint32 spellRank = GetLevel() * 5;
     if (spellInfo->maxLevel > 0 && spellRank >= spellInfo->maxLevel * 5)
         spellRank = spellInfo->maxLevel * 5;
     return spellRank;
