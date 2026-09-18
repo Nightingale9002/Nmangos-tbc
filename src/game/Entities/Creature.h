@@ -659,6 +659,15 @@ class Creature : public Unit
         bool CanInteractWithBattleMaster(Player* pPlayer, bool msg) const;
         bool CanTrainAndResetTalentsOf(Player* pPlayer) const;
 
+        // [GRAVITY-FLAG] Is this position in the air - i.e. above the terrain/WMO floor and
+        // above the water surface - rather than standing on something? Used at spawn and on
+        // every movement launch to decide whether the client may apply gravity.
+        bool IsAirbornePosition(float x, float y, float z) const;
+        // True when MOVEFLAG_LEVITATING was set by the core because the creature is in the
+        // air, so the core (and only the core) may take it away again once it lands.
+        bool IsAirborneFlagAutomatic() const { return m_airborneFlagAutomatic; }
+        void SetAirborneFlagAutomatic(bool apply) { m_airborneFlagAutomatic = apply; }
+
         void FillGuidsListFromThreatList(GuidVector& guids, uint32 maxamount = 0);
 
         bool IsImmuneToSpell(SpellEntry const* spellInfo, bool castOnSelf, uint8 effectMask, WorldObject const* caster) override;
@@ -1026,6 +1035,7 @@ class Creature : public Unit
         bool m_ignoreMMAP;
         bool m_forceAttackingCapability;                    // can attack even if not selectable/not attackable
         bool m_noReputation;
+        bool m_airborneFlagAutomatic;                       // MOVEFLAG_LEVITATING was set by the core for an airborne spawn/path
 
         CreatureSettings m_settings;
 

@@ -177,6 +177,49 @@ namespace Movement
             }
         }
 
+        // [FLY-FLAG] Vertical counterpart of the swim flag above: a creature whose path
+        // leaves the ground has to carry the gravity flag, otherwise the client animates it
+        // running through the air and drops the model to the terrain the moment the spline
+        // ends (it keeps the model there until the next movement packet). This is how the
+        // flying patrols work: their DB spawns are on the ground (20502 Eclipsion Dragonhawk,
+        // 21721 Enslaved Netherwing Whelp, 15649 Feral Dragonhawk Hatchling are InhabitType
+        // 3/1), so neither the template nor the create block can tell - only the path can.
+        // The destination decides, WMO floors included, so a wolf walking up a mountain or a
+        // waypoint on a bridge is not mistaken for a flyer. The flag is taken away again by
+        // the first path that ends on the ground (and only if we are the one who set it).
+        if (unit.GetTypeId() == TYPEID_UNIT && !unit.IsLevitating() && !unit.IsHovering() && !unit.IsInWater())
+        {
+            Creature* creature = static_cast<Creature*>(&unit);
+            if (!creature->IsClientControlled())
+            {
+                Vector3 const& dest = args.path.back();
+                if (creature->IsAirbornePosition(dest.x, dest.y, dest.z))
+                {
+                    unit.SetLevitate(true);
+                    creature->SetAirborneFlagAutomatic(true);
+                    args.flags.flying = true;
+                    DEBUG_LOG("Creature entry %u guid %u moves to %.1f %.1f %.1f in the air - gravity disabled for the client",
+                              creature->GetEntry(), creature->GetGUIDLow(), dest.x, dest.y, dest.z);
+                    PFDBG_MSG(&unit, "MoveSplineInit fly-flag: path ends at (%.2f,%.2f,%.2f) in the air -> gravity off for the client",
+                              dest.x, dest.y, dest.z);
+                }
+            }
+        }
+        else if (unit.GetTypeId() == TYPEID_UNIT && unit.IsLevitating() &&
+                 static_cast<Creature&>(unit).IsAirborneFlagAutomatic())
+        {
+            // We set the flag for a flight; if this movement ends on the ground the creature
+            // is back to being a land unit (otherwise it would glide/fly along the ground).
+            Vector3 const& dest = args.path.back();
+            if (!static_cast<Creature&>(unit).IsAirbornePosition(dest.x, dest.y, dest.z))
+            {
+                unit.SetLevitate(false);
+                static_cast<Creature&>(unit).SetAirborneFlagAutomatic(false);
+                args.flags.flying = false;
+                PFDBG_MSG(&unit, "MoveSplineInit fly-flag: path ends on the ground -> gravity restored");
+            }
+        }
+
         args.flags.enter_cycle = args.flags.cyclic;
         uint32 moveFlags = unit.m_movementInfo.GetMovementFlags();
         if (args.flags.runmode)

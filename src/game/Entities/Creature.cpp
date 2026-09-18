@@ -51,6 +51,40 @@
 // apply implementation of the singletons
 #include "Policies/Singleton.h"
 
+// How far a spawn may sit above its floor (terrain, WMO, or the water surface) before
+// it counts as airborne and therefore must not receive client-side gravity.
+// Grounded DB spawns sit within a few centimetres of their floor. Spawns a couple of yards
+// up are the sloppy ones that rely on the client's gravity to settle them onto a
+// client-side prop - 16945 Mo'arg Engineer (+2.7) and 17131 Talbuk Thorngrazer (+3.6) both
+// ended up hovering when the first version of this check used 2 yd - so those must keep
+// their gravity. Genuinely hovering spawns sit higher (17129 Greater Windroc +5.6,
+// 22979 Wild Sparrowhawk +17.7, 20237 Honor Hold Gryphon Rider +489), so 4 yd separates
+// the two groups with margin on both sides.
+static float const CREATURE_AIRBORNE_TOLERANCE = 4.0f;
+
+bool Creature::IsAirbornePosition(float x, float y, float z) const
+{
+    Map const* map = GetMap();
+    if (!map)
+        return false;
+
+    // Cheap first pass: the raw heightmap. Everything that stands somewhere (land, cave,
+    // building interior) fails here, so only suspected positions pay for the vmap query.
+    float const mapZ = map->GetTerrain()->GetHeightStatic(x, y, z, false);
+    if (mapZ <= INVALID_HEIGHT || z - mapZ <= CREATURE_AIRBORNE_TOLERANCE)
+        return false;
+
+    float floorZ = map->GetHeight(x, y, z);                 // terrain or WMO floor
+
+    // A position above water is not airborne when the water surface is what it stands on
+    // (boats, swimmers, floating wrecks): use the higher of the two levels.
+    float const waterZ = map->GetTerrain()->GetWaterLevel(x, y, z);
+    if (waterZ > floorZ)
+        floorZ = waterZ;
+
+    return floorZ > INVALID_HEIGHT && z - floorZ > CREATURE_AIRBORNE_TOLERANCE;
+}
+
 
 TrainerSpell const* TrainerSpellData::Find(uint32 spell_id) const
 {
@@ -144,6 +178,7 @@ Creature::Creature(CreatureSubtype subtype) : Unit(),
     m_originalEntry(0), m_gameEventVendorId(0),
     m_immunitySet(UINT32_MAX), m_ai(nullptr),
     m_isInvisible(false), m_ignoreMMAP(false), m_forceAttackingCapability(false),
+    m_airborneFlagAutomatic(false),
     m_settings(this),
     m_countSpawns(false),
     m_creatureGroup(nullptr), m_imposedCooldown(false), m_healthMultiplier(1.f), m_damageMultiplier(1.f), m_baseAP(0), m_baseRAP(0),
@@ -981,6 +1016,23 @@ bool Creature::Create(uint32 dbGuid, uint32 guidlow, CreatureCreatePos& cPos, Cr
     }
 
     LoadCreatureAddon(false);
+
+    // [GRAVITY-FLAG] Tell the client whether gravity applies to this spawn, because the
+    // create block is the only chance to do it: whatever the client is told here it keeps
+    // until the next movement packet, and with gravity on it drags an airborne model down
+    // to the terrain the moment the creature becomes visible (gryphon/drake riders, guards
+    // posted in the air, spawns sitting on floating rocks). The template cannot answer this
+    // - InhabitType is ground/water for plenty of DB flyers (20237 Honor Hold Gryphon Rider,
+    // 22000 Dragonmaw Nether Drake, 21719 Dragonmaw Drake-Rider, 25236 Unrestrained
+    // Dragonhawk) - so decide from the spawn position the movement code will actually use.
+    if (!IsLevitating() && !IsHovering() && !IsClientControlled() &&
+        IsAirbornePosition(GetPositionX(), GetPositionY(), GetPositionZ()))
+    {
+        SetLevitate(true);
+        SetAirborneFlagAutomatic(true);
+        DEBUG_LOG("Creature entry %u guid %u spawned at %.1f %.1f %.1f in the air - gravity disabled for the client",
+                  GetEntry(), GetGUIDLow(), GetPositionX(), GetPositionY(), GetPositionZ());
+    }
 
     return true;
 }
