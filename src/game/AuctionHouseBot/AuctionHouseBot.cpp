@@ -122,8 +122,15 @@ void AuctionHouseBot::Initialize()
         ParseLevelConstraints();
 
         // vendor items (used to prevent items being bought from vendor and sold at ah for profit)
+        // [2026-09-19] Only vendors that actually exist in the world count. A npc_vendor row whose
+        // NPC has no spawn point in `creature` can never be reached by a player, so treating its
+        // stock as "vendor price" (GetItemValue() -> 100) only misprices the item. Measured on this
+        // server: of 788 vendor NPCs, 27 have no spawn; they made 1,043 items (677 of them epic
+        // equipment) lose vendor status entirely and drop to their class value - e.g. 31334 was
+        // priced 67.17g instead of 16.79g. Mirrors the spawn check the gameobject source already
+        // does above. Note this is a strict subset: items also sold by a spawned vendor stay in.
         std::vector<uint32> tmpVector;
-        FillUintVectorFromQuery("SELECT item FROM npc_vendor", tmpVector);
+        FillUintVectorFromQuery("SELECT item FROM npc_vendor WHERE entry IN (SELECT id FROM creature)", tmpVector);
         std::copy(tmpVector.begin(), tmpVector.end(), std::inserter(m_vendorItems, m_vendorItems.end()));
 
         // item value
