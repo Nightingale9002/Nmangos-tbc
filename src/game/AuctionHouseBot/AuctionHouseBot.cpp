@@ -305,7 +305,12 @@ void AuctionHouseBot::Initialize()
                                 uint32 lo = staticPrice ? (uint32)((uint64)staticPrice * std::min<uint32>(100, m_mmPriceFloor) / 100) : 0;
                                 if (proto->SellPrice > lo)
                                     lo = proto->SellPrice;
-                                uint32 hi = staticPrice ? (uint32)((uint64)staticPrice * std::max<uint32>(100, m_mmPriceCeil) / 100) : 0;
+                                // [2026-09-20] PriceCeil = 0 now really means "no ceiling".
+                                // The old std::max<uint32>(100, ...) turned 0 into "ceiling ==
+                                // staticPrice" (3x TIGHTER than the 300 default) - the exact
+                                // opposite of what an operator writing 0 expects.
+                                uint32 hi = (staticPrice && m_mmPriceCeil)
+                                                ? (uint32)((uint64)staticPrice * std::max<uint32>(100, m_mmPriceCeil) / 100) : 0;
                                 if (lo && clamped < lo)
                                     clamped = lo;
                                 if (hi && clamped > hi)
@@ -785,7 +790,11 @@ void AuctionHouseBot::UpdateMarketPrices()
             if (ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId))
                 if (proto->SellPrice > floor)
                     floor = proto->SellPrice;
-            uint32 ceil  = staticPrice ? (uint32)((uint64)staticPrice * std::max<uint32>(100, m_mmPriceCeil) / 100) : 0;
+            // [2026-09-20] PriceCeil = 0 now really means "no ceiling" (see the startup
+            // clamp above): the old std::max<uint32>(100, ...) made 0 mean "ceiling ==
+            // staticPrice", i.e. tighter than the default instead of unlimited.
+            uint32 ceil  = (staticPrice && m_mmPriceCeil)
+                               ? (uint32)((uint64)staticPrice * std::max<uint32>(100, m_mmPriceCeil) / 100) : 0;
 
             // drain player sales since the last scan
             uint32 soldUnits = 0, lastTradePrice = 0;
@@ -911,13 +920,30 @@ void AuctionHouseBot::UpdateMarketPrices()
                 if (oldPrice && (!state.lastSettleTime || now - state.lastSettleTime >= m_flowSettleHours * HOUR))
                 {
                     uint32 flowTotal = state.flowBought + state.flowSold;
+                    // [2026-09-20] settlement log - the ONLY way to tune FlowMinUnits /
+                    // FlowRatio / FlowSettleHours from real data instead of guessing.
+                    // NOTE: the counters are zeroed below either way, so flow that stays
+                    // under the gate is DISCARDED, not carried into the next period.
+                    const char* outcome = "under-gate";
                     if (flowTotal >= m_flowMinUnits)
                     {
                         if (state.flowBought > (uint64)state.flowSold * m_flowRatio / 100)
+                        {
                             newPrice = (uint32)(((uint64)oldPrice * (100 - std::min<uint32>(50, m_flowMoveDownPct)) + 50) / 100);
+                            outcome = "down";
+                        }
                         else if (state.flowSold > (uint64)state.flowBought * m_flowRatio / 100)
+                        {
                             newPrice = (uint32)(((uint64)oldPrice * (100 + std::min<uint32>(50, m_flowMoveUpPct)) + 50) / 100);
+                            outcome = "up";
+                        }
+                        else
+                            outcome = "balanced";
                     }
+                    if (flowTotal)
+                        sLog.outError("[AHBOT] SETTLE item=%u house=%u bought=%u sold=%u total=%u gate=%u old=%u new=%u result=%s",
+                                      itemId, uint32(houseIndex), state.flowBought, state.flowSold,
+                                      flowTotal, m_flowMinUnits, oldPrice, newPrice, outcome);
                     state.flowBought = 0;
                     state.flowSold = 0;
                     state.lastSettleTime = now;
@@ -1062,8 +1088,21 @@ void AuctionHouseBot::UpdateMarketPrices()
                         // keep bid/startbid within the buyout (no inverted bid > buyout)
                         if (auction->bid > newBuyout)
                             auction->bid = newBuyout;
-                        if (auction->startbid > newBuyout)
-                            auction->startbid = newBuyout;
+                        // [2026-09-20] startbid used to be clamped DOWN only, so an upward reprice
+                        // left the old (lower) startbid in place: after the epic value change
+                        // 25%->50% every repriced epic showed startbid = 49% of buyout, while the
+                        // creation path uses urand(Bid.Min, Bid.Max)% = 95..100%. Pull startbid back
+                        // into that band; a listing already inside it is left untouched (no jitter
+                        // on every reprice).
+                        uint32 bidLo = (uint32)((uint64)newBuyout * m_auctionBidMin / 100);
+                        uint32 bidHi = (uint32)((uint64)newBuyout * m_auctionBidMax / 100);
+                        if (auction->startbid < bidLo || auction->startbid > bidHi)
+                        {
+                            uint32 target = (bidLo >= bidHi) ? bidHi : urand(bidLo, bidHi);
+                            if (auction->bid && target > auction->bid)
+                                target = auction->bid;   // never raise startbid above an existing bid
+                            auction->startbid = target;
+                        }
                         auction->buyout = newBuyout;
                         CharacterDatabase.PExecute("UPDATE auction SET buyoutprice = %u, lastbid = %u, startbid = %u WHERE id = %u", newBuyout, auction->bid, auction->startbid, auction->Id);
                     }
