@@ -2774,5 +2774,88 @@ AHBot 结构性上不了架的，才用掉落补。实测（云端角色库 bot 
 - 机器 **2 vCPU / 1.87 GB RAM**：mangosd RES 1.1 GB（61%）、swap 已用 ~250 MB，资源本就紧张
   （另见 `[内存]` 章，以及 P0 的"严禁在运行时段在 2GB 机器上编译"）。
 
+## [稳定性][安全] realmd 登录包堆溢出：认证前可远程触发的崩溃 — 2026-09-19
 
+> **这是长期"realmd 隔两三天自己崩一次"的根因**，也是本端第一个被确认的**远程可利用**内存安全问题。
 
+### 现象
+
+- `/opt/mangos/bin/realmd` 约每 2~3 天自发崩溃一次（5 周内被 watchdog 拉起约 14 次）。
+- 09-19 当天更明显：12:38 SIGABRT、13:34 SIGSEGV，间隔不到 1 小时。
+- 此前一直是"没有现场"：core 存不下来（cron/watchdog 下 `RLIMIT_CORE=0`），日志也定位不到。
+
+### 定位（靠 core，不靠猜）
+
+把 `ulimit -c unlimited` 补到 realmd 启动路径后，09-19 两次崩溃的 core 首次被完整保存，
+`coredumpctl info` 拿到**带符号的回溯**：
+
+| 时间 | 信号 | 关键帧 |
+|---|---|---|
+| 12:38 | SIGABRT | `AuthSocket::_HandleLogonChallenge` 的 lambda → `std::make_shared<ByteBuffer>` → `malloc_consolidate` → `malloc_printerr` = **glibc 当场检出堆损坏** |
+| 13:34 | SIGSEGV | `AsyncListener<AuthSocket>::startAccept` → `SRP6::SRP6` → `BN_new` → **段错误发生在 malloc 内部**（空闲链表被写坏） |
+
+两次都在认证路径、都是"堆被写坏"，且第二例是**上一次连接写坏堆、下一次连接 malloc 时踩雷** ——
+这正是"崩溃时间看起来随机"的原因。
+
+### 成因
+
+`src/realmd/AuthSocket.cpp` 的 `_HandleLogonChallenge()`：
+
+```cpp
+uint16 remaining = header->size;              // 客户端给的 uint16，最大 65535
+if ((remaining < sizeof(sAuthLogonChallengeBody) - AUTH_LOGON_MAX_NAME)) return;   // 只有下界！
+std::shared_ptr<sAuthLogonChallengeBody> body = std::make_shared<sAuthLogonChallengeBody>();  // 47 字节
+self->Read((char*)body.get(), remaining, ...);  // 把 remaining 字节读进 47 字节的堆对象
+```
+
+**缺上界检查** → 客户端只要把登录包里的 `size` 写成 > 47，就能让 realmd 往 47 字节的堆对象里
+写入最多 65535 字节。`_HandleReconnectChallenge()` 是**同一个 bug**（下界 37，同样无上界）。
+
+- 合法客户端最大只发 `30 + userName_len(≤16) = 46` 字节，所以**正常玩家永远不会触发**，只有畸形/扫描/构造包会。
+- 3724 是公网端口（本机日志里本来就有端口扫描与 SSH 暴力破解记录），触发来源现实存在。
+- ⚠️ 危害不止"崩溃"：这是**认证前、写入长度可控的堆溢出**，具备被利用做远程代码执行的条件。
+
+### 改动
+
+`src/realmd/AuthSocket.cpp` 两个 handler 各加上界检查 + ERROR 级日志 + 主动断连：
+
+```cpp
+if (remaining > sizeof(sAuthLogonChallengeBody))
+{
+    sLog.outError("[AuthChallenge] Rejecting oversized body (%u bytes) from %s",
+                  uint32(remaining), self->GetRemoteAddress().c_str());
+    self->Close();
+    return;
+}
+```
+
+### 验证（本地实测，非推断）
+
+⚠️ **前置坑**：本地 `x64_Debug\realmd.exe` 是**陈旧二进制**（8-21，2.79 MB；当前源码编出来只有 686 KB），
+因为 `build_deploy_restart.bat` 只编 mangosd、**从不重编 realmd**。第一轮 PoC 打旧二进制打不崩，
+差点误判成"漏洞不存在"。**结论：任何 realmd 改动都必须先 `cmake --build build1 --target realmd` 再测。**
+
+- 复现（修复前，用当前源码新编的 realmd）：发一个 `size=2000` 的登录挑战包 → **realmd 当场死亡**；
+  对照 `size=46`（合法最大）正常应答。
+- 修复后回归 `_agent_tmp\verify_realmd_fix.py`：**8/8 通过** —— 46/47 正常应答；48/2000/65535 以及
+  reconnect 包的 2000/65535 一律被丢弃、realmd 存活；攻击之后再发合法包仍能正常应答。
+
+### 顺带审计（这两处是安全的，不要误改）
+
+- `_HandleLogonProof` 的 PIN 分支：`*pinCount > 16` 有检查，`vector` 按 `*pinCount + 1` 分配 → 安全。
+- `_HandleLogonProof` 的包长由服务端 `getSize()` 决定，客户端不可控 → 安全。
+
+### 教训
+
+1. **凡是"客户端声明的长度"都必须同时校验上界**。本端 `Read(buf, len)` 是裸
+   `boost::asio::async_read`，不会校验缓冲区大小 —— 只要 `len` 来自网络就必须自己卡住。
+2. **core 是这类问题唯一的可靠证据**，`ulimit -c unlimited` 必须覆盖**所有**启动路径。
+   realmd 的三条路径（watchdog / realmd_restart_verify / golive）早就有，**只有 nightly 漏了** ——
+   09-19 17:45 mangosd 的 SIGABRT 因此没留下 core，`Server.log` 又被新进程截断，现场全丢。
+3. **部署脚本必须同时安装 realmd**：`nightly_build_restart.sh` 自始至终只 `cp` mangosd，
+   `/opt/mangos/bin/realmd` 一直停在 8-13 的旧二进制 → **realmd 的任何修复都上不了线**。已补 3.3 节。
+4. 崩溃"看起来随机"时，优先怀疑**堆被上一次请求写坏、下一次分配才踩雷**，而不是当次请求。
+
+### 状态
+
+- 2026-09-19：本地修复 + 回归通过；云端脚本已补 realmd 安装步骤与 core 开关；待 nightly 编译上线。

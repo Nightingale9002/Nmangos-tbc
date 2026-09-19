@@ -341,6 +341,15 @@ bool AuthSocket::_HandleLogonChallenge()
         if ((remaining < sizeof(sAuthLogonChallengeBody) - AUTH_LOGON_MAX_NAME))
             return;
 
+        // The body is read into a fixed-size sAuthLogonChallengeBody, so a client-declared
+        // size larger than that struct would overflow the heap allocation.
+        if (remaining > sizeof(sAuthLogonChallengeBody))
+        {
+            sLog.outError("[AuthChallenge] Rejecting oversized body (%u bytes) from %s", uint32(remaining), self->GetRemoteAddress().c_str());
+            self->Close();
+            return;
+        }
+
         DEBUG_LOG("[AuthChallenge] got header, body is %#04x bytes", remaining);
 
         ///- Session is closed unless overriden
@@ -721,6 +730,15 @@ bool AuthSocket::_HandleReconnectChallenge()
 
         if ((remaining < sizeof(sAuthLogonChallengeBody) - 10))
             return;
+
+        // The body is read into a fixed-size sAuthLogonChallengeBody, so a client-declared
+        // size larger than that struct would overflow the heap allocation.
+        if (remaining > sizeof(sAuthLogonChallengeBody))
+        {
+            sLog.outError("[ReconnectChallenge] Rejecting oversized body (%u bytes) from %s", uint32(remaining), self->GetRemoteAddress().c_str());
+            self->Close();
+            return;
+        }
 
         ///- Session is closed unless overriden
         self->_status = STATUS_CLOSED;
