@@ -3248,3 +3248,4 @@ state.flowBought = 0;  state.flowSold = 0;   // 无条件清零
 
 - 配置：mangosd 启动时读取 → 随重启生效
 - 代码：已同步云端源码树（md5 `6adc26e4…`，与本地逐字节一致）→ **随 09-21 04:06 nightly** 编译上线
+

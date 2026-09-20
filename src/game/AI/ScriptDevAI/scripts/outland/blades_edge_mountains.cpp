@@ -3324,23 +3324,6 @@ enum
     SPELL_ZEPHYRIUM_CHARGED = 37108,
 };
 
-// Zephyrium test flights (quests 10712 / 10711 / 10557): a mount or a shapeshift form swallows
-// the launch, because "Soaring" is knockback + fly aura (not a taxi that mounts the player itself).
-// Called twice: when the player picks a flight option (gossip) and AGAIN at takeoff, because the
-// player can remount / shift back during the 12s cannon charge on the platform.
-static void DropMountAndShapeshift(Player* player)
-{
-    if (!player)
-        return;
-
-    if (player->IsMounted())
-        player->Unmount();
-
-    Unit::AuraList shapeshiftForms = player->GetAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
-    for (Aura* aura : shapeshiftForms)
-        player->RemoveAurasDueToSpell(aura->GetId(), nullptr, AURA_REMOVE_BY_CANCEL);
-}
-
 // 36812, 37910, 37962, 37968 - Soaring
 struct Soaring : public SpellScript, public AuraScript
 {
@@ -3352,50 +3335,10 @@ struct Soaring : public SpellScript, public AuraScript
 
     void OnCast(Spell* spell) const override
     {
-        Unit* target = spell->m_targets.getUnitTarget();
-        if (!target)
-            return;
-
-        target->RemoveAurasDueToSpell(36801); // Remove Cannon Channel to prevent root affecting knockback
-
-        // takeoff re-check: a mount / form applied during the 12s charge would swallow the knockback
-        if (target->GetTypeId() == TYPEID_PLAYER)
-            DropMountAndShapeshift(static_cast<Player*>(target));
+        if (spell->m_targets.getUnitTarget())
+            spell->m_targets.getUnitTarget()->RemoveAurasDueToSpell(36801); // Remove Cannon Channel to prevent root affecting knockback
     }
 };
-
-// 21461 Rally Zapnabber (test-flight goblin standing next to the Zephyrium Capacitorium cannon)
-// Test flights (quests 10712 / 10711 / 10557) do not work while the player is mounted or shapeshifted:
-//   dbscript "dbscripts_on_gossip" 10712/10711/10557 first casts 36801 "Cannon Charging (Port)"
-//   (a teleport spell, destination from spell_target_position: 1920.13 / 5581.9 / 270.426) and then,
-//   after 12s, "Soaring" (37968 / 37910 / 36812 = knockback 98 + fly aura 105).
-//   A mount - like the root aura carried by 36801 - suppresses that knockback/movement, so the player
-//   is never moved onto the platform / never launched.
-// Fix: drop the mount and any shapeshift before the DB gossip script runs, then return false so
-// Player::OnGossipSelect() still executes the DB gossip/dbscript chain.
-struct npc_rally_zapnabberAI : public ScriptedAI
-{
-    npc_rally_zapnabberAI(Creature* pCreature) : ScriptedAI(pCreature) {}
-
-    void Reset() override {}
-    void UpdateAI(uint32 /*diff*/) override {}
-};
-
-bool GossipSelect_npc_rally_zapnabber(Player* pPlayer, Creature* /*pCreature*/, uint32 /*uiSender*/, uint32 /*uiAction*/)
-{
-    if (!pPlayer)
-        return false;
-
-    if (pPlayer->IsMounted())
-        pPlayer->Unmount();
-
-    // drop every shapeshift form as well - a form blocks the launch just like a mount does
-    Unit::AuraList shapeshiftForms = pPlayer->GetAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
-    for (Aura* aura : shapeshiftForms)
-        pPlayer->RemoveAurasDueToSpell(aura->GetId(), nullptr, AURA_REMOVE_BY_CANCEL);
-
-    return false;   // hand over to the DB gossip/dbscript chain (10557 / 10711 / 10712)
-}
 
 // 38544 - Coax Marmot
 struct CoaxMarmot : public SpellScript, public AuraScript
@@ -3592,12 +3535,6 @@ void AddSC_blades_edge_mountains()
     pNewScript = new Script;
     pNewScript->Name = "at_vindicator_vuuleen";
     pNewScript->pAreaTrigger = &AreaTrigger_at_vindicator_vuuleen;
-    pNewScript->RegisterSelf();
-
-    pNewScript = new Script;
-    pNewScript->Name = "npc_rally_zapnabber";
-    pNewScript->GetAI = &GetNewAIInstance<npc_rally_zapnabberAI>;
-    pNewScript->pGossipSelect = &GossipSelect_npc_rally_zapnabber;
     pNewScript->RegisterSelf();
 
     RegisterSpellScript<SimonGamePreGameTimer>("spell_simon_game_pre_game_timer");
