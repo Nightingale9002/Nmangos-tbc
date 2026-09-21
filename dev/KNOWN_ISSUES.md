@@ -1852,6 +1852,8 @@ navmesh 无路径(真高空/水面等)        -> 目标点 = 直线终点
 
 #### 2. pfQuest（objects-tbc.lua）
 坐标点数 + 第 4 值 = 刷新秒数：普通矿 45s、Ooze 矿 360s。
+⚠️ **来源更正（2026-09-22，站长指正）**：pfQuest 的 TBC 数据**取自 CMaNGOS**（与本库同源，只是另一份快照），
+**不是独立第三方、更不是官服数据**；Questie 的来源则**不可考**。见 6.4「证据等级」表 —— 本节数值只作"同源快照对照"，勿当官服事实。
 
 | 矿种 | pfQuest 点数 | 刷新 |
 |---|---|---|
@@ -3358,8 +3360,14 @@ if (mmBuyState && m_mmBuyPerCycle)
 
 ### 4. 生效
 
-- **dev SQL**：`dev/099_ahbot机制优化与成交日志.sql`（幂等：`information_schema` 守卫的 ADD COLUMN + `CREATE TABLE IF NOT EXISTS`；
+- **dev SQL**：`dev/099_ahbot机制优化与成交日志.sql`（**全静态**：只有 `CREATE TABLE IF NOT EXISTS auction_history`；
   显式库名 `tbccharacters`，因为 `apply_dev_sql.sh` 的默认库是 `tbcmangos`）。
+  - ⚠️ **2026-09-22 改造**：原版本用 `SET @exist := (SELECT COUNT(*) FROM information_schema.COLUMNS …)` +
+    `PREPARE/EXECUTE` 守卫 `ADD COLUMN`（MySQL 不支持 `ADD COLUMN IF NOT EXISTS`），属"逻辑查询"。
+    按站长定规「**SQL 里不用逻辑查询、一律静态写死值**」已改掉：新增列 **`last_settle_time` 于 2026-09-22
+    用静态 `ALTER TABLE` 在本地库与云端库直接建好**（云端实测 `SHOW COLUMNS` 返回
+    `last_settle_time int unsigned NO '' 0`），文件里只留建表语句；那句 ALTER 写进文件注释备"全新库重建"。
+    这样重跑不会撞 1060 Duplicate column 卡住 marker 队列，队列里也不再有任何查询/判断。
 - 云端源码树已手工同步（cpp 按云端 CRLF、其余 LF；备份 `/root/_srcbak_*_20260921_2*`）；
   nightly dry-run 实测：`would apply 099` + 需编译 `AuctionHouseMgr.cpp.o`、`AuctionHouseBot.cpp.o` ⇒ **今晚 04:06 生效**。
 - ⛔ **本次没有重启**（当时线上有玩家；站长定规：有玩家在线禁止重启）。
@@ -3372,4 +3380,366 @@ if (mmBuyState && m_mmBuyPerCycle)
 - 重启后的第一个窗口：买家集合是内存态（DB 只持久化流水）⇒ 该窗口不会因去重而涨价（保守方向，会自愈）。
 - `BuyDepth` 仍是 **0**（回收 = 100% 锚价，做市商没有价差）—— 站长尚未定；若要恢复价差设 5~10。
 - 成交日志量级：预计每天数百~数千行，`auction_history` 无清理策略，长期需留意（后续可加按天归档）。
+
+---
+
+## [任务] 9397《捉小鸟》：雌性卡利鸟是 10% 骰子（**不是 bug**）—— 2026-09-22 排查
+
+### 1. 站长反馈
+
+> 「检查任务 9397，我一直刷不出雌性卡利鸟。」
+
+### 2. 任务链路（全部查实，非推断）
+
+| 环节 | 数据/代码 |
+|---|---|
+| 任务 | 9397 `Birds of a Feather`（中文《捉小鸟》，62 级，地狱火半岛），接/交任务人 **16790 Falconer Drenna Riverwind**（猎鹰岗哨） |
+| 目标 | 收集 **23486 Caged Female Kaliri Hatchling**（`ReqItemId1`） |
+| **鸟笼从哪来** | `quest_template.SrcItemId = 23485, SrcItemCount = 1` ⇒ **接任务时系统直接发给你空鸟笼**（`Player.cpp:14095 StoreNewItem`），不是掉落/购买 |
+| 鸟巢 | **181582 Kaliri Nest**（GOOBER type 10、lock 43、`data10 = 29395`），**13 个静态刷点**（map 530，坐标约 x −983…−1333 / y 4040…4264 = **Den of Haal'esh**），`spawntimesecs = 181`（3 分钟），**不在池/刷怪组/事件里** ⇒ 巢本身没问题 |
+| 用巢发生什么 | 施放 **29395 Break Kaliri Egg**（Effect1 = 77 SCRIPT_EFFECT，**硬编码**在 `SpellEffects.cpp:6010-6025`） |
+| **随机结果** | `urand(0,99)`：**0–9 → 17034 雌性卡利鸟幼崽（10%）**；10–59 → 17035 卡利鸟女族长（**50%**，63 级真怪）；60–99 → 17039 雄性卡利鸟幼崽（40%） |
+| 召唤位置/寿命 | `SummonCreature(id, 0,0,0,0, …)` —— 0,0,0 走"**跟随召唤者**"分支（`Object.cpp:2138-2141`）⇒ 就刷在巢边；**只存在 120 秒**（`TEMPSPAWN_TIMED_OOC_OR_DEAD_DESPAWN, 120s`），脱战/死亡即消失 |
+| 抓鸟 | 用 **空鸟笼 23485**（法术 **29435**：`Effect1=3 DUMMY` + `Effect2=24 CREATE_ITEM → 23486`，隐式目标 **38 = TARGET_UNIT_SCRIPT_NEAR_CASTER** ⇒ **站在幼鸟旁边用**）⇒ 鸟被 `ForcedDespawn()`、物品到手 |
+| 交任务 | `dbscripts_on_quest_end(9397)`：在猎鹰岗哨召唤 **17262 Captive Female Kaliri** 20 秒 + 表情（演出，无关功能） |
+
+### 3. 结论：为什么"一直刷不出"
+
+**这是 10% 概率，不是坏了**。平均要开 ~10 个巢才出 1 只雌鸟；而且 **50% 会出"卡利鸟女族长"**（63 级会打你）——
+很可能就是"以为刷出来了、结果不是它"。按 13 个巢、每个 181 秒刷新算：
+- 一轮全开：出雌鸟概率 = 1 − 0.9¹³ ≈ **75%**；两轮 ≈ **94%**。
+- 要点：**召唤物只有 120 秒** ⇒ 出了立刻用鸟笼收（站旁边按就行，不用精确选中目标）；别跟女族长纠缠。
+
+### 4. 概率的出处与"别的端是多少"（三方核对）
+
+| 端 / 分支 | 29395「Break Kaliri Egg」的实现 | 概率 |
+|---|---|---|
+| **本端** Nmangos-tbc（`SpellEffects.cpp:6013-6020`） | 有 | 雌 **10%** / 女族长 50% / 雄 40% |
+| `mangos-tbc-heitu-master`、`Nmangos-tbc-master3`（本地两套别的 TBC fork） | 同一段代码（:6402 起） | **完全相同的 10/50/40** |
+| **上游 cmangos master**（2026-09-22 用 curl 拉最新 `SpellEffects.cpp` 核对） | 同一段代码 | **完全相同的 10/50/40** |
+| AzerothCore / TrinityCore（WotLK 系） | **核心没有这段实现**（AC 库里巢的 `data10=29395` 字段仍在，但代码无处理；TC master 的 29395 是别的法术） | 无值可比 |
+| 幼鸟等级（顺带核对） | 本端与 AC 的 `creature_template` 一致：雌 62 / 女族长 63 / 雄 61 | — |
+
+- `git blame`：这段判定来自 **上游 cmangos 提交 `de44790b05`（2012-01-24，作者 Xfurry）** ⇒ mangos 作者当年的**估计值**，
+  所有 mangos 系 fork 原样继承；**没有"别的端的更权威数字"可抄**（AC/TC 不实现该任务法术）。
+- 站长 2026-09-22 追问"概率太小"，核对完以上三方后**定案：保持 10% 不改**（承认上游设计；改它需改代码+编译+重启）。
+
+### 5. 10% 之下的刷法（给玩家/GM 的实际口径）
+
+| 雌鸟概率 | 一轮 13 个巢出 ≥1 只 | 每轮期望只数 |
+|---|---|---|
+| **10%（现行）** | **74.6%** | 1.3 |
+| 20% | 94.5% | 2.6 |
+| 30% | 98.8% | 3.9 |
+
+- **每轮 13 个巢**（guid 160049-160061，map 530，坐标集中在 Den of Haal'esh）：
+  x ≈ −1153/4264、−1099/4253、−1138/4242、−983/4231、−1168/4215、−1140/4212、−1103/4211、
+  −1115/4185、−1076/4177、−1109/4176、−1200/4117、−1332/4062、−1325/4041；**每个采后 181 秒（3 分钟）回**。
+- ⚠️ **三个常见"刷不出"的真正原因**：
+  1. **把幼鸟打死了**（幼鸟是生物 17034）—— 正确做法是**对幼鸟使用「空鸟笼」**（物品 23485，接任务时系统直接发），
+     吃了它才拿到 23486；打死只掉普通掉落，任务物品拿不到。
+  2. **超过 120 秒**：召唤出的幼鸟只存在 120 秒（脱战/死亡即消失），出了**立刻**用鸟笼收。
+  3. **只开了一两个巢**：单巢 10%、13 巢一轮 74.6%；一轮没出就再来一轮（3 分钟后巢全回来）。
+- 鸟笼不会消耗（法术 29435 只做 `CREATE_ITEM 23486` + 让目标消失），不用反复找笼子；交任务时系统会收回。
+
+---
+
+
+> 站长定案：**以后遇到「DB 里有、游戏里看不到/`.gobject nearspawned` 没有」这类问题，先考虑 dynGuid 这个原因。**
+> 本章把机制、判据、排查命令、以及本次（任务 9345 刺叶）的完整证据一次性写清。
+
+### 1. 症状签名（满足即先查这里）
+
+| 观测 | 结果 |
+|---|---|
+| `.gobject near 60`（读 DB，Level2.cpp:1228） | **有**（行、坐标、模板全对） |
+| `.gobject nearspawned 60`（读世界，Level2.cpp:1324） | **没有** |
+| `Server.log` | **没有任何** `invalid displayId` / `not loaded` 之类的报错 |
+| 换个客户端 / 换台机器 | 一样看不到（排除客户端渲染/模型缺失） |
+
+⚠️ **`.gobject nearspawned` 的默认半径只有 10 码**（`ExtractOptFloat(&args, distance, 10.0f)`），
+比较时必须两边都写同一个半径，否则"没有"是假阴性。
+
+### 2. 为什么"DB 有 = 场上必须有"是错的：加载期就被分流了
+
+`ObjectMgr::LoadGameObjects()`（`Globals/ObjectMgr.cpp:2426`）逐行判定一条刷点是不是 **dynGuid**：
+
+```
+ObjectMgr.cpp:2460-2488   ① gameobject.id == 0 且该 guid 在 gameobject_spawn_entry 里被标 dynguided
+                          ② gameobject_template.ExtraFlags & GAMEOBJECT_EXTRA_FLAG_DYNGUID (0x2)
+ObjectMgr.cpp:2589-2599   dynGuid 且非事件 ⇒ 只记进 m_dynguidGameobjectDbGuids[mapid]，
+                          否则（else if）才 AddGameobjectToGrid() —— 这一支才是"网格加载时刷出来"
+```
+
+也就是说：**被判为 dynGuid 的刷点，从一开始就不进网格表**，普通网格加载永远不会生成它。
+另有两条只在运行时才生效的 dynGuid 判据（`Entities/GameObject.cpp:922-930`）：
+
+```
+GameObject.cpp:923  map->IsDynguidForced()                 // Map.cpp:3065 —— 只有 533 Naxxramas / 543 Hellfire Ramparts
+GameObject.cpp:928  goinfo.ExtraFlags & 0x2  ||  groupEntry // ← 刷怪组（spawn_group_spawn）成员走这条
+GameObject.cpp:932  if (dynguid || newGuid == 0) newGuid = map->GenerateLocalLowGuid(HIGHGUID_GAMEOBJECT);
+                    // ⇒ 运行时 guid ≠ DB guid，这就是站长说的「动态 guid」；
+                    //    DB guid 仍是唯一句柄（所有 GM 命令都用它）
+ObjectGridLoader.cpp:123-138  网格加载时 newGuid 默认 = DB guid，只有 IsEventGuid() 为真才置 0
+```
+
+### 3. dynGuid 的刷点由 SpawnManager 接管，**当下可能并不存在**
+
+`SpawnManager::Initialize()`（`Maps/SpawnManager.cpp:72-90`，开图时执行一次）：
+
+```
+复活时间 < now  ⇒ MapPersistentState::AddGameobjectToGrid()   // 补进网格，随网格加载出现
+复活时间 ≥ now  ⇒ AddGameObject(dbGuid)                        // 只排进 m_spawns 待生成队列 ⇒ 场上没有
+```
+
+⇒ **"DB 行在、场上没有"在这里是合法状态**：要么它排着队没到点，要么它属于某个"限量组"而没被选中。
+
+### 4. 本次案例：任务 9345《Preparing the Salve》的刺叶
+
+- 任务 9345（等级 61，地狱火半岛）要求 **12 × 23205（Hellfire Spineleaf）**；
+  GO **181372 Hellfire Spineleaf**（type 3 宝箱、lock 259、loot 18233）每株只出 **1 个**（`gameobject_loot_template` 18233→23205，`-100`，maxcount 1）
+  ⇒ 需要**采 12 株**。
+- 刷点：`gameobject` 里 **98 个**（guid 181100-181197，map 530），坐标/模板/spawnMask/复活时间全部正常。
+- **真因**：这 98 个点**全部属于刷怪组 `spawn_group` 21390「Hellfire Spineleaf」**
+  （`spawn_group_spawn`：`Id=21390, SlotId=-1, Chance=0`；组定义 `Type=1`(GO)、**`MaxCount=15`**）。
+  - 组成员 ⇒ `GameObject.cpp:910/928` 判为 dynGuid ⇒ 运行时动态 guid；
+  - `SpawnGroup::Spawn()`（`Maps/SpawnGroup.cpp:157`、MaxCount 检查在 **175**、`std::shuffle` 在 **326**、截断在 **357**）
+    ⇒ 在 98 个候选点里**随机挑 15 个**生成；采掉一株后由 `SpawnManager::RespawnGameObject()`
+    （`SpawnManager.cpp:164`，写 `gameobject_respawn`）重排，**下次换哪几个点是不确定的**。
+- ⇒ **站在任意一个固定点上，大概率一株都看不到**（全场同时最多 15 株，且位置每次重抽），
+  这正是"`.gobject near` 有 98 个、`nearspawned` 一个没有、怎么换客户端都看不见"的全部原因。
+- 反证（系统本身在正常工作）：查的时候 `gameobject_respawn` 里有 **5 条**刺叶记录
+  （181107/181108/181145/181150/181151，时间 00:28~00:33，均为"+600 秒"）—— 说明近期确实有玩家**采到了**。
+- 与参照库一致：`tbcdb_ref` 里 **同一个组 21390、同样 MaxCount=15、同样 98 个成员** ⇒ **不是本次改坏的数据，是该库的设计**。
+
+### 5. 逐一排除掉的其它原因（本次都验过，别重复劳动）
+
+| 假设 | 实测 |
+|---|---|
+| 模板 displayId 不在 DBC | ❌ 无 `invalid displayId` 日志；`ObjectMgr.cpp:2480` 一失败就会打日志 |
+| 坐标埋地下 / 网格层级问题 | ❌ 98 个点与地形高度差 ≤0.1 码，与可见的魔草/梦叶草同级 |
+| 池（pool_gameobject / pool_gameobject_template） | ❌ 0 行（注意：**入口级**池是按 `gameobject.id` 关联的，只查 guid 会漏） |
+| 游戏事件（game_event_gameobject） | ❌ guid 181100-181197 一条都没有 |
+| 持久化复活时间未到 | ❌ `gameobject_respawn` 里那 5 条都已是过去时间，其余 93 个根本没有记录 |
+| `gameobject_spawn_entry` 标了 dynguided | ❌ 0 行（这条只对 `gameobject.id = 0` 的行生效） |
+| 本地/云端源码不一致 | ❌ 云端 `/root/Nmangos-tbc` 与本地判据代码逐行一致 |
+
+### 6. 「这任务不是太难做了吗」——站长定案：**取消节流，GO 刷点一律全刷（= AZ 口径，`dev/101`）**
+
+**先搞清这不是孤例**：本库的世界库把**所有采集点都做成了「分区/分组 + 并发上限」**
+（魔草 600 个点全在组里、梦叶草 439 个、铜矿 Barrens 36/160、瘟疫花 EPL 50/201……），
+所以「解散刷怪组、退回 98 个静态刷点」**是偏离本库整体设计的做法，不推荐**。
+
+**真正的异常是比例**：本库草药/矿脉组的并发上限普遍是成员数的 **20~33%**，而刺叶是 **15%**：
+
+| 组 | 上限 / 成员 | 比例 |
+|---|---|---|
+| Felweed - Hellfire Peninsula - SE (21460) | 13 / 56 | 23% |
+| Fel Iron Deposit - HFP - SW (21554) | 13 / 50 | 26% |
+| Dreaming Glory - Hellfire - Fissure East (21493) | 3 / 12 | 25% |
+| Copper Vein - Barrens (10565) | 36 / 160 | 23% |
+| Plaguebloom - Eastern Plaguelands (10776) | 50 / 201 | 25% |
+| **Hellfire Spineleaf (21390)** | **15 / 98** | **15%** ← 地狱火半岛采集组里最低档 |
+
+再叠加「任务要 12 株、每株只出 1 个、位置每轮随机重抽」，实际体验就是"满地图找 12 株"。
+
+**另一件事：`MaxCount = 15` 是上游原始设计，不是本端改坏的**。三方核对完全一致：
+
+| 数据源 | 刺叶刷点 | 组 | 上限 |
+|---|---|---|---|
+| TBC-DB 社区全库 `_tbc-db_ref\Full_DB\FullDB.sql` | 98 个（map 530） | `(21390,'Hellfire Spineleaf',1,15,…)` | 15 |
+| 同上 `spawn_group_spawn` 成员 | 98 个，guid **181100-181197**（与本库逐一对上） | — | — |
+| `tbcdb_ref` / `tbcmangos_orig` / `wotlkmangos`（cmangos 官方 WotLK 库） | 98 | 21390 | 15 |
+| AzerothCore 参照 `ac_cmp` | **无刷点数据**（只有 `gameobject_template` 模板/本地化）；AC 是 WotLK 端、节点分布用 `pool_*`，没有本端这套 spawn_group/dynGuid 机制 | — | — |
+| TrinityCore 参照 `trinitycore_ref` | 本地只有代码 + updates + 10.x 本地化串，**没有 world 数据 dump**；TC 采集点同样走池系统（`pool_template`/`pool_gameobject`），没有本端这套 spawn_group/dynGuid 机制 | — | — |
+
+任务 9345 的原文本身也写着「Spineleaf grows in and around the **Valley of Bones** to the north…
+Gather 12 Hellfire Spineleaf plants」—— 上游是按"**一小片区域里 15 株**"设计的。
+
+#### 6.1 定案前的普查：这套上限到底有多"随意"
+
+- **规模**：GO 型刷怪组 **1,514 个 / 22,857 个刷点**，上限合计 **5,734（≈25%）**
+  ⇒ 库里两万多个采集点，场上同刻只有五千多个。分类：草药 731 组 / 13,275 点、矿脉 543 组 / 6,902 点、
+  其他（宝箱/任务物/鱼群/蛋）240 组 / 2,680 点。
+- **比例没有任何公式**：<15% 247 组｜15-25% 270｜**25-35% 452**｜35-50% 23｜50-70% 42｜≥70% 47。
+- **上游自己承认是补偿值**：cmangos `Updates/0466` 注释 —— 加 dynguid 会缩短实际刷新时间，
+  故需调大刷点值以防"自然过量刷新"。⇒ 这些数字是**针对模拟器副作用的经验补偿，不是零售数据**。
+- **AZ 对照（已实测）**：同一批 181372 的点 AZ 有 70 个（本端 98 的子集）**全部常驻、无任何上限**。
+- **已经 ≥50% 的 190 组（982 点）构成**（查过，避免误伤）：**正好 50% 的 135 组 / 632 点**（不受影响）；
+  真超 50% 的 55 组 / 350 点 = **钓鱼 49 组 / 419 点** + **副本物件 15 组 / 107 点**
+  （Karazhan Sealed Tome、Deadmines Box of Assorted Parts、Old Hillsbrad 箱/水晶…）
+  + 少数外域草药矿脉（Netherstorm `Ethereal Technology` 30→23=77%、`Etherlithium Matrix` 29→21=72%…）
+  + 一个手误遗留 `Copper Vein - Hillsbrad Foothills`（3 个刷点、上限却写 8 = 267%）。
+- ⚠️ **坑：`FLOOR(成员数×50%)` 会把"只有 1 个刷点"的 18 个组算成 0，而 `MaxCount = 0` 是"一个都不刷"**
+  （`Maps/SpawnGroup.cpp:175` 的 `>=` 判定）⇒ 副本矿点/任务箱（IoQD 系列、Shattered Halls、Old Hillsbrad…）会直接消失。
+  **本方案（上限 = 成员数）天然绕开这个坑**（1 个成员 ⇒ 上限 1）。
+
+#### 6.2 改动（`dev/101_刷点上限放开_GO组全刷.sql`，**全静态**）
+
+```sql
+-- 每条都是写死的字面量：无 JOIN / 无子查询 / 无聚合 / 无计算（站长定规：云端只跑静态幂等写，改数据写死值）
+UPDATE `spawn_group` SET `MaxCount` = 98 WHERE `Id` = 21390 AND `MaxCount` <> 98;
+UPDATE `spawn_group` SET `MaxCount` = 13 WHERE `Id` = 21032 AND `MaxCount` <> 13;
+... （共 1,514 条，逐组写死"成员数"）
+```
+
+- ⛔ **为什么不做成 `UPDATE … JOIN (SELECT COUNT(*))`**：那是逻辑查询（云端还要现算一遍）。
+  数值已在**本地**算好，云端只做字面量赋值。
+- ✅ **写法：按目标值分组**（2026-09-22 站长要求"一大堆 `WHERE Id=` 不能写到一起吗"后改的）：
+  同一个 `MaxCount` 的所有 Id 用一条 `IN (…)` 写完 ⇒ **1,514 条压成 110 条**（110 个不同目标值），
+  文件 **120 KB → 18 KB**；回滚文件同法 **1,536 → 36 条**（12 KB）。
+  例（刺叶与另一组同为 98，合并成一条）：
+  ```sql
+  UPDATE `spawn_group` SET `MaxCount` = 98 WHERE `Id` IN (10547,21390) AND `MaxCount` <> 98;
+  ```
+  本地三步实测：回滚 0.084s、应用 **0.16s**、复跑 0 行变更（幂等）、`MaxCount<成员数` 的组 0。
+  （不用"一条巨型 CASE"：单条 100 KB+ 语句、全有全无、出错难定位；分组版既短又可逐条核对。）
+- ✅ **已于 2026-09-22 02:07 在云端应用并重启生效**（marker 097 → 099 → 101；当时 0 人在线，站长授权）。
+  **实测效果（world 库口径）**：GO 组上限合计 **5,734 → 22,857**（+17,123，×3.99）——
+  矿脉 1,631 → **5,976**（×3.66）｜草药/植物 3,203 → **12,917**（×4.03）｜其他（宝箱/任务物/鱼群/蛋/副本）900 → **3,964**（×4.40）；刺叶 15 → **98**。
+  ⚠️ 口径说明：这是"**同刻可存在点数**"上限；实际场上数量还受刷新 CD（采集后 600s / 组覆盖 300s）与玩家采集影响。
+  其中 **6,154 个成员是 `gameobject.id = 0` 的占位点**（运行时按 `gameobject_spawn_entry` 的权重抽矿种）⇒
+  "点位全开"**不会**让稀有矿变多，稀有度仍由权重与点位数量决定。
+- **回滚**：`dev/rollback/101_回滚_刷点上限还原.sql`（同样是全静态、写死**改前**值：刺叶 15、21032 → 2 …，共 1,536 条）。
+  ⚠️ 放在 `dev/rollback/` 子目录 —— `apply_dev_sql.sh` 只扫 `dev/[0-9][0-9][0-9]_*.sql`（**不递归**），**不会被自动执行**（干跑实测仍只列 099 → 101）。
+- **只改 `MaxCount`**（设为该组成员数 = 全刷）；组成员、模板、刷新时间、组的世界状态/旗标**一律不动**，代码不改。
+  ⚠️ 口径说明：`spawn_group.Type = 1` 共 **1,536 组**，其中 **22 组没有任何 `spawn_group_spawn` 成员（空组）**，
+  它们的 `MaxCount` 保持原值（空组本来就刷不出东西、无影响）。
+  因此按"全部 Type=1"统计上限合计是 **5,790 → 22,913**，而按"有成员的 1,514 组"统计是 **5,734 → 22,857**，两个口径都对。
+- **生物组（`Type = 0`，1,648 组）一律不动**：生物组成员本来就由网格加载（`ObjectMgr.cpp` 生物分支是两个独立 `if`），
+  上限限制的是组管理器；乱动会把 `MaxCount = 1` 的稀有精英变成"全刷"，也会踩 dynguid 双刷的老坑（见 1449 章）。
+- 本地实测（2026-09-22，走"静态回滚 → 静态应用 → 复跑"三步）：改前 **5,734**（刺叶 15、与成员数不符的组 1,494）
+  → 改后 **22,857**（刺叶 98/98、不符的组 **0**）；生物组分布不变（1,340 组仍是 0）；**复跑 0 行变更（幂等）**。
+
+#### 6.3 ⚠️ 「全刷」不等于「秒刷」：`MaxCount` 与刷新 CD 是两个独立旋钮
+
+站长 2026-09-22 追问"全刷会不会所有东西秒刷"——**不会**。`MaxCount` 只决定**同刻存在几个**，
+一个物件被采掉后**必须等它自己的 CD 到点才回来**：
+
+| 环节 | 代码位置 | 行为 |
+|---|---|---|
+| 采掉物件时定 CD | `Entities/GameObject.cpp:702-705` | `m_respawnDelay = gameobject.spawntimesecsmin~max 的随机值`；**组设了 `RespawnOverrideMin/Max` 就用组的值覆盖** |
+| 落定回来时间 | `GameObject.cpp:711` | `m_respawnTime = now + m_respawnDelay` |
+| CD 未到不许刷 | `Maps/SpawnGroup.cpp:291-307` | 候选里"复活时间 > now"的点**被剔除**；只有 `ignoreRespawntime`（GM `.respawn` / 脚本强制）才无视 CD |
+| 组级冷却 | `SpawnGroup.cpp:78-83` | 仅**整组清空**时给一次冷却（非副本）；全刷下几百成员不可能同时空 ⇒ 实际不触发 |
+
+**本库实际 CD**（2026-09-22 实测）：采集点（刺叶/魔草/梦叶草/地脉草/虚空花/梦魇藤/铜矿）**600 秒**；
+**416 个组带 `RespawnOverride = 300 秒`**（`dev/038` 矿脉刷新加速那批：成员自身 600、组覆盖 300 ⇒ 矿 5 分钟回来，
+如 `Iron Deposit - Arathi Highlands`）；无覆盖的组走成员自身的 600。全库其它值参照：
+600×20,745、180×18,821、120×4,742、900×4,572、7200×2,252、`-1`（永不自动刷）×1,401、86400×1,196。
+
+**体感差异（这才是全刷真正的变化）**：
+
+| | 改前（有上限） | 改后（全刷） |
+|---|---|---|
+| 采掉一个点 | 组里空出名额 ⇒ **立刻随机换另一个点**刷出（节点像"会瞬移/乱冒"） | 名额已满 ⇒ **采一个少一个**，只能等它自己 CD（采集点 600s） |
+| 区域总览 | 恒定 N 个、位置一直变 | **开局遍地**、越采越稀、按 CD 陆续回满 |
+
+⇒ 想让采集"更快回"必须改另一个旋钮（`gameobject.spawntimesecs` 或组 `RespawnOverride`），经济影响远大于本改动。
+
+**判定频率与"补位是随机抽签"（站长 2026-09-22 追问的细节）**：
+
+- `Map::Update` **每 tick** 调 `m_spawnManager.Update()`（`Map.cpp:729`）→ 组 `Spawn(false,false)`；
+  而 `MapUpdateInterval` 默认 **100 ms**（`World.cpp:511`，下限 `MIN_MAP_UPDATE_DELAY`）⇒ 所有"补位/回刷"的延迟都是**亚秒级**。
+- **改前（有上限）是"名额驱动"**：某点 CD 走完但名额满 ⇒ 它只是重新进入抽签池，**不会顶掉别人**；
+  只要有**任意一个活着点被采**（哪怕不是它）就空出名额 ⇒ 下一 tick 补一个，但补的**是随机的**：
+  `SpawnGroup.cpp:326` 把"所有 CD 已到期的成员"`std::shuffle` 后取前 k 个（k = 空位数）
+  ⇒ 那个刚到期、被挡住的点**中签概率 = 1 / 候选数**，不保证轮到它（这就是玩家觉得"矿/草会乱冒、会跑"的根源）。
+  候选全在 CD 中时一个都不刷；`MaxCount == 1` 的组另有 rare-mob 保护（`SpawnGroup.cpp:298-299`：任一成员在 CD ⇒ 整个 `Spawn()` return，**不换点顶替**）。
+- **改后（全刷）是"CD 驱动"**：名额永远有空 ⇒ **CD 一到就地刷回原刷点**，位置固定。
+
+**玩家可见症状：「同一个点采完马上又刷出来一个」——这是"替位（substitution）"，不是该点 CD 提前结束**（2026-09-22 站长实测提问）：
+
+- 机制：采掉一个点 ⇒ 组里立刻空出一个名额 ⇒ 下一 tick（≤100ms）在"**CD 已到期的成员**"里 `shuffle` 抽一个补上（见上面 291-357 那段）。
+  被采的那个 guid **确实在冷却**（`tbccharacters.gameobject_respawn` 里能看到 `now+600`/`now+300`），回不来的是别人顶上。
+- 为什么"看着像原地"：很多组是**小簇组**（如 `Badlands - Iron Deposit | Silver Vein | Gold Vein (1) Ore 004` 只有 4 个点挤在一小片、
+  `The Deadmines - Copper Vein (1) Ore 000` 4 个点）⇒ 新点就刷在旁边几码；偶发也会**抽中同一坐标**（但那是**另一个 guid**，概率 1/候选数）。
+- **实测方法**：采掉后立刻查 `SELECT guid, respawntime, FROM_UNIXTIME(respawntime) FROM tbccharacters.gameobject_respawn ORDER BY respawntime DESC LIMIT 5;`
+  （期望该 guid = 现在+600/300），再用 `.gobject nearspawned 60` 看多出来的是哪个 guid（多半是几码外的另一个组成员）。
+- **全刷（dev/101）后此现象消失**：上限=成员数 ⇒ 采掉一个后场上已是 N−1，而唯一"CD 已到期却不在场"的成员就是它自己（正在冷却）
+  ⇒ **候选池为空、不补位**，变成"采掉就空着，等自己的 CD 到点原位刷回"。
+
+#### 6.4 「官服是怎么样的」—— ⚠️ 只能给证据等级，**不能给结论**
+
+站长 2026-09-22 追问后又纠正：**pfQuest 不是官服数据，Questie 来源也不明** ⇒ 本端**没有任何一手官服数据**。
+所以下面只列"每个来源能不能代表官服"，**不要**再写"官服是这样的"：
+
+| 来源 | 它是什么 | 能不能当官服证据 |
+|---|---|---|
+| **pfQuest** `objects-tbc.lua` | 点数 + 第 4 值刷新秒数（普通矿 45s、Ooze 360s） | ❌ **其官方仓库自述 TBC 数据取自 CMaNGOS** ⇒ 与本库**同源**，是"另一份快照"而非独立第三方（本文件 2063 行早记过） |
+| **Questie** `tbcObjectDB.lua` | 众包坐标库（铜 2637、锡 2598、银 3524、富瑟银 539…），**无刷新时间字段** | ❓ **来源不可考**（站长：可能是官服数据，也可能是别处凑的）⇒ 不能单独作为官服依据 |
+| TBC-DB / cmangos / 本库 `tbcmangos` | 同一条血统的社区库；**`spawn_group + MaxCount` 这套并发上限是 mangos 系自己加的机制** | ❌ 机制不是零售的 |
+| **AzerothCore** `acore_world`（已导入本地） | 另一支血统：同一点**70 个刷点、无上限、无池**（`gameobject` 表连 `spawnGroupId`/`poolId` 列都没有） | ❌ 它和本库(98 点)点位数就不同 ⇒ 两边都是**众包近似**，谁都不是"官服原样" |
+
+**能确定 / 不能确定**：
+
+- ✅ **能确定（本端实测）**：`spawn_group` 的并发上限是 **mangos/cmangos 血统的机制**（AZ/TC 的 world 库里没有这些草药组，
+  连列都没有）；本端改前"98 个点只开 15 个、采一个立刻随机换点"的行为，**是这套机制的产物，不是零售行为**。
+- ✅ **能确定（语义等价）**：全刷后的语义 = "**所有点位都可能存在 + 采掉后各自 CD 回原位**"，
+  与"无上限的库（AZ）"一致。
+- ❓ **不能确定**：官服的真实并发数、真实刷新秒数。暴雪从未公布，插件数据要么同源（pfQuest）、要么来源不明（Questie）。
+  因此 6.3 里"官服 CD 更快（45s 级）"这类说法**只能当作"某个同源库的数值"，不能当官服事实**。
+- 生效：**需重启**（`LoadGameObjects` / `SpawnManager::Initialize` 在启动/开图时跑；
+  之后 `SpawnGroup::Update()` 每 tick 会把组填到上限）。云端干跑 `would apply 099 → 101`，随夜间 04:06 生效。
+- 预期：同刻存在的采集点/物件 **5,734 → 22,857**（+17,123 个常驻 GameObject，内存估算 **+10~17 MB**）；
+  采集产出≈4 倍，草药/矿石市场供给↑、AHBot 回收支出↑（日闸 100 金/周期、5000 金/24h 不变）。
+- 遗留观察：① 重启后首图打开会一次性生成 2 万多个物件（内存峰值留意 `mem_monitor.sh`）；
+  ② 灵翼蛋/血之英雄/副本宝箱等"稀有轮换"物件也变成全刷（站长已确认接受该口径）。
+- ⚠️ **`MaxCount = 0` 不是"无限"，是"一个都不刷"**：`SpawnGroup.cpp:175` 是 `if (m_objects.size() >= m_entry.MaxCount) return;`
+  ⇒ 0 会让 `0 >= 0` 恒真。（注：库里确实存在一批 `MaxCount = 0` 的**生物**组（Netherstorm 28011/28014…），
+  按这段代码它们应当刷不出东西 —— 与本任务无关，仅记录待查。）
+- ⚠️ **改完必须重启**（`LoadGameObjects` 只在 mangosd 启动时跑、`SpawnManager::Initialize` 只在开图时跑），
+  且**有玩家在线时禁止重启**（P0）⇒ 走夜间维护窗口（04:00 关机 / 04:05 开机 / 04:06 nightly 应用 dev SQL 并启动）。
+
+### 6b. 别的核心怎么实现的（AZ / TC 对照，2026-09-22 查）
+
+**核心差异：AZ/TC 的 `spawn_group` 与本端（cmangos）的 `spawn_group` 是"同名不同物"。**
+
+| | 本端 cmangos | AzerothCore / TrinityCore |
+|---|---|---|
+| 表 | `spawn_group(Id, Name, Type, **MaxCount**, WorldState, WorldStateExpression, Flags, StringId, RespawnOverrideMin/Max)` + `spawn_group_spawn(Id, Guid, SlotId, Chance)` | `spawn_group_template(groupId, name, mapId, flags)` + 刷点的 `spawnGroupId` 列（AC `SpawnData.h`：`SpawnGroupTemplateData { groupId, name, mapId, flags }`） |
+| 语义 | **限量池**：一组刷点里**同时最多 `MaxCount` 个**存在，随机挑、采后重排；组成员还是 dynGuid（运行时动态 guid） | **开关组**：`SPAWNGROUP_FLAG_SYSTEM / COMPATIBILITY_MODE / MANUAL_SPAWN / DYNAMIC_SPAWN_RATE / ESCORTQUESTNPC` ⇒ 只管"这组**生不生效**"（副本 boss 状态联动 `instance_spawn_groups`、护送任务、手动 `SpawnGroupSpawn/Despawn`），**没有"同时存在几个"这种上限** |
+| 采集点数量控制 | 刷怪组上限（本端刺叶即 15/98） | **没有这个维度**；只有**池系统** `pool_template`/`pool_gameobject`（一组点里按权重只出其中一部分），草药/矿脉一般不进池 |
+| 结论 | 库里有 98 个点、场上最多 15 个 | **`gameobject` 表里有多少行，就同时存在多少株**（采掉后按各自 `spawntimesecs` 刷新） |
+
+- 证据：AC 源码 `azerothcore_ref\src\server\game\Maps\SpawnData.h`（`SpawnGroupTemplateData` 只有 groupId/name/mapId/flags）
+  与 `Map.cpp:2596-2720`（`IsSpawnGroupActive` / `SpawnGroupSpawn` / `SpawnGroupDespawn`）；
+  TC 侧 `trinitycore_ref\sql\base\dev\world_database.sql` 里是 `instance_spawn_groups`（boss 状态→刷怪组）。
+  参考：[AzerothCore wiki `spawn_group`](https://www.azerothcore.org/wiki/spawn_group)、
+  [`spawn_group_template`](https://www.azerothcore.org/wiki/spawn_group_template)。
+- ⇒ **cmangos 的 spawn_group 数据（含 MaxCount）搬到 AZ 上没有任何作用**（列不匹配、语义不同）。
+- ✅ **已实测（2026-09-22）**：把 AC 的 world 库导进了本地 MySQL（库名 **`acore_world`**）。
+  官方没有单文件发布 —— 正确路径是主仓库 `azerothcore/azerothcore-wotlk` 的
+  `data/sql/base/db_world/*.sql`（309 个文件 297 MB，内含完整刷点内容）+ 按日期顺序
+  `data/sql/updates/db_world/*.sql`（867 个）。本次用 `git sparse-checkout set data/sql` 只取这两个目录，
+  脚本见 `_agent_tmp/import_acore_world.sh`（base 8 个 locale 文件 + 43 个 update 因**客户端字符集/重复主键**失败，
+  与刷点无关；重跑需加 `--default-character-set=utf8mb4` 并按 base 里的 `updates` 表跳过已应用项）。
+  **实测结果**：`gameobject` 共 **96,628** 行；**181372 = 70 行**（全部 map 530）；`pool_gameobject` 中 **0 行**；
+  `spawn_group` 全表 **54 行**、`spawn_group_template` **7 行**（全是 Sanctum of the Stars / Altar of Sha'tar 等
+  脚本开关组，flag=4 `MANUAL_SPAWN`，**无任何草药组**）；`gameobject` 表**没有 `spawnGroupId`/`poolId` 列**。
+  ⇒ **AZ 上 70 个点全部同时存在**（采后各自按 `spawntimesecs` 刷新），不存在本端"库里有 98、场上只有 15"的现象。
+- **逐点比对（本端 98 vs AZ 70）**：AC 的 70 个点**是本端 98 个点的真子集** —— 70/70 在 2 码内一一对上，
+  AZ **无独有点**，本端多出 **28** 个点；两边 z 范围一致（−36.4 ~ 94.9）。同组对照：Felweed 本端 633 / AZ 426。
+  即：**AZ 的点更少，但同刻可采数量是 70 : 15（约 4.7 倍）**。
+
+- **与 `dev/051`（2026-08-29"矿脉组 MaxCount 1→2"）的关系**（站长 2026-09-22 专门追问过）：
+  051 是针对**同一根因**（spawn_group 机制 + `MaxCount` 太小 ⇒ 矿少）的第一次修复，把 215 个含矿 entry 的组 1→2；
+  线上实测（改前）：该范围 265 组里 **230 组仍是 `MaxCount = 2`**、上限合计 **936 / 成员 3,149**；
+  全库 `MaxCount = 2` 的 GO 组 **517 组 / 3,129 个成员**（含灵翼蛋、Ragveil 泵站等）。
+  → 本脚本把它们一律抬到成员数（该范围 936 → **3,149**），**是 051 的延续与终极版，不是回退**；
+  站长确认"矿脉一并全刷，不保留 `MaxCount = 2` 的档位"（不再单独排除任何组）。
+- **回滚**：`dev/rollback/101_回滚_刷点上限还原.sql`（**全静态**，写死改前值 1,536 条；见 6.2）。
+  ⚠️ 早先版本曾用"建快照表 `spawn_group_bak_maxcount_20260922` + JOIN 还原"的写法，因站长定规
+  「**SQL 里不用逻辑查询、一律写死值**」已改掉（云端从未执行过那版，本地那张表已删）。
+- **本地与云端的一致性**：本地库已应用（`MaxCount` 全为成员数；静态回滚文件在手）；
+  云端在夜间 04:06 应用（干跑 `would apply 099 → 101`）。两者最终一致。
+
+### 7. 附：一条顺手发现的代码笔误（只记录，不改）
+
+`GameEvents/GameEventMgr.cpp:880`：事件 GO 注册成了 **`AddEventGuid(goDbGuid, HIGHGUID_UNIT)`**
+（同函数的移除用 `RemoveEventGuid(goDbGuid, HIGHGUID_GAMEOBJECT)`，981 行才是 creature 的正确写法）。
+后果：事件 GO 的 dbGuid 进的是**生物**的事件 guid 集合（`IsEventGuid(go, GAMEOBJECT)` 恒 false），
+网格加载时不会给它动态 guid；而移除时从 GO 集合删、删了个不存在的东西 ⇒ **生物集合里会残留**。
+生物与 GO 的 dbGuid 是两个独立编号空间（都从 1 开始）⇒ 理论上存在"编号撞车"的隐患。
+本次与刺叶无关，仅记录待观察。
 

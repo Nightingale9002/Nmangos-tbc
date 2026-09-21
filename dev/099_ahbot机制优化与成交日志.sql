@@ -9,19 +9,15 @@
 --   ④ 方差对称化（ValueWithVariance 值域 [−V, +V]）
 --   ⑤ 结算时钟 last_settle_time 持久化（原先只在内存 ⇒ 重启即提前结算）
 --   ⑥ 成交日志 auction_history（所有成交一行，便于追踪经济）
+--
+-- ⛔ 【全静态 SQL】：本文件没有任何查询 / 判断 / 动态 SQL（`SET @` / `PREPARE` / `information_schema` 一律不用）。
+--    站长定规：SQL 里不用逻辑查询，一律静态写死值。结构变更（新增列）已在 **2026-09-22 用静态 ALTER
+--    在本地库与云端库建好**，因此本文件只负责建日志表；那句 ALTER 留在文末"结构变更记录"里备查
+--    （不放进本文件，是为了避免重跑时 1060 Duplicate column 报错卡住 marker 队列）。
 
--- 1) ahbot_market_state.last_settle_time —— 结算时钟持久化
---    幂等：MySQL 不支持 ADD COLUMN IF NOT EXISTS，用 information_schema 判断。
-SET @exist := (SELECT COUNT(*) FROM information_schema.COLUMNS
-                WHERE TABLE_SCHEMA = 'tbccharacters' AND TABLE_NAME = 'ahbot_market_state'
-                  AND COLUMN_NAME = 'last_settle_time');
-SET @ddl := IF(@exist = 0,
-    'ALTER TABLE tbccharacters.ahbot_market_state ADD COLUMN last_settle_time INT UNSIGNED NOT NULL DEFAULT 0 COMMENT ''上次流水结算时刻(unix)''',
-    'DO 0');
-PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
--- 2) auction_history —— 拍卖行成交日志（含玩家↔玩家、玩家↔AHBot、买断与竞价获胜）
+-- 1) auction_history —— 拍卖行成交日志（含玩家↔玩家、玩家↔AHBot、买断与竞价获胜）
 --    写入点：AuctionEntry::AuctionBidWinning()（唯一成交结算点）
+--    幂等：`CREATE TABLE IF NOT EXISTS` 本身幂等，重跑无副作用。
 CREATE TABLE IF NOT EXISTS tbccharacters.auction_history (
   id            BIGINT UNSIGNED  NOT NULL AUTO_INCREMENT,
   `time`        INT UNSIGNED     NOT NULL COMMENT 'unix 成交时刻',
@@ -39,6 +35,13 @@ CREATE TABLE IF NOT EXISTS tbccharacters.auction_history (
   KEY idx_item_time (item_template, `time`),
   KEY idx_bot (seller_is_bot, buyer_is_bot)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3;
+
+-- 结构变更记录（已完成，无需重复执行；如需在全新库重建请手工跑这一句）：
+--   2026-09-22 已在【本地库 + 云端库】执行，云端实测
+--     `SHOW COLUMNS FROM tbccharacters.ahbot_market_state LIKE 'last_settle_time';`
+--     → last_settle_time  int unsigned  NO  ''  0
+--   ALTER TABLE tbccharacters.ahbot_market_state
+--     ADD COLUMN last_settle_time INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '上次流水结算时刻(unix)';
 
 -- 回滚：
 --   ALTER TABLE tbccharacters.ahbot_market_state DROP COLUMN last_settle_time;
