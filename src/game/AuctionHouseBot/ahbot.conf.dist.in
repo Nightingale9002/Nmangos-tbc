@@ -303,7 +303,13 @@ AuctionHouseBot.Value.Subclass.0.5.Epic = 0
 #   BuyDepth     - hidden buy cap = price * (100 - BuyDepth) / 100
 #                  0 = buy at the reference price (players can sell at/near ref)
 #                  (2026-09-04: 0 on cloud so player listings at ~ref price are absorbed)
-#   BuyPerCycle  - max buyout units per item per refresh cycle (0 = unlimited)
+#   BuyPerCycle  - 每周期（≈Value.DynamicRefresh 秒）每件最多吸收多少【单位】（不是"单数"）。
+#                  按已买量累加，余额装不下整单就等下一个周期。
+#                  ⚠️ 买断是【整单成交】，拍卖行无法只买一单的一部分 ⇒ 堆叠数大于本值的挂单
+#                  一条都不会被回收（不是"少买几个"）。所以本值必须 ≥ 玩家常见的堆叠大小：
+#                  云端 2026-09-18 设成 2 ⇒ 实测玩家 10/20 个一组的挂单**全都卖不掉**
+#                  （静默失效：没有任何报错，只在 `ahbot_market_state.flow_bought` 上表现为恒为 0），
+#                  2026-09-21 改为 20。0 = 不限制（总量仍由 MaxGoldPerCycle / MaxGoldPerDay 兜底）
 #   BidOnlyBuyout - 1 = only buyout player listings (never bid: bot bidding is free
 #                   and mints gold to the seller), 0 = allow bidding up to the cap
 #   Smoothing    - EMA alpha %% for following trade prices
@@ -343,3 +349,16 @@ AuctionHouseBot.MarketMaker.ProbeInterval = 30
 AuctionHouseBot.MarketMaker.PriceFloor = 5
 AuctionHouseBot.MarketMaker.PriceCeil = 300
 
+
+###################################################################################################################
+# [2026-09-21] 结算机制（站长定案）—— 与 FlowMinUnits/FlowRatio/FlowSettleHours/FlowMove*Pct 配套读：
+#   FlowMinUnits + FlowRatio = 单次结算的"证据门槛"：窗口内 flowTotal ≥ FlowMinUnits 且单边比 ≥ FlowRatio%
+#                             才动价；低于门槛的流水会被【无条件清零丢弃】（不累积到下期）
+#   FlowSettleHours          = 结算窗口（小时）。1 = 每小时结算一次
+#   FlowMoveUpPct/DownPct    = 每次结算最多移动百分之几 ⇒ 配合 FlowSettleHours=1 即"每小时 ≤1%"
+#   MaxDailyMovePct          = 每 24 小时累计移动上限 ⇒ 即"每天 ≤±10%"（day_price/day_start 持久化）
+#   ★ 涨价额外要求"≥2 个不同买家"（代码 soldBuyers 去重）：单人自买自卖（养价）无法推价；
+#     降价不设该限制 —— 单个玩家大量砸货是真实的供给过剩信号，且价格跌得比涨得快是有意的保护
+#   ★ PriceFloor / PriceCeil = 0 ⇒ 不按静态价钳制（静态价是随手设的，不能当"正常区间"）
+#   ★ 成交日志：每笔成交写 tbccharacters.auction_history 一行 + Server.log 的 [AHTRADE] 日志
+###################################################################################################################

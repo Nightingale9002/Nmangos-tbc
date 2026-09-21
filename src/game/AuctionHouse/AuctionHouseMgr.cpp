@@ -982,6 +982,27 @@ void AuctionEntry::SaveToDB() const
 
 void AuctionEntry::AuctionBidWinning(Player* newbidder)
 {
+    // [2026-09-21] 经济追踪：每一笔成交（含玩家↔玩家、玩家↔AHBot、竞价获胜/买断）
+    // 在唯一结算点记一行到 tbccharacters.auction_history，并同时落一条 ERROR 级日志。
+    // 落盘说明（站长要求）：
+    //   ① DB 行刻意写在下面 BeginTransaction() **之外** ⇒ 自己独立提交，不会被后续事务回滚带走；
+    //      InnoDB autocommit 立刻落盘（auction_history 见 deploy/dev SQL）。
+    //   ② 同时用 sLog.outError 写 Server.log（ERROR 级必然输出，见 handoff 第十三章），
+    //      即使 DB 写失败/表被删，成交记录仍有一份在磁盘上，可用于事后对账。
+    {
+        uint32 const unitPrice = bid / std::max<uint32>(1, itemCount);
+        uint32 const houseIdx = sAuctionMgr.GetAuctionMapIndex(auctionHouseEntry);
+        uint32 const now = uint32(time(nullptr));
+        CharacterDatabase.PExecute("INSERT INTO auction_history "
+                                   "(time, house, item_template, item_count, unit_price, total_price, seller_guid, buyer_guid, seller_is_bot, buyer_is_bot) "
+                                   "VALUES (%u, %u, %u, %u, %u, %u, %u, %u, %u, %u)",
+                                   now, houseIdx, itemTemplate, itemCount, unitPrice, bid,
+                                   owner, bidder, owner ? 0 : 1, bidder ? 0 : 1);
+        sLog.outError("[AHTRADE] time=%u house=%u item=%u count=%u unit=%u total=%u seller=%u buyer=%u sellerBot=%u buyerBot=%u",
+                      now, houseIdx, itemTemplate, itemCount, unitPrice, bid,
+                      owner, bidder, owner ? 0 : 1, bidder ? 0 : 1);
+    }
+
     // market-maker demand signal: a player won this auction (bidder != 0; the AHBot
     // buys with bidder = 0 and must not count its own purchases as demand). Record the
     // actual unit price paid so the AHBot can anchor its mid to the recent trade price.
@@ -996,7 +1017,7 @@ void AuctionEntry::AuctionBidWinning(Player* newbidder)
     //    -> goods enter our holdings at the price paid
     uint32 houseIdx = sAuctionMgr.GetAuctionMapIndex(auctionHouseEntry);
     if (!owner && bidder)
-        sAuctionHouseBot.DeductInventory(itemTemplate, houseIdx, itemCount, bid);
+        sAuctionHouseBot.DeductInventory(itemTemplate, houseIdx, itemCount, bid, bidder);
     else if (owner && !bidder && bid)
         sAuctionHouseBot.RecordBotPurchase(itemTemplate, houseIdx, itemCount, bid / std::max<uint32>(1, itemCount), bid);
 #endif

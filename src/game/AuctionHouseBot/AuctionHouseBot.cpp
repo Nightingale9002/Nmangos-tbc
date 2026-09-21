@@ -934,20 +934,32 @@ void AuctionHouseBot::UpdateMarketPrices()
                         }
                         else if (state.flowSold > (uint64)state.flowBought * m_flowRatio / 100)
                         {
-                            newPrice = (uint32)(((uint64)oldPrice * (100 + std::min<uint32>(50, m_flowMoveUpPct)) + 50) / 100);
-                            outcome = "up";
+                            // [2026-09-21] 去重后的单边性判定：涨价必须来自 ≥2 个不同买家。
+                            // 单人自己反复买（"养价"）无论买多少都不算需求信号。
+                            // 降价不设这个限制：单个玩家大量砸货本来就是"供给过剩"的真实信号，
+                            // 且价格跌得快是该机制有意的保护（宁可低也不要虚高）。
+                            if (state.soldBuyerCount >= 2)
+                            {
+                                newPrice = (uint32)(((uint64)oldPrice * (100 + std::min<uint32>(50, m_flowMoveUpPct)) + 50) / 100);
+                                outcome = "up";
+                            }
+                            else
+                                outcome = "up-blocked-1buyer";
                         }
                         else
                             outcome = "balanced";
                     }
                     if (flowTotal)
-                        sLog.outError("[AHBOT] SETTLE item=%u house=%u bought=%u sold=%u total=%u gate=%u old=%u new=%u result=%s",
+                        sLog.outError("[AHBOT] SETTLE item=%u house=%u bought=%u sold=%u total=%u gate=%u buyers=%u old=%u new=%u result=%s",
                                       itemId, uint32(houseIndex), state.flowBought, state.flowSold,
-                                      flowTotal, m_flowMinUnits, oldPrice, newPrice, outcome);
+                                      flowTotal, m_flowMinUnits, state.soldBuyerCount, oldPrice, newPrice, outcome);
                     state.flowBought = 0;
                     state.flowSold = 0;
+                    state.soldBuyerCount = 0;               // 买家去重集合随窗口清零
+                    state.soldBuyers.fill(0);
                     state.lastSettleTime = now;
-                    CharacterDatabase.PExecute("UPDATE ahbot_market_state SET flow_bought = 0, flow_sold = 0 WHERE item = %u AND auction_house = %u", itemId, houseIndex);
+                    CharacterDatabase.PExecute("UPDATE ahbot_market_state SET flow_bought = 0, flow_sold = 0, last_settle_time = %u WHERE item = %u AND auction_house = %u",
+                                               state.lastSettleTime, itemId, houseIndex);
                 }
             }
 
@@ -1303,7 +1315,7 @@ void AuctionHouseBot::EnsureTargets(AuctionHouseBotMarketState& state, uint32 it
 // restored so price settlement and the operator log stay continuous across restarts.
 void AuctionHouseBot::LoadInventory()
 {
-    if (auto result = CharacterDatabase.Query("SELECT item, auction_house, spent, earned, flow_bought, flow_sold, day_price, day_start FROM ahbot_market_state"))
+    if (auto result = CharacterDatabase.Query("SELECT item, auction_house, spent, earned, flow_bought, flow_sold, day_price, day_start, last_settle_time FROM ahbot_market_state"))
     {
         do
         {
@@ -1320,6 +1332,8 @@ void AuctionHouseBot::LoadInventory()
             // [2026-09-18] 报价每日限额窗口（day_price/day_start）
             state.dayPrice = fields[6].GetUInt32();
             state.dayStart = fields[7].GetUInt32();
+            // [2026-09-21] 结算时钟同样持久化：原先只在内存 ⇒ 每次重启都会"提前结算一次"
+            state.lastSettleTime = fields[8].GetUInt32();
         } while (result->NextRow());
     }
 
@@ -1373,13 +1387,23 @@ uint32 AuctionHouseBot::GetBookedUnits(AuctionHouseBotMarketState const& state) 
 // inventory is gone: this only records the demand signal (flow_sold) and the gold the
 // economy paid (earned) for the price machinery; nothing is deducted anywhere.
 // goldReceived = final price paid (the gold the economy lost to our ask).
-void AuctionHouseBot::DeductInventory(uint32 itemId, uint32 houseIdx, uint32 count, uint32 goldReceived)
+void AuctionHouseBot::DeductInventory(uint32 itemId, uint32 houseIdx, uint32 count, uint32 goldReceived, uint32 buyerGuid)
 {
     if (houseIdx >= MAX_AUCTION_HOUSE_TYPE)
         return;
     AuctionHouseBotMarketState& state = m_marketState[itemId][houseIdx];
     state.earnedGold += goldReceived;
     state.flowSold += count; // central-bank flow signal: players consumed our supply
+    // [2026-09-21] 记录本窗口内的不同买家（去重）：涨价要求 ≥2 个不同买家，
+    // 单人自买自卖（"养价"）不能构成涨价依据。
+    if (buyerGuid)
+    {
+        bool known = false;
+        for (uint32 i = 0; i < state.soldBuyerCount; ++i)
+            if (state.soldBuyers[i] == buyerGuid) { known = true; break; }
+        if (!known && state.soldBuyerCount < state.soldBuyers.size())
+            state.soldBuyers[state.soldBuyerCount++] = buyerGuid;
+    }
     CharacterDatabase.PExecute("UPDATE ahbot_market_state SET earned = %u, flow_sold = %u WHERE item = %u AND auction_house = %u",
                                state.earnedGold, state.flowSold, itemId, houseIdx);
 }

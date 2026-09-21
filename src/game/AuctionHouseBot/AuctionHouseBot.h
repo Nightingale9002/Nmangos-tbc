@@ -103,6 +103,12 @@ struct AuctionHouseBotMarketState
     // (persisted in ahbot_market_state) feeding the price machinery.
     uint32 spentGold = 0;      // gold paid out to players for bot purchases
     uint32 earnedGold = 0;     // gold received from players for bot sales
+    // [2026-09-21] 结算时钟（原为纯内存字段，重启即丢 ⇒ 每次重启都会"提前结算一次"）
+    // 现已持久化到 ahbot_market_state.last_settle_time（LoadInventory 读入、结算时写回）
+    // [2026-09-21] 本流水窗口内"买走我们挂单"的**不同买家**（低 guid），用于去重判定：
+    // 涨价必须来自 ≥2 个不同买家，单人自买自卖无法推价。
+    std::array<uint32, 8> soldBuyers = {};
+    uint32 soldBuyerCount = 0;   // 已记录的不同买家数（最多 8）
     // quote exposure driver (seeded from catalog/config / static 055 rows)
     uint32 target = 0;         // desired concurrent exposure = target x QuoteExposurePct
     uint32 capacity = 0;       // (reserved; kept for the DB row mirror)
@@ -161,7 +167,8 @@ class AuctionHouseBot
         // only the demand/supply signals + gold observables, no stock movement):
         // a player bought one of our listings (flow_sold/earned) or the bot bought a
         // player listing / won its bid (flow_bought/spent)
-        void DeductInventory(uint32 itemId, uint32 houseIdx, uint32 count, uint32 goldReceived);
+        // [2026-09-21] buyerGuid 用于"按买家去重的单边性判定"（一个玩家-alone 不能构成涨价依据）
+        void DeductInventory(uint32 itemId, uint32 houseIdx, uint32 count, uint32 goldReceived, uint32 buyerGuid);
         void RecordBotPurchase(uint32 itemId, uint32 houseIdx, uint32 count, uint32 unitCost, uint32 goldPaid);
 
     private:
@@ -175,7 +182,9 @@ class AuctionHouseBot
         void AddLootToItemMap(LootStore* store, std::vector<int32>& lootConfig, std::vector<uint32>& lootTemplates, std::unordered_map<uint32, uint32>& itemMap);
         uint32 CalculateBuyoutPrice(ItemPrototype const* prototype);
         uint32 GetItemValue(ItemPrototype const* prototype) const;
-        uint32 ValueWithVariance(uint32 itemValue) { return (uint32) (itemValue + ((int32) urand(0, m_valueVariance * 2 + 1) - (int32) m_valueVariance) * (int32) (itemValue / 100)); };
+        // [2026-09-21] 方差对称化：原式 `urand(0, 2V+1) - V` 的值域是 [−V, +V+1]（略偏上、且上沿多 1%），
+        // 会让"按上限挂单"多拿一点（例如 V=5 时回收上限 106% 而不是 105%）。改成 [−V, +V]。
+        uint32 ValueWithVariance(uint32 itemValue) { return (uint32) (itemValue + ((int32) urand(0, m_valueVariance * 2) - (int32) m_valueVariance) * (int32) (itemValue / 100)); };
 
         // ---- market-maker ladder quoting ----
         // Tracks the real per-unit market price and quotes a sell ladder around it,

@@ -3261,3 +3261,115 @@ state.flowBought = 0;  state.flowSold = 0;   // 无条件清零
 - 配置：mangosd 启动时读取 → 随重启生效
 - 代码：已同步云端源码树（md5 `6adc26e4…`，与本地逐字节一致）→ **随 09-21 04:06 nightly** 编译上线
 
+## [经济] AHBot 回收侧：`BuyPerCycle = 2` 让所有整组挂单卖不掉（纯配置已修）—— 2026-09-21
+
+### 1. 现象（站长实测）
+
+> 「我在拍卖行的挂单一直没 bot 买入。」
+
+线上实查（`tbccharacters`）：玩家挂单共 **6 条（全是站长的）**，`item_count` = 20 / 10 / 20 / 20 / 20 / 10，
+**全部 `> 2`**；单价全部落在 bot 的回收区间内（Silk Cloth 300 vs 291–324、Runecloth 800 vs 768–856、
+Netherweave 1300 vs 1303–1454、Ancient Lichen 2688 vs 3024–3374），物品也都确实在做市商 book 里（`category=1`）。
+⇒ **不是价格问题**。另外线上 `ahbot_market_state.flow_bought` 全部为 0（没有新的回收流水）。
+
+### 2. 根因：配额数的是「单位」，而买断是「整单成交」
+
+```cpp
+if (mmBuyState && m_mmBuyPerCycle)
+{
+    if (mmBuyState->buyoutsThisCycle + item->GetCount() > m_mmBuyPerCycle)
+        continue;                                  // 整单跳过
+    mmBuyState->buyoutsThisCycle += item->GetCount();
+}
+```
+
+- `MarketMaker.BuyPerCycle` 的语义是 **每周期（≈`Value.DynamicRefresh`=60 秒）每件最多吸收多少「单位」**，
+  **不是"单数"** —— 以前的口径容易被读成"每周期最多 2 单"，**这是误判点**。
+- 因为**买断是整单成交**（拍卖行无法只买一条挂单的一部分），判据会**整单跳过**：
+  堆叠数大于该配额的挂单 **永远** 不会被回收 —— 不是"只买 2 个"，而是"一条都不买"。
+- 于是 `BuyPerCycle = 2` 在人人挂整组（10/20 个）的服务器上 ⇒ **回收功能整体静默失效**：
+  没有任何报错，只在数据上表现为 `flow_bought` 恒为 0（历史 `spent > 0` 的记录都来自 1~2 个的小单）。
+
+### 3. 修法：**纯配置**（不改代码）
+
+`/opt/mangos/etc/ahbot.conf`（备份 `/root/ahbot.conf.bak_20260921_buypercycle`；该文件 LF、无 BOM）：
+
+| 键 | 原 | 现 | 说明 |
+|---|---|---|---|
+| `MarketMaker.BuyPerCycle` | 2 | **20** | 每周期每件最多吸收 20 单位 ⇒ 20 个/组的满组能成交（成交一次即用满当周期配额，下一条等下一个 60 秒周期）|
+
+> **曾经**想把它拆成"每周期单位配额 + 单笔堆叠上限（新增 `BuyMaxStack`）"两个键并已写好代码；
+> **站长定：没必要** —— 这个配置本来就是"最多买多少个（单位）"，把值调到 ≥ 玩家常见堆叠大小即可，
+> 拆键等于凭空多一个机制。**该代码改动已整条撤回**（未推送，工作区已还原）。
+> 两道金币闸不变：`MaxGoldPerCycle = 100 金/周期`、`MaxGoldPerDay = 5000 金/24h`。
+
+### 4. 生效与验收
+
+- 线上 conf 已改；⛔ **没有为它单独重启**：查的时候线上有 **3 名玩家**，
+  站长定规「**有玩家在线时禁止重启服务器**」（已写进 handoff 的 P0）。
+- 生效路径：夜间维护窗口（阿里云 04:00 关机 / 04:05 开机 → 04:06 nightly）。**即使不需要编译**，
+  nightly 也会走"mangosd 未运行则拉起"这一步把服务起回来 ⇒ **配置随这次启动读取生效**。
+- 验收：重启后 `ahbot_market_state.flow_bought` / `spent` 开始增长；站长那 6 条挂单被逐条买走。
+
+### 5. 教训
+
+1. **数量/百分比类配额必须先问"单位是什么"**：`BuyPerCycle` 数的是**单位**，而判据与"整单成交"耦合
+   ⇒ 值必须 ≥ 玩家常见堆叠大小，否则是完全静默的失效（"配额 2" ≠ "每周期买 2 单"）。
+2. 这类失效**没有任何日志**，只能靠观测量发现（`flow_bought = 0` + 玩家挂单堆积）——
+   以后调这类参数，先定一个"可观测的验收指标"。
+3. 对称地看：卖侧的挂单是按**满组**打的（`QuoteCatalog` 用 `maxstack` 打包），回收侧却按"单位"限额 ——
+   两侧的计量单位不一致，就是这次踩坑的土壤。
+
+## [经济] AHBot 结算机制优化（反养价 + 摊平价格）+ 拍卖行成交日志 —— 2026-09-21
+
+### 1. 动机（站长定案）
+
+- 上一节关掉探针后，剩下的可套利路径是"**养价**"：每天买 ≥20 单位 → 锚价 +3%/天 → 出货时挂 106% 锚价 →
+  在 5000 金/天的日闸内稳赚小额。要压掉它 ⇒ **提高门槛与单边要求 + 把价格变动摊平 + 按买家去重**。
+- 静态价上下限（`PriceFloor/PriceCeil`）**无意义**：最初的价格是随手设的，不能当"正常区间"；
+  改成"**以当前价格为准 + 每小时/每天的变动上限**"来约束。
+
+### 2. 配置（`/opt/mangos/etc/ahbot.conf`，备份 `ahbot.conf.bak_20260921_mech`）
+
+| 键 | 原 | 现 | 含义 |
+|---|---|---|---|
+| `FlowMinUnits` | 20 | **100** | 单次结算的证据门槛（单位数）|
+| `FlowRatio` | 120 | **300** | 单边比要求（3:1）|
+| `FlowSettleHours` | 24 | **1** | 结算窗口 = 1 小时 |
+| `FlowMoveUpPct` / `FlowMoveDownPct` | 3 / 5 | **1 / 1** | 每次结算最多 1% ⇒ **每小时 ≤1%** |
+| `MaxDailyMovePct` | 10 | 10（不变）| **每天 ≤±10%**（`day_price/day_start` 持久化）|
+| `PriceFloor` / `PriceCeil` | 0 / 10000 | **0 / 0** | 关闭静态价钳制（0 = 不钳制）|
+
+### 3. 代码（`AuctionHouseBot.cpp/.h`、`AuctionHouseMgr.cpp`、`ahbot.conf.dist.in`）
+
+1. **涨价按买家去重**（反养价核心）：新增 `soldBuyers[8] / soldBuyerCount`，每次"玩家买走我们挂单"记录买家低 guid
+   （`AuctionHouseMgr` 的 `DeductInventory(...)` 增加 `buyerGuid` 参数）；结算时**涨价要求 `soldBuyerCount >= 2`**，
+   否则 `result=up-blocked-1buyer`（写进结算日志）。**降价不设该限制** —— 单个玩家大量砸货是真实的供给过剩信号，
+   且"跌得比涨得快"是该机制有意的保护（宁可低也不要虚高）。
+2. **方差对称化**：`ValueWithVariance` 原式 `urand(0, 2V+1) − V` 值域是 `[−V, +V+1]`（上沿多 1%），
+   改为 `[−V, +V]`。影响：回收上限由 106% 变回 105%（`V=5`），堵掉"挂上限必被吃"的尾巴。
+3. **结算时钟持久化**：`lastSettleTime` 原来只在内存 ⇒ **每次重启都会"提前结算一次"**、24h 时钟被重置；
+   现持久化到 `ahbot_market_state.last_settle_time`（读入 + 结算时写回）。
+4. **拍卖行成交日志**（经济追踪）：在**唯一成交结算点** `AuctionEntry::AuctionBidWinning()` 写
+   ① `tbccharacters.auction_history` 一行（`time/house/item_template/item_count/unit_price/total_price/seller_guid/buyer_guid/seller_is_bot/buyer_is_bot`）；
+   ② 一条 ERROR 级 `[AHTRADE] …` 日志（必进 `Server.log`，见第十三章）。
+   ⚠️ **落盘**：DB 行刻意写在成交事务（`BeginTransaction`）**之外** ⇒ 自己独立提交、不被后续回滚带走；
+   再加日志文件一份 ⇒ 两道保险（站长要求）。
+
+### 4. 生效
+
+- **dev SQL**：`dev/099_ahbot机制优化与成交日志.sql`（幂等：`information_schema` 守卫的 ADD COLUMN + `CREATE TABLE IF NOT EXISTS`；
+  显式库名 `tbccharacters`，因为 `apply_dev_sql.sh` 的默认库是 `tbcmangos`）。
+- 云端源码树已手工同步（cpp 按云端 CRLF、其余 LF；备份 `/root/_srcbak_*_20260921_2*`）；
+  nightly dry-run 实测：`would apply 099` + 需编译 `AuctionHouseMgr.cpp.o`、`AuctionHouseBot.cpp.o` ⇒ **今晚 04:06 生效**。
+- ⛔ **本次没有重启**（当时线上有玩家；站长定规：有玩家在线禁止重启）。
+
+### 5. 取舍与待观察
+
+- `FlowMinUnits = 100` 是**每 1 小时窗口**的门槛 ⇒ 冷门商品可能长期不动价（这正是"证据驱动"的代价）。
+  观察 `[AHBOT] SETTLE … result=under-gate` 的占比再调；若觉得太死，可把 `FlowSettleHours` 设回 24（门槛变"每天 100 单位"），
+  但那样"每次 1%"就变成"每天 1%"——两者必须一起改。
+- 重启后的第一个窗口：买家集合是内存态（DB 只持久化流水）⇒ 该窗口不会因去重而涨价（保守方向，会自愈）。
+- `BuyDepth` 仍是 **0**（回收 = 100% 锚价，做市商没有价差）—— 站长尚未定；若要恢复价差设 5~10。
+- 成交日志量级：预计每天数百~数千行，`auction_history` 无清理策略，长期需留意（后续可加按天归档）。
+
