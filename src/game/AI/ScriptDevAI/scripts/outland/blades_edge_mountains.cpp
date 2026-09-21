@@ -3340,6 +3340,39 @@ struct Soaring : public SpellScript, public AuraScript
     }
 };
 
+// 21461 Rally Zapnabber - Zephyrium test flights (quests 10557 / 10711 / 10712).
+// The flight itself is the dbscripts_on_gossip chain, and it opens with NON-triggered casts
+// (36785 / 36795 / 36801 "Cannon Charging (Port)"; 36801 is what teleports the player onto the
+// platform, destination from spell_target_position 1920.13 / 5581.9 / 270.426), then 12s of
+// charging, then "Soaring". The 36801 row runs with data_flags = 6, i.e. REVERSE_DIRECTION +
+// SOURCE_TARGETS_SELF = the PLAYER casts it on himself, and none of those spells carries
+// SPELL_ATTR_ALLOW_WHILE_MOUNTED, so Spell::CheckCast() (Spell.cpp:5338-5345) rejects a mounted
+// player with SPELL_FAILED_NOT_MOUNTED: no platform, no charge - and only the triggered "Soaring"
+// still fires, launching the player from wherever they happen to stand. A shapeshift form (druid
+// flight form / travel form, ghost wolf, ...) breaks exactly the same way.
+// Fix: run the takeoff pre-check of Player::ActivateTaxiPathTo() (Player.cpp:18323-18343) before
+// the DB chain starts - drop the mount aura and every form that does not allow mounting.
+// The hook must be pGossipHello and NEVER pGossipSelect: ScriptDevAIMgr::OnGossipSelect() calls
+// ClearMenus() *before* invoking the handler, while NPCHandler only falls through to
+// Player::OnGossipSelect() - the function that starts the dbscripts_on_gossip chain - when the
+// handler returns false. With the menu already emptied that function bails out at its first guard
+// (Player.cpp:12520) and the whole flight stops working, mounted or not.
+bool GossipHello_npc_rally_zapnabber(Player* pPlayer, Creature* /*pCreature*/)
+{
+    if (!pPlayer)
+        return false;
+
+    // NOTE: Unit::Unmount() is NOT a player dismount - it only clears the display and the mount
+    // flag and leaves SPELL_AURA_MOUNTED (and its speed bonus) in place. Removing the aura IS the
+    // dismount, exactly like the flight master / .dismount path does it.
+    pPlayer->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
+
+    if (pPlayer->IsInDisallowedMountForm())
+        pPlayer->RemoveSpellsCausingAura(SPELL_AURA_MOD_SHAPESHIFT);
+
+    return false;   // carry on with the DB menu 8304 / dbscripts_on_gossip chain
+}
+
 // 38544 - Coax Marmot
 struct CoaxMarmot : public SpellScript, public AuraScript
 {
@@ -3535,6 +3568,12 @@ void AddSC_blades_edge_mountains()
     pNewScript = new Script;
     pNewScript->Name = "at_vindicator_vuuleen";
     pNewScript->pAreaTrigger = &AreaTrigger_at_vindicator_vuuleen;
+    pNewScript->RegisterSelf();
+
+    pNewScript = new Script;
+    pNewScript->Name = "npc_rally_zapnabber";
+    // pGossipHello (menu open), NOT pGossipSelect (would clear the menu and kill the DB chain)
+    pNewScript->pGossipHello = &GossipHello_npc_rally_zapnabber;
     pNewScript->RegisterSelf();
 
     RegisterSpellScript<SimonGamePreGameTimer>("spell_simon_game_pre_game_timer");

@@ -1602,20 +1602,32 @@ navmesh 无路径(真高空/水面等)        -> 目标点 = 直线终点
   `ERROR:EventAI: Creature entry 21492 has ranged mode action but no main spell.`（`CreatureEventAI.cpp:1336` 的守卫：没有 main spell 时该 action **只写日志、什么都不做**；21492 = Wyrmcult Blessed，同营地同类）。
 - **修复（站长定案 A：按近战怪处理）**：`dev/067_NPC21382改为近战模式.sql`，把 `action1_param1` 由 2 改为 **0**（TYPE_NONE＝近战模式；参照 2163703 注释里的 "Enable Melee Mode"）。21492 的可选同改留在该 SQL 注释中备用。
 
-## [机制] 试飞任务（10712 / 10711 / 10557）坐骑状态不会被送上试飞平台 — 2026-09-16 已修（本地，待推云）
+## [机制] 试飞任务（10557 / 10711 / 10712）骑乘或变形时不会被传上试飞平台 — 2026-09-21 已修（本地实测通过，待推云）
 
-- **现象**：骑着坐骑与试飞管理员对话选试飞，玩家不会被正确送上试飞平台（玩家反馈）。
+- **现象**：**骑着坐骑**（或德鲁伊飞行变身等形态）跟 21461 Rally Zapnabber 对话选试飞，人不会被传上平台、也不会被弹射；未骑乘/未变形时一切正常。
 - **完整链路（已核实）**：
-  1. `gossip_menu_option` menu **8304**（**21461 Rally Zapnabber**，站位 1920.3/5581.3）→ option 0/2/3 分别绑 `dbscripts_on_gossip` **10557 / 10711 / 10712**；
-  2. 脚本第一步用命令 15（CAST_SPELL）对玩家施放 **36801 "Cannon Charging (Port)"** —— 它是**传送法术**（落点在 `spell_target_position`：id=36801 → map530 **1920.13 / 5581.9 / 270.426**）＝"送上平台"那一步；
-  3. 同时给炮台 NPC 21393/21394 灌 charging aura（36785/36790/36792/36795/36800，0/3/6/9 秒）；
-  4. **12 秒后**施放 **Soaring**（Ruuan Weald=**37968** / Razaan's Landing=37910 / Singing Ridge=36812），其数据为 `Effect1=98 KNOCK_BACK`(+misc 100/200/300) + `Effect2=6/aura 105(飞行)` → **"发射"是击退+飞行 aura，不是 taxi 航线**；
-  5. C++ 侧只有一处脚本：`src/game/AI/ScriptDevAI/scripts/outland/blades_edge_mountains.cpp` 的 `struct Soaring`（`spell_scripts` 里 36812/37910/37968 → `spell_soaring`），施放时 `RemoveAurasDueToSpell(36801)`，注释写明"避免 root 影响击退"。
-- **根因判断**：36801 自带 root，且**坐骑状态同样会压制击退/这类位移** → 骑坐骑时传送/发射不生效。
-- **修复**：ScriptDev 新增 `npc_rally_zapnabberAI` + `GossipSelect_npc_rally_zapnabber`（同文件）：
-  对话时 `IsMounted() → Unmount()`；遍历 `GetAurasByType(SPELL_AURA_MOD_SHAPESHIFT)` 逐个 `RemoveAurasDueToSpell(aura->GetId(), nullptr, AURA_REMOVE_BY_CANCEL)`（`Aura::GetId()` 在 `SpellAuras.h:119`）；随后 **return false** 交回 `Player::OnGossipSelect()` 继续执行 DB gossip/dbscript（`NPCHandler.cpp:438-439`）。
-  配套 `dev/068_试飞任务对话自动下坐骑.sql`：`creature_template.ScriptName = 'npc_rally_zapnabber'`（**必须**，`ScriptDevAIMgr::OnGossipSelect` 按 `GetScriptId()` 取脚本，不绑则钩子不触发）。
-- ⚠️ **踩坑记录**：本 fork **没有** `RemoveAurasByType()`（只有 `GetAurasByType()`），别照抄 WotLK/AC 的写法，否则编译报 `error C2039: 不是 "Player" 的成员`。
+  1. `gossip_menu` entry **8304**（21461 Rally Zapnabber，站位 1920.31/5581.30/263.98）→ `gossip_menu_option.action_script_id` = 10557 / 10711 / 10712 → `dbscripts_on_gossip` 三条链；
+  2. delay 0：**36801 "Cannon Charging (Port)"**（传送法术，落点在 `spell_target_position`：map530 **1920.13/5581.9/270.426**）＝"送上平台"那一步；同时由 **buddy** NPC 灌充能光环：21394 Cannon Channel Target(半径 30) 施 36785，21393 Cannon Channeler 施 36795；
+  3. delay 3000/6000/9000：21394 施 36790/36792/36800；delay 12000：先命令 14 清掉这些光环，再由 21930 / 21413 / 21944（Gnome Cannon Shooter，**搜索半径 200**）施放 **Soaring**（10557→37910 / 10711→36812 / 10712→37968，`datalong2=1` 触发）；
+  4. Soaring = `Effect1=98 KNOCK_BACK`(misc 100/200/300) + `Effect2=aura 105(飞行)` → **"发射"是击退 + 飞行光环，不是 taxi 航线**（C++ 侧 `struct Soaring` 施放时 `RemoveAurasDueToSpell(36801)` 去 root）。
+- **真因（代码级，不是"坐骑压住击退"那种推测）**：36801 那行的 `data_flags = 6` = `REVERSE_DIRECTION(2) | SOURCE_TARGETS_SELF(4)`
+  ⇒ 先反转、再"源指向自身"（`ScriptMgr.cpp:1626-1630`）⇒ **是玩家自己给自己施放 36801**；
+  而 `spell_template` 里 36801 的 `Attributes = 536871168 (0x20000400)` **没有 bit24 `SPELL_ATTR_ALLOW_WHILE_MOUNTED`**，`datalong2 = 0` 又表示**非触发**
+  ⇒ `Spell::CheckCast()` 的骑乘分支（`Spell.cpp:5338-5345`）直接返回 **`SPELL_FAILED_NOT_MOUNTED`**，36801 连 `cast()` 都进不去（挂在 `OnCast` 上的下马是死代码）。
+  骑乘时 36785 / 36795 / 36801 全部被拒，只剩 triggered 的 Soaring 生效 ⇒ 人从原地被弹飞或完全没反应；变形（`IsInDisallowedMountForm()`）同理。
+- **修复（唯一改动）**：`src/game/AI/ScriptDevAI/scripts/outland/blades_edge_mountains.cpp` 新增 `GossipHello_npc_rally_zapnabber`，注册为 **`pGossipHello`**，照抄飞行管理员起飞前检查（`Player.cpp:18323-18343`）：
+  ```cpp
+  pPlayer->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);                       // 真下马（光环一起删，移速恢复）
+  if (pPlayer->IsInDisallowedMountForm())
+      pPlayer->RemoveSpellsCausingAura(SPELL_AURA_MOD_SHAPESHIFT);            // 变形/德鲁伊飞行变身
+  return false;                                                               // 交回数据库菜单 8304 / DB 链
+  ```
+  `pGossipHello` 在**菜单准备阶段**触发（`NPCHandler.cpp:401`：返回 false = 照旧下发 DB 菜单 8304），所以下马正好发生在 DB 链施放 36801 **之前**；DB / 法术 / SQL 一行未改（`dev/068` 的 `creature_template.ScriptName='npc_rally_zapnabber'` 仍然必须存在，钩子按 ScriptId 取）。
+- **本地验证（2026-09-21 17:10 部署的 x64_Debug）**：骑乘对话 → 立即下马且移速正常 → 点选项 → 被传上平台（实测坐标 1922.09/5581.96/269.22，与 36801 落点吻合）→ 充能 12 秒 → 弹射完成。
+- **回滚**：还原 `blades_edge_mountains.cpp` 两处（函数 + `AddSC_blades_edge_mountains` 里的注册），SQL/DB 无需回滚。
+- ⚠️ **绝不能注册 `pGossipSelect`**（09-16/09-20 两次踩坑）：`ScriptDevAIMgr::OnGossipSelect()` 在调 handler **之前**就 `ClearMenus()`（`ScriptDevAIMgr.cpp:208`），而 `NPCHandler.cpp:438` 只有 handler 返回 false 才继续调 `Player::OnGossipSelect()`（DB 链入口）；此时菜单已空 ⇒ `Player.cpp:12520` 第一个 guard 直接 return ⇒ **整条试飞链永不执行（骑不骑乘都一样）**。
+- ⚠️ **别用 `Unit::Unmount()` 给玩家下马**：它只清显示与 `UNIT_FLAG_MOUNT`，**不移除 `SPELL_AURA_MOUNTED`**（表现为"下了马但移速还在"）；本仓库通用写法是 `RemoveSpellsCausingAura(SPELL_AURA_MOUNTED)`（`.dismount`、战场、飞行管理员等 12 处）。
+- ⚠️ **法术脚本的绑定在 `spell_scripts` 表**（`SELECT Id, ScriptName`），`spell_template` 没有 `ScriptName` 列；表里有行但 C++ 没注册同名脚本 = 悬空绑定、不会有任何效果（本地库曾残留撤销掉的 dev/098 写的 `36801 → spell_cannon_charging_port`，已删除；云端从来没有这行）。
 
 
 ## [寻路] 本 fork 寻路/地形生成相对上游 cmangos 的全部改动 — 原 dev/寻路系统修改总结_vs_cmangos主分支.md（2026-09-16 整合，标题降一级）
