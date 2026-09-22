@@ -2239,6 +2239,19 @@ void Spell::SetTargetMap(SpellEffectIndex effIndex, uint32 targetMode, bool targ
                     break;
             }
 
+            // 2026-09-22 卡布修复：上面的硬编码表没收录的地区会落到兜底值 500，结果是**该地区任何技能都下不了钩**
+            // （客户端提示"技能等级不够" = SPELL_FAILED_LOW_CASTLEVEL）。站长在悲伤沼泽 · 芦苇海滩（zone 8）实测触发：
+            // 那里是 225 钓鱼任务「纳特·帕格的钓鱼大师」的必钓点，zone 8 不在表里 ⇒ 225 < 500 ⇒ 永远钓不了。
+            // 这里改为：硬编码表未收录时回退查 DB 表 `skill_fishing_base_level`（与 GameObject.cpp 钓鱼掉落用的是同一张表，
+            // 先查子区域 area、再查 zone），两处都查不到就不再阻止施法（原来会卡死在 500）。
+            if (minimumRequiredSkill >= 500)
+            {
+                int32 baseSkill = sObjectMgr.GetFishingBaseSkillLevel(area);
+                if (baseSkill <= 0)
+                    baseSkill = sObjectMgr.GetFishingBaseSkillLevel(zone);
+                minimumRequiredSkill = (baseSkill > 0) ? uint32(baseSkill) : 0u;
+            }
+
             uint32 fishingSkill = m_caster->IsPlayer() ? static_cast<Player*>(m_caster)->GetSkillValue(SKILL_FISHING) : 0;
             if (fishingSkill < minimumRequiredSkill)
                 result = SPELL_FAILED_LOW_CASTLEVEL;

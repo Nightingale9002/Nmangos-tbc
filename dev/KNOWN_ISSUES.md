@@ -3747,6 +3747,8 @@ UPDATE `spawn_group` SET `MaxCount` = 13 WHERE `Id` = 21032 AND `MaxCount` <> 13
 
 ## [机制] Tap 规则补齐：NPC 伤害 >50% 抢走拾取权 —— 2026-09-22（源码改动，本地编译通过）
 
+> ✅ **站长本地验收通过（2026-09-22）**：NPC 伤害 >50% 抢走拾取权的场景实测符合预期。
+
 ### 现状核查（改前）
 
 | 零售 Tap 规则 | 本端实现 |
@@ -3784,7 +3786,51 @@ UPDATE `spawn_group` SET `MaxCount` = 13 WHERE `Id` = 21032 AND `MaxCount` <> 13
 - **验收（重启后）**：接"关闭法力熔炉"→ 故意不打技术员 → 等到技术员走到控制台施放抢修 ⇒ **任务应失败**（EMOTE_ABORT + 任务失败提示）；
   在控制台附近清掉技术员则正常完成。
 
+### 追加修正（同日，站长实测反馈后）：补上"抢修引导"，别让玩家没反应过来就失败
+
+- **站长反馈**："他跑过来，但是距离很远就开始说台词，然后失败了，没反应过来"；并问"是不是应该先判断一次进入战斗"。
+- **为什么是"很远"就说台词**：不是补错了位置 —— 上游本来就把"抢修点"设在**离控制台 15~20 码的路点**（`m_afBanaarTechCoords` WP1:2 等；
+  `EnterEvadeMode` 里也是走到 `fDistance - 15` 处），技术员在那里对控制台施放 `Interrupt Shutdown`。
+  查 AZ 端 SmartAI（`acore_world.smart_scripts` 20218 → 定时脚本 `2021806`）**也是"到达路点 1 就施放 35016"** ⇒ 远端判定是设计如此。
+- **改法（站长 2026-09-22 定案，最终版）** —— 关键结论：**这个抢修本来就是"引导法术"，时长不该由我们硬编码**：
+  站长从 wowhead 查到 `Interrupt Shutdown` 是"**20 码范围 / 12 秒施法时间**"，回头核对官方数据**完全吻合**：
+  | 官方数据字段 | 值 | 含义 |
+  |---|---|---|
+  | `ChannelInterruptFlags` | **15367（非 0）** | 这是**引导**法术（不是瞬发） |
+  | `DurationIndex` | 29 → `SpellDuration.dbc` = **12000 ms** | **引导 12 秒**（wowhead 的"12 秒 施法时间"） |
+  | `RangeIndex` | 3 → `SpellRange.dbc` = **20.0 码** | 正好对应上游路点离控制台的 15~20 码 |
+  | `CastingTimeIndex` | 1 = 0 ms | 引导类法术的"施法时间"字段是 0，真正的时长在 Duration 里 |
+  ⇒ 改成：
+  1. **让技术员真的引导**：`DoCastSpellIfCan(控制台, SPELL_INTERRUPT_1/2)`（非 triggered）⇒ 客户端会显示**引导条**，也能被脚踢/击杀打断；
+     引导跑完 = 停机被打断。（原来是 `TRIGGERED_OLD_TRIGGERED` 瞬发，玩家看不到任何提示。）
+  2. **时长不硬编码**：窗口 = `GetSpellDuration(spellInfo)`（自由函数，`SpellMgr.h:62`）⇒ 直接从法术数据取 **12 秒**；
+     连"数据缺失时的兜底值"也写 **12000**（站长：兜底也该是 12 秒，不许自己拍数）。
+  3. **战斗中不抢修，且一旦脱战从头重新引导**（站长原话："这任务不应该那么难"）：战斗中直接 `InterruptNonMeleeSpells` 掐掉引导，
+     并把剩余时间重置为满窗口；脱战后重起一次引导。
+  4. **抢修成功后只中止事件，不判任务失败**（站长选 B，对齐 AZ）：`DoFailEvent()` 改名 `DoAbortEvent()`，
+     只做 `DoScriptText(EMOTE_ABORT)` + `ResetControlConsoleAndDespawn()`（清召唤物、解 GO 的 IN_USE、控制台消失）⇒ 玩家**立刻能再点控制台重来**；
+     原 SD2 的"对全队 `FailQuest`"那段已删（注释里留了恢复指引）。
+  ⛔ **不许自己加东西**（站长 2026-09-22 明确要求）：中途我自己加的两样已全部撤掉 ——
+     ①"抢修时播 `EMOTE_STATE_WORK` 修理表情"（引导本身就带引导条，不需要额外表情）；②"被拉离控制台 > 40 码算打断"这条护栏（战斗中不抢修已覆盖）。
+  实现：`npc_manaforge_spawnAI` 增加 `m_bRepairing` / `m_uiRepairTimer` / `m_uiRepairTime` / `m_uiChannelRetryTimer`
+  + `StartRepair()` / `StopRepair()` / `CastRepairChannel()` / `GetRepairChannelTime()` / `DoRepair()`，挂进**该类原有的 `UpdateAI`**
+  （⚠️ 该结构体本来就有 `UpdateAI`，别再写第二个，否则 C2535 "已经定义"）；控制台脚本 4 个抵达点统一改为 `StartRepair()`。
+- **其他端对照**：AZ 端技术员抢修成功后**只中止事件**（控制台 `On Data Set 7 7 → Despawn`），
+  全库**没有任何 `FAIL_QUEST` 针对 10299/10321/10322/10323/10329/10330/10338/10365** ⇒ AZ **不判任务失败**，玩家可直接重来 —— 站长据此选了 B。
+  ⚠️ 但 AZ 自己把这段写成"到达路点 → **1000 ms** 后瞬发施放"，**既不是官方数据的 12 秒引导，也没有引导条** ⇒ AZ 数据不能当官服口径用（站长指出）。
+- **站长本地验收（2026-09-22，`x64_Debug` 用新二进制实测）**：**大方向通过** —— 引导条、被打断、"只中止不判失败"都对。
+  站长唯一提出疑点的是"**只是靠近它，它也会中断引导来打我**"，核对后确认**这是上游数据本来的设计**，站长决定**保留不改**：
+  - `creature_ai_scripts 2021801`：技术员 On Spawn → `SET_REACT_STATE(1)` = **防御型**（不主动仇恨）；
+  - `creature_ai_scripts 2021802`：**On Aggro → `INTERRUPT_SPELL(3)`（CURRENT_CHANNELED_SPELL）= 一进战斗就掐掉自己的引导** —— 即"挨打中断抢修"是数据作者的原意；
+  - 所以现象是：防御型会**帮附近挨打的同伴** ⇒ 你在法力熔炉里跟别的日怒怪交手时，技术员会加入战斗 ⇒ 引导中断（不是"靠近"触发的）。
+  - 站长结论：**"我打他中断是对的"**，这条保留；代码里的"战斗中掐引导"与 DB 行效果重复但方向一致，一并保留。
+- ⛔ **云端同步纪律（站长 2026-09-22 指令）**：**未经他确认、本地没测过的东西一律不许同步云端**；本条与钓鱼那条在收到指令前已被我推云（`NEEDS_BUILD=1`），
+  且**云端 `netherstorm.cpp` 上还留着我后来被否掉的两处**（`EMOTE_STATE_WORK` 修理表情、8 秒兜底值）——
+  是否把"站长实测过的那版（无表情 / 兜底 12 秒 / 无 40 码护栏）"推上去覆盖它，等站长一句话，**不自行处理**。
+
 ## [数据] 魔铁宝箱 181798 掉落"断线"：`data1` 指向自己 ⇒ 接回 `9933` —— 2026-09-22（`dev/102`，本地验证通过）
+
+> ✅ **站长本地验收通过（2026-09-22）**：开箱掉落档位正确（必出食物 + 草药/锭 + 绿装 + 武器）。
 
 - **站长判断**："魔铁宝箱出的是 35 级物品……每个等级的宝箱应该出的东西越来越好才对。"
 - **按物品等级审计全部 158 个宝箱类模板**（参数：lootid 展开参考组后的物品 ilvl / RequiredLevel）：
@@ -3823,6 +3869,8 @@ UPDATE `gameobject_template` SET `data1` = 9933 WHERE `entry` = 181798 AND `data
 
 - 一行、全静态、幂等（带 `AND data1 = 181798`）；回滚 `dev/rollback/102_回滚_FelIron宝箱接线还原.sql`。
 - 本地验证：改前 `181798→181798` → 应用后 `181798→9933` → 复跑无变化 → 回滚回 `181798` → 再接线 `9933` ✓。
+- 生效：`gameobject_template` / 掉落表在 mangosd 启动时载入 ⇒ **需重启**（云端干跑 `would apply 102`，随 04:06 nightly 应用并重启生效）。
+- 效果：魔铁宝箱变成"**必出一件食物 + 一件草药/锭 + 一件绿装 + 一件武器 + 独立概率的药水/布/稀有图纸**"，与站长给的清单吻合。
 
 ## [机制] 「某单位死亡 → 周围单位脱战/逃跑/变友善/消失」设计全量普查 —— 2026-09-22（分析，未改）
 
@@ -3921,6 +3969,8 @@ UPDATE `gameobject_template` SET `data1` = 9933 WHERE `entry` = 181798 AND `data
 
 ## [机制] EventAI「相位不可达」死行普查 —— 2026-09-22（全库 19,373 行 → 47 行）
 
+> ✅ **站长定案（2026-09-22）**："看起来无所谓"，随 nightly 直接上线（未单独验收）。
+
 站长要求把上一条普查里发现的"相位死行"扫一遍。方法：写了个离线可达性工具
 `_agent_tmp/eai_phase_reach.py`（数据源 `_agent_tmp/ai_all.tsv` = 全量 `creature_ai_scripts`，报告 `eai_phase_reach.md`）：
 
@@ -3955,6 +4005,8 @@ UPDATE `gameobject_template` SET `data1` = 9933 WHERE `entry` = 181798 AND `data
   工具运行：`python _agent_tmp/eai_phase_reach.py`（依赖 `pos_all.tsv` 做 guid→entry 归一）。
 
 ## [机制] 「工头死亡 → 解放奴隶」家族全量普查（站长："类似的工头死亡还有很多 npc"）—— 2026-09-22
+
+> ✅ **站长本地验收通过（2026-09-22）**：赞加沼泽 17058（40 码内苦工立刻脱战 + 绿名）、蒸汽地窟 17805（死亡后奴隶脱战 + 变友善）均符合预期。
 
 方法（工具 `_agent_tmp/slaver_census.py`，报告 `slaver_census.md`）：
 按名字取「奴隶主/工头型」（taskmaster / slaver / slavedriver / slavemaster / slavehandler / enslaver / slavener / overseer / slave master，共 70 个 entry）
@@ -3992,7 +4044,55 @@ UPDATE `gameobject_template` SET `data1` = 9933 WHERE `entry` = 181798 AND `data
    `23140/23291`＋龙喉苦工（虚空风暴矿洞）、`23309 Murkblood Overseer`＋穆尔血矿工。
    **AZ 端逐一核对：这些 NPC 只有战斗技能/对话脚本，没有任何"解放"逻辑** ⇒ 都是普通怪，**不要凭空发明**。
    （判断口诀：先看别端有没有同一行为，有才补；没有就是设计如此。）
-- 生效：`gameobject_template` / 掉落表在 mangosd 启动时载入 ⇒ **需重启**（云端干跑 `would apply 102`，随 04:06 nightly 应用并重启生效）。
-- 效果：魔铁宝箱变成"**必出一件食物 + 一件草药/锭 + 一件绿装 + 一件武器 + 独立概率的药水/布/稀有图纸**"，与站长给的清单吻合。
 
+## [机制] 钓鱼"技能等级不够"：硬编码区域表漏收录 ⇒ 整个区域下不了钩（悲伤沼泽·芦苇海滩实测）—— 2026-09-22（源码改动，本地编译通过）
 
+### 现象与实测数据
+
+站长在**悲伤沼泽 · 芦苇海滩**（钓鱼 225，做「纳特·帕格的钓鱼大师」要钓 Misty Reed Mahi Mahi）**下不了钩**，
+客户端提示**"技能等级不够"**。`.gps` 现场：
+
+```
+Map:0(东部王国) Zone:8(悲伤沼泽) Area:300(芦苇海滩)
+X: -11018.43  Y: -4164.31  Z: -0.395
+GroundZ: -0.396755 FloorZ: -0.396755 Have height data (Map: 1 VMap: 1)
+Liquid level: 0.000000, ground: -0.396755, type flags 8, status: 4
+```
+⇒ 地面/水位/液体**完全正常**（水面 0.0 比地面高 0.4 码，status 4 = 站在浅水里）⇒ **不是地形/液体数据问题**。
+
+### 根因（源码里的一个兜底值）
+
+`Spell.cpp` 钓鱼目标分支 `TARGET_LOCATION_CASTER_FISHING_SPOT`（本地 `Spell.cpp:2042` 起）在算完抛钩点后，
+用一张**硬编码的「区域 → 钓鱼最低技能」表**当施法门槛：
+
+```cpp
+uint32 minimumRequiredSkill = 500; // catch setting for missing cases so its noticable   // ← Spell.cpp:2079
+switch (mapId) { case 0: switch (zone) { case 1: case 12: ... case 41: case 139: ... } }
+...
+if (fishingSkill < minimumRequiredSkill)
+    result = SPELL_FAILED_LOW_CASTLEVEL;      // ← 客户端显示"技能等级不够"
+```
+- **zone 8（悲伤沼泽）不在这张表里** ⇒ 落到兜底 **500** ⇒ 225 < 500 ⇒ 直接拒绝施法 ⇒ **该区域任何技能都下不了钩**。
+- 同类的经典区域漏收录还有 `46 燃烧平原(330)`、`36(130)`、`796(130)` 等；经典副本 map 未列出的也一律 500。
+  ⚠️ 外域 map 530 **有 `default: 305`**（`Spell.cpp:2223`）⇒ TBC 区域不受这个坑影响，受影响的只有 map 0/1 与未列出的副本 map。
+
+### 修法（`Spell.cpp`）
+
+硬编码表**未收录**（仍为兜底 500）时，回退查 DB 表 `skill_fishing_base_level` —— 与 `GameObject.cpp:1781` 钓鱼掉落**同一张表**：
+
+```cpp
+if (minimumRequiredSkill >= 500)
+{
+    int32 baseSkill = sObjectMgr.GetFishingBaseSkillLevel(area);   // 先子区域
+    if (baseSkill <= 0)
+        baseSkill = sObjectMgr.GetFishingBaseSkillLevel(zone);     // 再 zone
+    minimumRequiredSkill = (baseSkill > 0) ? uint32(baseSkill) : 0u;  // 都查不到就不再拦（原为 500 卡死）
+}
+```
+- 表里已收录的区域**行为完全不变**（只有兜底 500 那一支走新逻辑）⇒ 外域与经典已收录区域零回归。
+- 站长现场按新逻辑：area 300 查不到 → zone 8 = **130** → 225 ≥ 130 ⇒ **可以下钩**。
+- ✅ **站长本地实测通过（2026-09-22）**：`x64_Debug` 用新二进制 + `.setskill 356 225` + 钓鱼竿，在芦苇海滩**正常抛竿**（原话"可以钓了"）⇒ 不回滚，随 nightly 上线。
+- 生效：本地 Release 编译通过；云端源码树保持该修复（md5 `bc831e271148dcec7d765321940e47b5` 与本地一致、保持 CRLF；
+  原件备份 `/root/_srcbak_fishing_20260922/` = 修复前版本，如需回滚直接覆盖回去），`NEEDS_BUILD=1` ⇒ 随 04:06 nightly 编译生效。
+- ⚠️ 教训：客户端"**技能等级不够**"= 服务端 `SPELL_FAILED_LOW_CASTLEVEL` —— **先找服务端的技能门槛表**，
+  别先怀疑水位/地形；`.gps` 的 `Liquid level` 正常就能一眼排除液体问题。

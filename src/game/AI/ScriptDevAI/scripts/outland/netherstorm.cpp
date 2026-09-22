@@ -170,9 +170,93 @@ struct npc_manaforge_spawnAI : public ScriptedAI
 
     ObjectGuid m_manaforgeGuid;
 
+    // [2026-09-22 卡布] 抢修 = **对控制台引导 12 秒**（站长从官方数据核出的真相）：
+    //   `Interrupt Shutdown`(35016/35176) 在官方数据里本来就是引导法术 ——
+    //   `ChannelInterruptFlags = 15367`（非 0 ⇒ 引导）、`DurationIndex = 29` = SpellDuration **12000 ms**、
+    //   `RangeIndex = 3` = SpellRange **20 码**（正好对应上游路点离控制台的 15~20 码；wowhead 也写"12 秒 施法时间 / 20 码范围"）。
+    //   ⇒ 技术员站定、真的把引导跑完 ⇒ 停机被打断；这期间**杀掉它 / 打断它 / 让它进战斗** ⇒ 抢修作废。
+    //   规则（站长定案）：战斗中不抢修，一旦脱战**从头**重新引导；窗口时长一律来自法术数据，不硬编码。
+    bool   m_bRepairing;
+    uint32 m_uiRepairTimer;         // 剩余抢修时间（战斗中会被重置为满窗口）
+    uint32 m_uiRepairTime;          // 满窗口时长，**从法术数据取**（Interrupt Shutdown 引导 12 秒），不硬编码
+    uint32 m_uiChannelRetryTimer;   // 引导补施的节流（避免射程外每 tick 重试刷日志）
+
     void Reset() override
     {
         m_creature->ClearInCombat();
+        m_bRepairing = false;
+        m_uiRepairTimer = 0;
+        m_uiRepairTime = 0;
+        m_uiChannelRetryTimer = 0;
+    }
+
+    Creature* GetManaforge() const
+    {
+        return m_manaforgeGuid ? m_creature->GetMap()->GetCreature(m_manaforgeGuid) : nullptr;
+    }
+
+    uint32 GetRepairSpell() const
+    {
+        Creature* manaforge = GetManaforge();
+        return (manaforge && manaforge->GetEntry() == NPC_ARA_C_CONSOLE) ? SPELL_INTERRUPT_2 : SPELL_INTERRUPT_1;
+    }
+
+    // 抢修时长**直接取法术数据**（引导法术的 DurationIndex ⇒ SpellDuration；官方数据 = 12 秒），不硬编码常量
+    uint32 GetRepairChannelTime(uint32 spellId) const
+    {
+        if (SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(spellId))
+        {
+            int32 duration = GetSpellDuration(spellInfo);   // 自由函数（SpellMgr.h:62）
+            if (duration > 0)
+                return uint32(duration);
+        }
+        return 12000;  // 兜底：法术数据缺失时也用官方数据的 12 秒
+    }
+
+    // 起一次真实引导（非 triggered ⇒ 客户端能看到引导条，可以被脚踢等打断）
+    void CastRepairChannel()
+    {
+        Creature* manaforge = GetManaforge();
+        if (!manaforge)
+            return;
+        if (m_creature->GetDistance(manaforge) > 20.0f)   // 法术射程 20 码（SpellRange 3）
+            return;
+
+        m_creature->SetFacingToObject(manaforge);
+        DoCastSpellIfCan(manaforge, GetRepairSpell());   // 非 triggered ⇒ 真引导（客户端有引导条，可被打断）
+    }
+
+    void StartRepair()
+    {
+        if (m_bRepairing)
+            return;
+
+        m_bRepairing = true;
+        m_uiRepairTime = GetRepairChannelTime(GetRepairSpell());   // 时长跟着法术走
+        m_uiRepairTimer = m_uiRepairTime;
+        CastRepairChannel();
+    }
+
+    void StopRepair()
+    {
+        m_bRepairing = false;
+        m_uiRepairTimer = 0;
+        if (m_creature->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+            m_creature->InterruptNonMeleeSpells(false);
+    }
+
+    void DoRepair()
+    {
+        if (!m_creature->IsAlive())
+            return;
+
+        Creature* manaforge = GetManaforge();
+        if (!manaforge)
+            return;
+
+        // 抢修成功（引导跑完）⇒ 通知控制台中止本次关闭（控制台侧决定是否判任务失败）
+        if (manaforge->AI())
+            manaforge->AI()->SendAIEvent(AI_EVENT_CUSTOM_A, m_creature, manaforge);
     }
 
     void EnterEvadeMode() override
@@ -189,24 +273,14 @@ struct npc_manaforge_spawnAI : public ScriptedAI
 
                 m_creature->GetMotionMaster()->Clear();
                 float fDistance = m_creature->GetDistance(manaforge);
-                if (fDistance < 20) // If within cast range
+                if (fDistance < 20) // If within repair range
                 {
                     m_creature->SetFacingToObject(manaforge);
                     if (uiManaforgeEntry == NPC_ARA_C_CONSOLE)
-                    {
                         m_creature->GetMotionMaster()->MovePoint(0, m_creature->GetPositionX(), m_creature->GetPositionY(), m_creature->GetPositionZ()); // Why must I do this? They walk back to spawn point otherwise (and only ara mobs do this)
-                        m_creature->CastSpell(m_creature, SPELL_INTERRUPT_2, TRIGGERED_OLD_TRIGGERED); // Ara mobs
 
-                    }
-                    else
-                        m_creature->CastSpell(m_creature, SPELL_INTERRUPT_1, TRIGGERED_OLD_TRIGGERED); // Other consoles
-
-                    // [2026-09-22] 技术员跑回控制台抢修成功 ⇒ 关闭事件失败。
-                    // 原实现里 DoFailEvent() 只由 ReceiveAIEvent(AI_EVENT_CUSTOM_A) 触发，而全代码无人发送该事件
-                    // ⇒ 技术员纯装饰、躲角落等 2 分钟必成（上游 cmangos 同样如此）。
-                    if (manaforge->AI())
-                        manaforge->AI()->SendAIEvent(AI_EVENT_CUSTOM_A, m_creature, manaforge);
-
+                    // [2026-09-22] 跑回控制台只是"开始抢修"：12 秒引导（战斗中不抢修、脱战后从头重来）内杀掉/打断它就不算数
+                    StartRepair();
                 }
                 else
                 {
@@ -241,8 +315,41 @@ struct npc_manaforge_spawnAI : public ScriptedAI
         }
     }
 
-    void UpdateAI(const uint32 /*uiDiff*/) override
+    void UpdateAI(const uint32 uiDiff) override
     {
+        // [2026-09-22] 抢修 = 12 秒引导；战斗中不抢修，一旦脱战**从头**重新引导（站长定案）
+        if (m_uiChannelRetryTimer)
+        {
+            if (m_uiChannelRetryTimer <= uiDiff)
+                m_uiChannelRetryTimer = 0;
+            else
+                m_uiChannelRetryTimer -= uiDiff;
+        }
+
+        if (m_bRepairing)
+        {
+            Spell* channel = m_creature->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+            if (m_creature->IsInCombat())
+            {
+                if (channel)
+                    m_creature->InterruptNonMeleeSpells(false);   // 战斗中不抢修：直接掐掉引导
+                m_uiRepairTimer = m_uiRepairTime ? m_uiRepairTime : GetRepairChannelTime(GetRepairSpell());   // 脱战后拿到的是满窗口
+            }
+            else if (m_uiRepairTimer <= uiDiff)
+            {
+                StopRepair();
+                DoRepair();
+            }
+            else if (!channel && !m_uiChannelRetryTimer)
+            {
+                CastRepairChannel();                              // 引导被打断 / 刚脱战 ⇒ 补一次（不重置剩余时间）
+                m_uiChannelRetryTimer = 2000;
+                m_uiRepairTimer -= uiDiff;
+            }
+            else
+                m_uiRepairTimer -= uiDiff;
+        }
+
         if (!m_creature->SelectHostileTarget() || !m_creature->GetVictim())
             return;
 
@@ -312,82 +419,13 @@ struct npc_manaforge_control_consoleAI : public ScriptedAI
         m_creature->ForcedDespawn();
     }
 
-    void DoFailEvent()
+    // [2026-09-22 卡布] 站长定案（对齐 AZ 语义）：技术员抢修成功 ⇒ **只中止本次关闭事件**，不判任务失败
+    // （玩家可以立刻再点控制台重来；AZ 全库对 10299/10321/10322/10323/10329/10330/10338/10365 没有任何 FAIL_QUEST）。
+    // 原实现（SD2 上游）在这里对全队 FailQuest，已按站长要求去掉；将来若要恢复，加回
+    //   pMember / pPlayer->FailQuest(QUEST_SHUTDOWN_*)（先判 GetQuestStatus == QUEST_STATUS_INCOMPLETE）那两段即可。
+    void DoAbortEvent()
     {
         DoScriptText(EMOTE_ABORT, m_creature);
-
-        // Fail players quests
-        // Handle all players in group (if they took quest)
-
-        if (Player* pPlayer = m_creature->GetMap()->GetPlayer(m_playerGuid))
-        {
-            if (Group* pGroup = pPlayer->GetGroup())
-            {
-                for (GroupReference* pRef = pGroup->GetFirstMember(); pRef != nullptr; pRef = pRef->next())
-                {
-                    if (Player* pMember = pRef->getSource())
-                    {
-                        switch (m_creature->GetEntry())
-                        {
-                            case NPC_BNAAR_C_CONSOLE:
-                                if (pMember->GetQuestStatus(QUEST_SHUTDOWN_BNAAR_ALDOR) == QUEST_STATUS_INCOMPLETE)
-                                    pMember->FailQuest(QUEST_SHUTDOWN_BNAAR_ALDOR);
-                                else if (pMember->GetQuestStatus(QUEST_SHUTDOWN_BNAAR_SCRYERS) == QUEST_STATUS_INCOMPLETE)
-                                    pMember->FailQuest(QUEST_SHUTDOWN_BNAAR_SCRYERS);
-                                break;
-                            case NPC_CORUU_C_CONSOLE:
-                                if (pMember->GetQuestStatus(QUEST_SHUTDOWN_CORUU_ALDOR) == QUEST_STATUS_INCOMPLETE)
-                                    pMember->FailQuest(QUEST_SHUTDOWN_CORUU_ALDOR);
-                                else if (pMember->GetQuestStatus(QUEST_SHUTDOWN_CORUU_SCRYERS) == QUEST_STATUS_INCOMPLETE)
-                                    pMember->FailQuest(QUEST_SHUTDOWN_CORUU_SCRYERS);
-                                break;
-                            case NPC_DURO_C_CONSOLE:
-                                if (pMember->GetQuestStatus(QUEST_SHUTDOWN_DURO_ALDOR) == QUEST_STATUS_INCOMPLETE)
-                                    pMember->FailQuest(QUEST_SHUTDOWN_DURO_ALDOR);
-                                else if (pMember->GetQuestStatus(QUEST_SHUTDOWN_DURO_SCRYERS) == QUEST_STATUS_INCOMPLETE)
-                                    pMember->FailQuest(QUEST_SHUTDOWN_DURO_SCRYERS);
-                                break;
-                            case NPC_ARA_C_CONSOLE:
-                                if (pMember->GetQuestStatus(QUEST_SHUTDOWN_ARA_ALDOR) == QUEST_STATUS_INCOMPLETE)
-                                    pMember->FailQuest(QUEST_SHUTDOWN_ARA_ALDOR);
-                                else if (pMember->GetQuestStatus(QUEST_SHUTDOWN_ARA_SCRYERS) == QUEST_STATUS_INCOMPLETE)
-                                    pMember->FailQuest(QUEST_SHUTDOWN_ARA_SCRYERS);
-                                break;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                switch (m_creature->GetEntry())
-                {
-                    case NPC_BNAAR_C_CONSOLE:
-                        if (pPlayer->GetQuestStatus(QUEST_SHUTDOWN_BNAAR_ALDOR) == QUEST_STATUS_INCOMPLETE)
-                            pPlayer->FailQuest(QUEST_SHUTDOWN_BNAAR_ALDOR);
-                        else
-                            pPlayer->FailQuest(QUEST_SHUTDOWN_BNAAR_SCRYERS);
-                        break;
-                    case NPC_CORUU_C_CONSOLE:
-                        if (pPlayer->GetQuestStatus(QUEST_SHUTDOWN_CORUU_ALDOR) == QUEST_STATUS_INCOMPLETE)
-                            pPlayer->FailQuest(QUEST_SHUTDOWN_CORUU_ALDOR);
-                        else
-                            pPlayer->FailQuest(QUEST_SHUTDOWN_CORUU_SCRYERS);
-                        break;
-                    case NPC_DURO_C_CONSOLE:
-                        if (pPlayer->GetQuestStatus(QUEST_SHUTDOWN_DURO_ALDOR) == QUEST_STATUS_INCOMPLETE)
-                            pPlayer->FailQuest(QUEST_SHUTDOWN_DURO_ALDOR);
-                        else
-                            pPlayer->FailQuest(QUEST_SHUTDOWN_DURO_SCRYERS);
-                        break;
-                    case NPC_ARA_C_CONSOLE:
-                        if (pPlayer->GetQuestStatus(QUEST_SHUTDOWN_ARA_ALDOR) == QUEST_STATUS_INCOMPLETE)
-                            pPlayer->FailQuest(QUEST_SHUTDOWN_ARA_ALDOR);
-                        else
-                            pPlayer->FailQuest(QUEST_SHUTDOWN_ARA_SCRYERS);
-                        break;
-                }
-            }
-        }
 
         ResetControlConsoleAndDespawn();
     }
@@ -593,8 +631,9 @@ struct npc_manaforge_control_consoleAI : public ScriptedAI
                                 m_bShutdownSaid = true;
                             }
                             pSummoned->SetFacingToObject(m_creature);
-                            pSummoned->CastSpell(m_creature, SPELL_INTERRUPT_1, TRIGGERED_OLD_TRIGGERED);
-                            SendAIEvent(AI_EVENT_CUSTOM_A, pSummoned, m_creature); // [2026-09-22] 技术员抢修成功 → 关闭事件失败
+                            // [2026-09-22] 抵达抢修点不再立刻判失败：开始 12 秒抢修引导（战斗中不抢修、脱战后从头重来；引导内杀掉/打断它就不算数）
+                            if (npc_manaforge_spawnAI* pTechAI = dynamic_cast<npc_manaforge_spawnAI*>(pSummoned->AI()))
+                                pTechAI->StartRepair();
                             break;
                     }
                 break;
@@ -612,8 +651,9 @@ struct npc_manaforge_control_consoleAI : public ScriptedAI
                                 m_bShutdownSaid = true;
                             }
                             pSummoned->SetFacingToObject(m_creature);
-                            pSummoned->CastSpell(m_creature, SPELL_INTERRUPT_1, TRIGGERED_OLD_TRIGGERED);
-                            SendAIEvent(AI_EVENT_CUSTOM_A, pSummoned, m_creature); // [2026-09-22] 技术员抢修成功 → 关闭事件失败
+                            // [2026-09-22] 抵达抢修点不再立刻判失败：开始 12 秒抢修引导（战斗中不抢修、脱战后从头重来；引导内杀掉/打断它就不算数）
+                            if (npc_manaforge_spawnAI* pTechAI = dynamic_cast<npc_manaforge_spawnAI*>(pSummoned->AI()))
+                                pTechAI->StartRepair();
                             break;
                     }
                 break;
@@ -639,8 +679,9 @@ struct npc_manaforge_control_consoleAI : public ScriptedAI
                                 m_bShutdownSaid = true;
                             }
                             pSummoned->SetFacingToObject(m_creature);
-                            pSummoned->CastSpell(m_creature, SPELL_INTERRUPT_1, TRIGGERED_OLD_TRIGGERED);
-                            SendAIEvent(AI_EVENT_CUSTOM_A, pSummoned, m_creature); // [2026-09-22] 技术员抢修成功 → 关闭事件失败
+                            // [2026-09-22] 抵达抢修点不再立刻判失败：开始 12 秒抢修引导（战斗中不抢修、脱战后从头重来；引导内杀掉/打断它就不算数）
+                            if (npc_manaforge_spawnAI* pTechAI = dynamic_cast<npc_manaforge_spawnAI*>(pSummoned->AI()))
+                                pTechAI->StartRepair();
                             break;
                     }
                 break;
@@ -659,8 +700,9 @@ struct npc_manaforge_control_consoleAI : public ScriptedAI
                                 m_bShutdownSaid = true;
                             }
                             pSummoned->SetFacingToObject(m_creature);
-                            pSummoned->CastSpell(m_creature, SPELL_INTERRUPT_2, TRIGGERED_OLD_TRIGGERED);
-                            SendAIEvent(AI_EVENT_CUSTOM_A, pSummoned, m_creature); // [2026-09-22] 技术员抢修成功 → 关闭事件失败
+                            // [2026-09-22] 抵达抢修点不再立刻判失败：开始 12 秒抢修引导（战斗中不抢修、脱战后从头重来；引导内杀掉/打断它就不算数）
+                            if (npc_manaforge_spawnAI* pTechAI = dynamic_cast<npc_manaforge_spawnAI*>(pSummoned->AI()))
+                                pTechAI->StartRepair();
                             break;
                     }
                 break;
@@ -670,7 +712,7 @@ struct npc_manaforge_control_consoleAI : public ScriptedAI
     void ReceiveAIEvent(AIEventType eventType, Unit* /*pSender*/, Unit* /*pInvoker*/, uint32 /*uiMiscValue*/) override
     {
         if (eventType == AI_EVENT_CUSTOM_A)
-            DoFailEvent();
+            DoAbortEvent();
     }
 
     void JustSummoned(Creature* pSummoned) override 
