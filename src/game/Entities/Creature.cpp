@@ -1272,6 +1272,10 @@ void Creature::SetLootRecipient(Unit* unit)
         return;
     }
 
+    // [2026-09-22] Tap 规则：已被 NPC（守卫/友方单位）抢走拾取权 ⇒ 玩家不能再抢回
+    if (IsTapStolenByNpc())
+        return;
+
     if (GetSettings().HasFlag(CreatureStaticFlags3::CAN_BE_MULTITAPPED))
         return;
 

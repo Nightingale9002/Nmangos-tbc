@@ -3743,3 +3743,87 @@ UPDATE `spawn_group` SET `MaxCount` = 13 WHERE `Id` = 21032 AND `MaxCount` <> 13
 生物与 GO 的 dbGuid 是两个独立编号空间（都从 1 开始）⇒ 理论上存在"编号撞车"的隐患。
 本次与刺叶无关，仅记录待观察。
 
+---
+
+## [机制] Tap 规则补齐：NPC 伤害 >50% 抢走拾取权 —— 2026-09-22（源码改动，本地编译通过）
+
+### 现状核查（改前）
+
+| 零售 Tap 规则 | 本端实现 |
+|---|---|
+| 首击归属 | ✅ `Unit.cpp` 伤害路径：`!HasLootRecipient()` 时 `SetLootRecipient(dealer)`；`Creature::SetLootRecipient` 用 `GetBeneficiaryPlayer()` ⇒ 宠物算主人、**纯 NPC 不设归属** |
+| 副本内按组共享 | ✅ `m_lootGroupRecipientId` + `IsTappedBy`（代码里留着 cmangos 的 TODO "group situation need more work"） |
+| 无 Tap（世界 boss） | ✅ `CreatureStaticFlags3::CAN_BE_MULTITAPPED` 直接跳过归属 |
+| **NPC >50% 抢拾取权** | ❌ **未实现**：`m_damageByOthers` 只喂给 `Unit::GetModifierXpBasedOnDamageReceived`（**削经验**，≥100% 归零），**与拾取权无关** |
+
+### 改动（4 文件，已编译通过）
+
+- `Unit.h`：加 `uint32 m_damageByNpcs = 0` / `bool m_tapStolenByNpc = false` + `GetDamageDoneByNpcs()` / `IsTapStolenByNpc()` / `SetTapStolenByNpc()`（头文件改动是必要的，否则无法区分"NPC 伤害"与"他人玩家伤害"）。
+- `Unit.cpp` 伤害路径：**非玩家单位**（`TYPEID_UNIT` 且无受益玩家 ⇒ 守卫/友方 NPC 及其宠物）伤害累加，**> 目标最大生命 50%** ⇒ `SetTapStolenByNpc()` + `SetLootRecipient(nullptr)`；
+  首击赋值处加 `!IsTapStolenByNpc()` 判断。
+- `Creature.cpp::SetLootRecipient`：`IsTapStolenByNpc()` 时直接 return ⇒ **被 NPC 抢走后玩家再也抢不回来**（`SetLootRecipient(nullptr)` 仍可用）。
+- 宠物/图腾有受益玩家 ⇒ 算玩家侧、不计入。⚠️ **副本内同样生效**（零售如此）：副本里友方护送 NPC 打掉 >50% 时本队会失去该怪拾取权。
+- **生效与验收**：本地 Release 编译通过；4 个文件已同步云端源码树（md5 一致、原件备份 `/root/_srcbak_tap_manaforge_20260922/`），
+  随 **04:06 nightly** 编译上线（同步时线上 3 人，未人工重启）。
+  验收：① 让友方卫兵/护送 NPC 打掉某怪 >50% ⇒ 你和其他玩家都**不能再拾取**（该怪拾取权作废）；
+  ② 宠物独自打 >50% 不影响归属（宠物算玩家侧）；③ 普通抢怪（玩家先手）行为不变。
+
+## [任务] 关闭法力熔炉（10299/10321/10322/10323）：失败路径无人触发，躲角落等 2 分钟必成 —— 2026-09-22（源码改动，本地编译通过）
+
+- **站长实测**："打到钥匙后关闭法力熔炉，然后找个没人角落等 2 分钟就完成了，完全不用管修复的工程师。"
+- **机制**（`AI/ScriptDevAI/scripts/outland/netherstorm.cpp`，`npc_manaforge_control_consoleAI`）：用 Access Crystal 开启控制台 → 阶段 1/2/3/4 = **60+30+20+10 = 120 秒**（正是"2 分钟"）→ 阶段 5 `EMOTE_COMPLETE` + `KilledMonsterCredit`；
+  期间每 20~30 秒刷 **Sunfury 技术员(20218)** 沿路径走向控制台施放 `Interrupt Shutdown`(35016/35176) = 抢修。
+- **根因**：失败逻辑 `DoFailEvent()`（`FailQuest` + EMOTE_ABORT + 复位）**只由 `ReceiveAIEvent(AI_EVENT_CUSTOM_A)` 触发，而全代码库无人发送该事件** ⇒ 技术员纯装饰。
+  ✅ 已拉**上游 cmangos master 同一文件**对比：同样如此 ⇒ **上游实现缺口，不是本 fork 改坏的**。
+- **改动（5 处补发事件）**：`SummonedMovementInform` 里技术员到达控制台施放抢修法术的 3 处（B'naar/Coruu/Duro）+ Ara 的 `SPELL_INTERRUPT_2` 那处 +
+  `npc_manaforge_spawnAI::EnterEvadeMode` 的 `fDistance < 20` 分支（技术员脱战后跑回控制台抢修）⇒ 触发既有 `DoFailEvent()`，
+  玩家必须**阻止工程师**才能完成。
+- **生效**：本地 Release 编译通过（无 error）；4 个文件已同步云端源码树（md5 与本地一致、保持云端 CRLF 行尾；
+  原件备份 `/root/_srcbak_tap_manaforge_20260922/`），nightly 判据 `NEEDS_BUILD=1` ⇒ **随 04:06 nightly 自动编译 + 安装 + 重启**
+  （同步时线上有 3 名玩家，按 P0 不人工重启）。
+- **验收（重启后）**：接"关闭法力熔炉"→ 故意不打技术员 → 等到技术员走到控制台施放抢修 ⇒ **任务应失败**（EMOTE_ABORT + 任务失败提示）；
+  在控制台附近清掉技术员则正常完成。
+
+## [数据] 魔铁宝箱 181798 掉落"断线"：`data1` 指向自己 ⇒ 接回 `9933` —— 2026-09-22（`dev/102`，本地验证通过）
+
+- **站长判断**："魔铁宝箱出的是 35 级物品……每个等级的宝箱应该出的东西越来越好才对。"
+- **按物品等级审计全部 158 个宝箱类模板**（参数：lootid 展开参考组后的物品 ilvl / RequiredLevel）：
+
+  | 宝箱 | lootid | 物品数 | ilvl 中位 | 需求等级中位 | 判定 |
+  |---|---|---|---|---|---|
+  | Bound/Solid Adamantite Chest | 21261/21280/21281 | 86-172 | **114-120** | 68-70 | ✓ 外域高档 |
+  | Heavy Fel Iron / Adamantite Bound / Felsteel | 22342/22984 | 232 | **108** | 66 | ✓（参考组 61000/60446/50604/42005） |
+  | Solid/Bound Fel Iron Chest | 21260/21278/21279 | 200 | **96** | 62 | ✓（参考组 50604/42002/42001） |
+  | **Fel Iron Chest（181798）** | 181798 | 436 | **57** | **52** | ❌ **旧世界档**（= 断线后的降级表，见下"根因"） |
+- 181798 明细：**6 行 ilvl<40**（Silk Cloth / Iron Ore / Mana Potion / Heavy Hide / Greater Healing Potion / Bolt of Silk Cloth）、
+  **71 行 ilvl 40-59**（Mageweave / Mithril Ore / Dreamfoil / Golden Sansam / 各种附魔与裁缝图纸…）、仅 13 行 ilvl 60-79；
+  它用的 6 个参考组（60008/60198/60274/60334/60445/60446）也都是 **ilvl 51~65** 档。
+- **三方一致**（本库 = `tbcmangos_orig` = `tbcdb_ref`）⇒ **上游 DB 的历史遗留错误**，不是我们改的。
+- ~~修法（待批，纯静态数据）：把 181798 换成同级结构（参照 `22342` 或 `22984`）~~ ← **已被下面的"根因/修法"取代**：不需要重写表，把线接回 `9933` 即可（低档行是当年抄表抄坏的产物）。
+- 次要可疑（待复核）：`184716 Coilskar Chest`（中位 70、23% 低档）、`187892/188124 Ice Chest`（含 ilvl 1 行）。
+
+### 根因（站长判断成立）：不是"表写错"，是**线接错了**
+
+站长原话："既然这个箱子写错了，应该有一个原本给它准备的掉落表没写过去，只要找到这个 id 把线连上就行。" —— 核实结果：
+
+- 本库 / `tbcmangos_orig` / `tbcdb_ref`：181798 的 `gameobject_template.data1 = 181798`（**自引用**），表内容是把 9933 拍平出来的独立百分比 + 64 条 0.01% 死行；
+- ✅ **`wotlkmangos`（cmangos 官方 WotLK 库）：同一个 GO 181798 接的是 `9933`**；
+- ✅ `9933` 在我们库里**存在且完整**（497 行，被 `153454 Solid Chest` 使用）：组 4 = 6 种食物（**必出一件、1/6 等概率**）、组 2 = 梦叶草/黄金参/山鼠草/真银锭（必出一件）、组 1 = 307 件绿装池、组 3 = 48 件武器池、组 0 = 131 条独立概率行；
+- 🔑 **铁证**：181798 那 64 条 0.01% 死行的物品（Recipe: Limited Invulnerability Potion、Formula: Enchant Gloves - Riding Skill、Plans: Thorium Armor…）**正是 9933 组 0 里 0.5% 的同一批** ⇒ 当年是"把 9933 抄成 181798 并把概率写坏（0.5% → 0.01%）"。
+- 全库扫描（本库 vs `wotlkmangos` 的 `type=3` 容器 `data1` 差异）：除 181798 外只剩 `153462 Large Solid Chest`（本库 0、wotlk 接 9934），
+  但**本库 `gameobject` 表里 153462/153463/153464 一个刷点都没有**（wotlk 里也只有 153463 刷 3 个）⇒ **零影响，不动**。
+  其余差异（Ancient Gem Vein 22046 vs 26862、Ice Chest 23324 vs 187892、Brightly Colored Egg…）都是 **WotLK 专属 lootid、本库不存在** ⇒ 属资料片差异而非断线。
+- 已排除的疑似（**误报，不记入待修**）：`184716 Coilskar Chest` 的 `data1 = 21717`，**与 wotlk 完全一致**（表也在，13 行）⇒ 低档内容是上游数据，不是断线；`187892/188124 Ice Chest` 在 wotlk 里就是自引用 `187892`。
+
+### 修法（`dev/102_FelIron宝箱掉落接线_181798指向9933.sql`）
+
+```sql
+UPDATE `gameobject_template` SET `data1` = 9933 WHERE `entry` = 181798 AND `data1` = 181798;
+```
+
+- 一行、全静态、幂等（带 `AND data1 = 181798`）；回滚 `dev/rollback/102_回滚_FelIron宝箱接线还原.sql`。
+- 本地验证：改前 `181798→181798` → 应用后 `181798→9933` → 复跑无变化 → 回滚回 `181798` → 再接线 `9933` ✓。
+- 生效：`gameobject_template` / 掉落表在 mangosd 启动时载入 ⇒ **需重启**（云端干跑 `would apply 102`，随 04:06 nightly 应用并重启生效）。
+- 效果：魔铁宝箱变成"**必出一件食物 + 一件草药/锭 + 一件绿装 + 一件武器 + 独立概率的药水/布/稀有图纸**"，与站长给的清单吻合。
+
+

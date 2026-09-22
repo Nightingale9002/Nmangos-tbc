@@ -1140,7 +1140,7 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
         {
             if (Creature* creatureVictim = static_cast<Creature*>(victim))
             {
-                if (!creatureVictim->IsPet() && !creatureVictim->HasLootRecipient())
+                if (!creatureVictim->IsPet() && !creatureVictim->HasLootRecipient() && !creatureVictim->IsTapStolenByNpc())
                     creatureVictim->SetLootRecipient(dealer);
 
                 if (creatureVictim->HasLootRecipient())
@@ -1150,6 +1150,20 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
                         // Note: there is evidence that pre-mop this was split between player/nonplayer instead of group/nongroup
                         if (!dealer->IsInGroup(player))
                             victim->m_damageByOthers += damage;
+                    }
+                }
+
+                // [2026-09-22] Tap 规则（站长确认，按零售规则补）：
+                //   非玩家单位（守卫/友方 NPC 等**没有受益玩家**的单位）对目标造成超过其最大生命 50% 的伤害
+                //   ⇒ 抢走拾取权：清空 loot recipient 并打标记，之后玩家无法再抢回（零售同规则，副本内同样生效）。
+                //   注：宠物/图腾有受益玩家 ⇒ 算玩家侧，不计入；NPC 伤害对**经验**的影响走上面的 m_damageByOthers。
+                if (dealer && dealer->GetTypeId() == TYPEID_UNIT && !dealer->GetBeneficiaryPlayer())
+                {
+                    victim->m_damageByNpcs += damage;
+                    if (!victim->IsTapStolenByNpc() && victim->m_damageByNpcs > victim->GetMaxHealth() / 2)
+                    {
+                        victim->SetTapStolenByNpc();
+                        creatureVictim->SetLootRecipient(nullptr);
                     }
                 }
             }

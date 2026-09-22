@@ -2516,6 +2516,11 @@ class Unit : public WorldObject
 
         uint32 GetDamageDoneByOthers() { return m_damageByOthers; }
         uint32 GetModifierXpBasedOnDamageReceived(uint32 xp);
+
+        // [2026-09-22] Tap 规则：非玩家单位（守卫/友方 NPC，含其宠物）打掉目标 >50% 最大生命 ⇒ 抢走拾取权
+        uint32 GetDamageDoneByNpcs() const { return m_damageByNpcs; }
+        bool IsTapStolenByNpc() const { return m_tapStolenByNpc; }
+        void SetTapStolenByNpc() { m_tapStolenByNpc = true; }
         
         void OverrideMountDisplayId(uint32 newDisplayId);
 
@@ -2752,6 +2757,9 @@ class Unit : public WorldObject
         int8 m_comboPoints;
 
         uint32 m_damageByOthers;
+        // [2026-09-22] 非玩家单位造成的伤害累计 + “已被 NPC 抢走拾取权”标记（Tap 规则）
+        uint32 m_damageByNpcs = 0;
+        bool m_tapStolenByNpc = false;
 
         bool m_isMountOverriden;
         uint32 m_overridenMountId;

@@ -201,6 +201,12 @@ struct npc_manaforge_spawnAI : public ScriptedAI
                     else
                         m_creature->CastSpell(m_creature, SPELL_INTERRUPT_1, TRIGGERED_OLD_TRIGGERED); // Other consoles
 
+                    // [2026-09-22] 技术员跑回控制台抢修成功 ⇒ 关闭事件失败。
+                    // 原实现里 DoFailEvent() 只由 ReceiveAIEvent(AI_EVENT_CUSTOM_A) 触发，而全代码无人发送该事件
+                    // ⇒ 技术员纯装饰、躲角落等 2 分钟必成（上游 cmangos 同样如此）。
+                    if (manaforge->AI())
+                        manaforge->AI()->SendAIEvent(AI_EVENT_CUSTOM_A, m_creature, manaforge);
+
                 }
                 else
                 {
@@ -588,6 +594,7 @@ struct npc_manaforge_control_consoleAI : public ScriptedAI
                             }
                             pSummoned->SetFacingToObject(m_creature);
                             pSummoned->CastSpell(m_creature, SPELL_INTERRUPT_1, TRIGGERED_OLD_TRIGGERED);
+                            SendAIEvent(AI_EVENT_CUSTOM_A, pSummoned, m_creature); // [2026-09-22] 技术员抢修成功 → 关闭事件失败
                             break;
                     }
                 break;
@@ -606,6 +613,7 @@ struct npc_manaforge_control_consoleAI : public ScriptedAI
                             }
                             pSummoned->SetFacingToObject(m_creature);
                             pSummoned->CastSpell(m_creature, SPELL_INTERRUPT_1, TRIGGERED_OLD_TRIGGERED);
+                            SendAIEvent(AI_EVENT_CUSTOM_A, pSummoned, m_creature); // [2026-09-22] 技术员抢修成功 → 关闭事件失败
                             break;
                     }
                 break;
@@ -632,6 +640,7 @@ struct npc_manaforge_control_consoleAI : public ScriptedAI
                             }
                             pSummoned->SetFacingToObject(m_creature);
                             pSummoned->CastSpell(m_creature, SPELL_INTERRUPT_1, TRIGGERED_OLD_TRIGGERED);
+                            SendAIEvent(AI_EVENT_CUSTOM_A, pSummoned, m_creature); // [2026-09-22] 技术员抢修成功 → 关闭事件失败
                             break;
                     }
                 break;
@@ -651,6 +660,7 @@ struct npc_manaforge_control_consoleAI : public ScriptedAI
                             }
                             pSummoned->SetFacingToObject(m_creature);
                             pSummoned->CastSpell(m_creature, SPELL_INTERRUPT_2, TRIGGERED_OLD_TRIGGERED);
+                            SendAIEvent(AI_EVENT_CUSTOM_A, pSummoned, m_creature); // [2026-09-22] 技术员抢修成功 → 关闭事件失败
                             break;
                     }
                 break;
