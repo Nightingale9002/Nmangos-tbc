@@ -3823,6 +3823,175 @@ UPDATE `gameobject_template` SET `data1` = 9933 WHERE `entry` = 181798 AND `data
 
 - 一行、全静态、幂等（带 `AND data1 = 181798`）；回滚 `dev/rollback/102_回滚_FelIron宝箱接线还原.sql`。
 - 本地验证：改前 `181798→181798` → 应用后 `181798→9933` → 复跑无变化 → 回滚回 `181798` → 再接线 `9933` ✓。
+
+## [机制] 「某单位死亡 → 周围单位脱战/逃跑/变友善/消失」设计全量普查 —— 2026-09-22（分析，未改）
+
+起因：站长报 17058「伊利达雷工头」死亡后，附近的德莱尼苦工应当**脱战并变友善**；站长要求"我们有很多类似的设计，检查所有的这些"。
+
+### 一、这套机制怎么运作（先立判据）
+
+除了脚本（ScriptDevAI）直接写逻辑，DB 里有一条**通用的"广播—接收"链路**：
+
+1. **抛出方**：死者的 `creature_ai_scripts` 里 `event_type = 6 (EVENT_T_DEATH)`，动作 `ACTION_T_THROW_AI_EVENT = 45`，参数 = `(事件号, 半径, 目标)`；
+   `CreatureEventAI::JustDied()`（`CreatureEventAI.cpp:1528`）→ `ProcessAction` case 45（同文件 `1178`）→ `SendAIEventAround(事件号, target, 0, 半径)`。
+2. **事件号取值**（`AIDefines.h:22`）：`0=JUST_DIED、1=CRITICAL_HEALTH、2=LOST_HEALTH、5/6/8/9/10/11=CUSTOM_EVENTAI_A/B/C/D/E/F`。
+   ⚠️ **事件号是全局槽位，不是私有通道**：`半径` 才是隔离手段；离线判定"谁会被影响"必须**按生成点距离算**，不能只看 `event_param2`（`event_param2 = 0` 表示"任意发送者"）。
+3. **接收方**：`event_type = 30 (EVENT_T_RECEIVE_AI_EVENT)`，`event_param1 = 事件号`，`event_param2 = 发送者 entry`（0 = 任意）；
+   `CreatureEventAI::ReceiveAIEvent()`（`CreatureEventAI.cpp:1599`）只做两件事：匹配事件号 + 匹配发送者 entry。
+4. **常用"脱战类"动作**：`24 EVADE`（`param1=1` 只停战 `CombatStopWithPets`、`0` 走完整 `EnterEvadeMode`）、`25 FLEE`（`DoFlee()` → `SetInPanic`，**恐慌乱跑但仍在战斗**）、`2 SET_FACTION`、
+   `36 UPDATE_TEMPLATE`（`UpdateEntry` 会 `setFaction(新模板的 Faction)` ⇒ **换模板 = 换阵营 + 换模型/等级**）、`41 FORCE_DESPAWN(延迟ms)`、`14 THREAT_ALL%(-100)` 清仇恨。
+5. **相位（phase）闸门**（关键坑）：`event_inverse_phase_mask` 是**反掩码**，`mask & (1<<当前相位)` 为真 ⇒ 跳过（`CreatureEventAI.cpp:300`）。
+   例：`mask=3` = 相位 0、1 都不跑 ⇒ **只有相位 ≥2 才跑**；`mask=5` = 相位 0、2 不跑 ⇒ 相位 1 跑。
+   相位在**死亡时**被清 0（`JustDied` 末尾 `m_Phase = 0`），`Reset()`（闪避/回巢）**不清相位**。
+
+### 二、普查结果（本地全量 19,373 行 `creature_ai_scripts`）
+
+- **死亡触发（event_type=6）且带 THROW 的行：14 条**。按"死者生成点 ↔ 接收方生成点"最短距离与半径对照：
+
+  | 死者 | 名称 | 事件/半径 | 接收方（半径内） | 接收方动作 | 判定 |
+  |---|---|---|---|---|---|
+  | 17058 | Illidari Taskmaster | 6 / 15 | Dreghood Geomancer d=0.9、Dreghood Brute d=1.9 | `FLEE + EMOTE0 + SET_PHASE 2` →（相位≥2 的通用计时器行）`UPDATE_TEMPLATE→Fleeing Dreghood + THREAT-100% + 9 秒后 FORCE_DESPAWN` | ✅ 设计完整（详见下） |
+  | 17959 | Coilfang Slavehandler | 6 / 25 | Wastewalker Slave d=8.9、Wastewalker Worker d=5.3 | `EVADE(0) + RELAY_SCRIPT(5470001) + THREAT_ALL%(-100)`（相位 1） | ✅ **本服"解放奴隶"标准范式** |
+  | 22963 | Bonechewer Worker | 5 / 50 | Bonechewer Taskmaster d=1.7、Dragonmaw Wyrmcaller d=20.2 | `CAST(40845)+TEXT_NEW+SET_PHASE 2` / `TEXT_NEW` | ✅ |
+  | 15937 | Mmmrrrggglll | 5 / 225 | Grimscale Murloc/Oracle/Forager/Seer（5~51 码） | `CAST(26661)`（小鱼人逃散） | ✅ |
+  | 7156 / 9462 / 12380 | Deadwood Den Watcher / Chieftain Bloodmaw / Unliving Resident | 0 / 25、25、20 | Deadwood Avenger d=5.7/8.3、Unliving Caretaker d=9.7 | `CAST(8599 狂暴) + TEXT(1151)` | ✅ |
+  | 18322 | Sethekk Ravenguard | 5 / 20 | Sethekk Ravenguard d=0.0（自身） | `CAST(34970)` | ✅ |
+  | 20138 | Culuthas | 6 / 25 | Image of Socrethar d=19.8 | `SET_PHASE 2` | ✅ |
+  | 15449 / 15620 / 25948 | Hive'Zora Abomination / Hive'Regal Hunter-Killer / Doomfire Shard | 9、8、0 / 200、200、100 | 铁炉堡旅/卡巴尔教徒等（**但死者自身在本库没有刷点**） | 各族脱战/消失 | ⚠️ 死者是召唤物（AQ/太阳井），脚本本身没错，只是**场上永不出现** |
+  | 9257 | Scarshield Warlock | 5 / 40 | 接收方 `9707 Scarshield Portal`（**召唤物，无静态刷点**） | `FORCE_DESPAWN` | ⚠️ 无法离线判定（召唤物） |
+  | 17678 | Sironas | 5 / 10 | 接收方在 **cpp**（`bloodmyst_isle.cpp:198`），DB 内无 | — | ⚠️ 属脚本侧 |
+
+- **接收方动作含"脱战/消失/变友善"的行：26 条**（含非死亡触发）。除上表外还有：
+  1779905 Dreghood Slave（`EVADE+RELAY 5450002+清仇恨`，由 17805 CC 时的事件 7 触发）、1544105/1544205 铁炉堡旅（`FORCE_DESPAWN 20s`）、
+  2066625 刀刃山宝珠触发器、2150307 日怒术士 `SET_FACTION(1826)`、495103/495201 塞拉摩练习假人（`EVADE`）、277501 刺脊掠夺者、2360204 叛逃煽动者 等。
+  其中标注"DB 内没有对应抛出行"的，是**由 ScriptDevAI/核心抛事件**（如 `AI_EVENT_GOT_CCED`、`AI_EVENT_JUST_DIED` 由 `CreatureEventAI.cpp:1534` 自动广播），不是断链。
+
+### 三、结构性问题扫描（全库）
+
+| 检查项 | 结果 |
+|---|---|
+| 接收行所在模板 `AIName` 不是 `EventAI`（脚本永不执行） | **0 条**（加载器 `CreatureEventAIMgr.cpp:1114` 会报错，云端 `EventAIErrors.log` 也无此类行） |
+| 接收行模板/guid 不存在 | 仅 `5550xxx` 一族 guid 脚本（历史遗留，云端加载日志同样报 `have missing dbguid`，**脚本本身是死的**，与本主题无关） |
+| THROW 行引用的 entry/spell 不存在 | **0 条** |
+| **相位不可达**（`mask` 要求的相位永远到不了 ⇒ 死行） | 全库 **150 行**（如 Perry Gatner 的"Phase 3"若干行、Race Master Kronkrider 441903/441904）；**本主题的链条 0 行**（自写工具 `_agent_tmp/eai_phase_reach.py` + `death_flee_audit.py`） |
+
+### 四、17058 这条到底怎么回事（结论：设计是完整的、且是上游原样）
+
+- 链路（云端库与本地库逐字段一致，`tbcmangos_orig`/`tbcdb_ref` 也一致 ⇒ **不是我们改坏的**）：
+  `1705802`（死亡）`CAST 29460 + THROW(6, 半径15)` → `1693701/1693802`（接收）`FLEE + EMOTE0 + SET_PHASE 2`
+  → `1693702/1693803`（`mask=3`，即相位 ≥2 的通用计时器）`UPDATE_TEMPLATE→20157/19477 + THREAT_ALL%(-100) + FORCE_DESPAWN(9000)`。
+- **几何上必定触发**：17 个工头刷点，每个都有苦工在 **10 码内**（最近距离 0.9~9.2 码），半径 15 足够。
+- **阵营上确实变友善**：`Fleeing Dreghood Geomancer/Warrior`（20157/19477）模板 Faction = **774**；查本地 2.4.3 `FactionTemplate.dbc`：**`774` 的 `enemyMask = 0x0`（对玩家无敌意）**，`friendMask=0x2`，即**友善**。（AZ 端同一 NPC 用 `35`，也是友善档；两者都可用。）
+- **与"解放奴隶"范式的唯一差别**：17058 用的是 `FLEE`（恐慌乱跑，**仍在战斗中**），而不是 Coilfang 那套 `EVADE + 清仇恨`；"脱战"实际由**下一秒的换模板行**完成。
+  ⇒ 因此如果你在游戏里看到"苦工没有立刻脱战/仍在打我"，属于**动作选型差异**而非断链。
+- AZ 对照：`acore_world.smart_scripts` 里 17058 死亡脚本是 `UPDATE_TEMPLATE 19477 + SET_FACTION 15 + SET_EMOTE_STATE + EVADE + 随机移动 + 10 秒消失`（意图相同），但其 `target_type = 9`（= 随机敌对**玩家**）明显是脏数据 ⇒ **AZ 的那份不能照抄**。
+
+### 五、站长 2026-09-22 游戏内实测反馈 → 真因找到：**工头在巡逻，15 码半径大半时候够不着**
+
+站长原话："没有变友善，只是脱战一次，我还是能打他。"⇒ 补查发现两个此前没看的点：
+
+1. **只有 16937/16938 会被这条广播命中**：本库 `event_param1 = 6` 且 `event_param2 ∈ {0, 17058}` 的接收行共 46 条，
+   逐一按生成点比对，**半径 15/25/30/40/60/100 都只有这 2 行落在范围内** ⇒ 提半径**没有副作用**。
+2. **17 个工头里有 2 个在巡逻**（`creature_movement` 有路径：guid **59461** 8 点、**59464** 9 点；其余 15 个是静止刷点，
+   苦工全部静止）——巡逻圈到最近苦工的距离**最远 34.2 / 34.4 码**：
+   | 半径 | 59461 命中巡逻点 | 59464 命中巡逻点 |
+   |---|---|---|
+   | 15（原值） | **2 / 8** | **3 / 9** |
+   | 25 | 5 / 8 | 6 / 9 |
+   | **40** | **8 / 8** | **9 / 9** |
+   ⇒ **在巡逻圈外侧击杀工头 = 附近苦工完全没反应**，这正是"时灵时不灵 / 没变友善"的来源；
+   而"脱战一次"是玩家把苦工拉出拴绳后的常规归位。
+3. 另：每个工头只"约束"自己那 **1~3 个**苦工（37 个苦工里 34 个能被某个工头覆盖），营地其余苦工本来就不该响应 —— 设计如此。
+
+### 六、落地（**一份**静态 SQL 覆盖家族全部改动，已本地验证 + 已推云端，随夜间窗口生效）
+
+> ⚠️ 2026-09-22 站长要求"同类 SQL 整合到一起"：原先拆成 `dev/103`（17058 动作）+ `dev/104`（17058 半径）+ `dev/106`（17805 补链）
+> 三份，现已**合并为一份 `dev/103_工头与奴隶主死亡解放奴隶.sql`**（三项工作同属"工头/奴隶主死亡 → 奴隶脱战变友善"），
+> 旧的 103/104/106 三份及其回滚件已从本地与云端删除；队列因此变成 **102 → 103 → 105**。
+
+| 文件 | 覆盖内容 | 本地验证 |
+|---|---|---|
+| `dev/103_工头与奴隶主死亡解放奴隶.sql` | ① 17058 接收动作：`25 FLEE(0)` → `24 EVADE(0)`、`5 EMOTE(0)` → `2 SET_FACTION(35)`（`action3 22 SET_PHASE(2)` 不变）；② 17058 死亡广播半径 15 → **40**；③ 17805 新增死亡抛事件 6 / 半径 30；④ 17805 新增仇恨抛事件 5 / 半径 30；⑤ 17799 新增接收行：`EVADE(0)` + `SET_FACTION(35)` + `RELAY(5450002)` | 应用=成品态（对已修库 0 行变更）、全量回滚可回上游原样（25/0+5/0+22/2、半径 15、三行消失）、再应用恢复 ✔ |
+
+- 效果：击杀工头/奴隶主 → 40 码内（含巡逻全圈）的奴隶**立刻脱战 + 立刻变友善**（不再依赖"下一秒换模板"），
+  随后原有链路仍跑（换 `Fleeing Dreghood` 模板 + 清仇恨 + 9 秒后消失）。
+- 回滚：`dev/rollback/103_回滚_工头与奴隶主解放奴隶.sql`（一次还原全部五项）。
+- ⚠️ 教训：**"事件广播半径"必须对照"刷点的移动方式"验算** —— 静止刷点用生成点距离就够，
+  巡逻怪必须用**整条路径**逐点验算，否则会漏掉"最远处永远够不着"这一类失败。
+
+## [机制] EventAI「相位不可达」死行普查 —— 2026-09-22（全库 19,373 行 → 47 行）
+
+站长要求把上一条普查里发现的"相位死行"扫一遍。方法：写了个离线可达性工具
+`_agent_tmp/eai_phase_reach.py`（数据源 `_agent_tmp/ai_all.tsv` = 全量 `creature_ai_scripts`，报告 `eai_phase_reach.md`）：
+
+- **判据**：`event_inverse_phase_mask` 是**反掩码**，`mask & (1 << 当前相位)` 为真就跳过（`CreatureEventAI.cpp:300`）；
+  `m_Phase` 初值 0（`CreatureEventAI.h` / 构造函数），**只在死亡时归零**（`JustDied` 末尾），`Reset()` 不清相位。
+  于是从相位 0 出发做 BFS（`SET_PHASE 22` / `INC_PHASE 23` / `RANDOM_PHASE 30` / `RANDOM_PHASE_RANGE 31` 都算转移），
+  任何"要求的相位永远到不了"的行就是**死行**。⚠️ 两个坑：① `MAX_PHASE = 32`（`CreatureEventAI.h:34`），
+  掩码是 32 位，别按 16 相位猜；② 反掩码里 `65535 = 0xFFFF` 只屏蔽相位 0-15，**不是"永远屏蔽"**。
+- **同一 guid 的 `-guid` 脚本与该 guid 的 entry 脚本是同一个 AI 实例**，必须合并后再算相位（合并前 150 行、合并后 47 行）。
+
+**结果（47 行，3 个真问题 + 1 批历史残留）**：
+
+| entry | 名称 | 行数 | 症状 | 三个库是否一致 |
+|---|---|---|---|---|
+| **19228** | **Perry Gatner**（说笑话的 NPC，map 530 有 1 个刷点） | **40** | 出生行 `1922801` 是 `RANDOM_PHASE(1, 2, 1)` ⇒ 相位只可能是 **1 或 2**；但"Phase 3"那一整套段子（`1922882~19228121`，掩码 7 = 只在相位 ≥3 跑）**永远不播** | ✅ 本库 = `tbcmangos_orig` = `wotlkmangos` **完全一致**（上游数据 bug，不是我们改的） |
+| **18875** | **Zaxxis Raider**（虚空风暴） | 2 | `1887501`（掩码 5 = 相位 1/3…跑，设相位 2）与 `1887502`（掩码 3 = 相位 ≥2 跑，设相位 1）**互相等对方先跑**，而初始相位是 0 ⇒ 两条都永不执行，表情循环完全没生效 | ✅ 三库一致（上游） |
+| **4419** | **Race Master Kronkrider**（赛车场播报员） | 2 | `441903/441904`（掩码 3 = 需相位 ≥2）永远不跑；**而且**发送者 `4251 Goblin Racer` / `4252 Gnome Racer` **在本库没有刷点、其 EventAI 也从没抛过事件 5/6** ⇒ 即使修掩码也不会响 | ✅ 三库一致（上游） |
+| 16424 / 16425 / guid -5320412 | Spectral Sentry / Phantom Guardsman | 3 | 历史残留的**按 guid 脚本**：这些 guid 只留了 OOC 行，没有对应的接收行（相位 1 由**别的 guid** 的行设置）⇒ 不影响场内表现 | — |
+
+**可选修法（都是一行静态 SQL）**：
+
+| 方案 | SQL 要点 | 效果 | 状态 |
+|---|---|---|---|
+| Perry Gatner | `1922801` 的 `action1_param3` 由 `1` 改成 `3`（即 `RANDOM_PHASE(1,2,3)`） | 三套段子各 1/3 概率播出，40 行死行全部复活 | ✅ **已改（`dev/105`）** |
+| Zaxxis Raider | `1887502` 的 `event_inverse_phase_mask` 由 `3` 改成 `2`（允许在相位 0 起跑） | 表情循环 `相位0→2→1→2…` 正常运转 | ✅ **已改（`dev/105`）** |
+| Kronkrider | 不修（发送侧根本没抛事件）或改掩码 `3→1` 只做数据整洁 | 场上无差别 | ⏸ 不改 |
+
+- **`dev/105_修两处相位死行.sql`**（+ 回滚 `dev/rollback/105_回滚_两处相位死行还原.sql`）：站长 2026-09-22 定案修前两项。
+  本地验证：`1922801` p3 `1→3`、`1887502` 掩码 `3→2`；复跑 0 行；回滚可还原；再应用成功；
+  **复算后全库死行 47 → 5**（残留：Kronkrider 2 行 + 16424/16425/-5320412 三个 guid 残留行，均已判定为无影响）。
+- 复用手法：以后凡"某段 EventAI 行为在游戏里从来不出现"，**先用相位可达性工具扫一遍**（比在游戏里试快得多）。
+  工具运行：`python _agent_tmp/eai_phase_reach.py`（依赖 `pos_all.tsv` 做 guid→entry 归一）。
+
+## [机制] 「工头死亡 → 解放奴隶」家族全量普查（站长："类似的工头死亡还有很多 npc"）—— 2026-09-22
+
+方法（工具 `_agent_tmp/slaver_census.py`，报告 `slaver_census.md`）：
+按名字取「奴隶主/工头型」（taskmaster / slaver / slavedriver / slavemaster / slavehandler / enslaver / slavener / overseer / slave master，共 70 个 entry）
+× 「奴隶/苦工型」（slave / drudge / peon / worker / captive / wrekt / dreghood / enslaved / prisoner / laborer / miner，共 205 个），
+**按生成点距离 ≤60 码同图配对** ⇒ **26 组"工头 × 附近奴隶"**；再对每组查三样证据：
+① 工头有没有"抛事件"行（EventAI `ACTION_T_THROW_AI_EVENT=45`）或 dbscripts 的 `SCRIPT_COMMAND_SEND_AI_EVENT=35`；
+② 奴隶有没有对应接收行；③ **AZ 端（`acore_world.smart_scripts`）同 NPC 有没有"解放"脚本**（只有 AZ 有，才算零售行为，才值得我们补）。
+
+### 结论：TBC 里"打死工头 → 解放奴隶"只有 3 处，我们已全部覆盖
+
+| 工头 | 场景 | 我们库的状态 | AZ 端证据 |
+|---|---|---|---|
+| **17058 Illidari Taskmaster** | 赞加沼泽 | ✅ 完整（死亡抛事件 6，半径 15→**40**；奴隶 EVADE + 变友善）—— `dev/103` | 死亡脚本 = 换 Fleeing Dreghood 模板 + 改阵营 + 逃脱 |
+| **17959 Coilfang Slavehandler** | 盘牙水库·**奴隶围栏**（map 547 = CoilfangDraenei） | ✅ 完整（仇恨抛事件 5 → 奴隶改阵营 16；死亡抛事件 6 → 奴隶 EVADE + 中继 + 清仇恨） | On Aggro → Set Data 2 2；On Death → Set Data 1 1（解放） |
+| **17805 Coilfang Slavemaster** | 盘牙水库·**蒸汽地窟**（map 545 = CoilfangPumping，站长 2026-09-22 点名"这里也有一个类似事件"） | ❌ **断链**（17799 奴隶监听事件 5/7，但 17805 从不抛事件、也没有 dbscripts）⇒ 打死它奴隶照旧打你 | **On Just Died → Set Data 2 2（"Free Stored Slaves"）**；On Aggro → "Assist me slaves!" ⇒ 本题成立 |
+
+- **`dev/103_工头与奴隶主死亡解放奴隶.sql`**（一份文件覆盖上表 17058 + 17805 的全部改动；回滚 `dev/rollback/103_回滚_工头与奴隶主解放奴隶.sql`）：
+  站长 2026-09-22 定案，并按要求把同类改动**合并成一份**（原 103/104/106 三份已删）。文件内含五项：
+  ① 17058 接收动作 `FLEE+EMOTE` → `EVADE+SET_FACTION(35)`；② 17058 死亡广播半径 15 → 40；
+  ③ `1780511` = 17805 死亡时抛事件 6 / 半径 30；
+  ④ `1780512` = 17805 仇恨时抛事件 5 / 半径 30（对齐 AZ 的 "Assist me slaves!"，让原本永远跑不到的 `1779903` 复活）；
+  ⑤ `1779907` = 17799 收到"事件 6 / 来自 17805" → `EVADE(0)` + `SET_FACTION(35)` + `RELAY(5450002 逃跑喊话)`，
+     掩码 0（原事件 7 那两条是掩码 1 = 只在相位 ≥1，死亡瞬间可能还在相位 0）。
+  本地验证：应用（对已修库 0 行变更）→ 全量回滚回上游原样 → 再应用恢复 ✔。
+
+### 其余 23 组为什么**不动**
+
+1. **"奴隶来帮忙"型（不是解放）**：赞加沼泽的纳迦 `18086 Darkcrest Taskmaster / 18089 Bloodscale Slavedriver / 19946 Darkcrest Slaver / 20088 Bloodscale Overseer`
+   在**仇恨**时抛事件 5（半径 25），附近 `18122 Dreghood Drudge / 18123 Wrekt Slave` 的反应是 `ATTACK_START`（打攻击工头的人）——
+   即"奴隶是帮凶"。AZ 端同 NPC 也没有死亡解放脚本 ⇒ **不是 bug，是设计**。
+2. **完全没有任何设计（19 组）**：`79 Narg the Taskmaster`＋科博矿工、`634/4417 Defias`＋矿工、`2977/6606 Venture Co.`＋劳工、
+   `5844 Dark Iron Slaver / 8283 Slave Master Blackheart / 14621 Overseer Maltorius`＋黑铁工人/被奴役考古学家、
+   `8889 Anvilrage Overseer`（黑石深渊）、`11605/11677`＋冰矿苦工（奥特兰克山谷）、`19397 Mo'arg Overseer`＋甘纳尔苦工、
+   `19426 Peon Overseer`、`21808 Illidari Overseer`＋灰舌工人、`23028 Bonechewer Taskmaster`＋碎手苦工（黑庙）、
+   `23140/23291`＋龙喉苦工（虚空风暴矿洞）、`23309 Murkblood Overseer`＋穆尔血矿工。
+   **AZ 端逐一核对：这些 NPC 只有战斗技能/对话脚本，没有任何"解放"逻辑** ⇒ 都是普通怪，**不要凭空发明**。
+   （判断口诀：先看别端有没有同一行为，有才补；没有就是设计如此。）
 - 生效：`gameobject_template` / 掉落表在 mangosd 启动时载入 ⇒ **需重启**（云端干跑 `would apply 102`，随 04:06 nightly 应用并重启生效）。
 - 效果：魔铁宝箱变成"**必出一件食物 + 一件草药/锭 + 一件绿装 + 一件武器 + 独立概率的药水/布/稀有图纸**"，与站长给的清单吻合。
 

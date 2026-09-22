@@ -35,7 +35,7 @@
 | `功能更新手册_卡布魔兽.md` | **功能性更新手册**：历次功能更新做了什么、怎么实现的、哪些已废弃（含踩坑与实测结论） |
 | `玩家指南_开门任务与徽章兑换.md` | 面向玩家的**开门任务路线**与**公正徽章兑换分档** |
 | `内存基线_20260917.md` | mangosd **内存基线数据**（2026-09-17 采集）：分段占用、增长曲线与结论，配合 KNOWN_ISSUES 的 `[内存]` 章使用 |
-| `0xx_*.sql` | 各项改动的**可重复执行 SQL**（当前 **001–102**；编号即大致时序，**同一项工作只写一个文件**；云端由 `/root/apply_dev_sql.sh` 按 marker 顺序应用后重启，**marker 现为 101**，待应用队列 `102`）。⛔ **全静态**：不写 JOIN/子查询/聚合/计算，值在本地算好、文件里只写字面量；回滚文件放 **`dev/rollback/`**（marker 扫描不递归，不会被自动执行） |
+| `0xx_*.sql` | 各项改动的**可重复执行 SQL**（当前 **001–105**；编号即大致时序，**同一项工作只写一个文件** —— 同类改动必须合并进同一份，别拆成 103/104/106 那样；云端由 `/root/apply_dev_sql.sh` 按 marker 顺序应用后重启，**marker 现为 101**，待应用队列 `102 → 103 → 105`）。⛔ **全静态**：不写 JOIN/子查询/聚合/计算，值在本地算好、文件里只写字面量；回滚文件放 **`dev/rollback/`**（marker 扫描不递归，不会被自动执行） |
 
 ## 二、KNOWN_ISSUES.md 逐章索引（行号仅作定位提示，2026-09-22 重算）
 
@@ -110,6 +110,9 @@
 | 3748 | [机制] Tap 规则补齐：NPC 伤害 >50% 抢走拾取权 —— 2026-09-22（源码改动，本地编译通过） |
 | 3771 | [任务] 关闭法力熔炉（10299/10321/10322/10323）：失败路径无人触发，躲角落等 2 分钟必成 —— 2026-09-22（源码改动，本地编译通过） |
 | 3787 | [数据] 魔铁宝箱 181798 掉落"断线"：`data1` 指向自己 ⇒ 接回 `9933` —— 2026-09-22（`dev/102`，本地验证通过） |
+| 3827 | [机制] 「某单位死亡 → 周围单位脱战/逃跑/变友善/消失」设计全量普查 —— 2026-09-22（分析，未改） |
+| 3922 | [机制] EventAI「相位不可达」死行普查 —— 2026-09-22（全库 19,373 行 → 47 行） |
+| 3957 | [机制] 「工头死亡 → 解放奴隶」家族全量普查（站长："类似的工头死亡还有很多 npc"）—— 2026-09-22 |
 
 ## 三、dev/ 之外的文档（同项目相关）
 
@@ -131,7 +134,7 @@
 | `restart_local_mangosd2.ps1` / `restart_local_mangosd_only.ps1` | 只重启，不部署 |
 | `import_acore_world.sh` | **把 AZ（AzerothCore）的 world 库导进本地 MySQL**（库名 `acore_world`）：sparse clone 主仓库 `data/sql` → 建库 → 灌 `base/db_world/*.sql`(309) → 按日期应用 `updates/db_world/*.sql`(867)。用途：对照别端数据（刷点数量/机制），见 KNOWN_ISSUES 的「库里有、场上没有」章 6b/6c |
 | `spawngroup_census*.sql` / `over50*.sql` / `diff_vs_ref.sql` / `dev051_scope.sql` | **刷怪组普查与分析**：上限分布、≥50% 的组清单、与参照库逐行差异、指定改动（如 dev/051）的范围与影响 |
-| `finalize_dev101.sh` / `verify_dev101.sh` | dev/101 的**本地验证 + 快照 + 幂等复核 + 推送云端干跑** 一条龙（`verify_dev102.sh` 同理，验 181798 接线/幂等/回滚） |
+| `finalize_dev101.sh` / `verify_dev101.sh` | dev/101 的**本地验证 + 快照 + 幂等复核 + 推送云端干跑** 一条龙（`verify_dev102.sh` 同理验 181798 接线；`verify_dev103_merged.sh` 验「工头/奴隶主解放奴隶」合并版：应用=成品态 → 全量回滚 → 再应用，并同步云端旧文件清理） |
 | `chest_loot_all.py` / `chest_split.py` | **宝箱掉落全量审计**：展开 `type=3` 容器的 lootid（含参考组）→ 算物品 ilvl/需求等级中位 → 输出 `chest_loot_all.tsv`，按档位排序找"串档"的箱子 |
 | `orphan_loot.py` / `lootid_wire_scan.sql` / `feliron_family.sql` | **"线接错了"排查**：扫全库"存在但没人用的掉落表"（孤儿 lootid）、比对各容器 `data1` 指向、拉同族宝箱的掉落结构做对照 |
 | `questie_npc_audit.py` / `questie_npc_audit2.py` | **任务起止 NPC 全量比对**：解析 Questie `tbcQuestDB.lua`（6515 条）与本库 `creature_questrelation`/`creature_involvedrelation` 逐任务比对 → `questie_npc_audit.tsv`（分 A 本库缺 / B Questie 缺 / C 双方不一致） |
