@@ -3381,6 +3381,21 @@ if (mmBuyState && m_mmBuyPerCycle)
 - `BuyDepth` 仍是 **0**（回收 = 100% 锚价，做市商没有价差）—— 站长尚未定；若要恢复价差设 5~10。
 - 成交日志量级：预计每天数百~数千行，`auction_history` 无清理策略，长期需留意（后续可加按天归档）。
 
+### 6. 探针单（`MarketMaker.ProbeUnits`）2026-09-22 关闭（站长要求）
+
+- **机制**：做市商会按参考价的 85%/75%/65%/55%/45% 五档各挂一小单（`ProbeUnits` 件）试探需求 ——
+  下单 `AuctionHouseBot.cpp:510-536`；扫价时"单价 < 参考价 95%"的自家挂单被归入 probe 档 `:1124-1163`；
+  重定价时"探针单跟随新价重锚到它那一档" `:1058`。**默认是关的**（`ahbot.conf.dist.in` = 0），
+  但云端 2026-09-04 部署做市商时被设成 **5**、后来是 **1** ⇒ 探针一直在挂。
+- **处理（2026-09-22）**：云端 `/opt/mangos/etc/ahbot.conf:230` 的 `ProbeUnits` **1 → 0**（备份 `ahbot.conf.bak_probeoff_*`），
+  随即 `screen -S mangosd -X stuff ".ahbot reload\r"` 热重载，日志确认
+  `All config are reloaded from ahbot configuration file.` —— **没重启、没动服**（`.ahbot reload` → `ReloadAllConfig()`，`Chat/Level3.cpp:88`）。
+  ⚠️ 云端 mangosd 实际读的是 **`/opt/mangos/etc/ahbot.conf`**（启动日志 `AHBot using configuration file ../etc/ahbot.conf`，cwd=`/opt/mangos/bin`，
+  编译期 `SYSCONFDIR` 决定，见 `src/shared/SystemConfig.h:79`）；`/opt/mangos/bin/ahbot.conf` 是 2026-09-02 的旧拷贝（仍写着 5），**别拿它当 live**。
+- **存量探针单**：关闭那一刻线上还挂着 **481 条**（单价≈参考价 85%/88% 的 bot 挂单，多数是 1 件铜币货，如 2835 劣质石头 8c→7c；
+  88% 是 85% 在小额价上的四舍五入产物）。它们已在服务器内存里，**直接删 DB 行不会让它在游戏里消失**（要等重启才重建）
+  ⇒ 正确做法是等它们**卖掉或到期**（做市商挂单时长 12–48h）自然消失；关闭后不会再新增。
+
 ---
 
 ## [任务] 9397《捉小鸟》：雌性卡利鸟是 10% 骰子（**不是 bug**）—— 2026-09-22 排查
