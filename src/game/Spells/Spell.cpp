@@ -1230,6 +1230,8 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
 
     m_damage = target->damage;
     m_healing = target->healing;
+    uint32 blockedAmount = 0;
+    uint32 resistedAmount = 0;
 
     if (missInfo == SPELL_MISS_NONE)                        // In case spell hit target, do all effect on that target
         DoSpellHitOnUnit(unit, effectMask, target);
@@ -1305,6 +1307,8 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
 
         m_absorb = spellDamageInfo.absorb;
         m_damage = spellDamageInfo.damage; // update value so that script handler has access
+        blockedAmount = spellDamageInfo.blocked;
+        resistedAmount = spellDamageInfo.resist;
         OnHit(missInfo); // TODO: After spell damage calc is moved to proper handler - move this before the first if
 
         // Send log damage message to client
@@ -3649,6 +3653,68 @@ void Spell::_handle_immediate_phase()
             m_caster->resetAttackTimer(BASE_ATTACK);
             if (m_caster->hasOffhandWeaponForAttack())
                 m_caster->resetAttackTimer(OFF_ATTACK);
+        }
+    }
+
+    if (m_spellInfo->HasAttribute(SPELL_ATTR_ON_NEXT_SWING) || m_spellInfo->HasAttribute(SPELL_ATTR_ON_NEXT_SWING_NO_DAMAGE))
+    {
+        ObjectGuid targetGuid = m_targets.getUnitTargetGuid();
+        TargetInfo* target = nullptr;
+        for (auto& ihit : m_UniqueTargetInfo)
+            if (ihit.targetGUID == targetGuid)
+                target = &ihit;
+
+        if (target != nullptr)
+        {
+            CalcDamageInfo dmgInfo;
+            uint32 hitInfo = HITINFO_NORMALSWING2 | HITINFO_NOACTION;
+            switch (target->missCondition)
+            {
+                case SPELL_MISS_MISS:
+                    hitInfo = hitInfo | HITINFO_MISS;
+                    dmgInfo.TargetState = VICTIMSTATE_UNAFFECTED;
+                    break;
+                case SPELL_MISS_EVADE:
+                    hitInfo = hitInfo | HITINFO_MISS | HITINFO_SWINGNOHITSOUND;
+                    dmgInfo.TargetState = VICTIMSTATE_EVADES;
+                    break;
+                case SPELL_MISS_NONE:
+                    if (target->isCrit)
+                    {
+                        hitInfo = hitInfo | HITINFO_CRITICALHIT;
+                        dmgInfo.TargetState = VICTIMSTATE_NORMAL;
+                    }
+                    else
+                    {
+                        dmgInfo.TargetState = VICTIMSTATE_NORMAL;
+                    }
+                    break;
+                case SPELL_MISS_PARRY:
+                    dmgInfo.TargetState = VICTIMSTATE_PARRY;
+                    break;
+                case SPELL_MISS_DODGE:
+                    dmgInfo.TargetState = VICTIMSTATE_DODGE;
+                    break;
+                case SPELL_MISS_BLOCK:
+                    hitInfo = hitInfo | HITINFO_BLOCK;
+                    dmgInfo.TargetState = VICTIMSTATE_UNAFFECTED;
+                    break;
+                    // spell has no glancing or crushing
+            }
+
+            dmgInfo.HitInfo = hitInfo;
+            dmgInfo.attacker = m_caster;
+            dmgInfo.target = m_targets.getUnitTarget();
+            dmgInfo.attackType = BASE_ATTACK;
+            dmgInfo.totalDamage = 0; // all filled with 0
+            dmgInfo.subDamage[0].damage = 0;
+            dmgInfo.subDamage[0].damageSchoolMask = m_spellSchoolMask;
+            dmgInfo.subDamage[0].absorb = 0;
+            dmgInfo.subDamage[0].resist = 0;
+            dmgInfo.blockedAmount = 0;
+            dmgInfo.meleeSpellId = m_spellInfo->Id;
+            dmgInfo.attackerState = 0;
+            m_caster->SendAttackStateUpdate(dmgInfo);
         }
     }
 

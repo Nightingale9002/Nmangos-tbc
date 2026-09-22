@@ -166,7 +166,7 @@ enum Swing
     TWOHANDEDSWING             = 2
 };
 
-enum VictimState
+enum VictimState : uint32
 {
     VICTIMSTATE_UNAFFECTED     = 0,                         // seen in relation with HITINFO_MISS
     VICTIMSTATE_NORMAL         = 1,
@@ -182,7 +182,7 @@ enum VictimState
 enum HitInfo
 {
     HITINFO_NORMALSWING         = 0x00000000,
-    HITINFO_UNK0                = 0x00000001,               // req correct packet structure
+    HITINFO_DEBUG               = 0x00000001,               // req correct packet structure
     HITINFO_NORMALSWING2        = 0x00000002,
     HITINFO_LEFTSWING           = 0x00000004,
     HITINFO_UNK3                = 0x00000008,
@@ -191,11 +191,16 @@ enum HitInfo
     HITINFO_RESIST              = 0x00000040,               // resisted atleast some damage
     HITINFO_CRITICALHIT         = 0x00000080,
     HITINFO_UNK8                = 0x00000100,               // wotlk?
+    HITINFO_UNK9                = 0x00000200,
+    HITINFO_UNK10               = 0x00000400,
     HITINFO_BLOCK               = 0x00000800,
-    HITINFO_UNK9                = 0x00002000,               // wotlk?
+    HITINFO_UNK12               = 0x00001000,
+    HITINFO_BLOOD_SPURT         = 0x00002000,               // blood spurt
     HITINFO_GLANCING            = 0x00004000,
     HITINFO_CRUSHING            = 0x00008000,
     HITINFO_NOACTION            = 0x00010000,
+    HITINFO_UNK17               = 0x00020000,
+    HITINFO_UNK18               = 0x00040000,
     HITINFO_SWINGNOHITSOUND     = 0x00080000
 };
 
@@ -687,9 +692,11 @@ struct CalcDamageInfo
     Unit*  target;               // Target for damage
     uint32 totalDamage;
     SubDamageInfo subDamage[MAX_ITEM_PROTO_DAMAGES];
-    uint32 blocked_amount;
+    uint32 blockedAmount;
     uint32 HitInfo;
-    uint32 TargetState;
+    VictimState TargetState;
+    uint32 meleeSpellId;         // next swing spells
+    uint32 attackerState;        // no known use in client
     // Helper
     WeaponAttackType attackType; //
     uint32 procAttacker;
@@ -1787,7 +1794,7 @@ class Unit : public WorldObject
 
         void SendAIReaction(AiReaction reactionType);
 
-        void SendAttackStateUpdate(CalcDamageInfo* calcDamageInfo) const;
+        void SendAttackStateUpdate(CalcDamageInfo const& calcDamageInfo) const;
         void SendAttackStateUpdate(uint32 HitInfo, Unit* target, SpellSchoolMask damageSchoolMask, uint32 Damage, uint32 AbsorbDamage, int32 Resist, VictimState TargetState, uint32 BlockedAmount);
         void SendEnergizeSpellLog(Unit* pVictim, uint32 SpellID, uint32 Damage, Powers powertype) const;
         void SendEnvironmentalDamageLog(uint8 type, uint32 damage, uint32 absorb, int32 resist) const;

@@ -4096,3 +4096,126 @@ if (minimumRequiredSkill >= 500)
   原件备份 `/root/_srcbak_fishing_20260922/` = 修复前版本，如需回滚直接覆盖回去），`NEEDS_BUILD=1` ⇒ 随 04:06 nightly 编译生效。
 - ⚠️ 教训：客户端"**技能等级不够**"= 服务端 `SPELL_FAILED_LOW_CASTLEVEL` —— **先找服务端的技能门槛表**，
   别先怀疑水位/地形；`.gps` 的 `Liquid level` 正常就能一眼排除液体问题。
+
+---
+
+## [机制] GameObject「重生时间」被误设成 NODESPAWN：门/按钮/goober 不按 DB 时间重生（上游 e0999474b）—— 2026-09-22（源码改动，本地编译通过）
+
+### 现象
+- 部分 GameObject（门/按钮/goober）**不按 DB 里的重生时间走**：被脚本移除/实例重置/用掉后，要么当拍就回来，要么再也不回来。典型受害者是任务/节日物件（战槌监狱门、Fel Cannonball Stack、虚空龙蛋、仲夏彩带柱…）。
+
+### 定位/根因（`GameObject.cpp:947` 修复前的写法）
+```cpp
+if (!GetGOInfo()->GetDespawnPossibility() && !GetGOInfo()->IsDespawnAtAction() && data->spawntimesecsmin >= 0)
+{
+    SetFlag(GAMEOBJECT_FLAGS, GO_FLAG_NODESPAWN);
+    m_spawnedByDefault = true;
+    m_respawnDelay = 0;          // ← DB 的 spawntimesecs 被整条丢弃
+    m_respawnTime  = 0;
+}
+```
+- `GetDespawnPossibility()`（`GameObject.h:444`）只有 **DOOR / BUTTON / GOOBER / FLAGSTAND / FLAGDROP** 会按 `noDamageImmune` 返回 false，其余类型恒 true；再叠加 `IsDespawnAtAction()`（CHEST/GOOBER 看 `consumable`）⇒ 命中面就是「`noDamageImmune = 0` 的门/按钮，以及 `consumable = 0` 的 goober」。
+- `m_respawnDelay = 0` 还连带把 `IsSpawned()`（`GameObject.h:796`）**恒定为 true**：
+  `return m_respawnDelay == 0 || (m_respawnTime > 0 && !m_spawnedByDefault) || (m_respawnTime == 0 && m_spawnedByDefault);`
+  ⇒ 这些 GO 永远"处于已刷出状态"，同时 `GO_FLAG_NODESPAWN` 也发给客户端；而 `GO_JUST_DEACTIVATED` 分支里 `if (!m_respawnDelay) return;`（`GameObject.cpp:688`）**根本不排重生**。
+
+### 全库受影响面（本地 `tbcmangos` 实测）
+| 类型 | 命中模板 | 命中刷点 | 其中重生时间非 0 |
+|---|---|---|---|
+| 0 DOOR | 547 | 556 | 548 |
+| 1 BUTTON | 214 | 187 | 171 |
+| 10 GOOBER | 616 | 1,253 | 1,247 |
+
+合计 **1,972 个刷点**此前被硬当成"永不 despawn"。典型条目：`182484~182503 Warmaul Prison`（纳格兰战槌监狱门，181 秒）、`185861 Fel Cannonball Stack`（正是上游同一处 TODO 注释点名的对象）、`184867 Nether Drake Egg`（181 秒）、`181605 Ribbon Pole`、`180763/180764 Firecrackers`、`182106 Tower Banner`（900 秒）、`181148 Mummified Troll Remains`（60~120 秒）、`186287 Blackhoof Cage`（900 秒）。
+
+### 修复
+- 采用上游提交 **e0999474b**（`src/game/Entities/GameObject.cpp`，+12/−22）：删掉该分支，**所有 `spawntimesecsmin >= 0` 的 GO 一律走 DB 的 `spawntimesecsmin/max`**；只有 `spawntimesecsmin < 0`（DB 约定 = 反重生时间）才走 `m_spawnedByDefault = false` 分支。
+- 本地对 `e0999474b` 全 3 个 hunk clean apply（GameObject.cpp 命中在 944 行，offset −11）。
+
+### 验证
+- 本地 Release 编译通过（新 `x64_Debug\mangosd.exe` md5 `BDFC221C12A182D1A76A5A74A3BF2E8D`），本地测试服已换新二进制，启动 11 秒无新增报错。
+- **站长游戏内验收用例（最干净的一条）**：纳格兰 **战槌监狱门 182484~182503**（type 0 DOOR，`data3 = 0`，`spawntimesecs = 181`）——
+  它的 go-use 脚本是 `dbscripts_on_go_template_use 182484`：`command 8`（kill credit）→ 3 秒后 `command 18 SCRIPT_COMMAND_DESPAWN_SELF`。
+  修复前：`m_respawnDelay = 0` ⇒ despawn 之后不会排重生；修复后：门消失后应在 **181 秒**回来。
+
+### 残留风险
+- 门/按钮的**自动关闭**走 `autoCloseTime`（`UseDoorOrButton` → `GameObject.cpp:1391`，`Update` GO_ACTIVATED 分支 `:529`），与本改动无关，不受影响。
+- 我们 fork 在 `Use()` 里保留了「非消耗型箱子/goober 用掉后不 despawn」的早退（`GameObject.cpp:653/685`，上游同款语义）⇒ **"用掉后留在原地可再点"的那类 goober 行为不变**；本次变的是"需要消失、并按 DB 时间重生"的那部分。
+- 受影响的门/按钮共 743 个刷点，量不小；若站长实测发现某扇门/按钮"该一直开着却关了"或反之，请回报具体 entry + 坐标，可单独把这一个 entry 的 `spawntimesecs` 调整或回滚本提交。
+
+---
+
+## [机制] 34700「过敏反应」只应对玩家控制单位生效（上游 46d9a78d7）—— 2026-09-22（源码改动 + `dev/107`）
+
+### 现象/根因
+- 植物园 **Laj（17980）**给自己叠 `34697 Allergic Reaction`（自身 buff），再由 34697 触发 **`34700`** 传染给附近单位。
+- 我们库里 `34700`（`spell_template`：`AttributesEx = 2048`、`EffectApplyAuraName1 = 14`、`EffectApplyAuraName2 = 3`）**没有挂任何 SpellScript**：`spell_scripts` 查不到 `34700` 这一行 ⇒ 传染目标不做过滤，连**非玩家控制单位**（Laj 自己的召唤物等）也能吃到，官服只对玩家侧生效。
+
+### 修复（两半，必须一起上线）
+1. 代码：`src/game/AI/ScriptDevAI/scripts/outland/tempest_keep/botanica/boss_laj.cpp` 新增
+   ```cpp
+   // 34700 - Allergic Reaction
+   struct AllergicReaction : public SpellScript
+   {
+       bool OnCheckTarget(const Spell* spell, Unit* target, SpellEffectIndex /*eff*/) const override
+       { return target->IsPlayerControlled(); }   // 玩家控制单位才允许被传染
+   };
+   ```
+   并在 `AddSC_boss_laj()` 里 `RegisterSpellScript<AllergicReaction>("spell_allergic_reaction");`
+2. 数据：`dev/107_34700过敏反应只作用于玩家单位.sql`
+   ```sql
+   DELETE FROM `spell_scripts` WHERE `Id` = 34700;
+   INSERT INTO `spell_scripts` (`Id`, `ScriptName`) VALUES (34700, 'spell_allergic_reaction');
+   ```
+   ⚠ 顺序：**代码先于数据**，否则启动日志会报 `Spell 34700 has script spell_allergic_reaction in spell_scripts but script does not exist. Skipping.`（不致命，该行会被跳过）。两者同一夜间窗口上线即可。
+
+### 验证
+- 本地 Release 编译通过、启动无 "script does not exist" 报错（对照：库里另一条老问题 `53719 spell_seal_of_martyr_self_damage` 仍在报缺脚本，属既有问题，不在本次范围）。
+- 待站长验收：植物园打 Laj，34700 只应压在玩家/玩家宠物身上，不应传到 Laj 的召唤物。
+
+---
+
+## [数据] 上游 spell 数据修正：脱战保留（32578 / 39153）+ 术士 T5 四件套叠层 —— 2026-09-22（`dev/106`）
+
+### 背景
+上游 `sql/base/dbc/cmangos_fixes/Spell.sql` 自我们 merge-base（`3e69c84c9`, 2026-08-05）以来有大量增量，**不能整文件覆盖**（会带回一堆无关改动）。逐条核对后，只有下面 3 处对我们是真实的"库内取值不对"，整理成 `dev/106`（全静态、带旧值判据、幂等）。
+
+### 逐条
+| 项 | 我们库内现状 | 官方/上游目标值 | 判定 |
+|---|---|---|---|
+| `32578` Gor'drek's Ointment | `AttributesServerSide = 0` | `\|= 0x04`（`SPELL_ATTR_SS_IGNORE_EVADE`，`SpellMgr.h:498`） | **缺失，已补** |
+| `39153` Darkfury | `AttributesServerSide = 0` | `\|= 0x04` | **缺失，已补**（见下方 id 说明） |
+| `37401/37402` 术士 T5 四件套服务端光环 | `Attributes = 192`、`AttributesEx5 = 0` | `Attributes = 128`、`AttributesEx5 = 0x20000000` | **缺失，已补** |
+| `12579` Winter's Chill | `AttributesEx = 2048` | `\|= 0x800` | 早已满足（`dev/031` 已合） |
+| `15167` Windsor's Frenzy / `32912` Windfury / `29363` / `31386` / `32008` / `32732` / `37248` / `38471` / `43119` / `43120` / `43457` | `AttributesServerSide = 4` | 同上 | 早已满足（`dev/031` 已合） |
+
+- **`0x20000000` = `SPELL_ATTR_EX5_AURA_UNIQUE_PER_CASTER`**（`SpellDefines.h:239`，核心在 `Unit.cpp:5370` / `SpellStacking.cpp:420` 读它）⇒ 同一施法者只保留一层，修"T5 四件套无限叠层"；`Attributes 0xC0 → 0x80` 是去掉 `SPELL_ATTR_PASSIVE`、保留 `DO_NOT_DISPLAY`（上游 `921115e06`，与 `140802b54` 是同一处两笔，文件里合并成终态一次写死）。
+
+### ⚠ 上游 id 笔误（`39152` vs `39153`）
+上游 `c54fbea31` 提交信息与语句写的是 **`39152`**，但：
+- `39152` 在 **我们库和上游库的 `spell_template` 里都不存在**（查无此行）；
+- 库里唯一叫 `Darkfury` 的法术是 **`39153`**（`Attributes = 65536`，`EffectApplyAuraName1 = 22`）；
+- 唯一使用者也正是"会脱战"的那类对象：**creature 21315 Ruul the Darkener（虚空风暴）**，由 `creature_ai_scripts 2131505`（`action1_type = 11 CAST_SPELL`, `action1_param1 = 39153`，注释 "Ruul the Darkener - Cast Darkfury"）在战斗中施放。
+
+⇒ 按上游**意图**（该 buff 不应在脱战时被移除）把标记打在真正存在的 `39153` 上；若站长认为应严格照抄上游（打在不存在的 `39152` 上＝空操作），删掉 `dev/106` 的第 ② 条即可。
+
+### 生效/回滚
+- `dev/106_上游spell数据修正_脱战保留与术士T5.sql`（`spell_template` 在 mangosd 启动时载入 ⇒ **需重启**）；回滚件 `dev/rollback/106_回滚_上游spell数据修正.sql`。
+- 已在本地库连续执行两次：第二次 0 行变更（幂等）。云端待站长验收后随夜间窗口应用。
+
+---
+
+## [机制] 战斗日志协议补全：`SMSG_ATTACKERSTATEUPDATE`（上游 0d2ebc3ee）—— 2026-09-22（源码改动，本地编译通过）
+
+### 改了什么（`Unit.h` / `Unit.cpp` / `Spell.cpp`，+121/−43）
+1. `CalcDamageInfo`：`blocked_amount → blockedAmount`，新增 `meleeSpellId`（下次挥击法术 id）、`attackerState`；`HitInfo` 位名整理（`HITINFO_BLOOD_SPURT = 0x2000` 等）。
+2. **下次挥击类法术**（`SPELL_ATTR_ON_NEXT_SWING` / `_NO_DAMAGE`，如英勇打击、重殴、猛禽一击）现在也会发一条 `SMSG_ATTACKERSTATEUPDATE`，并把法术 id 带进包（客户端战斗日志因此能正确显示这一击）。
+3. **血花喷溅**改为"重击才算"：`cleanDamage > target->GetHealth() * 25 / 100` 时置 `HITINFO_BLOOD_SPURT`（`Unit::CalculateMeleeDamage` 末尾）。
+4. `SendAttackStateUpdate` 从 `CalcDamageInfo*` 改成 `CalcDamageInfo const&`（顺带 codestyle）。
+
+### 验证
+- 本地 Release 编译通过、本地测试服启动正常。
+- 待站长验收：打怪时战斗日志里**英勇打击/重殴**这类"下次挥击"技能应出现挥击条目；血花只在大额伤害时出现。
+
+### 残留风险（上游自身的小瑕疵，未改，先记录）
+- `Spell.cpp::_handle_immediate_phase()` 里新增的 `CalcDamageInfo dmgInfo;` **未整体清零**，只逐字段赋值了 `subDamage[0]`；而 `SendAttackStateUpdate` 是按 `m_weaponDamageInfo.weapon[attackType].lines`（可 >1，多段伤害武器）循环发包的 ⇒ 多段武器偶发可能带上未初始化字段。上游 HEAD 至今也是这个写法（已确认），故本次**保持与上游逐字节一致**；若游戏内真出现战斗日志乱码，再把 `CalcDamageInfo dmgInfo;` 改成 `CalcDamageInfo dmgInfo{};` 即可。

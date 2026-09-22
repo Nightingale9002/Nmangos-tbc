@@ -2085,7 +2085,9 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, CalcDamageInfo* calcDamageInfo, W
     calcDamageInfo->totalDamage      = 0;
     calcDamageInfo->cleanDamage      = 0;
     calcDamageInfo->absorb = 0;
-    calcDamageInfo->blocked_amount   = 0;
+    calcDamageInfo->blockedAmount    = 0;
+    calcDamageInfo->meleeSpellId     = 0;
+    calcDamageInfo->attackerState    = 0;
 
     calcDamageInfo->TargetState      = VICTIMSTATE_UNAFFECTED;
     calcDamageInfo->HitInfo          = HITINFO_NORMALSWING;
@@ -2252,23 +2254,23 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, CalcDamageInfo* calcDamageInfo, W
             calcDamageInfo->HitInfo |= HITINFO_BLOCK;
             calcDamageInfo->TargetState = VICTIMSTATE_NORMAL;
             calcDamageInfo->procEx |= PROC_EX_BLOCK;
-            calcDamageInfo->blocked_amount = calcDamageInfo->target->GetShieldBlockValue();
+            calcDamageInfo->blockedAmount = calcDamageInfo->target->GetShieldBlockValue();
 
-            if (calcDamageInfo->blocked_amount >= calcDamageInfo->totalDamage)
+            if (calcDamageInfo->blockedAmount >= calcDamageInfo->totalDamage)
             {
                 // Full block
                 calcDamageInfo->TargetState = VICTIMSTATE_BLOCKS;
-                calcDamageInfo->blocked_amount = calcDamageInfo->totalDamage;
+                calcDamageInfo->blockedAmount = calcDamageInfo->totalDamage;
 
                 for (uint8 i = 0; i < m_weaponDamageInfo.weapon[calcDamageInfo->attackType].lines; i++)
                     calcDamageInfo->subDamage[i].damage = 0;
             }
-            else if (calcDamageInfo->blocked_amount)
+            else if (calcDamageInfo->blockedAmount)
             {
                 // Partial block
                 calcDamageInfo->procEx |= PROC_EX_NORMAL_HIT;
 
-                auto amount = calcDamageInfo->blocked_amount;
+                auto amount = calcDamageInfo->blockedAmount;
 
                 for (uint8 i = 0; i < m_weaponDamageInfo.weapon[calcDamageInfo->attackType].lines; i++)
                 {
@@ -2285,8 +2287,8 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, CalcDamageInfo* calcDamageInfo, W
                 }
             }
 
-            calcDamageInfo->totalDamage -= calcDamageInfo->blocked_amount;
-            calcDamageInfo->cleanDamage += calcDamageInfo->blocked_amount;
+            calcDamageInfo->totalDamage -= calcDamageInfo->blockedAmount;
+            calcDamageInfo->cleanDamage += calcDamageInfo->blockedAmount;
 
             break;
         }
@@ -2362,6 +2364,9 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, CalcDamageInfo* calcDamageInfo, W
     }
     else
         calcDamageInfo->totalDamage = 0;
+
+    if (calcDamageInfo->cleanDamage > (calcDamageInfo->target->GetHealth() * 25 / 100)) // heavy hits
+        calcDamageInfo->HitInfo |= HITINFO_BLOOD_SPURT;
 }
 
 void Unit::DealMeleeDamage(CalcDamageInfo* calcDamageInfo, bool durabilityLoss)
@@ -2877,7 +2882,7 @@ void Unit::AttackerStateUpdate(Unit* pVictim, WeaponAttackType attType, bool ext
         meleeDamageInfo.absorb += meleeDamageInfo.subDamage[i].absorb;
     }
 
-    SendAttackStateUpdate(&meleeDamageInfo);
+    SendAttackStateUpdate(meleeDamageInfo);
     DealMeleeDamage(&meleeDamageInfo, true);
     ProcDamageAndSpell(ProcSystemArguments(this, meleeDamageInfo.target, meleeDamageInfo.procAttacker, meleeDamageInfo.procVictim, meleeDamageInfo.procEx, meleeDamageInfo.totalDamage, meleeDamageInfo.absorb, meleeDamageInfo.attackType));
 
@@ -2892,10 +2897,10 @@ void Unit::AttackerStateUpdate(Unit* pVictim, WeaponAttackType attType, bool ext
 
     if (GetTypeId() == TYPEID_PLAYER)
         DEBUG_FILTER_LOG(LOG_FILTER_COMBAT, "AttackerStateUpdate: (Player) %u attacked %u (TypeId: %u) for %u dmg, absorbed %u, blocked %u, resisted %u.",
-                         GetGUIDLow(), pVictim->GetGUIDLow(), pVictim->GetTypeId(), meleeDamageInfo.totalDamage, totalAbsorb, meleeDamageInfo.blocked_amount, totalResist);
+                         GetGUIDLow(), pVictim->GetGUIDLow(), pVictim->GetTypeId(), meleeDamageInfo.totalDamage, totalAbsorb, meleeDamageInfo.blockedAmount, totalResist);
     else
         DEBUG_FILTER_LOG(LOG_FILTER_COMBAT, "AttackerStateUpdate: (NPC)    %u attacked %u (TypeId: %u) for %u dmg, absorbed %u, blocked %u, resisted %u.",
-                         GetGUIDLow(), pVictim->GetGUIDLow(), pVictim->GetTypeId(), meleeDamageInfo.totalDamage, totalAbsorb, meleeDamageInfo.blocked_amount, totalResist);
+                         GetGUIDLow(), pVictim->GetGUIDLow(), pVictim->GetTypeId(), meleeDamageInfo.totalDamage, totalAbsorb, meleeDamageInfo.blockedAmount, totalResist);
 }
 
 void Unit::DoExtraAttacks(Unit* victim)
@@ -6570,26 +6575,26 @@ bool Unit::CanInitiateAttack() const
     return true;
 }
 
-void Unit::SendAttackStateUpdate(CalcDamageInfo* calcDamageInfo) const
+void Unit::SendAttackStateUpdate(CalcDamageInfo const& calcDamageInfo) const
 {
     DEBUG_FILTER_LOG(LOG_FILTER_COMBAT, "WORLD: Sending SMSG_ATTACKERSTATEUPDATE");
 
     // Subdamage count:
-    uint32 lines = m_weaponDamageInfo.weapon[calcDamageInfo->attackType].lines;
+    uint32 lines = m_weaponDamageInfo.weapon[calcDamageInfo.attackType].lines;
 
     WorldPacket data(SMSG_ATTACKERSTATEUPDATE, (4 + 8 + 8 + 4) + 1 + (lines * (4 + 4 + 4 + 4 + 4)) + (4 + 4 + 4 + 4));
 
-    data << uint32(calcDamageInfo->HitInfo);
-    data << calcDamageInfo->attacker->GetPackGUID();
-    data << calcDamageInfo->target->GetPackGUID();
-    data << uint32(calcDamageInfo->totalDamage);                // Total damage
+    data << uint32(calcDamageInfo.HitInfo);
+    data << calcDamageInfo.attacker->GetPackGUID();
+    data << calcDamageInfo.target->GetPackGUID();
+    data << uint32(calcDamageInfo.totalDamage);                // Total damage
 
     data << uint8(lines);
 
     // Subdamage information:
     for (uint8 i = 0; i < lines; ++i)
     {
-        auto &line = calcDamageInfo->subDamage[i];
+        auto &line = calcDamageInfo.subDamage[i];
 
         data << uint32(line.damageSchoolMask);
         data << float(line.damage);
@@ -6598,30 +6603,30 @@ void Unit::SendAttackStateUpdate(CalcDamageInfo* calcDamageInfo) const
         data << int32(line.resist);
     }
 
-    data << uint32(calcDamageInfo->TargetState);
-    data << uint32(0);                                      // unknown, usually seen with -1, 0 and 1000
-    data << uint32(0);                                      // spell id, seen with heroic strike and disarm as examples.
+    data << uint32(calcDamageInfo.TargetState);
+    data << uint32(calcDamageInfo.attackerState);   // unknown, usually seen with -1, 0 and 1000
+    data << uint32(calcDamageInfo.meleeSpellId);    // spell id, seen with heroic strike and disarm as examples.
     // HITINFO_NOACTION normally set if spell
 
     // Blocked amount:
-    data << uint32(calcDamageInfo->blocked_amount);
+    data << uint32(calcDamageInfo.blockedAmount);
 
     // Debug info
-    if (calcDamageInfo->HitInfo & HITINFO_UNK0)
+    if (calcDamageInfo.HitInfo & HITINFO_DEBUG)
     {
-        data << uint32(0);
-        data << float(0);
-        data << float(0);
-        data << float(0);
-        data << float(0);
-        data << float(0);
-        data << float(0);
-        data << float(0);
-        data << float(0);
+        data << uint32(0); // Armor
+        data << float(0); // Crit Chance
+        data << float(0); // Combat Roll
+        data << float(0); // Miss Chance
+        data << float(0); // Dodge Chance
+        data << float(0); // Parry Chance
+        data << float(0); // Block Chance
+        data << float(0); // Glance Chance
+        data << float(0); // Crush Chance
         for (uint8 i = 0; i < 5; ++i)
         {
-            data << float(0);
-            data << float(0);
+            data << float(0); // Min Damage
+            data << float(0); // Max Damage
         }
         data << uint32(0);
     }
@@ -6645,8 +6650,8 @@ void Unit::SendAttackStateUpdate(uint32 HitInfo, Unit* target, SpellSchoolMask d
     dmgInfo.subDamage[0].absorb = AbsorbDamage;
     dmgInfo.subDamage[0].resist = Resist;
     dmgInfo.TargetState = TargetState;
-    dmgInfo.blocked_amount = BlockedAmount;
-    SendAttackStateUpdate(&dmgInfo);
+    dmgInfo.blockedAmount = BlockedAmount;
+    SendAttackStateUpdate(dmgInfo);
 }
 
 void Unit::SetPowerType(Powers new_powertype)
