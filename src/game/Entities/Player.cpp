@@ -3607,8 +3607,50 @@ bool Player::IsNeedCastPassiveLikeSpellAtLearn(SpellEntry const* spellInfo) cons
     return need_cast && (!spellInfo->CasterAuraState || HasAuraState(AuraState(spellInfo->CasterAuraState)));
 }
 
+/* 2026-09-22 (Kabu): if spellId is a profession SPECIALIZATION spell (9788 Armorsmith,
+ * 26798 Mooncloth Tailoring, 20219 Gnomish Engineer, 17039 Master Swordsmith, ...) return the
+ * skill id of its parent profession (164/165/171/197/202...), otherwise 0.
+ * Specialization spells are SPELL_EFFECT_TRADE_SKILL spells that carry no skill id in their
+ * EffectMiscValue fields, while base profession spells do (2018 Blacksmithing -> 164).
+ * The parent profession is resolved through spell_chain's first spell (9788 -> 2018). */
+static uint32 GetSpecializationProfessionSkill(uint32 spellId)
+{
+    SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(spellId);
+    if (!spellInfo || !IsSpellHaveEffect(spellInfo, SPELL_EFFECT_TRADE_SKILL))
+        return 0;
+
+    for (unsigned int miscValue : spellInfo->EffectMiscValue)
+        if (miscValue)
+            return 0;                                       // base profession spell knows its own skill
+
+    SpellChainNode const* node = sSpellMgr.GetSpellChainNode(spellId);
+    if (!node || !node->first || node->first == spellId)
+        return 0;
+
+    SpellEntry const* baseSpell = sSpellTemplate.LookupEntry<SpellEntry>(node->first);
+    return baseSpell ? uint32(baseSpell->EffectMiscValue[EFFECT_INDEX_1]) : 0;
+}
+
 void Player::learnSpell(uint32 spell_id, bool dependent, bool talent)
 {
+    /* 2026-09-22 (Kabu): a profession specialization spell may only be learned while the parent
+     * profession is still known. Player::learnSpell is the single choke point of every path that
+     * hands one out: quest rewards (Player::RewardQuest), quest-end scripts (5283 -> Armorsmith),
+     * gossip scripts (318201 Armorsmith / 318202 Weaponsmith / 853001 Mooncloth Tailoring ...),
+     * spell_learn_spell, trainers and .learn. Without this check a player can keep several
+     * specializations: the branch quests/scripts can be taken while qualified and turned in later
+     * after dropping the profession, and a spec spell only has to be in the spellbook to work
+     * (Skills/SkillExtraItems.cpp). GMs can still grant one after setting the skill first. */
+    if (uint32 professionSkill = GetSpecializationProfessionSkill(spell_id))
+    {
+        if (GetSkillValue(professionSkill) == 0)
+        {
+            sLog.outError("Player %s (guid %u) tries to learn profession specialization spell %u without profession skill %u.",
+                          GetName(), GetGUIDLow(), spell_id, professionSkill);
+            return;
+        }
+    }
+
     PlayerSpellMap::iterator itr = m_spells.find(spell_id);
 
     bool disabled = (itr != m_spells.end()) ? itr->second.disabled : false;
@@ -13357,6 +13399,33 @@ void Player::IncompleteQuest(uint32 quest_id)
     }
 }
 
+/* 2026-09-22 (Kabu): returns true if a quest reward spell grants a crafting profession
+ * skill or profession specialization (SPELL_EFFECT_TRADE_SKILL):
+ *   - the reward spell itself is a trade skill spell (26798 Mooncloth Tailoring, 20219 Gnomish Engineer)
+ *   - or it is a learn-spell wrapper teaching one (26799 -> 26798, 20220 -> 20219, 10657 -> 10656)
+ * Used to re-check "player still has the profession" at quest turn-in, which previously was only
+ * checked when accepting the quest (Player::CanTakeQuest). */
+static bool GrantsProfessionTradeSkill(SpellEntry const* spellInfo)
+{
+    for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
+    {
+        if (spellInfo->Effect[i] == SPELL_EFFECT_TRADE_SKILL)
+            return true;
+
+        if (spellInfo->Effect[i] != SPELL_EFFECT_LEARN_SPELL)
+            continue;
+
+        uint32 taughtSpellId = spellInfo->EffectTriggerSpell[i];
+        if (!taughtSpellId)
+            continue;
+
+        if (SpellEntry const* taughtSpell = sSpellTemplate.LookupEntry<SpellEntry>(taughtSpellId))
+            if (IsSpellHaveEffect(taughtSpell, SPELL_EFFECT_TRADE_SKILL))
+                return true;
+    }
+    return false;
+}
+
 void Player::RewardQuest(Quest const* pQuest, uint32 reward, Object* questGiver, bool announce)
 {
     uint32 quest_id = pQuest->GetQuestId();
@@ -13503,24 +13572,40 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, Object* questGiver,
     {
         if (SpellEntry const* spellProto = sSpellTemplate.LookupEntry<SpellEntry>(spellId))
         {
-            Unit* caster = this;
-
-            if (questGiver->GetTypeId() == TYPEID_UNIT)
+            /* 2026-09-22 (Kabu): profession skill / specialization rewards require the player to still
+             * have the profession at turn-in. RequiredSkill was only checked when accepting or seeing the
+             * quest (CanTakeQuest / CanSeeStartQuest), while the reward spell below was cast unconditionally
+             * -> players could accept several profession branch quests while qualified, then drop that
+             * profession and hand in all of them to collect several specializations at once (a spec spell
+             * only needs to be in the spellbook to work, see Skills/SkillExtraItems.cpp). Minimal check:
+             * if the reward spell grants a crafting trade skill and the profession requirement of this
+             * quest is no longer met, skip the reward spell (items/money/reputation are still given). */
+            if (!GrantsProfessionTradeSkill(spellProto) || SatisfyQuestSkill(pQuest, false))
             {
-                for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
+                Unit* caster = this;
+
+                if (questGiver->GetTypeId() == TYPEID_UNIT)
                 {
-                    if (spellProto->Effect[i] == SPELL_EFFECT_LEARN_SPELL ||
-                            spellProto->Effect[i] == SPELL_EFFECT_CREATE_ITEM ||
-                            spellProto->EffectImplicitTargetA[i] == TARGET_UNIT ||
-                            spellProto->EffectImplicitTargetA[i] == TARGET_UNIT_FRIEND)
+                    for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
                     {
-                        caster = (Unit*)questGiver;
-                        break;
+                        if (spellProto->Effect[i] == SPELL_EFFECT_LEARN_SPELL ||
+                                spellProto->Effect[i] == SPELL_EFFECT_CREATE_ITEM ||
+                                spellProto->EffectImplicitTargetA[i] == TARGET_UNIT ||
+                                spellProto->EffectImplicitTargetA[i] == TARGET_UNIT_FRIEND)
+                        {
+                            caster = (Unit*)questGiver;
+                            break;
+                        }
                     }
                 }
-            }
 
-            caster->CastSpell(this, spellProto, TRIGGERED_OLD_TRIGGERED);
+                caster->CastSpell(this, spellProto, TRIGGERED_OLD_TRIGGERED);
+            }
+            else
+            {
+                sLog.outError("Player %s (guid %u) rewarded quest %u without required skill %u (profession reward spell %u skipped).",
+                              GetName(), GetGUIDLow(), quest_id, pQuest->GetRequiredSkill(), spellId);
+            }
         }
     }
 
