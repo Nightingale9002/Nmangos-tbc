@@ -4433,3 +4433,299 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
 ### 生效 / 回滚
 - `creature_ai_scripts` 启动载入 ⇒ **需重启**。
 - ⚠️ 本改动**偏离上游数据**（上游三库都是坏脚本），属站长 2026-09-23 明确批准的修正；若上游日后自行修好，可删掉 `dev/110` 文件。
+
+---
+
+## [机制] 飞行路线「会走不同路径」的机制排查 —— 2026-09-23（纯分析，**未改任何东西**）
+
+站长问题：*"检查是否有机制导致了飞行路线有不同的路径。"* 结论：**有 4 条，且都不在数据库数据上（数据库侧只有 `taxi_shortcuts` 一张表参与）**。
+
+### 0. 航线数据来源与选路唯一性
+- 航线几何**全部来自 DBC**：`TaxiPath.dbc`(514 行=514 条航线) + `TaxiPathNode.dbc`(13462 个导航点) + `TaxiNodes.dbc`；服务端**没有** `taxi_path*` 数据表，DB 侧唯一影响飞行的是 `taxi_shortcuts`（235 行，本地与云端一致，启动日志 `>> Loaded 235 taxi shortcuts`）。
+- `(起点,终点)` → 航线由 `sTaxiPathSetBySource` 决定（`DBCStores.cpp:536-539` 用 DBC 逐行填 map）。实测 514 行里 **`(from,to)` 组合无一条重复** ⇒ 服务端选路**没有歧义**，"同一对起终点飞两条路"在服务端不可能发生。
+
+### M1 中转接缝裁剪 `Tracker::Trim`（**唯一会改变几何形状的机制**）
+- `Tracker::AddRoute` 每加一段就裁一次前一段的接缝：`Taxi.cpp:161-163` → `Trim(m_routes[count-2], m_routes[count-1])`；`Trim` 本体 `Taxi.cpp:381-452`：把前一段的**落点**与后一段的**起点**各裁掉若干导航点，让坐骑"切角"而不是飞进中转点再折返。
+- 三级行为：
+  1. `taxi_shortcuts` 里 `pathid` 的 `landing` 与 `takeoff` **都非零** ⇒ 用原版预定义接缝裁剪（`Taxi.cpp:409-414`，数据来自 `ObjectMgr::LoadTaxiShortcuts` / `GetTaxiShortcut`，`ObjectMgr.cpp:6775-6803`）。
+  2. 数据缺或只写一半 ⇒ **运行时兜底启发式**（`Taxi.cpp:416-450`）：两个游标从上一段尾部、下一段头部**锁步**向里推，找到第一对"离中转节点 2D 距离都 > 48 码"的点当作新接缝。代码注释自己写明：*"Retail uses serverside pre-definied junction points… We have a fallback custom automatic runtime trimmer. The result will not match retail and can be visually unpleasing at times."*
+  3. 兜底也失败（两段不同地图、地图 id 变化、走到头）⇒ **完全不裁** ⇒ 坐骑飞到中转点再从原路飞出去，肉眼就是"折返绕远"。
+- 覆盖率实测（本地库 `taxi_shortcuts` × `TaxiPath.dbc`）：514 条航线中 **takeoff/landing 都非零只有 101 条**，只写一半 **67+67 条**，**完全没行 279 条**。按"真实的 A→B→C 中转组合"枚举，**2670 种里只有 926 种（34.7%）两边数据齐全** ⇒ **约 2/3 的中转衔接走的是 48 码兜底算法**。
+- 分大陆：外域 **119/158（75%）**、东部王国 **86/142（61%）**、**卡利莫多只有 30/210（14%）** ⇒ 卡利莫多的多段航线基本全靠兜底。奎岛（节点 **213 破碎残阳基地**）相关 7 条航线**都有数据且方向配套**（入岛航线给 takeoff、出岛给 landing）：781/782 银月城、786/787 祖阿曼、796/797 圣光之愿、807 铁炉堡 ⇒ 奎岛不会因为缺数据而绕远。
+- 兜底算法两个**确定性**缺陷（正是"同一条路看着不一样"的来源）：① 两游标**锁步**推进（`++i1, ++i2`），配对的是"第 k 个尾点 ↔ 第 k 个头点"，不是几何最近点对 ⇒ 接缝位置随**两段各自的点数**变化；同一路口、不同航段组合会裁在不同位置。② 只比 **2D 距离、忽略高度与地形** ⇒ 切角线可能穿山穿建筑。
+- `taxi_shortcuts` 数据本身无异常：无一条被 `std::min(…, nodeEnd-1)` 夹断（值最大 17，航线点数都够），注释显示来源为"视频核对 / 近似"。
+
+### M2 中转站由**客户端**决定，服务端从不重新规划
+- 客户端把**整条节点链**发上来：`CMSG_ACTIVATETAXI`（2 点，`TaxiHandler.cpp:194-221`）或 `CMSG_ACTIVATETAXIEXPRESS`（N 点，`TaxiHandler.cpp:141-179`）；服务端只逐段查 `GetTaxiPath` 后依次飞（`Player.cpp:18509` → `AddRoutes`）。
+- ⇒ "同一目的地走哪几个中转站"取决于该玩家**当前已解锁飞行点掩码**（`m_taxi`）：解锁进度不同的两个玩家，或同一玩家后来解锁了新点，客户端给出的中转链就不同 ⇒ **同一句"去奎岛"能飞出不同路线**。这是客户端行为，不是服务端 bug；`AllFlightPaths`（本服/云端均为 0）会把这个差异放大。
+
+### M3 客户端 / 服务端 DBC 不一致 —— 本次实测**排除**（标准客户端一致）
+- 用 mpyq 按补丁优先级解析三份本地 2.4.3.8606 客户端（`D:\Game\70\2.4.3`、`守护者（LV核心）客户端`、`卡布奇诺TBC纯净客户端`）的 `TaxiPath.dbc` / `TaxiPathNode.dbc` / `TaxiNodes.dbc`，md5 **与本服（`x64_Debug\dbc`）/云端（`/opt/mangos/data/dbc`）逐字节一致**（`ca64ada0…` / `d43ffb83…` / `11a46c1b…`）⇒ 正常客户端**不会**出现"地图上画的线 ≠ 实际飞的线"。
+- 但客户端**自身两个语言补丁互相打架**（`patch-zhCN.MPQ` vs `patch-zhCN-2.MPQ`）：
+  - `TaxiPathNode`：**412 号航线**差 **5 个点（补了 idx 18-22）+ idx 11-17 相差最大 885 码**；526 号航线差 3 点（10~39 码）；411 号 idx3 差 7.7 码；
+  - `TaxiNodes`：**82/83**（银月城/塔奎林）坐骑外观 id 不同（3574 vs 19917），**209/210/211/212/213**（太阳井日常/破碎残阳基地节点）flag 由 `0xFF00FE` 变 `0xFF01FE`。
+  - ⇒ 若玩家用**自制或改过 DBC / 带额外补丁的客户端**（例如本机 `守护者（LV核心）客户端` 里那个 mpyq 都读不了的加密 `patch-zhCN-Z.MPQ`），预览与实际就可能真的对不上。**官方纯净客户端不存在这个问题。**
+- ⚠️ 顺带修正本文档 432 行那节的归因：把"点飞行常提示离空运站太远(ERR_TAXITOOFARAWAY)"说成"客户端 2.5.3 + 服务端 2.4.3 DBC 差异"，**本次核对不支持**（三份客户端 taxi DBC 与服务端逐字节相同）。更可能的真因是那段坐标校验把**平方距离**与 `(2*INTERACTION_DISTANCE)^3` 比较（`Player.cpp:18474-18488`，维度写错，等效容差≈**31.6 码**；上游同样写法）⇒ 节点坐标离飞行管理员稍远就误判。该节结论（"NPC 发起的飞行放行"）仍然有效，只是**理由要改**。
+
+### M4 断线/重登会丢掉后半段航线（配置决定）
+- `LongFlightPathsPersistence = 0`（本地与云端 `mangosd.conf` 均是 0）：`Tracker::Save()` 只保存 **1 条** pathid（`Taxi.cpp:56`），`Load()` 读回来只飞第一段 ⇒ 多段航线中途掉线/重登，**飞完第一段就停下**、剩余航段被丢弃 ⇒ 与"平时那条路线"不一致。
+
+### M5 缺腿静默截断（少见）
+- `Tracker::AddRoutes`（`Taxi.cpp:191-205`）逐段添加，坏段（该段起点节点**该阵营没有坐骑外观** `GetTaxiMountDisplayId`、或 `(from,to)` 组合不存在）直接 `break`，但只要**已加成一段**就返回 true ⇒ 请求 3 段可能只飞 1-2 段就落地下马，表现为"路线不对/没飞到目的地"。
+
+### 追加（同日）：站长补充症状「有时候 taxi 走直线穿模」——**实测定位：兜底接缝算法把接缝画到山体里**
+方法与判据：用本服地形高度图（`x64_Debug/maps/%03u%02u%02u.map`，地形 float V9 129×129/格，与 `GridMap::getHeightFromFloat` 同源）沿每条直线段每 4~10 码采样，比较「该点 Z」与「该点地形高度」。
+
+| 对照 | 段数 | 地形高出直线 >2 码 | >20 码 | 最大穿透 |
+|---|---|---|---|---|
+| **基线：原版 DBC 相邻航点**（暴雪自己的数据） | 12,804 | **5.27%** | **4.88%** | 349 码 |
+| 接缝直线 · 有 `taxi_shortcuts` 数据（data 模式） | 471 | 0.8% | 0.8% | **69 码** |
+| 接缝直线 · **兜底算法**（fallback 模式） | 759 | 7.1% | **8.3%** | **346 码** |
+
+- 更严格的判据（地形高出该点 >5 码 **且** 该点离两条航线的原版航点都 >60 码 ⇒ 既在地下、又不在原版航线附近，也就是"既穿地又不在 WMO 内部通道里"）：命中 **53 个真实中转**（fallback 48 / data 5），其中穿透 >100 码 34 个、>200 码 16 个。
+- **top 全部集中在铁炉堡（node 6，山洞城）**：穿透 194~345 码、直线段 373~1555 码，例如 `path 312 -> path 438` 穿 345 码 / 直线 667 码、`path 13(暴风城→铁炉堡) -> path 314(铁炉堡→丹巴达尔)` 穿 266 码 / 直线 1400 码、`path 402 -> path 314` 穿 265 码 / 直线 1555 码；其次是 **卡加斯（node 21，荒芜之地峡谷）** 125~128 码、**守望堡（node 45）** 126 码。
+- 原因：兜底那套「两个游标锁步推进、找第一对离枢纽 >48 码的点」在铁炉堡必然踩坑——进出铁炉堡的航线是沿**环形山的两侧**走的，第一个满足 48 码条件的点对正好是**跨过整座山**的一对，于是服务器让坐骑**直接从山体里穿过去**（客户端只是沿服务端给的直线段播放，没有地形跟随）。`taxi_shortcuts` 里那些"视频核对"出来的值反而是好的（最大仅 69 码），**问题出在没有数据的 61% 中转上**。
+- 离线模拟两种修法（782 个兜底中转，同一判据）：
+  | 方案 | 穿透 >20 码的中转 | 最深穿透 | 直线段中位/最大 |
+  |---|---|---|---|
+  | 现状（锁步） | 60 (7.7%) | 281 码 | 193 / 2669 码 |
+  | 兜底改「按直线段长度从小到大找第一条不穿地的」 | **0** | **0** | 103 / 573 码 |
+  | 只补数据行（每条航线取模拟最优值） | 25 (3.2%) | 122 码 | 141 / 2884 码 |
+- 建议：优先做**代码修法**（`Tracker::Trim` 兜底分支：候选点对按直线段长度排序，用 `m_owner.GetMap()->GetHeight(x,y,z)`（含 vmap）逐点验证，取第一条不穿地的；全都不行就不裁）——改动小、离线可验证、对将来数据缺失自动兜底；`taxi_shortcuts` 可以顺带补，但纯数据只能修 ~60%。本地复现脚本：`_agent_tmp/taxi_terrain*.py`、`taxi_fallback_rules.py`、`taxi_rock_check.py`、`taxi_data_fix_sim.py`。
+
+### 追加 2（同日）：站长反馈「守望堡附近确实容易穿模，但不是每次都穿」+ **已加诊断日志（只写日志、不改行为）**
+- ⚠️ **修正上一段的判断**：上一段里"铁炉堡那批 200~345 码穿透"**不可信**——铁炉堡是**山洞城**，进出航线本来就走在 WMO 内部通道里，而原始 `.map` 地形**不含 WMO 挖空**，所以拿地形高度比对会把它整段判成"在地下"。反证：原版 DBC 自己的 12,804 段里，被判"地形高出 >20 码"的 624 段**绝大多数就在铁炉堡这一圈**（坐标 ≈(-4850,-1000)），说明该判据在 WMO 内部失效。**守望堡（node 45，诅咒之地开阔地形）与卡加斯那批判据才有效**，站长也确认穿模确实出现在守望堡一带（命中记录：`path 381 -> path 262`，兜底接缝、穿透 126 码、直线段 766 码）。
+- 因此改为**用服务端自己的高度查询（含 vmap）在真实飞行上取证**。已加诊断日志（`src/game/Entities/Taxi.cpp`，**纯日志，无任何行为改动**；`Trim()` 保持 `static` 原样，`.h` 未改）：
+  - `Tracker::AddRoute`：每形成一个中转接缝就打印**接缝类型**（`shortcut-data` / `FALLBACK-trimmer` / `none`）、两条航线的裁剪节点数（含表里的 landing/takeoff 值）、以及接缝直线的长度/ΔZ/地形净空；
+  - `Tracker::Prepare`：打印每条腿的裁剪范围（`node range A..B`），并列出这次飞行所有 **>120 码的直线段**（原版长段与接缝直线都会出现）及其地形净空；
+  - `Tracker::AddRoutes(std::vector<DestID>)`：打印**客户端请求的完整中转链**（解释"同一目的地为何有时走不同路线"）。
+  - 每条采样段给出：`height above point: low-query X yd, +100yd-probe Y yd (worst at ...)`（`low = GetHeight(x,y,z)`、`high = GetHeight(x,y,z+100)`，两个查询都低于该点 Z 才算安全）与 `endpoint clearance 首/尾`。
+  - **开关**：GM 命令 `.debug taxi`（`Chat::HandleDebugTaxiCommand`，默认关闭 ⇒ 零开销）。日志前缀统一 `[TAXI-DIAG]`，同时进 `logs/Server.log` 与控制台。
+- 本地已编译并部署（2026-09-23 23:43 启动，`x64_Debug\mangosd.exe` md5 `A14A8AB8620D60BA66FA476935F0A308`，启动 9 秒无报错）；**未推云端**。
+- **云端同步记录（2026-09-23 23:46，站长指示"把日志版本同步到云"）**：云端源码树 `/root/Nmangos-tbc`（当时 HEAD `19964c635`）**只同步了这次提交的 3 个文件**（scp 覆盖，非 `git reset --hard`；`git push` 到云端仓库因公钥不被云端 git 接受而放弃）：
+  - `src/game/Entities/Taxi.cpp` md5 `1623cab9d67802aac1e95fc5e0c10e8e`（诊断日志本体）
+  - `src/game/AuctionHouseBot/AuctionHouseBot.cpp` md5 `e8b1dae694035e3b636ccc52dfcbf754`（**同一提交里带的 AHBot 改动**；云端 `ahbot_market_state` 目前没有 `category=2` 行 ⇒ 行为不变，等 `dev/111` 数据上去才生效）
+  - `dev/KNOWN_ISSUES.md`（文档）
+  - **未同步** `dev/111`（AH 上架商人配方，站长尚未验收）⇒ 夜间 `apply_dev_sql.sh` 不会自动应用它（云端 `dev/` 里没有该文件）。**该状态已于同日 23:59 由站长指示解除——见文末「AHBot 上架商人可交易配方」章节的云端同步记录。**
+  - 覆盖前备份：`/root/_prep_taxilog_20260923_2346/{Taxi.cpp,AuctionHouseBot.cpp,KNOWN_ISSUES.md}`（md5 `da464f73…` / `836d8d46…` / `253b4f5a…`）。
+  - `Taxi.h` 云端与提交一致**未被改动**（`git diff --name-only HEAD -- src/game/Entities/Taxi.h` 为空）。
+  - 生效方式：**04:06 夜间任务** `flock -w 5400 /var/lock/nightly_build.lock /root/nightly_build_restart.sh` —— 它先用 `make -n` 判断要编译 ⇒ 停 mangosd ⇒ `make -C /root/Nmangos-tbc-build -j2`（增量：`Taxi.cpp.o` 是 04:32 的旧产物 ⇒ 至少这 1 个 TU）⇒ 二进制有变化才 `cp` 安装 ⇒ 重启。同步时云端在线 4 人，**没有做任何编译/重启**。
+  - 云端日志位置：`sLog.outString` 进 `/tmp/mangosd_run.log`（实测启动行 "taxi shortcuts" 在该文件里出现 91 次）⇒ `[TAXI-DIAG]` 也在这里，grep 即可。
+- 复现步骤：进本地测试服 → `.debug taxi` → 飞一次守望堡那条线（最好再飞一次"正常"的线做对照）→ 我读 `Server.log` 里的 `[TAXI-DIAG]` 行判断穿模点落在**接缝直线**还是**原版 DBC 长段**上、以及该点的 `high-probe` 是否明显为正。
+- 判读表：① `kind = FALLBACK-trimmer` 且该段 `+100yd-probe` 明显为正 ⇒ 兜底接缝穿山（改 `Trim` 兜底算法）；② `kind = shortcut-data` 但净空为负 ⇒ `taxi_shortcuts` 里那条"近似"值裁过头（改数据）；③ `long-segment` 出现在**没有中转**的单段航线上 ⇒ 原版 DBC 航点本身太稀（要做"长段贴地形补点"）；④ 净空全为负但玩家看到穿模 ⇒ 判据要换成 vmap-only 查询再核。
+
+### 可选动作（**均未实施**，等站长定）
+0. **（本次新增，推荐）** 按上面「追加」一节的代码修法改兜底接缝算法（需本地编译 + 站长游戏内看一次铁炉堡中转确认）。
+1. 补 `taxi_shortcuts`（卡利莫多最缺）：改完需重启（表可 `.reload taxi_shortcuts`，按 P0 规矩我们不用 `.reload`）。注意：本库 / `tbcmangos_orig` / `tbcdb_ref` / `wotlkmangos` 都是**同源 235 行**，上游没有更全的版本可抄，只能自己按视频/实测补。
+2. 改兜底算法：距离改 3D、接缝取几何最近点对（而非锁步）、跨图/跨地图 id 时保守不裁。
+3. 打开 `LongFlightPathsPersistence = 1`（多段航线重登续飞）——注意会改变收费/存档行为（`Taxi.cpp:152`、`:236`），需站长确认。
+4. 复核 `Player.cpp:18474-18488` 那段容差写法（上游 wart），避免误判"离空运站太远"。
+
+### 复现用的临时脚本（`_agent_tmp/`，非交付物）
+`taxi_dbc_dup.py`（DBC 重复 (from,to) 检查）、`taxi_shortcut_coverage.py` / `taxi_junction_check.py`（覆盖率与中转组合统计）、`taxi_shortcut_by_map.py`（分大陆覆盖率 + 奎岛相关航线）、`taxi_mpq_probe.py` / `taxi_mpq_diff.py` / `taxi_node_decode.py` / `taxi_client_compare.py`（从客户端 MPQ 提取并逐字节/逐行比对 taxi DBC）。
+
+---
+
+## [经济] AHBot 上架「商人出售的可交易配方」（固定商人价）—— `dev/111`，2026-09-23 已上云端
+
+### 需求（站长 2026-09-23）
+「让 AH 上架来自商人出售的装绑配方」→ 细化后：**上白 + 绿两档、固定按商人售价**；机制上"把 `category 2` 改成固定价格，在表里用价格字段决定"。
+
+### 范围（本库实测）
+- 口径：`item_template` class=9(配方) + `bonding=0`（可交易）+ Quality 1(白)/2(绿) + **确实有真实商人卖它**（`npc_vendor` 或 `creature_template.VendorTemplateId` 指向的 `npc_vendor_template`，且商人 entry 在 `creature` 里有刷点）。
+- 命中 **292 件 = 白 270 + 绿 22**；商人售价合计 **5,037,570 铜**。
+- 排除：蓝色仅 1 件（**12703** 设计图：风暴护手，站长要求不上）；另有 **476 件**商人卖的配方是 `bonding=1`(BoP 拾取绑定) **不可交易**，不在范围内。本库 class 9 只有 bonding 0/1，没有 bonding 2 ⇒ "装绑"按"可交易"理解。
+
+### 机制与参数（`dev/111_AH上架商人可交易配方_固定商人价.sql`，1 条 `INSERT IGNORE`(292 行) + 25 条带守卫的 `UPDATE` 兜底）
+- 表：`ahbot_market_state`（角色库，PK=`(item, auction_house)`，AHBot operator 表）。
+- `auction_house = 2`（中立 AH —— 与既有 `category=1` 行一致；catalog 只读 house 2）。
+- `category = 2` = **固定单价**，单价取本行 `price`（铜币）；代码 `GetCatalogFixedPrice()` = `category==2 ? price : 0`。
+- `price` = `price_ref` = 该配方的**商人售价 BuyPrice**（AH 与 NPC 同价）。
+- `target = 4` / `capacity = 8` ⇒ 曝光切片 `max(1, target*QuoteExposurePct/100)` = **每件挂 1 个**（默认 target=50/capacity=200 会让每件挂十几个）。
+- 幂等：`INSERT IGNORE` + `UPDATE … AND category<>2` ⇒ 重复执行 0 行变更（本地实测）。
+
+### 配套代码（同批上线：`src/game/AuctionHouseBot/AuctionHouseBot.cpp`，仅 14 行）
+1. `LoadCatalogOverrides()` 的 supply universe 由 `category==1` 扩为 **`category==1 || category==2`**（否则 category 2 只定价、不供货）。
+2. 固定价商品的**出价价值**不再乘 `ValueWithVariance`：`uint32 buyUnitValue = fixedBuy ? itemWorth : ValueWithVariance(itemWorth);`（固定价商品的收购价也应按固定价，不该带随机浮动）。
+- 无 `category=2` 行时该改动**行为等价于旧版** ⇒ 可先上代码、后上数据。
+
+### 本地验证（2026-09-23）
+- 应用后本地库 `category=2 AND auction_house=2` = **292 行**；重跑 0 行变更。
+- 本地测试服启动日志：`AHBot market-maker catalog: 410 book items (459 operator overrides)`（410 = 旧 118 条 category 1 + 新增 292）。
+- 遗留：老的中立 AH 里已挂的 class 9 商品（约 1201 条，`itemowner=0` = AHBot 自己挂的）仍是旧价（约商人价 2 倍），要等自然过期；如需立刻生效可清理这些挂单（**未做**，等站长定）。
+
+### 云端同步记录（2026-09-23 23:59，站长指示"同步 AH 上架商人配方"）
+- 同步文件：`/root/Nmangos-tbc/dev/111_AH上架商人可交易配方_固定商人价.sql`，md5 `25b7bc86203d80be992825c9dba72abb`（与本地一致；scp 覆盖）。
+- 同步前核对云端 `tbccharacters.ahbot_market_state` **表结构与本地逐列一致**，且**没有任何 `category=2` 行**（当时只有 `category=1` 125 行、`category=3` 41 行）⇒ `INSERT IGNORE` 不会覆盖既有行。
+- `DRYRUN=1 bash /root/apply_dev_sql.sh` 实测输出：`[dry-run] would apply 111: 111_AH上架商人可交易配方_固定商人价.sql`，标记仍停在 **110**（**没有现在执行**）。
+- 生效方式：**04:06 夜间任务**先跑 `apply_dev_sql.sh`（应用 111、标记→111），再增量编译（`Taxi.cpp` + `AuctionHouseBot.cpp` 两个 TU）→ 安装二进制 → 重启。⇒ 数据与代码同一次重启一起生效。
+- 回滚件：`dev/rollback/111_回滚_AH上架商人配方.sql`（**只在本地**，未同步；它不在 `dev/` 根目录，`apply_dev_sql.sh` 不会自动执行它；需要时手工 `mysql tbcmangos < 该文件` + 重启或 `.ahbot reload`）。
+- 同步时云端在线 3 人，**没有做任何编译/重启/SQL 执行**。
+
+### 后续：AHBot loot 来源调整（`ahbot.conf`，站长 2026-09-24 指示）
+站长原话：*"Disenchant 我们改成 mm 管理了应该没什么用；大部分 skinning 和 go 来源也会被 category=1 过滤。Fishing 改成 10,12,5,10，Skinning 改成 20,30,5,10，go 和 item 先按这个来。"*
+
+**最终值（本地 + 云端一致）**
+| 键 | 旧 | 新 | 备注 |
+|---|---|---|---|
+| `AuctionHouseBot.Loot.Disenchant` | `3, 4, 10, 15` | **`0, 0, 0, 0`（关闭）** | 实测其产出**全部**已被 MM 目录接管 ⇒ 该来源实际产出为 0 |
+| `AuctionHouseBot.Loot.Fishing` | `10, 12, 10, 20` | `10, 12, 5, 10` | 数量减半、品种不变 |
+| `AuctionHouseBot.Loot.Gameobject` | `40, 50, 10, 20` | `15, 18, 6, 12` | 刷次量 700 → ≈153（−78%） |
+| `AuctionHouseBot.Loot.Skinning` | `10, 12, 5, 10` | `20, 30, 5, 10` | 品种变宽、数量不变 |
+| `AuctionHouseBot.Loot.Item` | `10, 12, 1, 2` | `3, 4, 1, 2` | 刷次量 ≈17 → ≈5.5（−68%） |
+
+**"会被 category 过滤"实测（本地库，判据：`AuctionHouseBot.cpp:466` —— 有 operator 行且 `category != 0` 的物品**永不**走 legacy loot 供给）**
+- operator 行总计 **459**（category1 118 + category2 292 + category3 49）。
+- 按**产出品种**算被过滤比例：Disenchant **30/30 = 100%**、Skinning 23/86 = 26.7%、Fishing 2/40 = 5%、GO 78/2929 = 2.7%、Item(开箱) 36/1550 = 2.3%、Creature 99/5447 = 1.8%。
+- 按**模板行暴露度**（`loot_template` 里 (entry,item) 行数）算：Disenchant **102/102 = 100%**、**Skinning 1599/3369 = 47.5%**、GO **342/9440 = 3.6%**、Item 215/4709 = 4.6%、Fishing 7/199 = 3.5%、Creature 9045/174709 = 5.2%。
+- ⇒ 站长的判断对 **Disenchant（100%，关了等于没关，纯省计算）** 和 **Skinning（近半被接管）** 成立；但**Gameobject 只有 3.6% 的模板行被过滤 ⇒ 它仍是最大投放源**（这也是它需要被砍 78% 的原因）。
+
+**改动落点与生效**
+- 本地 `x64_Debug\ahbot.conf`：已改 + 已于 2026-09-24 00:48 重启验证（`AHBot using configuration file ahbot.conf` + catalog 410 条加载正常）；备份 `_agent_tmp\ahbot.conf.bak_local_20260924_0043`。
+- 云端 `/opt/mangos/etc/ahbot.conf`：已改（md5 前 `ed892633…` → 后 **`e6632bd4…`**，`diff` 只有这几行 + 注释变化），备份 `/opt/mangos/etc/ahbot.conf.bak_20260924_loot`（md5 `ed892633…`）。**随 04:06 夜间重启生效**；若要提前，`.ahbot reload` 会走 `ReloadAllConfig()` → 整份重读该文件（热生效）。
+- 注意：本地测试服的 `Loot.Creature.Normal` 仍是 `100, 100, 5, 8`（云端是 `25, 25, 3, 5`），本次**未动**——本地是测试服，两边总投放量本来就不同。
+
+**运维教训（配置解析）**：`Config::Reload()` 只跳过"**行首** `#`"的行（`Config.cpp:65`），**不剥行内注释**；值后面的 `# 注释` 之所以还能生效，纯粹是 `atoi` 在第一个非数字字符处停下（云端已有的 `MarketMaker.ProbeUnits = 0   # …`、`MaxGoldPer*` 都是这样"侥幸"生效的）。⇒ 以后给配置加说明一律写成**独立注释行**，别写字尾注释。
+
+### 元素类（class 7 / subclass 10）在 MM 目录里的归属 —— 2026-09-24 核查
+站长问：*"除了源生和微粒还有哪些在 category=1 管理？"* 结论（**以云端 live 为准**）：
+
+元素类在本库共 **31 件，全部有归属 = 30 件 category=1 + 1 件 category=3**：
+- **源生 7 件**（21884 源生火焰 / 21885 源生之水 / 21886 源生生命 / 22451 源生空气 / 22452 源生之土 / 22456 源生暗影 / 22457 源生法力）= **category=1（MM 管理）**。
+- **微粒 7 件**（22572~22578：空气/土/火/生命/法力/暗影/水之微粒）= **category=1**。
+- **其余 16 件也都在 category=1**（站长问的"还有哪些"就是这 16 件）：**7067 元素之土、7068 元素火焰、7069 元素空气、7070 元素之水、7075 大地之核、7076 大地精华、7077 火焰之心、7078 火焰精华、7079 纯水之球、7080 水之精华、7081 风之气息、7082 空气精华、7972 亡灵腐液、10286 野性之心、12803 生命精华、12808 死灵精华**。
+- **唯一例外：23571 源生之能（Primal Might）= category=3（封禁）** ⇒ MM 不挂牌、loot 供给也跳过。
+
+类别构成（云端 category=1 共 125 行）：草药 40 / **元素 30** / 附魔 29 / 金属与石头 14 / 皮革 6 / 布料 6。
+
+⚠️ **本地测试库与云端不一致（本次顺带查出来的漂移）**：本地 cat1 = 118、cat3 = 49；云端 cat1 = 125、cat3 = 41。差异恰好是：**云端把 7 件源生放在 cat1（MM 管理），本地把 7 件源生 + 21840 灵纹布卷放在 cat3（封禁）**；其余完全相同（本地 cat1 ⊂ 云端 cat1）。⇒ 若要在本地复现云端行为（做 AHBot 测试时目录一致），需要把 7 件源生改回 cat1、并解除 21840 的封禁；**未改**，等站长定。
+
+### 处置：这 16 件元素材料退出 MM 目录（`dev/112`，2026-09-24）
+站长指示：*"还有这 16 件不应该在 category=1，应该是 0。"*
+
+- **`dev/112_元素类16件退出MM目录改category0.sql`**：`UPDATE tbccharacters.ahbot_market_state SET category = 0 WHERE auction_house=2 AND category=1 AND item IN (16 件)`。单条静态 SQL、幂等（带 `AND category = 1`，重跑 0 行）。
+- 回滚件：`dev/rollback/112_回滚_元素16件重回MM目录.sql`（`category 0 → 1`，同样幂等）。
+- **语义**：`category = 0`（等同"无行"）= untouched ⇒ ① MM 不再为其定价/挂牌；② `AuctionHouseBot.cpp:466` 的 `category != 0 → continue` 只过滤非 0，所以它们**重新回到普通 loot 来源供给**（生物/采集/剥皮，受 `ahbot.conf` 的 `Loot.*` + `Chance.Sell` 控制）。
+- **保留不变**：源生 7 件 + 微粒 7 件仍 `category=1`（MM 管理）；源生之能 23571 仍 `category=3`（封禁）。
+- **本地已应用并验证**（2026-09-24 00:52 重启）：`category` 计数 `cat1 118→102 / cat2 292 / cat3 49 / **cat0 +16**`；16 行实测全部为 0；启动日志 `AHBot market-maker catalog: 394 book items (459 operator overrides)`（410 → 394，正好 −16）。
+- **云端已同步、等 04:06 生效**：`dev/112` + 回滚件已 scp 到云端（md5 `4bc1a047…`），`DRYRUN=1 bash /root/apply_dev_sql.sh` 显示待执行顺序 **111 → 112**，标记仍停在 110（同步时在线 3 人，未执行任何 SQL / 未重启）。04:06 跑完后线上目录计数应为 `cat0=16 / cat1=109 / cat2=292 / cat3=41`。
+
+### 本地测试库对齐云端（站长 2026-09-24 01:00 指示"把本地对齐成云端"）
+- **比对方法**：把本地与云端 `tbccharacters.ahbot_market_state`（`auction_house=2` 全部行）导成 `item|enabled|category` 与"配置列"两份文本逐行 diff（脚本 `_agent_tmp/diff_house2.py`、`_agent_tmp/diff_cfg.py`）。
+- **实质差异只有 2 处**（16 件元素材料那批是本地已执行 `dev/112`、云端未执行造成的临时差异）：
+  1. 7 件源生（21884/21885/21886/22451/22452/22456/22457）：本地 `category=3`（封禁）→ 云端 `category=1`（MM 管理）⇒ 本地改回 `1`（`enabled=1`）；
+  2. **21840 灵纹布卷**：本地 `category=3`（封禁）→ 云端**没有这一行** ⇒ 本地**删行**（等同 category 0）。
+- 修正脚本：`_agent_tmp/local_align_from_cloud.sql`（**仅本地执行**，云端本来就是目标状态；幂等：`UPDATE ... AND category=3` + 带 item 条件的 `DELETE`）。重跑 0 行变更。
+- **刻意不对齐的字段**（市场商人运行期自己改，不是配置，对齐了也会立刻漂开）：`price / price_ref / target / qty / avg_cost / spent / earned / flow_bought / flow_sold / day_price / day_start / last_settle_time`。实测 `price_ref` 有 63 项、`target` 有 23 项与云端不同（运行时浮动 / 需求加成 / 闲置衰减）。
+- **对齐后**本地：`cat0=16 / cat1=109 / cat2=292 / cat3=41`（共 458 行）—— 与云端 04:06 执行完 111+112 后的预期**逐行一致**（云端当前仍是 `cat1=125 / cat3=41`，差的正是未执行的 dev/111 292 行与 dev/112 的 16 行）。逐行 diff 复检结果：共同物品里只剩那 16 件"云端还没执行 dev/112"的临时差异，`只在云端=0`，`只在本地=292`（=dev/111）。
+- 本地重启验证（00:57）：`AHBot market-maker catalog: 401 book items (458 operator overrides)`（109 + 292 = 401 ✓，覆盖行 458 = 对齐后总行数 ✓）。
+- **以后复检方法**：两边各跑一次 `SELECT CONCAT_WS('|', item, enabled, category) FROM ahbot_market_state WHERE auction_house=2 ORDER BY item;` 再 diff，预期只剩"云端尚未执行某个 dev/NNN"造成的临时差异。
+
+### 追加：玩家可能是"代理 + 现代客户端"——判读穿模时要把这一层排除（2026-09-24）
+站长贴来的两行报错（`游戏内对象信息更新失败 WowGuid128 …` / `NewHighGuidLegacy error high= 50575<=>C58F`，2026-09-23 22:35~2026-09-24 00:24）**来源已定位**：
+- 这两个字符串只存在于 **`SugarProxy.exe`**（`D:\Game\小黑兔\tools\sugar-proxy\`；Go 符号 `sugar/core/wow_guid.NewHighGuidLegacy`、`sugar/world/enums.(*ObjectType).Convert`、`wow_guid.WowGuid128`、`HighGuid703`），我们核验过的三份 2.4.3 客户端里都没有。
+- 同目录 `realm.txt` = **`39.96.90.39:3724`**（就是我们的服），`manifest.json` 指向 `static.xiaoheitu.cn` 的 hotfix 包 ⇒ **玩家用"小黑兔糖糖代理"接入**，客户端是**现代客户端**（`HighGuid703` = 7.x 世代 GUID 方案），不是在本地核验过的 2.4.3 纯净客户端。
+- 两条报错含义：① 代理按 128 位 GUID 更新某个游戏内对象失败（对象标识/更新层）；② 现代高段 GUID ↔ legacy 高段换算自检不一致（`50575` 与 `C58F` 是同一个值的十进制/十六进制）。报错里的 `2882308159563644032` = `0x2800040000003C80`（现代 128 位格式）。
+
+**与"飞行穿模"的关系**：机制上**无直接因果**——航线折线由服务端按 DBC 节点算好、以 `SMSG_MONSTER_MOVE` 下发，GUID/对象更新层的错误不会改折线。但**代理客户端是一个必须排除的独立变量**：
+- 现代客户端用自己的地形/碰撞/坐骑与样条处理；代理翻译包时还可能改动样条相关字段；
+- 之前"客户端 taxi DBC 与服务端逐字节一致"的核验**只覆盖三份 2.4.3 客户端**，**不覆盖**代理/现代客户端。
+⇒ 判读顺序（`[TAXI-DIAG]` 日志是**服务端侧**、与客户端无关）：① 让报穿模的玩家飞一次，看日志里那条段的 `+100yd-probe`：**明显为正** ⇒ 服务端几何确实穿山（改兜底接缝/补数据）；**净空为负（在空中）却仍看到穿模** ⇒ 属于客户端/代理侧，与上述两条报错同一层面，不该归到我们的接缝算法上。② 同一路线用 2.4.3 纯净客户端复飞对照：只有代理客户端穿 ⇒ 问题在代理/现代客户端。
+
+---
+
+## [本地化] 官方 API 物品名全量比对跑完：350 件不一致，其中 **279 件是坏 zhCN 译名（线上可见）** —— 2026-09-24（**未改**）
+
+- 扫描范围：全库 30,407 件（`item_template`），逐件问 Blizzard 官方 API（`tw.api.blizzard.com` `/data/wow/item/{id}`，一次取全语言）：
+  **一致 28,188**、**官方查不到（已删除/404）2,219**、**不一致 350**。
+- 350 件拆解（脚本 `_agent_tmp/item_diff_classify3.py`；清单 `_agent_tmp/物品名称_本地vs官方_待审.tsv`）：
+  | 类型 | 数量 | 说明 |
+  |---|---|---|
+  | zhCN **为空** ⇒ 游戏内显示英文 | **3** | 5632 怯逃药水 / 29877 / 39149 `"Fred"` |
+  | zhCN 是中文但与官方不同，且**本地 zhTW == 官方 zhTW** | **279** | **高可信**：说明该条目本身没被改过，是 zhCN 那一列来源不好 |
+  | zhCN 与官方不同、且本地 zhTW 也不同 | **68** | 需人工确认 |
+- **坏译名的模式**（很典型，像是"照英文单词机翻"）：`徽记 ← Head`（官方"头颅"）、`精华 ← Heart`（官方"心脏"）、`标记 ← Remains`（官方"残骸"）、`穴居人 ← Trogg`（官方"石腭怪"）、`装满烈酒的酒桶 ← Tainted Keg`（官方"被污染的酒桶"）、`铜质宽剑 ← Heavy Copper Broadsword`（官方"铜质重剑"）、`腐朽之尘 ← Dust of Decay`（官方"蚀骨灰"）、`药剂 ← Potion`（官方"药水"）……
+- **云端 live 同样是这些坏名字**（抽查 182 加瑞克的徽记 / 1532 皱缩的徽记 / 2382 藏尸者的精华 / 2828 妮萨的标记 / 3382 弱效巨魔之血药剂 / 3520 装满烈酒的酒桶 / 3571 穴居人巨锤 —— 云端 `locales_item.name_loc4` 与本地一致）⇒ **玩家现在就看到这些**。
+
+---
+
+## [机制] 「未知的服务器错误」= `ERR_TAXIUNSPECIFIEDSERVERERROR`：它只在"一个航段都没建成"时发出 —— 2026-09-24（诊断日志已加，**行为未改**）
+
+站长补充线索：*"当我飞行穿模的时候，总会提示一个未知的服务器错误"* + *"而且总是我骑在坐骑上的时候"*。
+
+### 报错源头（已逐字确认）
+- 客户端 `Data\locale-zhCN.MPQ` 的 `Interface\FrameXML\GlobalStrings.lua` 里 **`ERR_TAXIUNSPECIFIEDSERVERERROR = "未知的服务器错误"`**（全表唯一匹配；`ERR_TAXIPLAYERALREADYMOUNTED` 是"你已经骑乘了"、`ERR_TAXITOOFARAWAY` 是"离空运站太远"，都不是这条）。
+- 服务端**只有一处**会发这个值：`Player::ActivateTaxiPathTo`（`Player.cpp:18511`）——条件是 **`m_taxiTracker.AddRoutes(...)` 返回 false**，即 `m_routes` 为空、**第一段航段就没建成**。
+- 三种拒绝原因（`Tracker::AddRoute`）：
+  1. **tracker 忙**：`AddRoutes` 开头 `Clear()` 失败（`m_state > TRACKER_STAGING`，也就是"已经在飞/正在准备飞"）⇒ 与"总是骑在坐骑（飞行坐骑）上的时候"最吻合：**客户端在一次飞行进行中又发了一次飞行请求**；
+  2. `sObjectMgr.GetTaxiPath(from, to)` 返回 0 ⇒ **客户端给的这对起终点在 DBC 里没有航线**；
+  3. 起点节点**该阵营没有飞行坐骑 display**（`GetTaxiMountDisplayId == 0`）。
+- ⚠️ 关键区分：如果只是**后续某一段**失败，`AddRoutes` 仍返回 true（只要有一段成功）⇒ **不会**报这个错；所以这条 toast 一定意味着**第一段**失败。
+
+### 与"穿模"的可能联系（推断，待日志证实）
+"飞行途中又被拒一次飞行请求"说明**客户端自己认为要再开一段航程**（服务端并没有让它继续）——这正是"客户端接管移动、直接用直线飞过去"这类观感的典型前置条件；而客户端是"代理 + 现代客户端"时（见上一节）尤其可疑。**目前仍是推断**，因此先加日志取证、不动行为。
+
+### 已加的诊断日志（只写日志、`.h` 未改；`.debug taxi` 打开，默认零开销）
+| 位置 | 内容 |
+|---|---|
+| `TaxiHandler.cpp` | 客户端每次请求（`CMSG_ACTIVATETAXI` / `CMSG_ACTIVATETAXIEXPRESS`）：完整节点链、坐骑 display、是否处于 `UNIT_STAT_TAXI_FLIGHT`、客户端控制标志 |
+| `Tracker::AddRoute`（`Taxi.cpp`） | **每一种拒绝原因**：tracker 忙（带 state）/ 该起终点无 DBC 航线 / 起点节点该阵营无坐骑 display |
+| `Tracker::AddRoutes`（`Taxi.cpp`） | 结果：加了几段、尝试了几段、返回值（false 会明确写"client will show 'unknown server error'"） |
+| `Player::ActivateTaxiPathTo` | **发 `ERR_TAXIUNSPECIFIEDSERVERERROR` 的现场**（节点链 + 坐骑 + 飞行状态 + tracker state）；以及以前**完全静默**的 `Prepare()` 失败 |
+| `Player::OnTaxiFlightEnd` / `OnTaxiFlightEject` | 飞行**结束/被弹出**时的坐标与剩余腿数（判断"服务端计划到哪结束" vs "客户端以为到哪"） |
+
+- 本地已编译部署验证（2026-09-24 01:32 启动，`x64_Debug\mangosd.exe` md5 `A74BFDAFBCC65E334CE5282C25359580`，启动 16 秒，AHBot `401 book items` 正常）。
+- **云端已同步这 3 个文件**（md5 `573601d8…`(TaxiHandler) / `df48e79b…`(Taxi) / `8f210884…`(Player)，均为**纯新增**：`git diff --no-index` 显示 0 删除、只有 37/50/39 行新增）；云端对象文件是 04:32~04:36 的旧产物 ⇒ **04:06 夜间会增量编译这 3 个 TU**。
+- 复现判读：线上 `grep '\[TAXI-DIAG\]' /tmp/mangosd_run.log`（本地 `logs\Server.log`）——
+  `AddRoutes FAILED at Clear(): tracker busy` ⇒ 飞行中重复请求；`no DBC taxi path for pair (X -> Y)` ⇒ 客户端给的节点对服务端不存在（客户端/代理数据问题）；`no taxi mount display for source node X` ⇒ 该节点缺坐骑外观（数据问题，可按节点补）。
+
+### 改成**常开**：所有飞行都自动记录（站长 2026-09-24："我没法预测哪一次会出 bug"）
+- 三个文件里各放了一个**常开开关**，事件日志与 `.debug taxi` 解耦：
+  - `Entities/Taxi.cpp:62`、`Maps/TaxiHandler.cpp:45`：`inline bool TaxiDiagEnabled() { return true; }`
+  - `Entities/Player.cpp:18393`：`static bool TaxiDiagEnabled() { return true; }`
+  - 想恢复"只在 `.debug taxi` 时记录"：把 `return true` 改成 `return m_debug` / `return player.IsTaxiDebug()` / `return IsTaxiDebug()`（对应各自的上下文）。**`.debug taxi` 现在只控制采样精度**：常开时每 25 码采一个点、最多 40 点（控开销）；`.debug taxi` 打开时每 10 码、最多 200 点。
+- 每次飞行**自动**进日志的行（前缀统一 `[TAXI-DIAG]`，带玩家名/GUID/地图）：
+  1. 客户端请求：`CMSG_ACTIVATETAXI[EXPRESS] request … chain: 2 -> 6 -> 213 (3 nodes) | mounted display … taxi flight state … client control lost …`
+  2. `itinerary (client request)` / `junction: … kind = shortcut-data|FALLBACK-trimmer|none` / `leg: path … node range …`
+  3. 每个 **>120 码**直线段：`long-segment / junction-chord: path A idx X -> path B idx Y | len … yd, dZ … | height above point: low-query … +100yd-probe … | endpoint clearance …`
+  4. 拒绝原因（**新增，专为这条报错**）：`AddRoute REFUSED: tracker busy (state N > STAGING)` / `no DBC taxi path for pair (X -> Y)` / `no taxi mount display for source node X (team T), path P`
+  5. `AddRoutes result: N leg(s) added, M attempted, return TRUE|FALSE (client will show 'unknown server error')`
+  6. `ActivateTaxiPathTo: AddRoutes FAILED => ERR_TAXIUNSPECIFIEDSERVERERROR | … chain …` / `Prepare() FAILED (no reply sent)`
+  7. `flight END: path … player pos (x,y,z) map M` / `flight EJECT (clear=…): player pos … tracker state … legs left …`
+- 本地已编译部署（01:38 启动，`x64_Debug\mangosd.exe` md5 `EAAB02232B805278EDC5715C22521380`，启动 9 秒，AHBot 401 书目正常）；**云端已同步**（md5 `0282803f…`(TaxiHandler) / `7b0c17f5…`(Taxi) / `275111c1…`(Player)，云端已确认 `if (m_debug)`/`if (IsTaxiDebug()` 事件门**为 0 处**）；云端 `.o` 仍是 04:32~04:36 旧产物 ⇒ **04:06 夜间增量编译这 3 个 TU** 后自动常开。
+- 日志量预估：每次飞行约 10~40 行；线上日志在 `/tmp/mangosd_run.log`（`grep '\[TAXI-DIAG\]'`），本地在 `x64_Debug\logs\Server.log`。
+
+### ⚠️ 运维教训：Windows/MSVC（代码页 936）下**别用 Python 整文件重写带中文注释的源码**
+本次为改"常开开关"用 Python `open(..., "w", newline="")` 重写了 `Player.cpp`/`Taxi.cpp`/`TaxiHandler.cpp`，把仓库本来的 **CRLF 换行改成了 LF**，结果 MSVC 按 GBK 解码中文注释时，行尾少掉的那个 `0x0D` 让**悬挂的前导字节吃掉了换行符**，注释与下一行代码粘连，编译报出 `C2181 没有匹配 if 的非法 else` / `C2059` / `C3861 TaxiDiagEnabled 找不到标识符` 等**看似无关**的错误。
+- 证据：同一目录里未被重写的 `Unit.cpp`/`AuctionHouseBot.cpp` 都是 **CRLF**（`CRLF == LF` 计数相等）。
+- 结论/规则：① 本仓库源码是 **CRLF**，改动后必须保持 CRLF（`bytes.replace(b'\r\n',b'\n').replace(b'\n',b'\r\n')` 归一化即可）；② 新加的**注释也一律用 ASCII**（本次所有新诊断代码的注释都是英文，就是为了避开这个坑）；③ 报出"找不到自己刚写的符号/非法 else"这类怪错时，先查换行与编码，别怀疑逻辑。
+- 建议修法（未做，等站长定）：`dev/113` —— 只对 **279 件高可信**（本地 zhTW == 官方 zhTW）用官方 zhCN 覆盖 `locales_item.name_loc4`（带旧值守卫 `AND name_loc4='旧值'` ⇒ 幂等），3 件空的补齐，68 件列出人工确认。用"zhTW 也一致"当闸门可规避"官方现代译名在后续资料片被改名"的风险。`locales_item` 启动载入 ⇒ 需重启生效。
+
+---
+
+## [部署] 源码分发从 scp 改为 git（**夜间 git sync 仍然保持关闭**）—— 2026-09-24
+
+站长问："一直用 scp 能保证版本稳定吗？" 结论：**scp 不能**。举证（改之前）：云端 `/root/Nmangos-tbc` 的 `HEAD` 停在 `19964c635`（9-23 旧提交，且是 detached），而工作树里有 **19 处**未提交改动（含我们 scp 上去的 `Taxi.cpp`/`Player.cpp`/`TaxiHandler.cpp`、`dev/*.sql` 等）⇒ **那棵树不对应任何一个提交**，"线上跑的是哪一版"无法回答，出错也无法整体回滚。`dev/NNN_*.sql` 那套（编号 + 升序 + 幂等 + `.dev_sql_applied` 标记）本身是可靠的，问题只在**源码树分发**。
+
+### 已做的三件事
+1. **修好 git over ssh**（根因不是密钥）：git 经 `sh` 执行 ssh 时把 Windows 路径的**反斜杠吃掉**了（`Warning: Identity file C:UsersnYmpH.sshcodex_ecs_deploy not accessible`）。改用正斜杠即通，并写进本地仓库配置：
+   `git config core.sshCommand "ssh -i C:/Users/nYmpH/.ssh/codex_ecs_deploy -o StrictHostKeyChecking=no"`；验证：`git ls-remote ssh://root@39.96.90.39/root/Nmangos-tbc` 列出 `HEAD / master / release` ✓。
+2. **本地提交 push 成云端 `deploy` ref**（只加 ref，**不动工作树**）：`git push ssh://root@39.96.90.39/root/Nmangos-tbc HEAD:refs/heads/deploy` ⇒ 云端 `deploy = 3e72be978（添加鸟点飞行日志）`。
+3. **装手动部署助手 `/root/deploy_from_git.sh`**（权限 755，`bash -n` 通过）——**只做**"备份就地改动 → checkout 到指定提交（detached，保证以后还能继续 push `deploy`）→ 打印版本指纹"，**不编译、不重启、不动 dev SQL 标记、不碰配置文件**：
+   - `bash /root/deploy_from_git.sh deploy --dry-run` 先看要做什么；
+   - **工作树脏就拒绝执行**（实测：当前 19 处未提交 ⇒ `[refuse] … 加 --allow-dirty-tree 重跑`），需要强切时先把 tracked 改动导成 `_prep_git_deploy_<ts>.patch`、未跟踪文件打包 `_prep_git_deploy_<ts>_untracked.tgz`、构建树里的旧二进制也留一份；
+   - 结束后打印 `HEAD = <sha>` + `dirty files = 0` + 工作树内容指纹 `git ls-files -s | sha1sum`。
+4. **夜间脚本只加"只读版本指纹"**（`/root/nightly_build_restart.sh`，改动为**纯新增 10 行**，`bash -n` 通过，备份 `nightly_build_restart.sh.bak_20260924_fingerprint`）：
+   `[info] source HEAD: <sha> (<标题>)` + `[info] source dirty files: N`（N≠0 时逐行列出）。**`git sync disabled` 那段保持原样、没有启用** —— 按站长要求，绝不让夜间流程自动切换源码版本，避免把不稳定版本自动带上线。
+
+### 还没做完的一步（需要站长拍板）
+- 本地仍有未提交改动：`dev/KNOWN_ISSUES.md`、`src/game/Entities/Player.cpp`、`src/game/Entities/Taxi.cpp`、`src/game/Maps/TaxiHandler.cpp` + 未跟踪 `dev/112_*.sql`、`dev/rollback/112_*.sql`、`dev/rollback/112b_*.sql`（注意：`HEAD=3e72be978` 里只有**第一批**飞行日志，扩展/常开那批与 `TaxiHandler.cpp`/`Player.cpp` 还没进 git）。
+- 这些提交后，云端树才算"= 某个提交"；届时跑一次
+  `bash /root/deploy_from_git.sh deploy --allow-dirty-tree`（一次性对齐，会先备份），
+  之后就用 `git push … :refs/heads/deploy` + `bash /root/deploy_from_git.sh deploy`（干净树无需 `--allow-dirty-tree`），**不再用 scp 传源码**。
+- 生效方式不变：编译/重启仍只在夜间窗口或手工流程里做（`04:06` nightly / `03:00` restart）。
+
+
+
+
+

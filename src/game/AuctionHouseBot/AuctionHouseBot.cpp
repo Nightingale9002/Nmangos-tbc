@@ -591,7 +591,11 @@ void AuctionHouseBot::Update()
             }
             // [v3 2026-09-07] no warehouse capacity gate: virtual inventory is gone,
             // absorption is bounded by the per-cycle quota below (buyoutsThisCycle).
-            uint32 buyItemCheck = (uint32)std::min<uint64>((uint64)ValueWithVariance(itemWorth) * item->GetCount(), 0xFFFFFFFFull);
+            // [2026-09-23] fixed-price (category 2) goods: no variance on the bid either -
+            // a nozzle above the operator price would let players buy from an unlimited
+            // vendor and dump it back to the bot for a guaranteed profit.
+            uint32 buyUnitValue = fixedBuy ? itemWorth : ValueWithVariance(itemWorth);
+            uint32 buyItemCheck = (uint32)std::min<uint64>((uint64)buyUnitValue * item->GetCount(), 0xFFFFFFFFull);
             uint32 bidPrice = auction->bid + auction->GetAuctionOutBid();
             if (auction->startbid > bidPrice)
                 bidPrice = auction->startbid;
@@ -1211,7 +1215,11 @@ void AuctionHouseBot::LoadCatalogOverrides()
     m_catalogOverrides.clear();
 
     uint32 tAll = WorldTimer::getMSTime();
-    // one pass: overrides + book set (category == 1 && enabled, house 2)
+    // one pass: overrides + book set (category 1 or 2 && enabled, house 2)
+    // [2026-09-23] category 2 (fixed unit price from the row's `price`) is a book
+    // member too: it is supplied at that fixed price (single tier, no probes) by
+    // QuoteCatalog and pinned by UpdateMarketPrices. Before this it was excluded
+    // from the universe, so category-2 rows were never listed at all.
     if (auto result = CharacterDatabase.Query("SELECT item, MAX(enabled), MAX(target), MAX(capacity), MAX(category), MAX(price) FROM ahbot_market_state WHERE auction_house = 2 GROUP BY item"))
     {
         do
@@ -1225,7 +1233,7 @@ void AuctionHouseBot::LoadCatalogOverrides()
             e.price = fields[5].GetUInt32();
             uint32 itemId = fields[0].GetUInt32();
             m_catalogOverrides[itemId] = e;
-            if (e.enabled && e.category == 1)
+            if (e.enabled && (e.category == 1 || e.category == 2))
                 m_catalogUniverse.insert(itemId);
         } while (result->NextRow());
     }

@@ -27,6 +27,40 @@
 #include "MotionGenerators/Path.h"
 #include "MotionGenerators/WaypointMovementGenerator.h"
 
+#include <sstream>
+
+namespace
+{
+    /////////////////////////////////////////////////////////////////////////////////////
+    // [TAXI-DIAG 2026-09-24] Logging only: dump every incoming taxi activation request
+    // together with the state the player is in. Needed to explain the client toast
+    // "unknown server error" (ERR_TAXIUNSPECIFIEDSERVERERROR) which the server only
+    // sends when the tracker refuses to build ANY leg - the most likely case being a
+    // second request while a flight is already active (player riding the taxi mount).
+    // Enabled per player by the GM command ".debug taxi" (default off => zero cost).
+    /////////////////////////////////////////////////////////////////////////////////////
+    // [TAXI-DIAG 2026-09-24] Always-on request logging (owner request). ASCII only on purpose:
+    // this file is compiled under codepage 936, non-ASCII comments here break parsing.
+    // To go back to ".debug taxi" only, return player.IsTaxiDebug() instead.
+    inline bool TaxiDiagEnabled() { return true; }
+
+    void TaxiDiagRequest(Player const& player, char const* opcode, ObjectGuid npcGuid, uint32 const* nodes, uint32 nodeCount)
+    {
+        std::ostringstream d;
+        d << opcode << " request | player " << player.GetName() << " (guid " << player.GetGUIDLow()
+          << ", map " << player.GetMapId() << ") | npc " << npcGuid.GetString()
+          << " | chain: ";
+        for (uint32 i = 0; i < nodeCount; ++i)
+            d << (i ? " -> " : "") << nodes[i];
+        d << " (" << nodeCount << " nodes)";
+        d << " | mounted display " << player.GetMountID()
+          << ", taxi flight state " << (player.hasUnitState(UNIT_STAT_TAXI_FLIGHT) ? "YES" : "no")
+          << ", client control lost " << (player.HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CLIENT_CONTROL_LOST) ? "YES" : "no")
+          << " (tracker state is logged by Taxi.cpp right after)";
+        sLog.outString("[TAXI-DIAG] %s", d.str().c_str());
+    }
+}
+
 void WorldSession::HandleTaxiNodeStatusQueryOpcode(WorldPacket& recv_data)
 {
     DEBUG_LOG("WORLD: Received opcode CMSG_TAXINODE_STATUS_QUERY");
@@ -175,6 +209,10 @@ void WorldSession::HandleActivateTaxiExpressOpcode(WorldPacket& recv_data)
 
     DEBUG_LOG("WORLD: Received opcode CMSG_ACTIVATETAXIEXPRESS from %d to %d", nodes.front(), nodes.back());
 
+    // [TAXI-DIAG] logging only
+    if (TaxiDiagEnabled())
+        TaxiDiagRequest(*_player, "CMSG_ACTIVATETAXIEXPRESS", guid, nodes.data(), uint32(nodes.size()));
+
     GetPlayer()->ActivateTaxiPathTo(nodes, npc);
 }
 
@@ -216,6 +254,10 @@ void WorldSession::HandleActivateTaxiOpcode(WorldPacket& recv_data)
             return;
         }
     }
+
+    // [TAXI-DIAG] logging only
+    if (TaxiDiagEnabled())
+        TaxiDiagRequest(*_player, "CMSG_ACTIVATETAXI", guid, nodes.data(), uint32(nodes.size()));
 
     GetPlayer()->ActivateTaxiPathTo(nodes, npc);
 }

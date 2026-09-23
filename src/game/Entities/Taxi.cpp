@@ -31,6 +31,99 @@
 
 using namespace Taxi;
 
+namespace
+{
+    //////////////////////////////////////////////////////////////////////////////////////
+    // [TAXI-DIAG 2026-09-24] Taxi flight "straight line through terrain" diagnostics.
+    // Logging only: no flight behaviour is changed anywhere in this block.
+    //
+    // Why: players report occasional clipping near Nethergarde Keep (node 45) but not
+    // always. Raw .map terrain cannot decide whether a point is inside rock or inside a
+    // WMO interior (cities carved out of mountains), so this uses the server's own
+    // height query (terrain + vmap) to get ground truth on a real flight.
+    //
+    // Sampled per point on the segment:
+    //   low  = GetHeight(x, y, z)        - what the server normally uses
+    //   high = GetHeight(x, y, z + 100)  - probe 100yd above, detects rock overhead
+    // If "high - z" is clearly positive the segment point sits under solid geometry.
+    //
+    // Enabled per player by the GM command ".debug taxi" (default off => zero cost).
+    //////////////////////////////////////////////////////////////////////////////////////
+
+    void TaxiDiagLog(Player& owner, std::string const& msg)
+    {
+        sLog.outString("[TAXI-DIAG] %s | player %s (guid %u, map %u)",
+                       msg.c_str(), owner.GetName(), owner.GetGUIDLow(), owner.GetMapId());
+    }
+
+    // [TAXI-DIAG 2026-09-24] Always-on logging (owner request: cannot predict which flight breaks).
+    // To go back to ".debug taxi" only, change the return below to "return m_debug".
+    // ASCII only: this file is compiled under codepage 936, non-ASCII comments here break parsing.
+    inline bool TaxiDiagEnabled() { return true; }
+
+    /// Sample terrain height along one straight segment. Cross-map segments only report length.
+    std::string TaxiDiagSegment(Player& owner, bool detailed, char const* tag, PathID pathA, Index idxA, TaxiPathNodeEntry const* a,
+                                PathID pathB, Index idxB, TaxiPathNodeEntry const* b)
+    {
+        if (!a || !b)
+            return "";
+
+        std::ostringstream out;
+        const float dx = b->x - a->x, dy = b->y - a->y, dz = b->z - a->z;
+        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        out.setf(std::ios::fixed);
+        out.precision(1);
+        out << tag << ": path " << pathA << " idx " << idxA << " -> path " << pathB << " idx " << idxB
+            << " | len " << dist << " yd, dZ " << (b->z - a->z);
+
+        if (a->mapid != b->mapid)
+        {
+            out << " | cross-map segment (map " << a->mapid << "->" << b->mapid << "), no height sample";
+            return out.str();
+        }
+        if (a->mapid != owner.GetMapId())
+        {
+            out << " | sample skipped: segment on map " << a->mapid << ", player on map " << owner.GetMapId();
+            return out.str();
+        }
+
+        // always-on uses coarse sampling (every 25yd, max 40 points); ".debug taxi" uses fine sampling
+        const uint32 steps = detailed ? uint32(std::min(200.0f, std::max(2.0f, dist / 10.0f)))
+                                      : uint32(std::min(40.0f, std::max(2.0f, dist / 25.0f)));
+        float worstLow = 0.0f, worstHigh = 0.0f, worstAt = 0.0f;
+        for (uint32 i = 0; i <= steps; ++i)
+        {
+            const float t = float(i) / float(steps);
+            const float x = a->x + dx * t;
+            const float y = a->y + dy * t;
+            const float z = a->z + dz * t;
+
+            const float hLow  = owner.GetMap()->GetHeight(x, y, z, false);
+            const float hHigh = owner.GetMap()->GetHeight(x, y, z + 100.0f, false);
+
+            if (hLow - z > worstLow)
+                worstLow = hLow - z;
+            if (hHigh - z > worstHigh)
+            {
+                worstHigh = hHigh - z;
+                worstAt = dist * t;
+            }
+        }
+
+        out << " | height above point: low-query " << worstLow << " yd, +100yd-probe " << worstHigh
+            << " yd (worst at " << worstAt << " yd from segment start)";
+
+        // Endpoint clearance above the ground surface (negative = endpoint itself is underground)
+        const float cA = a->z - owner.GetMap()->GetHeight(a->x, a->y, a->z, false);
+        const float cB = b->z - owner.GetMap()->GetHeight(b->x, b->y, b->z, false);
+        out << " | endpoint clearance " << cA << " / " << cB << " yd";
+
+        return out.str();
+    }
+}
+
+
 std::string Tracker::Save()
 {
     // Writes in modified format.
@@ -125,7 +218,18 @@ bool Tracker::AddRoute(const TaxiPathEntry *entry, float discountMulti /*= 0.0f*
 {
     // Cant be altered while taxi ride is prepared
     if (m_state > TRACKER_STAGING)
+    {
+        // [TAXI-DIAG] logging only: this is the path that makes the client show
+        // "unknown server error" (ERR_TAXIUNSPECIFIEDSERVERERROR) via AddRoutes() == false
+        if (TaxiDiagEnabled())
+        {
+            std::ostringstream d;
+            d << "AddRoute REFUSED: tracker busy (state " << uint32(m_state) << " > STAGING)"
+              << " path " << (entry ? entry->ID : 0);
+            TaxiDiagLog(m_owner, d.str());
+        }
         return false;
+    }
 
     // Verify input
     if (!entry)
@@ -138,7 +242,17 @@ bool Tracker::AddRoute(const TaxiPathEntry *entry, float discountMulti /*= 0.0f*
     // Can't add taxi path without mount display id unless specified otherwise
     uint32 displayId = sObjectMgr.GetTaxiMountDisplayId(entry->from, m_owner.GetTeam());
     if (requireModel && !displayId)
+    {
+        // [TAXI-DIAG] logging only
+        if (TaxiDiagEnabled())
+        {
+            std::ostringstream d;
+            d << "AddRoute REFUSED: no taxi mount display for source node " << entry->from
+              << " (team " << uint32(m_owner.GetTeam()) << "), path " << entry->ID;
+            TaxiDiagLog(m_owner, d.str());
+        }
         return false;
+    }
 
     // Use first route's mount appearance for the entirety of the flight
     if (!m_displayId)
@@ -160,7 +274,53 @@ bool Tracker::AddRoute(const TaxiPathEntry *entry, float discountMulti /*= 0.0f*
 
     // Multi-route taxi path: set shortcut
     if (count > 1)
+    {
+        // [TAXI-DIAG 2026-09-24] Logging only. Trim() stays static and untouched, so the diagnostic
+        // works out afterwards what kind of junction was used by comparing the node ranges before
+        // and after the call against the taxi_shortcuts data (data / fallback / none).
+        const Index oldEnd = m_routes[count - 2].nodeEnd;
+        const Index oldStart = m_routes[count - 1].nodeStart;
+
         Trim(m_routes[count - 2], m_routes[count - 1]);
+
+        if (TaxiDiagEnabled())
+        {
+            Route const& first = m_routes[count - 2];
+            Route const& second = m_routes[count - 1];
+
+            uint32 scLanding = 0, scTakeoff = 0;
+            TaxiShortcutData scData;
+            if (sObjectMgr.GetTaxiShortcut(first.pathID, scData))
+                scLanding = std::min(scData.lengthLanding, (oldEnd - 1));
+            if (sObjectMgr.GetTaxiShortcut(second.pathID, scData))
+                scTakeoff = std::min(scData.lengthTakeoff, (second.nodeEnd - 1));
+
+            const Index cutEnd = oldEnd - first.nodeEnd;         // nodes dropped from the first route's tail
+            const Index cutStart = second.nodeStart - oldStart;  // nodes dropped from the second route's head
+
+            char const* kind = "none (junction kept untrimmed, mount flies into the hub and back out)";
+            if (cutEnd && cutStart)
+                kind = (scLanding && scTakeoff) ? "shortcut-data" : "FALLBACK-trimmer";
+
+            std::ostringstream d;
+            d << "junction: path " << first.pathID << " (" << first.destStart << " -> " << first.destEnd
+              << ") landing-cut " << cutEnd << " (table " << scLanding << ")"
+              << " + path " << second.pathID << " (" << second.destStart << " -> " << second.destEnd
+              << ") takeoff-cut " << cutStart << " (table " << scTakeoff << ")"
+              << " | kind = " << kind;
+
+            if (cutEnd && cutStart)
+            {
+                TaxiPathNodeList const& wp1 = sTaxiPathNodesByPath[first.pathID];
+                TaxiPathNodeList const& wp2 = sTaxiPathNodesByPath[second.pathID];
+                d << " | " << TaxiDiagSegment(m_owner, m_debug, "junction-chord",
+                        first.pathID, first.nodeEnd, wp1[first.nodeEnd],
+                        second.pathID, second.nodeStart, wp2[second.nodeStart]);
+            }
+
+            TaxiDiagLog(m_owner, d.str());
+        }
+    }
 
     return true;
 }
@@ -185,19 +345,61 @@ bool Tracker::AddRoute(DestID start, DestID end, float discountMulti /*= 0.0f*/,
     uint32 pathID, cost;
     sObjectMgr.GetTaxiPath(start, end, pathID, cost);
 
+    // [TAXI-DIAG] logging only (always on since 2026-09-24)
+    if (!pathID)
+    {
+        std::ostringstream d;
+        d << "AddRoute REFUSED: no DBC taxi path for pair (" << start << " -> " << end << ")";
+        TaxiDiagLog(m_owner, d.str());
+    }
+
     return (pathID && AddRoute(pathID, discountMulti, requireModel));
 }
 
 bool Tracker::AddRoutes(const std::vector<DestID>& destinations, float discountMulti /*= 0.0f*/, bool requireModel /*= true*/)
 {
     if (!Clear())
+    {
+        // [TAXI-DIAG] logging only: Clear() refuses when a ride is already being tracked
+        if (TaxiDiagEnabled())
+        {
+            std::ostringstream d;
+            d << "AddRoutes FAILED at Clear(): tracker busy (state " << uint32(m_state)
+              << ") => caller sends ERR_TAXIUNSPECIFIEDSERVERERROR";
+            TaxiDiagLog(m_owner, d.str());
+        }
         return false;
+    }
 
+    // [TAXI-DIAG] Record the full node chain requested by the client (this is what decides
+    // whether the same destination is flown via different hub nodes / different routes)
+    if (TaxiDiagEnabled())
+    {
+        std::ostringstream d;
+        d << "itinerary (client request): ";
+        for (size_t i = 0; i < destinations.size(); ++i)
+            d << (i ? " -> " : "") << destinations[i];
+        d << " | " << destinations.size() << " nodes, "
+          << (destinations.size() > 1 ? (destinations.size() - 1) : 0) << " legs";
+        TaxiDiagLog(m_owner, d.str());
+    }
+
+    uint32 attempted = 0;
     for (uint32 i = 1; i < destinations.size(); ++i)
     {
+        ++attempted;
         // Stop on bad input
         if (!AddRoute(destinations.at(i - 1), destinations.at(i), discountMulti, requireModel))
             break;
+    }
+
+    // [TAXI-DIAG] logging only: how many legs made it (partial plans end the flight early)
+    if (TaxiDiagEnabled())
+    {
+        std::ostringstream d;
+        d << "AddRoutes result: " << m_routes.size() << " leg(s) added, " << attempted << " attempted, "
+          << "return " << (!m_routes.empty() ? "TRUE" : "FALSE (client will show 'unknown server error')");
+        TaxiDiagLog(m_owner, d.str());
     }
 
     // If at least one insertion was accepted, return true
@@ -295,6 +497,35 @@ bool Tracker::Prepare(Index nodeResume /*= 0*/)
     }
     // Bugcheck: latest finished map spline is suspiciously short
     MANGOS_ASSERT(m_atlas.back().size() > 2);
+
+    // [TAXI-DIAG] Dump what will actually be flown: first the trimmed node range of every leg,
+    // then only the straight segments longer than 120yd with their ground clearance.
+    // Both plain DBC long segments and invented junction chords show up here, which is what
+    // tells us which of the two kinds a reported clipping happened on.
+    if (TaxiDiagEnabled())
+    {
+        for (Roadmap::const_iterator r = m_routes.begin(); r != m_routes.end(); ++r)
+        {
+            std::ostringstream d;
+            d << "leg: path " << (*r).pathID << " (" << (*r).destStart << " -> " << (*r).destEnd
+              << ") node range " << (*r).nodeStart << ".." << (*r).nodeEnd;
+            TaxiDiagLog(m_owner, d.str());
+        }
+
+        for (Atlas::const_iterator itr = m_atlas.begin(); itr != m_atlas.end(); ++itr)
+        {
+            Map const& spline = (*itr);
+            for (size_t i = 1; i < spline.size(); ++i)
+            {
+                TaxiPathNodeEntry const* a = spline[i - 1];
+                TaxiPathNodeEntry const* b = spline[i];
+                const float dx = b->x - a->x, dy = b->y - a->y, dz = b->z - a->z;
+                if (std::sqrt(dx * dx + dy * dy + dz * dz) < 120.0f)
+                    continue;
+                TaxiDiagLog(m_owner, TaxiDiagSegment(m_owner, m_debug, "long-segment", a->path, a->index, a, b->path, b->index, b));
+            }
+        }
+    }
 
     m_state = TRACKER_STANDBY;
     return true;
