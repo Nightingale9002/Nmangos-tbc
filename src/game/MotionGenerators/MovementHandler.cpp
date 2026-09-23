@@ -167,7 +167,13 @@ void WorldSession::HandleMoveWorldportAckOpcode()
         GetPlayer()->Relocate(loc.coord_x, loc.coord_y, loc.coord_z, loc.orientation);
     auto lambda = [playerGuid = GetPlayer()->GetObjectGuid(), loc, old_loc, mEntry, mInstance](Map* map)
     {
-        Player* player = map->GetPlayer(playerGuid);
+        /* [2026-09-23 Kabu] Must NOT use map->GetPlayer() here: during a cross-map teleport the player is
+         * temporarily detached from map instances, so map->GetPlayer() returns null and the teleport is
+         * silently aborted (client stuck on the loading screen -> disconnect/reconnect). Upstream fixed
+         * exactly this in e652e3274 "[Core/Movement] Fix teleport failure during map transitions" by going
+         * back to ObjectAccessor::FindPlayer(guid, false) (= also accept players not in world).
+         * Our cherry-pick 6714d7541 predates that fix, which is what broke far teleports on 2026-09-23. */
+        Player* player = ObjectAccessor::FindPlayer(playerGuid, false);
         if (!player)
             return;
 

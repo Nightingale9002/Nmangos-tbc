@@ -4296,3 +4296,61 @@ if (!GetGOInfo()->GetDespawnPossibility() && !GetGOInfo()->IsDespawnAtAction() &
 - **二级分支的前置没查**：`.learn 17039`（剑专精）目前只要求"有锻造"，不要求"有武器锻造"（官服要求武器锻造）。gossip 条件 `20479` 已含 `已学 9787`，所以正常玩法没洞；如需核心也兜住，可加 `spell_chain.prev_spell` 判定。
 - ⚠ **更正（先前"锻造部落侧少给"是误判，站长实测没复现）**：锻造专精的真正发放口是 **NPC gossip**——联盟 **Myolor Sunderfury(11145, menu 3182, 铁炉堡)**、部落 **Krathok Moltenfist(11176, menu 3187, 奥格瑞玛)**，选项条件 `20492` = `NOT(已学 9788 或 9787) AND 锻造 >= 225 AND (5283/5284 已奖励 OR 5301/5302 已奖励)` ⇒ **部落靠 5301/5302 已奖励 + 这个 gossip 拿专精，根本不缺**。
   而 `dbscripts_on_quest_end 5283 -> 9790 / 5284 -> 9789` 会**额外**直接给专精、且**没有互斥条件** ⇒ 联盟侧两条路都能拿，脚本那条更松（站长复现"交付后仍拿到防具锻造"走的正是它，本次已由学习入口兜住）。若要更干净，可删掉这两条脚本、改用 `quest_template.RewSpellCast`（自动走核心两层校验）。
+
+---
+
+## [数据] 全库「负事件号」刷怪标注整批缺失 ⇒ 奎岛推进阶段后旧敌对 NPC 不再消失 —— 2026-09-23（`dev/108`，本地验证通过）
+
+### 现象（站长 2026-09-23 报告）
+- 「现在奎岛开了新的阶段之后，旧的敌对 NPC 不会停止刷新」——黎明刃部队（Dawnblade Blood Knight/Summoner/Marksman）、虚空怪（Irespeaker / Abyssal Flamewalker / Unleashed Hellion）等在阶段推进后仍持续存在。
+
+### 机制：`game_event_creature.event` 允许【负数】（这是本次的关键）
+负数行 = **「该刷点存在到事件 N 开始为止」**，是 cmangos 用来做"阶段推进时整批清场"的原生手段：
+
+| 调用 | 效果 |
+|---|---|
+| `GameEventMgr::ApplyNewEvent(N)`（事件 N 启动） | `GameEventSpawn(N)`（生成正数标注的刷点）+ **`GameEventUnspawn(-N)`（移除负数标注的刷点）** |
+| `UnapplyEvent(N)`（事件 N 结束） | `GameEventUnspawn(N)` + `GameEventSpawn(-N)` |
+
+- 载入与索引：`GameEventMgr.cpp:245-290`，`m_gameEventCreatureGuids.resize(m_gameEvents.size() * 2 - 1)`，索引 `m_gameEvents.size() + event_id - 1`，合法性只查 `IsValidEvent(std::abs(event_id))` ⇒ 负数与正数共用同一套事件号空间。
+- 奎岛的阶段推进正是靠这套：`WorldState::StartSunsReachPhase()`（`WorldState.cpp:2487`）在阶段 2/3/4 分别 `StartEvent(303 / 306·307 / 310)`，从而触发 `-303 / -307 / -310` 的整批清理。
+
+### 根因：整类数据丢失（不是核心逻辑问题）
+- 本库 `game_event_creature` 里 **负数行 0 条**；参考库 `tbcmangos_orig` / `tbcdb_ref` 各 **262 条**。
+- 逐行比对（`guid` + `event` 维度）：本库相对参考库 **只少这 262 行、多 0 行**（6819 vs 7081）；262 个 guid **全部**存在于本库 `creature` 表（无悬空），PK 冲突 0。
+- 同时比对 `game_event_gameobject` / `game_event_creature_data` / `game_event_mail` / `game_event_quest` / `game_event` 五张表：与参考库**完全一致** ⇒ 只有 `game_event_creature` 这一张表整类丢失，不是零散人为删改。
+- 交叉验证：奎岛那 112 行与 **`wotlkmangos`** 的同名行逐行一致（差异 0/0），确认是上游原生数据而非参考库的孤例。
+
+### 修复：`dev/108_奎岛阶段清理_恢复负事件刷怪标注.sql`
+- 262 行**逐字取自 `tbcmangos_orig`**（上游数据，非自创）；**全静态**（无 JOIN/子查询/聚合/计算，只有写死字面量）；`INSERT IGNORE` ⇒ 幂等。
+- 分组（文件内按事件分段并注释受影响生物）：
+  - **一、奎岛 112 行**：`-302`:13、`-303`:19、`-307`:29、`-310`:51（覆盖 Dawnblade Blood Knight/Summoner/Marksman、Irespeaker、Abyssal Flamewalker、Unleashed Hellion，以及几个会被后续阶段替换掉的破碎残阳哨点）
+  - 二、同批丢失的其它事件 150 行：`-123` 安其拉第 4 阶段 96、`-27` 夜晚 14、`-26` 啤酒节 14、`-76`~`-84` 暗月马戏团搭建/开张 18、`-12` 万圣节 5、`-100` 暴风前夕 3
+- 回滚：`dev/rollback/108_回滚_恢复负事件刷怪标注.sql`（`DELETE FROM game_event_creature WHERE event < 0;` —— 修补前该表负数行为 0，等价还原）。
+
+### 验证（本地，含核心侧实证）
+1. 本地库连续执行两次：`262 → 262`（幂等，无报错）。
+2. 临时诊断（`GameEventUnspawn()` 内打印负数事件的清理条数与前 6 个 guid），把本地 `world_state` 的奎岛 `phase` 由 0 改成 **2（ARMORY）** 后重启，日志实测：
+```
+GameEvent 303 "Suns Reach Reclamation Phase 2 Permanent" started.
+GameEvent 306 "Suns Reach Reclamation Phase 3 Only" started.
+GameEvent 307 "Suns Reach Reclamation Phase 3 Permanent" started.
+GAMEEVENT-DIAG: unspawn event -303 -> 19 creatures (map 530), first guids: 5300086,5300087,5300293,...
+GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 5300365,5300460,5300461,...
+```
+   ⇒ 阶段推进时**实际移除了 48 个刷点**（全在 map 530 奎岛）。修复前这些行不存在 ⇒ 同样的阶段推进移除 **0 个**。
+3. 临时诊断代码**已回退**（`git diff src/game/GameEvents/GameEventMgr.cpp` 为空），并重新编译。
+4. 待站长验收：本地测试服奎岛阶段已置为 3（ARMORY），进岛看**日境圣所/军械库一带的黎明刃是否已消失**；看完想回阶段一执行
+   `UPDATE tbccharacters.world_state SET Data='0 0 0 0 0 0 0 0 0 0 0 0 3 0 0 0' WHERE Id=20;` 再重启即可。
+
+### 生效/回滚
+- `game_event_creature` 在 mangosd 启动时载入 ⇒ **需重启**；负数行是在"对应事件被 Apply 的那一刻"执行清理，而奎岛事件由 `WorldState::StartSunsReachPhase()` 在启动时重放 ⇒ 重启即生效。
+- 云端随夜间窗口应用；验收通过后再删回滚件（本仓惯例：验收通过的 SQL 不留回滚件）。
+
+### 关联发现（同一次排查的副产品，尚未处理）
+- **`game_event_creature_data.vendor_id` 是第二张"借货表"**：`Creature::GetVendorTemplateItems()`（`Creature.cpp:2737`）会用它覆盖 `creature_template.VendorTemplateId`。奎岛铁匠 **25046 Smith Hauthaa** 的 `VendorTemplateId = 0`（所以只查商品表永远查不到），但 `game_event_creature_data(guid 5300787, event 309 铁砧)` 把她的商店指向 **template 505**（57 件 P5 徽章装备，`condition_id` 全为 28024）。全库共 11 条这类覆盖（竞技场赛季军需官、Shaani、Hauthaa）。这条机制与本次修复无关，但它解释了"她自己表里没货却在卖"。
+- **真正未过滤的奎岛徽章货在 Kayri(26089)**：`template 554` 有 45 行以公正徽章结算（`ExtendedCost 1015 = 25 徽章` 15 行、`2347 = 40 徽章` 30 行），`condition_id` 全为 0，未按 `dev/054` 的"装等 ≥128 → 28023"上锁。
+
+### 运维教训
+- cmangos 的 `game_event_creature` 有**负数事件号**这一整类语义（阶段清场专用），**只比对正数行会漏掉整个机制**；今后做事件/刷点类数据比对，必须显式带上 `event < 0` 维度。
+- 参考库（`tbcmangos_orig` / `tbcdb_ref` / `wotlkmangos`）在"整类数据是否丢失"这类判断上是可靠标尺：先做 `guid`+`event` 双向差集，再谈修改。
