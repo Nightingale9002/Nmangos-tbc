@@ -18597,9 +18597,9 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
 
     if (!m_taxiTracker.AddRoutes(nodes, (npc ? GetReputationPriceDiscount(npc) : 0.0f), !spellid))
     {
-        // [TAXI-DIAG 2026-09-24] logging only: this is the ONLY place that answers
-        // ERR_TAXIUNSPECIFIEDSERVERERROR, which the client shows as "未知的服务器错误".
-        if (IsTaxiDebug())
+        // [TAXI-DIAG 2026-09-25] The log line is deliberately ALWAYS ON (rare event, so no spam) so
+        // that bad chains sent by any player are captured overnight without per-player ".debug taxi";
+        // the chat popup stays behind that flag.
         {
             std::ostringstream d;
             d << "ActivateTaxiPathTo: AddRoutes FAILED => ERR_TAXIUNSPECIFIEDSERVERERROR | player "
@@ -18610,8 +18610,9 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
             d << " | mounted display " << GetMountID()
               << ", taxi flight state " << (hasUnitState(UNIT_STAT_TAXI_FLIGHT) ? "YES" : "no")
               << ", tracker state " << uint32(m_taxiTracker.GetState());
-            sLog.outString("[TAXI-DIAG] %s", d.str().c_str());
-            ChatHandler(this).PSendSysMessage("[TAXI-DIAG] %s", d.str().c_str());
+            sLog.outString("[TAXI-DIAG][ANOMALY] %s", d.str().c_str());
+            if (IsTaxiDebug())
+                ChatHandler(this).PSendSysMessage("[TAXI-DIAG] %s", d.str().c_str());
         }
         GetSession()->SendActivateTaxiReply(ERR_TAXIUNSPECIFIEDSERVERERROR);
         return false;
@@ -18626,18 +18627,80 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
     // refused instead of being flown partially. A fully buildable chain behaves exactly as before.
     if (m_taxiTracker.GetRoadmap().size() != nodes.size() - 1)
     {
-        if (IsTaxiDebug())
+        // [TAXI-DIAG 2026-09-25] always-on anomaly log (rare), chat popup only with ".debug taxi".
         {
             std::ostringstream d;
             d << "ActivateTaxiPathTo: chain NOT fully buildable (" << uint32(m_taxiTracker.GetRoadmap().size())
               << " of " << uint32(nodes.size() - 1) << " legs) => refusing instead of flying a partial route | player "
               << GetName() << " (guid " << GetGUIDLow() << ")";
-            sLog.outString("[TAXI-DIAG] %s", d.str().c_str());
-            ChatHandler(this).PSendSysMessage("[TAXI-DIAG] %s", d.str().c_str());
+            for (size_t i = 0; i < nodes.size() && i < 16; ++i)
+                d << (i ? " ->" : "") << " " << nodes[i];
+            sLog.outString("[TAXI-DIAG][ANOMALY] %s", d.str().c_str());
+            if (IsTaxiDebug())
+                ChatHandler(this).PSendSysMessage("[TAXI-DIAG] %s", d.str().c_str());
         }
         m_taxiTracker.Clear();
         GetSession()->SendActivateTaxiReply(ERR_TAXINOTVISITED);
         return false;
+    }
+
+    // [TAXI-DIAG 2026-09-25] ANOMALY log, deliberately ALWAYS ON (no per-player ".debug taxi"): a chain
+    // whose head is more than 100 yd away from the player is the signature of the bad chains that used
+    // to end in a long straight "catch-up" flight. Only this rare case is logged (no spam) and no chat
+    // popup is sent, so other players never see diagnostic text.
+    if (nodes.size() >= 3)
+    {
+        const TaxiNodesEntry* head = sTaxiNodesStore.LookupEntry(nodes.front());
+        if (head)
+        {
+            const float ax = head->x - GetPositionX(), ay = head->y - GetPositionY(), az = head->z - GetPositionZ();
+            const float anomalyGap = std::sqrt(ax * ax + ay * ay + az * az);
+
+            if (anomalyGap > 100.0f)
+            {
+                uint32 const realNode = sObjectMgr.GetNearestTaxiNode(GetPositionX(), GetPositionY(), GetPositionZ(), GetMapId(), GetTeam());
+
+                std::ostringstream r;
+                r.setf(std::ios::fixed);
+                r.precision(1);
+                r << "chain head " << nodes.front() << " is " << anomalyGap << " yd from the player (nearest node "
+                  << realNode << "), " << uint32(nodes.size()) << " nodes:";
+                for (size_t i = 0; i < nodes.size() && i < 16; ++i)
+                    r << (i ? " ->" : "") << " " << nodes[i];
+
+                bool found = false;
+                for (size_t rot = 1; rot < nodes.size() && !found && rot < 16; ++rot)
+                {
+                    uint32 order[16];
+                    std::ostringstream orderText;
+                    bool ok = true;
+                    for (size_t i = 0; i < nodes.size() && i < 16; ++i)
+                    {
+                        order[i] = nodes[(i + rot) % nodes.size()];
+                        orderText << (i ? " -> " : "") << order[i];
+                    }
+                    for (size_t i = 0; i + 1 < nodes.size() && i + 1 < 16; ++i)
+                    {
+                        auto it = sTaxiPathSetBySource.find(order[i]);
+                        if (it == sTaxiPathSetBySource.end() || it->second.find(order[i + 1]) == it->second.end())
+                        {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if (ok)
+                    {
+                        found = true;
+                        r << " | *** ROTATED by " << uint32(rot) << " (buildable order: " << orderText.str() << ") ***";
+                    }
+                }
+                if (!found)
+                    r << " | no rotation of this chain is fully buildable";
+
+                sLog.outString("[TAXI-DIAG][ANOMALY] %s | player %s (guid %u, client build %u)",
+                               r.str().c_str(), GetName(), GetGUIDLow(), GetSession() ? GetSession()->GetGameBuild() : 0);
+            }
+        }
     }
 
     if (GetMoney() < m_taxiTracker.GetCostTotal())
