@@ -20,6 +20,7 @@
 #include "Entities/Player.h"
 #include "Globals/ObjectMgr.h"
 #include "World/World.h"
+#include "Chat/Chat.h"
 
 #include <sstream>
 
@@ -54,12 +55,14 @@ namespace
     {
         sLog.outString("[TAXI-DIAG] %s | player %s (guid %u, map %u)",
                        msg.c_str(), owner.GetName(), owner.GetGUIDLow(), owner.GetMapId());
+        // also pop it up in the player's chat window (".debug taxi" is on for that player)
+        ChatHandler(&owner).PSendSysMessage("[TAXI-DIAG] %s", msg.c_str());
     }
 
-    // [TAXI-DIAG 2026-09-24] Always-on logging (owner request: cannot predict which flight breaks).
-    // To go back to ".debug taxi" only, change the return below to "return m_debug".
-    // ASCII only: this file is compiled under codepage 936, non-ASCII comments here break parsing.
-    inline bool TaxiDiagEnabled() { return true; }
+    // [TAXI-DIAG 2026-09-24] Back to switchable logging: only when the player enabled
+    // ".debug taxi". (Was always-on for a while; owner reverted it: no log showed up on the
+    // flight where clipping reproduced, and always-on was too noisy.)
+    // ASCII only: this file is compiled under codepage 936, non-ASCII comments break parsing.
 
     /// Sample terrain height along one straight segment. Cross-map segments only report length.
     std::string TaxiDiagSegment(Player& owner, bool detailed, char const* tag, PathID pathA, Index idxA, TaxiPathNodeEntry const* a,
@@ -119,6 +122,79 @@ namespace
         const float cB = b->z - owner.GetMap()->GetHeight(b->x, b->y, b->z, false);
         out << " | endpoint clearance " << cA << " / " << cB << " yd";
 
+        return out.str();
+    }
+
+    // [TAXI-DIAG 2026-09-24] Geometry of one taxi path: how straight is it really?
+    // Answers "why does the mount look like it flies a straight line": compares the node
+    // polyline length against the direct first->last distance, and also the sub-range that
+    // is actually handed to the client after junction trimming (nodeStart..nodeEnd).
+    std::string TaxiDiagRouteGeometry(PathID pathID, Index nodeStart, Index nodeEnd)
+    {
+        TaxiPathNodeList const& nodes = sTaxiPathNodesByPath[pathID];
+        if (nodes.empty())
+            return "empty path";
+
+        auto polyline = [](TaxiPathNodeList const& ns, Index from, Index to, bool& sameMap)
+        {
+            double len = 0.0;
+            const TaxiPathNodeEntry* prev = nullptr;
+            sameMap = true;
+            uint32 used = 0;
+            for (auto itr = ns.begin(); itr != ns.end(); ++itr)
+            {
+                const TaxiPathNodeEntry* n = (*itr);
+                if (!n || n->index < from || n->index > to)
+                    continue;
+                if (prev)
+                {
+                    if (prev->mapid != n->mapid)
+                        sameMap = false;
+                    else
+                        len += std::sqrt(std::pow(n->x - prev->x, 2) + std::pow(n->y - prev->y, 2) + std::pow(n->z - prev->z, 2));
+                }
+                prev = n;
+                ++used;
+            }
+            return std::make_pair(len, used);
+        };
+
+        bool sameFull = true, sameSent = true;
+        auto full = polyline(nodes, nodes.front()->index, nodes.back()->index, sameFull);
+        auto sent = polyline(nodes, nodeStart, nodeEnd, sameSent);
+
+        const TaxiPathNodeEntry* f = nodes.front();
+        const TaxiPathNodeEntry* l = nodes.back();
+        const double directAll = (f->mapid == l->mapid)
+            ? std::sqrt(std::pow(l->x - f->x, 2) + std::pow(l->y - f->y, 2) + std::pow(l->z - f->z, 2)) : 0.0;
+
+        // first/last node actually sent
+        const TaxiPathNodeEntry* sFirst = nullptr;
+        const TaxiPathNodeEntry* sLast = nullptr;
+        for (auto itr = nodes.begin(); itr != nodes.end(); ++itr)
+        {
+            const TaxiPathNodeEntry* n = (*itr);
+            if (!n || n->index < nodeStart || n->index > nodeEnd)
+                continue;
+            if (!sFirst)
+                sFirst = n;
+            sLast = n;
+        }
+        const double directSent = (sFirst && sLast && sFirst->mapid == sLast->mapid)
+            ? std::sqrt(std::pow(sLast->x - sFirst->x, 2) + std::pow(sLast->y - sFirst->y, 2) + std::pow(sLast->z - sFirst->z, 2)) : 0.0;
+
+        std::ostringstream out;
+        out.setf(std::ios::fixed);
+        out.precision(1);
+        out << "path " << pathID << " geometry: full nodes " << full.second << ", polyline " << full.first
+            << " yd, direct " << directAll << " yd, ratio "
+            << (directAll > 1.0 ? (full.first / directAll) : 0.0);
+        out.precision(2);
+        out << " | sent nodes " << sent.second << ", polyline " << sent.first
+            << " yd, direct " << directSent << " yd, ratio "
+            << (directSent > 1.0 ? (sent.first / directSent) : 0.0);
+        if (!sameFull || !sameSent)
+            out << " (cross-map, ratios approximate)";
         return out.str();
     }
 }
@@ -221,7 +297,7 @@ bool Tracker::AddRoute(const TaxiPathEntry *entry, float discountMulti /*= 0.0f*
     {
         // [TAXI-DIAG] logging only: this is the path that makes the client show
         // "unknown server error" (ERR_TAXIUNSPECIFIEDSERVERERROR) via AddRoutes() == false
-        if (TaxiDiagEnabled())
+        if (m_debug)
         {
             std::ostringstream d;
             d << "AddRoute REFUSED: tracker busy (state " << uint32(m_state) << " > STAGING)"
@@ -244,7 +320,7 @@ bool Tracker::AddRoute(const TaxiPathEntry *entry, float discountMulti /*= 0.0f*
     if (requireModel && !displayId)
     {
         // [TAXI-DIAG] logging only
-        if (TaxiDiagEnabled())
+        if (m_debug)
         {
             std::ostringstream d;
             d << "AddRoute REFUSED: no taxi mount display for source node " << entry->from
@@ -283,7 +359,7 @@ bool Tracker::AddRoute(const TaxiPathEntry *entry, float discountMulti /*= 0.0f*
 
         Trim(m_routes[count - 2], m_routes[count - 1]);
 
-        if (TaxiDiagEnabled())
+        if (m_debug)
         {
             Route const& first = m_routes[count - 2];
             Route const& second = m_routes[count - 1];
@@ -361,7 +437,7 @@ bool Tracker::AddRoutes(const std::vector<DestID>& destinations, float discountM
     if (!Clear())
     {
         // [TAXI-DIAG] logging only: Clear() refuses when a ride is already being tracked
-        if (TaxiDiagEnabled())
+        if (m_debug)
         {
             std::ostringstream d;
             d << "AddRoutes FAILED at Clear(): tracker busy (state " << uint32(m_state)
@@ -373,7 +449,7 @@ bool Tracker::AddRoutes(const std::vector<DestID>& destinations, float discountM
 
     // [TAXI-DIAG] Record the full node chain requested by the client (this is what decides
     // whether the same destination is flown via different hub nodes / different routes)
-    if (TaxiDiagEnabled())
+    if (m_debug)
     {
         std::ostringstream d;
         d << "itinerary (client request): ";
@@ -394,7 +470,7 @@ bool Tracker::AddRoutes(const std::vector<DestID>& destinations, float discountM
     }
 
     // [TAXI-DIAG] logging only: how many legs made it (partial plans end the flight early)
-    if (TaxiDiagEnabled())
+    if (m_debug)
     {
         std::ostringstream d;
         d << "AddRoutes result: " << m_routes.size() << " leg(s) added, " << attempted << " attempted, "
@@ -502,14 +578,51 @@ bool Tracker::Prepare(Index nodeResume /*= 0*/)
     // then only the straight segments longer than 120yd with their ground clearance.
     // Both plain DBC long segments and invented junction chords show up here, which is what
     // tells us which of the two kinds a reported clipping happened on.
-    if (TaxiDiagEnabled())
+    if (m_debug)
     {
         for (Roadmap::const_iterator r = m_routes.begin(); r != m_routes.end(); ++r)
         {
             std::ostringstream d;
             d << "leg: path " << (*r).pathID << " (" << (*r).destStart << " -> " << (*r).destEnd
-              << ") node range " << (*r).nodeStart << ".." << (*r).nodeEnd;
+              << ") node range " << (*r).nodeStart << ".." << (*r).nodeEnd
+              << " | " << TaxiDiagRouteGeometry((*r).pathID, (*r).nodeStart, (*r).nodeEnd);
             TaxiDiagLog(m_owner, d.str());
+        }
+
+        // Whole-flight summary: polyline length vs the straight line first->last.
+        // ratio ~ 1.0 means "this flight really is a straight line" (data, not a bug);
+        // a big junction chord shows up as a very long single segment further below.
+        {
+            double total = 0.0;
+            const TaxiPathNodeEntry* first = nullptr;
+            const TaxiPathNodeEntry* last = nullptr;
+            for (Atlas::const_iterator itr = m_atlas.begin(); itr != m_atlas.end(); ++itr)
+            {
+                const TaxiPathNodeEntry* prev = nullptr;
+                for (auto j = (*itr).begin(); j != (*itr).end(); ++j)
+                {
+                    const TaxiPathNodeEntry* n = (*j);
+                    if (!first)
+                        first = n;
+                    if (prev && prev->mapid == n->mapid)
+                        total += std::sqrt(std::pow(n->x - prev->x, 2) + std::pow(n->y - prev->y, 2) + std::pow(n->z - prev->z, 2));
+                    prev = n;
+                    last = n;
+                }
+            }
+            if (first && last)
+            {
+                const double direct = (first->mapid == last->mapid)
+                    ? std::sqrt(std::pow(last->x - first->x, 2) + std::pow(last->y - first->y, 2) + std::pow(last->z - first->z, 2)) : 0.0;
+                std::ostringstream d;
+                d.setf(std::ios::fixed);
+                d.precision(1);
+                d << "flight geometry summary: spline " << total << " yd, direct " << direct << " yd, ratio ";
+                d.precision(3);
+                d << (direct > 1.0 ? (total / direct) : 0.0)
+                  << " (ratio near 1.000 = the whole flight is one straight line)";
+                TaxiDiagLog(m_owner, d.str());
+            }
         }
 
         for (Atlas::const_iterator itr = m_atlas.begin(); itr != m_atlas.end(); ++itr)

@@ -39,10 +39,8 @@ namespace
     // second request while a flight is already active (player riding the taxi mount).
     // Enabled per player by the GM command ".debug taxi" (default off => zero cost).
     /////////////////////////////////////////////////////////////////////////////////////
-    // [TAXI-DIAG 2026-09-24] Always-on request logging (owner request). ASCII only on purpose:
-    // this file is compiled under codepage 936, non-ASCII comments here break parsing.
-    // To go back to ".debug taxi" only, return player.IsTaxiDebug() instead.
-    inline bool TaxiDiagEnabled() { return true; }
+    // [TAXI-DIAG 2026-09-24] Request logging is gated by the player's ".debug taxi" switch.
+    // ASCII only on purpose: this file is compiled under codepage 936.
 
     void TaxiDiagRequest(Player const& player, char const* opcode, ObjectGuid npcGuid, uint32 const* nodes, uint32 nodeCount)
     {
@@ -210,7 +208,7 @@ void WorldSession::HandleActivateTaxiExpressOpcode(WorldPacket& recv_data)
     DEBUG_LOG("WORLD: Received opcode CMSG_ACTIVATETAXIEXPRESS from %d to %d", nodes.front(), nodes.back());
 
     // [TAXI-DIAG] logging only
-    if (TaxiDiagEnabled())
+    if (_player->IsTaxiDebug())
         TaxiDiagRequest(*_player, "CMSG_ACTIVATETAXIEXPRESS", guid, nodes.data(), uint32(nodes.size()));
 
     GetPlayer()->ActivateTaxiPathTo(nodes, npc);
@@ -256,7 +254,7 @@ void WorldSession::HandleActivateTaxiOpcode(WorldPacket& recv_data)
     }
 
     // [TAXI-DIAG] logging only
-    if (TaxiDiagEnabled())
+    if (_player->IsTaxiDebug())
         TaxiDiagRequest(*_player, "CMSG_ACTIVATETAXI", guid, nodes.data(), uint32(nodes.size()));
 
     GetPlayer()->ActivateTaxiPathTo(nodes, npc);

@@ -844,6 +844,28 @@ bool WorldSession::ProcessMovementInfo(MovementInfo& movementInfo, Unit* mover, 
         mover->HandleEmoteState(0);
     }
 
+    // [TAXI-DIAG 2026-09-24] Logging only, switched by the player's ".debug taxi".
+    // A player riding a taxi must be moved by the server flight spline only. The sole guard here
+    // is "!mover->movespline->Finalized()" above, which is TRUE between two splines (junction,
+    // map transfer, right after a leg ends). In that window the client's own movement packet is
+    // accepted and HandleMoverRelocation below moves the player wherever the CLIENT says.
+    // A client that keeps driving itself (modern client through a proxy, or a speed/teleport
+    // hack) therefore flies its own straight line instead of following the DBC taxi route.
+    if (plMover && plMover->IsTaxiFlying() && plMover->IsTaxiDebug())
+    {
+        float x, y, z;
+        plMover->GetPosition(x, y, z);
+        sLog.outString("[TAXI-DIAG] client movement ACCEPTED while taxi-flying | player %s (guid %u) "
+                       "| opcode %s | pos (%.1f, %.1f, %.1f) -> client says (%.1f, %.1f, %.1f) map %u "
+                       "| dist %.1f yd",
+                       plMover->GetName(), plMover->GetGUIDLow(), recv_data.GetOpcodeName(),
+                       x, y, z, movementInfo.GetPos().x, movementInfo.GetPos().y, movementInfo.GetPos().z,
+                       plMover->GetMapId(),
+                       std::sqrt(std::pow(movementInfo.GetPos().x - x, 2) +
+                                 std::pow(movementInfo.GetPos().y - y, 2) +
+                                 std::pow(movementInfo.GetPos().z - z, 2)));
+    }
+
     /* process position-change */
     HandleMoverRelocation(movementInfo);
 

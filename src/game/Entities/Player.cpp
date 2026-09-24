@@ -18387,11 +18387,6 @@ void Player::HandleStealthedUnitsDetection()
     }
 }
 
-// [TAXI-DIAG 2026-09-24] Always-on logging (owner request: cannot predict which flight breaks).
-// ASCII only on purpose: this file is compiled under codepage 936, non-ASCII comments here break parsing.
-// To go back to ".debug taxi" only, return IsTaxiDebug() instead (member context only).
-static bool TaxiDiagEnabled() { return true; }
-
 bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc /*= nullptr*/, uint32 spellid /*= 0*/)
 {
     if (nodes.size() < 2)
@@ -18515,7 +18510,7 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
     {
         // [TAXI-DIAG 2026-09-24] logging only: this is the ONLY place that answers
         // ERR_TAXIUNSPECIFIEDSERVERERROR, which the client shows as "未知的服务器错误".
-        if (TaxiDiagEnabled())
+        if (IsTaxiDebug())
         {
             std::ostringstream d;
             d << "ActivateTaxiPathTo: AddRoutes FAILED => ERR_TAXIUNSPECIFIEDSERVERERROR | player "
@@ -18527,6 +18522,7 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
               << ", taxi flight state " << (hasUnitState(UNIT_STAT_TAXI_FLIGHT) ? "YES" : "no")
               << ", tracker state " << uint32(m_taxiTracker.GetState());
             sLog.outString("[TAXI-DIAG] %s", d.str().c_str());
+            ChatHandler(this).PSendSysMessage("[TAXI-DIAG] %s", d.str().c_str());
         }
         GetSession()->SendActivateTaxiReply(ERR_TAXIUNSPECIFIEDSERVERERROR);
         return false;
@@ -18542,7 +18538,7 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
     if (!m_taxiTracker.Prepare())
     {
         // [TAXI-DIAG] logging only: this failure path used to be completely silent
-        if (TaxiDiagEnabled())
+        if (IsTaxiDebug())
             sLog.outString("[TAXI-DIAG] ActivateTaxiPathTo: Prepare() FAILED (no reply sent) | player %s (guid %u), legs %u",
                            GetName(), GetGUIDLow(), uint32(m_taxiTracker.GetRoadmap().size()));
         return false;
@@ -18617,7 +18613,7 @@ void Player::OnTaxiFlightStart(const TaxiPathEntry* /*path*/)
 void Player::OnTaxiFlightEnd(const TaxiPathEntry* path)
 {
     // [TAXI-DIAG 2026-09-24] logging only: where a flight actually ended (partial plans end early)
-    if (TaxiDiagEnabled() && path)
+    if (IsTaxiDebug() && path)
     {
         float x, y, z;
         GetPosition(x, y, z);
@@ -18656,7 +18652,7 @@ void Player::OnTaxiFlightEnd(const TaxiPathEntry* path)
 void Player::OnTaxiFlightEject(bool clear /*= true*/)
 {
     // [TAXI-DIAG 2026-09-24] logging only: a flight that got aborted (client may keep flying on its own)
-    if (TaxiDiagEnabled())
+    if (IsTaxiDebug())
     {
         float x, y, z;
         GetPosition(x, y, z);
@@ -18790,7 +18786,7 @@ bool Player::OnTaxiFlightSplineUpdate()
 
 void Player::OnTaxiFlightRouteStart(uint32 pathID, bool initial)
 {
-    if (TaxiDiagEnabled())
+    if (IsTaxiDebug())
         ChatHandler(this).PSendSysMessage(LANG_TAXI_DEBUG_PATH, pathID);
 
     if (initial)
@@ -18818,7 +18814,7 @@ void Player::OnTaxiFlightRouteProgress(const TaxiPathNodeEntry* node, const Taxi
     if (!node)
         return;
 
-    if (TaxiDiagEnabled())
+    if (IsTaxiDebug())
     {
         if (next)
             ChatHandler(this).PSendSysMessage(LANG_TAXI_DEBUG_NODE, node->path, node->index, next->path, next->index);

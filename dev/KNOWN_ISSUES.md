@@ -4725,7 +4725,106 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
   之后就用 `git push … :refs/heads/deploy` + `bash /root/deploy_from_git.sh deploy`（干净树无需 `--allow-dirty-tree`），**不再用 scp 传源码**。
 - 生效方式不变：编译/重启仍只在夜间窗口或手工流程里做（`04:06` nightly / `03:00` restart）。
 
+### 追加：飞行日志改回**可开关**（2026-09-24 站长：复现穿模时没有弹出日志）
+站长反馈：*"我刚才飞行的时候复现穿模了，但是没有弹出日志……我们应该把常开的日志关掉，回到可开关的。"*
+
+- 原因：常开版**只写 `sLog`**（服务器日志/控制台），没有发到游戏内 —— 站长在游戏里当然看不到"弹出"；而 `[TAXI-DIAG]` 又只能靠 `.debug taxi` 打开的游戏内提示才直观。⇒ 两头都要：**回到 `.debug taxi` 开关**，并且**打开时同时弹到聊天窗口**。
+- 改法（三处，全部 ASCII 注释、保持 CRLF）：
+  - `Entities/Taxi.cpp`：删掉 `TaxiDiagEnabled()` 常开函数，7 处 `if (TaxiDiagEnabled())` 回到 `if (m_debug)`；`TaxiDiagLog()` 除了 `sLog.outString` 之外**再加一句 `ChatHandler(&owner).PSendSysMessage(...)`**（新增 `#include "Chat/Chat.h"`）；采样精度仍由 `.debug taxi` 决定（常开时每 25 码 / 最多 40 点，打开时每 10 码 / 最多 200 点）。
+  - `Maps/TaxiHandler.cpp`：2 处恢复 `if (_player->IsTaxiDebug())`。
+  - `Entities/Player.cpp`：6 处恢复 `if (IsTaxiDebug())`；`ActivateTaxiPathTo` 里发 `ERR_TAXIUNSPECIFIEDSERVERERROR` 的现场日志也**同时弹到聊天窗口**。
+- 本地已验证：编译通过（MSVC，全 CRLF、Taxi/TaxiHandler 零非 ASCII）、12:20 重启、启动 16 秒、EventAI 载入正常。
+- 用法：站内 GM `.debug taxi` 打开 → 该玩家每次飞行都会在**聊天窗口**逐行弹出 `[TAXI-DIAG] …`，同时进 `logs/Server.log`；飞完再 `.debug taxi` 关掉（默认关，零开销）。
+
+### dev/113：GO 刷新组回调到 50%（向上取整）—— **⚠️ 站长 2026-09-24 改口：先不改，文件保留作备份**
+- 最终处置：**不启用**。`dev/113_GO刷新组回调50%.sql` 与 `dev/rollback/113_回滚_GO组恢复全刷.sql` **作为备份保留**在
+  `dev/hold/`，文件名加 `.hold` 后缀（`113_GO刷新组回调50%.sql.hold`、`113_回滚_GO组恢复全刷.sql.hold`）——
+  `apply_dev_sql.sh` 只扫 `dev/[0-9][0-9][0-9]_*.sql`（非递归），所以**永远不会被执行**。
+- 本地库已用回滚件**恢复成全刷**（`Type1 sumMax=22,913`、`MaxCount=1 的组=28`，与云端一致）；云端**从未执行过** 113（marker 停在 112，`spawn_group` 一直是 22,913）⇒ 两边现状一致、都没变。
+- 若以后要启用：把两个 `.hold` 文件改回 `dev/` 根目录与 `dev/rollback/`（去掉 `.hold`）即可随夜间流程生效。
+- 下面是当时（启用口径下）生成的完整数据，留档备查：
+站长定案：*"之前把 go 的刷新组调太高了，回调到 50%，向上取整，也就是只有一个点的依然刷新。"*
+
+- `dev/113_GO刷新组回调50%.sql`：`spawn_group.MaxCount = ceil(成员数/2)`，**只动 `Type=1`（GO 组）**：
+  - Type=1 共 **1,536 组**：空组 22（保持原值）、已符合 21、**需改 1,493 组**；
+  - `MaxCount` 总和 **22,913 → 11,779（51.4%）**；
+  - 目标值分布：`1 → 11 组`（单点组 ceil(1/2)=1，**依然刷新** ✓）、`2 → 378`、`3 → 430`、`4 → 143`、`5 → 93` … 最大 124（成员 247 的大组）。
+- 全静态（67 条 `UPDATE … IN (…) AND MaxCount <> 目标值`，无 JOIN/子查询）、幂等（重跑 0 行）；
+- 回滚件 `dev/rollback/113_回滚_GO组恢复全刷.sql`（113 条 UPDATE，恢复成 dev/101 的全刷值 = 成员数），已修好（第一版生成时把"成员数=当前值"的行全跳过了，等于空文件）。
+- **本地已应用并验证**：`Type1 groups=1536 sumMax=11779`、`MaxCount=1 的组=39`、重跑 0 行；重启后 `Loading Spawn Groups` 正常。
+- 生效：`spawn_group` 启动载入 ⇒ 需重启。
+
+### dev/114：埃博尔（Empoor）被击败时保镖同时变友善
+站长报告：*"当我打败埃博尔时，埃博尔的保镖没有同时变友善。"*
+
+- 定位：18482 **Empoor** 的 EventAI 本来就有完整"投降"流程 —— `1848204`（血量 5%）：`24 EVADE` ＋ `17 SET_UNIT_FIELD(168 UNIT_NPC_FLAGS, 2)` ＋ `2 SET_FACTION(35)`；`1848205`（EVADE=7）：`41 FORCE_DESPAWN(40s)` ＋ `42 免死`。而 18483 **Empoor's Bodyguard 只有两条战斗技能**（11977 撕裂 / 13730 挫志怒吼），**没有任何变友善/脱战处理** ⇒ 埃博尔投降后保镖继续打玩家。
+- 修法（纯 EventAI，与 `dev/110` 卡利鸟协战同一套"抛 AI 事件"机制）：
+  1. `1848205` 空着的**第 3 个动作槽**填 `45 THROW_AI_EVENT`：`EventType=5(AI_EVENT_CUSTOM_EVENTAI_A)`、`Radius=30`、`Target=0(TARGET_T_SELF)` ⇒ 埃博尔脱战瞬间向 30 码内广播事件 A（invoker = 埃博尔自己）。
+  2. 新增保镖行 **`1848303`**：`event_type=30(EVENT_T_RECEIVE_AI_EVENT)`、`event_param1=5`、`event_param2=18482`（只认发送者埃博尔）→ 动作 `24 EVADE`（脱战、走回原位、不再打玩家）→ 动作 `2 SET_FACTION(35, flags=0)`（与埃博尔同一友善阵营；flags=0 表示不因脱战恢复，重生时自然还原）。
+  - 动作按 1→2 顺序执行 ⇒ **先脱战、再切阵营**，避免脱战把临时阵营清掉。
+- 回滚件 `dev/rollback/114_回滚_保镖不跟随变友善.sql`（删 1848303 + 还原 1848205 的第 3 槽）。
+- **本地已应用并验证**：`1848205 = (…,45,5,30)`、`1848303 = (24,0 …,2,35 …)`，重跑 0 行；重启后 `Loaded 19351 CreatureEventAI scripts`（19,350 → 19,351，正是新增的这一行），且**无 "nonexistent FactionId 35" 报错** ⇒ 35 在 FactionTemplate 里有效。
+- 生效：`creature_ai_scripts` 启动载入 ⇒ 需重启。
+- 可选后续（未做）：是否让保镖也像埃博尔那样 **40 秒后消失**（站长只要求"变友善"，故先不做；要的话在 1848303 加 `41 FORCE_DESPAWN`）。
+
+### 【关键机制】飞行中"客户端上报移动被服务端接受" —— 绕过 DBC 航线的真正入口（2026-09-24 定位）
+站长判断：*"当我和飞行管理员对话飞行时，肯定有一个机制让我走直线而不是飞固定路线"* —— **成立**，机制不在飞行代码里，而在**移动包处理**里：
+
+- 调用链：`WorldSession::HandleMovementOpcodes`（`MovementHandler.cpp:379`）→ `ProcessMovementInfo`（`:822`）→ `HandleMoverRelocation`（`:760` 的 `plMover->SetPosition(movementInfo.GetPos().x/y/z, o)`）⇒ **玩家位置由客户端包里的坐标决定**。
+- 唯一的门是 **`if (!mover->movespline->Finalized()) return false;`（`:830`）** —— 这是**时序门**不是状态门：
+  - 服务端飞行样条正在播放时 `Finalized()==false` ⇒ 客户端的移动包被丢 ✓；
+  - **两段样条之间**（中转接缝、换地图瞬间、某段刚播完、样条被弹开后的那一瞬）`Finalized()==true` ⇒ 客户端的移动包**被接受**，服务端**把玩家挪到客户端报的坐标**；
+  - ⇒ 只要客户端在这瞬间继续自己驱动移动（**代理/现代客户端会**：日志里 `MSG_MOVE_TELEPORT_ACK`、`CMSG_FORCE_FLIGHT_SPEED_CHANGE_ACK … not pending` 就是这一类；作弊器更会），玩家就**按客户端坐标直线前进、完全绕过 DBC 航线**。"有时候正常有时候直线"也正是因为窗口只在样条间隙。
+- 旁证：同一文件里 `HandleMoveNotActiveMover`（`:532`）**有** `if (!_player->IsTaxiFlying())` 守卫，而 `ProcessMovementInfo` 没有 ⇒ 属于**漏了状态守卫**，不是有意设计。
+- 已加**取证日志**（`.debug taxi` 打开时，`MovementHandler.cpp:854`，只写日志）：
+  `[TAXI-DIAG] client movement ACCEPTED while taxi-flying | player … | opcode MSG_MOVE_* | pos (…) -> client says (…) | dist … yd`
+  ⇒ 只要出现这一行，就当场证明这次"直线"是**客户端驱动 + 服务端接受**，而不是服务端发错样条。
+- **建议修法（两行，待站长定）**：在 `ProcessMovementInfo` 开头补状态守卫
+  `if (plMover && plMover->IsTaxiFlying()) return false;`（保留原有 `IsBeingTeleported()` / `!movespline->Finalized()` 判断；只影响玩家自身 mover）。已核：飞行中被这条链路覆盖的其它逻辑只有 `MSG_MOVE_FALL_LAND` 的坠落伤害，而它本来就带 `!IsTaxiFlying()` ⇒ 应该安全。
+- 生效：随今晚增量编译（本批 4 个 TU：`Taxi.cpp`、`TaxiHandler.cpp`、`Player.cpp`、`MovementHandler.cpp`）。
 
 
+### 线上真实日志证据（2026-09-24 12:42 抓取，此刻线上跑的仍是"常开日志"版本 `cd043200`）
+线上 `/tmp/mangosd_run.log` 里已有 **405 行 `[TAXI-DIAG]`**，覆盖 25 次飞行 / 30 个航段。要点：
+
+| 观测 | 数量/内容 | 说明 |
+|---|---|---|
+| `itinerary`（客户端请求） | 25 | Asggd 316 行、Artemis 42、Spicymode 23 为主 |
+| `junction` | **6，全部 `kind = shortcut-data`** | 接缝弦长度 129 / 177 / 56 / 45 yd，`+100yd-probe = 0.0`、端点净空 6~53 yd ⇒ **现场这几趟的接缝裁剪没有穿地形**（与离线结论"data 模式 0.8% 穿"一致） |
+| `long-segment` | 270 | 最长 259 yd（`path 784/779`，玩家 Spicymode），probe 全 0.0 |
+| **`AddRoute REFUSED: no DBC taxi path for pair (140 -> 100)`** | **2** | 随后 `AddRoutes result: 0 leg(s) added, return FALSE (client will show 'unknown server error')` ⇒ **"未知的服务器错误"实锤** |
+| `flight END` / `flight EJECT` | **9 / 15** | 被弹开的比正常结束的还多！位置都在 100 号点（荣耀堡）附近 100 码内 |
+
+**关键结论（合理解释站长"直飞 + 未知的服务器错误"）**：
+1. 拒绝的那对是 **140 沙塔尔祭坛（影月谷） → 100 荣耀堡（地狱火半岛）**。查 DBC：**我们 2.4.3 里 140 只连 123/124**，飞往 100 的只有 101/121/128/129/149 —— 也就是说**客户端请求的是一条我们 DBC 里不存在的"直连"**。2.4.3 时代这条线要靠中转；后来的资料片给飞行网加了大量直连，**代理连接的现代客户端持有更新版 TaxiPath，于是它请求直连 ⇒ 服务端拒绝（未知的服务器错误）⇒ 客户端按自己那套继续飞（它自己算的直线）**。
+2. 这正好接上上一节：服务端拒绝后并不会接管移动，而 `ProcessMovementInfo` 又没有"飞行中"状态守卫 ⇒ **客户端自己驱动的坐标被服务端照单全收**，于是"走直线、不按固定路线"。
+3. `flight EJECT` 15 次：`OnTaxiFlightUpdate` 在样条结束时要求玩家位置与预期节点**完全一致**（0.01 码精度），只要客户端自己挪过位置就对不上 ⇒ 服务端主动弹开这次飞行，`PathMovementGenerator.cpp:366` 的注释正是 *"Some other code messed with our spline before it was completed"* ⇒ 表现为"飞一半停了/掉下来"。
+4. 因此：**要根治"直飞"，要么让客户端的飞行网与服务端一致（客户端侧），要么在服务端把飞行中的客户端移动彻底挡住**（上一节那两行守卫），后者能同时减少 EJECT（位置不再被客户端带偏）。
 
 
+### dev/116：物品名称按 Blizzard 官方 API 修正（zhCN，350 条）—— 2026-09-24
+站长指示：*"物品名 350 件修正按照官方api更新"*。上一节的比对结论落地为数据修正：
+
+- `dev/116_物品名按官方API修正.sql`：**347 条 `UPDATE` + 3 条 `INSERT IGNORE`**（后者是本地根本没有 `locales_item` 行、游戏内显示英文的 5632/29877/39149）：
+  - ① **279 条高可信**（本地 zhTW 与官方 zhTW 完全一致 ⇒ 条目本身没被改过，只是 zhCN 那列来源不好）
+  - ② **68 条**（连 zhTW 也不同）**同样按官方 zhCN 更新**，注释里单独成块，便于复核
+  - ③ 3 条补齐（5632 怯逃药水 / 29877 战士罪人的饰品 / 39149 `"Fred"`）
+- 幂等：每条都带**旧值守卫**（`AND name_loc4 = '<旧值>'`，空值用 `(name_loc4='' OR name_loc4 IS NULL)`）+ `INSERT IGNORE` ⇒ 重跑 0 行（实测 rc=0）。
+- 回滚件 `dev/rollback/116_回滚_物品名还原.sql`（把 347 条改回旧名、3 条清空）。
+- **本地已应用并抽查**（全部改对）：182 加瑞克的徽记→**加瑞克的头颅**、1532 皱缩的徽记→皱缩的头颅、2382 藏尸者的精华→**藏尸者的心脏**、2828 妮萨的标记→**妮萨的残骸**、3382 弱效巨魔之血药剂→弱效巨魔之血药水、3520 装满烈酒的酒桶→**被污染的酒桶**、3571 穴居人巨锤→**石腭怪巨锤**；5632/39149 已补齐。
+- 复核脚本 `_agent_tmp/verify116.py`：比对 350 条，**仅剩 1 条差异**（39149：本地 `“弗雷德”` vs 官方 `"Fred"` —— 引号风格差异，官方名本身就是英文测试物品名，无实质影响）。
+- 云端已同步（`dev/` + `dev/rollback/`），`DRYRUN` 显示待执行顺序 **114 → 116**，marker 停在 112；**今晚 04:06 生效**（`locales_item` 启动载入 ⇒ 需重启）。
+
+
+### dev/116 补充：4 条「名字被拼进品质/来源」的污染条目（2026-09-24）
+除 24490（麦迪文的钥匙（普通）_任务奖励，已在 ①② 里修好）外，locales_item.name_loc4 里还有 4 条同类污染，官方 API 对这 4 件**均返回 404**（后续资料片被移除/改名），故改用 Wowhead 中文页 + 本库同族惯例取名，一并补进 dev/116（第 ④ 段）：
+| entry | 旧（污染） | 新 | 依据 |
+|---|---|---|---|
+| 4959 | 破损的投掷轻斧（普通）_相同模型 | **破损的投掷轻斧** | Wowhead CN item=4959 页面标题即此名 |
+| 16315 | （精良）_分解 | **士官长斗篷** | 英文 Sergeant Major's Cape；Wowhead CN item=16336 = 士官长斗篷；本库同族惯例 Sergeant Major = 士官长（见 18445 士官长的板甲护腕）|
+| 16336 | （精良）_分解 | **士官长斗篷** | 同上 |
+| 16337 | （精良）_分解 | **士官长斗篷** | 同上 |
+
+- 顺带全库扫了一遍同类模式（名字含下划线 / 以括号开头 / 含来源式词），共 52 条命中，其中**只有这 4 条 + 24490 是真污染**，其余（如 写给____的信、秘典：制造魔法宝石、Monster - Polearm…）是正常名字，**未改动**。
+- 本地已应用（幂等复跑 0 行）；回滚件 dev/rollback/116_回滚_物品名还原.sql 同步追加了第 ④ 段。
+- 至此 dev/116 = **354 条**（350 API 修正 + 4 污染名）。
