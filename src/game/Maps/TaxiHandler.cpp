@@ -28,6 +28,7 @@
 #include "MotionGenerators/WaypointMovementGenerator.h"
 
 #include <sstream>
+#include <algorithm>
 
 namespace
 {
@@ -69,6 +70,22 @@ void WorldSession::HandleTaxiNodeStatusQueryOpcode(WorldPacket& recv_data)
     SendTaxiStatus(guid);
 }
 
+namespace
+{
+    // [TAXI-DIAG 2026-09-25] logging only: what the server answers as "current node" for the flight
+    // master the player is talking to. Needed to tell a bad client chain (chain starts at a station
+    // 1600+ yd away) apart from a bad server answer. Changes nothing.
+    void TaxiDiagCurLoc(Player* player, Creature* unit, char const* where, uint32 curloc, uint32 build)
+    {
+        if (!player || !unit || !player->IsTaxiDebug())
+            return;
+        sLog.outString("[TAXI-DIAG] %s curloc %u | npc %u at (%.1f, %.1f, %.1f) map %u, team %u | player %s (guid %u, map %u, client build %u)",
+                       where, curloc, unit->GetEntry(), unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ(),
+                       unit->GetMapId(), uint32(player->GetTeam()), player->GetName(), player->GetGUIDLow(),
+                       player->GetMapId(), build);
+    }
+}
+
 void WorldSession::SendTaxiStatus(ObjectGuid guid) const
 {
     // cheating checks
@@ -84,6 +101,8 @@ void WorldSession::SendTaxiStatus(ObjectGuid guid) const
     // not found nearest
     if (curloc == 0)
         return;
+
+    TaxiDiagCurLoc(GetPlayer(), unit, "SMSG_TAXINODE_STATUS", curloc, GetGameBuild());
 
     DEBUG_LOG("WORLD: current location %u ", curloc);
 
@@ -128,6 +147,8 @@ void WorldSession::SendTaxiMenu(Creature* unit) const
 
     DEBUG_LOG("WORLD: CMSG_TAXINODE_STATUS_QUERY %u ", curloc);
 
+    TaxiDiagCurLoc(GetPlayer(), unit, "SMSG_SHOWTAXINODES", curloc, GetGameBuild());
+
     WorldPacket data(SMSG_SHOWTAXINODES, (4 + 8 + 4 + 8 * 4));
     data << uint32(1);
     data << unit->GetObjectGuid();
@@ -145,6 +166,8 @@ bool WorldSession::SendLearnNewTaxiNode(Creature* unit) const
 
     if (curloc == 0)
         return true;                                        // `true` send to avoid WorldSession::SendTaxiMenu call with one more curlock seartch with same false result.
+
+    TaxiDiagCurLoc(GetPlayer(), unit, "SMSG_NEW_TAXI_PATH(mask add)", curloc, GetGameBuild());
 
     if (GetPlayer()->m_taxi.SetTaximaskNode(curloc))
     {
@@ -178,6 +201,30 @@ void WorldSession::HandleActivateTaxiExpressOpcode(WorldPacket& recv_data)
     uint32 node_count, _totalcost;
 
     recv_data >> guid >> _totalcost >> node_count;
+
+    // [TAXI-DIAG 2026-09-25] logging only: raw packet of the multi-hop request. A chain that looks
+    // shifted by one node (e.g. "124 -> 159 -> 140" while the player stands at 140) must be told
+    // apart from what the client really put on the wire, so dump the raw words. The read position is
+    // restored afterwards and no behaviour depends on this block.
+    if (_player && _player->IsTaxiDebug())
+    {
+        std::ostringstream d;
+        d << "CMSG_ACTIVATETAXIEXPRESS raw packet: size " << recv_data.size() << " rpos " << recv_data.rpos()
+          << ", totalcost " << _totalcost << ", node_count " << node_count << ", raw words:";
+        size_t const save = recv_data.rpos();
+        recv_data.rpos(0);
+        uint32 const words = uint32(std::min<size_t>(10, recv_data.size() / 4));
+        for (uint32 i = 0; i < words; ++i)
+        {
+            uint32 w = 0;
+            recv_data >> w;
+            d << " " << w;
+        }
+        recv_data.rpos(save);
+        d << " | player " << _player->GetName() << " (guid " << _player->GetGUIDLow()
+          << ", map " << _player->GetMapId() << ", client build " << GetGameBuild() << ")";
+        sLog.outString("[TAXI-DIAG] %s", d.str().c_str());
+    }
 
     Creature* npc = GetPlayer()->GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_FLIGHTMASTER);
     if (!npc)

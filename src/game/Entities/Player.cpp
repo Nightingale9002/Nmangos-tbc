@@ -1983,6 +1983,20 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
 
     MapEntry const* mEntry = sMapStore.LookupEntry(mapid);  // Validity checked in IsValidMapCoord
 
+    // [TAXI-DIAG 2026-09-24] logging only. A teleport that happens while a taxi flight is tracked is
+    // the interesting case: cross-map flights hand off through TeleportTo/worldport-ack, and the
+    // recent teleport fixes (29bded4cf / 19964c635) touch exactly that path.
+    if (IsTaxiDebug() && m_taxiTracker.GetState() >= Taxi::TRACKER_STANDBY)
+    {
+        float ox, oy, oz;
+        GetPosition(ox, oy, oz);
+        sLog.outString("[TAXI-DIAG] TeleportTo DURING TAXI: map %u (%.1f, %.1f, %.1f) -> map %u (%.1f, %.1f, %.1f)"
+                       " | player %s (guid %u), tracker state %u, legs left %u, gen type %u",
+                       GetMapId(), ox, oy, oz, mapid, x, y, z, GetName(), GetGUIDLow(),
+                       uint32(m_taxiTracker.GetState()), uint32(m_taxiTracker.GetRoadmap().size()),
+                       uint32(GetMotionMaster()->GetCurrentMovementGeneratorType()));
+    }
+
 #ifdef BUILD_DEPRECATED_PLAYERBOT
     // If this user has bots, tell them to stop following master
     // so they don't try to follow the master after the master teleports
@@ -18463,6 +18477,81 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
         return false;
     }
 
+    // [TAXI-DIAG 2026-09-24] logging only. The [TAXI-FIX 2026-09-17] change right below is the only
+    // recent behaviour change that can start a flight which used to be refused, so log exactly what
+    // it lets through: the client chain, where the player stands, and where our DBC thinks the
+    // boarding node is. A large gap there turns into a straight "catch-up" line for the client.
+    if (IsTaxiDebug())
+    {
+        std::ostringstream d;
+        d.setf(std::ios::fixed);
+        d.precision(1);
+        d << "chain check | player " << GetName() << " (guid " << GetGUIDLow() << ") pos ("
+          << GetPositionX() << ", " << GetPositionY() << ", " << GetPositionZ() << ") map " << GetMapId()
+          << " | npc " << (npc ? npc->GetEntry() : 0) << " | chain (" << uint32(nodes.size()) << " nodes):";
+        for (size_t i = 0; i < nodes.size(); ++i)
+            d << (i ? " ->" : "") << " " << nodes[i];
+        d << " | source node " << sourcenode << " DBC pos (" << node->x << ", " << node->y << ", " << node->z
+          << ") map " << node->map_id;
+        const float gdx = node->x - GetPositionX(), gdy = node->y - GetPositionY(), gdz = node->z - GetPositionZ();
+        const float gap = std::sqrt(gdx * gdx + gdy * gdy + gdz * gdz);
+        d << " | gap " << gap << " yd";
+        if (node->map_id != GetMapId())
+            d << " *** DIFFERENT MAP ***";
+        if (gap > 31.6f)
+            d << " *** the legacy (2*INTERACTION_DISTANCE)^3 check would have REFUSED this flight ***";
+        d << " | client build " << (GetSession() ? GetSession()->GetGameBuild() : 0);
+        sLog.outString("[TAXI-DIAG] %s", d.str().c_str());
+
+        // [TAXI-DIAG 2026-09-25] logging only: rotation detector (threshold 100 yd).
+        // Observed live: the sender sometimes puts the very same node set on the wire shifted by one
+        // (e.g. "100 -> 124 -> 121" while the player stands at 124, where "124 -> 121 -> 100" was
+        // meant). Such a chain cannot be built at all, so record whether any rotation of the received
+        // chain is fully buildable in our own taxi graph. Nothing here changes behaviour.
+        if (gap > 100.0f && nodes.size() >= 3)
+        {
+            uint32 const realNode = sObjectMgr.GetNearestTaxiNode(GetPositionX(), GetPositionY(), GetPositionZ(), GetMapId(), GetTeam());
+
+            std::ostringstream r;
+            r.setf(std::ios::fixed);
+            r.precision(1);
+            r << "rotation check: player is at node " << realNode << ", chain head " << nodes.front() << " is "
+              << gap << " yd away, chain size " << uint32(nodes.size());
+
+            bool found = false;
+            for (size_t rot = 1; rot < nodes.size() && !found; ++rot)
+            {
+                uint32 order[16];
+                std::ostringstream orderText;
+                bool ok = true;
+                for (size_t i = 0; i < nodes.size() && i < 16; ++i)
+                {
+                    order[i] = nodes[(i + rot) % nodes.size()];
+                    orderText << (i ? " -> " : "") << order[i];
+                }
+                for (size_t i = 0; i + 1 < nodes.size() && i + 1 < 16; ++i)
+                {
+                    auto it = sTaxiPathSetBySource.find(order[i]);
+                    if (it == sTaxiPathSetBySource.end() || it->second.find(order[i + 1]) == it->second.end())
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+                if (ok)
+                {
+                    found = true;
+                    r << " | *** chain looks ROTATED by " << uint32(rot) << " (buildable order: " << orderText.str() << ") ***";
+                }
+            }
+            if (!found)
+                r << " | no rotation of this chain is fully buildable";
+
+            sLog.outString("[TAXI-DIAG] %s | player %s (guid %u, client build %u)",
+                           r.str().c_str(), GetName(), GetGUIDLow(), GetSession() ? GetSession()->GetGameBuild() : 0);
+        }
+    }
+
     // check node starting pos data set case if provided
     // [TAXI-FIX 2026-09-17] 通过飞行管理员（npc != nullptr）启动时**跳过**这个坐标校验：
     //   走到这里之前，TaxiHandler 已经用 GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_FLIGHTMASTER)
@@ -18528,6 +18617,29 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
         return false;
     }
 
+    // [TAXI-FIX 2026-09-25] A client can ask for a chain that our taxi network cannot build completely
+    // (observed on live: a stale client sent "124 -> 159 -> 140" while the player stood at 140, so the
+    // 159 -> 140 hop does not exist in the DBC). AddRoutes() reports success as long as at least one
+    // leg was built ("1 leg(s) added, 2 attempted, return TRUE"), the flight then starts from the wrong
+    // node and the client fills the gap with one long straight line (1688 yd observed near Nethergarde
+    // / Shadowmoon). Only this error case is handled: a chain that cannot be built completely is
+    // refused instead of being flown partially. A fully buildable chain behaves exactly as before.
+    if (m_taxiTracker.GetRoadmap().size() != nodes.size() - 1)
+    {
+        if (IsTaxiDebug())
+        {
+            std::ostringstream d;
+            d << "ActivateTaxiPathTo: chain NOT fully buildable (" << uint32(m_taxiTracker.GetRoadmap().size())
+              << " of " << uint32(nodes.size() - 1) << " legs) => refusing instead of flying a partial route | player "
+              << GetName() << " (guid " << GetGUIDLow() << ")";
+            sLog.outString("[TAXI-DIAG] %s", d.str().c_str());
+            ChatHandler(this).PSendSysMessage("[TAXI-DIAG] %s", d.str().c_str());
+        }
+        m_taxiTracker.Clear();
+        GetSession()->SendActivateTaxiReply(ERR_TAXINOTVISITED);
+        return false;
+    }
+
     if (GetMoney() < m_taxiTracker.GetCostTotal())
     {
         GetSession()->SendActivateTaxiReply(ERR_TAXINOTENOUGHMONEY);
@@ -18569,6 +18681,35 @@ void Player::TaxiFlightResume(bool forceRenewMoveGen /*= false*/)
         return;
 
     DEBUG_LOG("WORLD: Resuming taxi flight for character %u", GetGUIDLow());
+
+    // [TAXI-DIAG 2026-09-24] logging only. Cross-map taxi flights are resumed from the worldport
+    // ack; the recent teleport fixes (29bded4cf / 19964c635) touch exactly that path, so log what
+    // the resume actually sees: where the player is, on which map, and how far that is from the
+    // next route node (a big gap here = the client is told to fly a straight catch-up line).
+    if (IsTaxiDebug())
+    {
+        float x, y, z;
+        GetPosition(x, y, z);
+        std::ostringstream d;
+        d.setf(std::ios::fixed);
+        d.precision(1);
+        d << "TaxiFlightResume (forceRenewMoveGen " << (forceRenewMoveGen ? "yes" : "no")
+          << "): player pos (" << x << ", " << y << ", " << z << ") map " << GetMapId()
+          << ", tracker state " << uint32(m_taxiTracker.GetState())
+          << ", legs left " << uint32(m_taxiTracker.GetRoadmap().size())
+          << ", taxi flight state " << (hasUnitState(UNIT_STAT_TAXI_FLIGHT) ? "YES" : "no")
+          << ", gen type " << uint32(GetMotionMaster()->GetCurrentMovementGeneratorType());
+        if (m_taxiTracker.GetState() >= Taxi::TRACKER_STANDBY && !m_taxiTracker.GetMap().empty())
+        {
+            const TaxiPathNodeEntry* next = m_taxiTracker.GetMap().front();
+            const float gdx = next->x - x, gdy = next->y - y, gdz = next->z - z;
+            const float gap = std::sqrt(gdx * gdx + gdy * gdy + gdz * gdz);
+            d << ", next node " << next->index << " on map " << next->mapid << " is " << gap << " yd away";
+            if (gap > 100.0f)
+                d << " *** STRAIGHT CATCH-UP LINE TO THE ROUTE ***";
+        }
+        sLog.outString("[TAXI-DIAG] %s", d.str().c_str());
+    }
 
     // Already in flight: just make sure client control is updated
     if (hasUnitState(UNIT_STAT_TAXI_FLIGHT))
@@ -18623,7 +18764,14 @@ void Player::OnTaxiFlightEnd(const TaxiPathEntry* path)
 
     // Final destination
     if (const TaxiNodesEntry* destination = sTaxiNodesStore.LookupEntry(path->to))
-        TeleportTo(GetMap()->GetId(), destination->x, destination->y, destination->z, GetOrientation());
+    {
+        // [TAXI-DIAG 2026-09-24] logging only. This teleport's result was never checked: if it fails
+        // the player is left where the spline stopped while the client believes the flight landed.
+        const bool moved = TeleportTo(GetMap()->GetId(), destination->x, destination->y, destination->z, GetOrientation());
+        if (IsTaxiDebug() && !moved)
+            sLog.outString("[TAXI-DIAG] *** FLIGHT END TELEPORT FAILED *** node %u (path %u: %u -> %u), player %s (guid %u), still on map %u",
+                           path->to, path->ID, path->from, path->to, GetName(), GetGUIDLow(), GetMapId());
+    }
 
     if (pvpInfo.inPvPEnforcedArea)
         CastSpell(this, 2479, TRIGGERED_OLD_TRIGGERED);
@@ -18771,8 +18919,24 @@ bool Player::OnTaxiFlightSplineUpdate()
             }
             if (m_taxiTracker.GetState() == Taxi::TRACKER_TRANSFER)
             {
-                OnTaxiFlightSplineEnd();
-                TeleportTo(first->mapid, first->x, first->y, first->z, GetOrientation());
+                // [TAXI-FIX 2026-09-25] Cross-map hand-off. Start the map transfer once, then KEEP THE
+                // FLIGHT ALIVE until it really completed: returning true here (instead of falling
+                // through to the old "return false") stops TaxiMovementGenerator from expiring itself
+                // - which is what returned client control and let the client fly its own straight line.
+                // The teleport is asynchronous; the worldport ack (HandleMoveWorldportAckOpcode ->
+                // TaxiFlightResume) and the next Resume() tick pick the flight up on the new map.
+                // TeleportTo's result is checked now: on failure we stay in TRANSFER and retry next tick.
+                if (!IsBeingTeleported() && GetMapId() != first->mapid)
+                {
+                    OnTaxiFlightSplineEnd();   // unmount + tracker -> TRANSFER (done once, not per tick)
+                    const bool started = TeleportTo(first->mapid, first->x, first->y, first->z, GetOrientation());
+                    if (IsTaxiDebug())
+                        sLog.outString("[TAXI-DIAG] cross-map transfer teleport %s: node %u, map %u -> map %u, player %s (guid %u) still on map %u (being teleported: near %s / far %s)",
+                                       started ? "STARTED" : "*** FAILED - will retry next tick ***", first->index, mapid, first->mapid,
+                                       GetName(), GetGUIDLow(), GetMapId(),
+                                       IsBeingTeleportedNear() ? "yes" : "no", IsBeingTeleportedFar() ? "yes" : "no");
+                }
+                return true;   // transfer pending: no spline is handed out until the player is there
             }
             break;
         }

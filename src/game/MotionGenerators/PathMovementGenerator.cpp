@@ -23,8 +23,11 @@
 #include "Entities/TemporarySpawn.h"
 #include "AI/BaseAI/UnitAI.h"
 #include "Entities/Player.h"
+#include "Server/WorldSession.h"
 
 #include <algorithm>
+#include <cmath>
+#include <sstream>
 
 AbstractPathMovementGenerator::AbstractPathMovementGenerator(const Movement::PointsArray& path, std::optional<float> orientation, int32 offset /* = 0*/, bool cyclic /* = true*/) :
     m_pathIndex(offset), m_orientation(orientation), m_cyclic(cyclic), m_firstCycle(false), m_startPoint(0), m_speedChanged(false)
@@ -381,6 +384,48 @@ bool TaxiMovementGenerator::Move(Unit& unit)
     init.SetFirstPointId(m_pathIndex);
     init.SetFly();
     init.SetVelocity(TAXI_FLIGHT_SPEED);
+
+    // [TAXI-DIAG 2026-09-24] logging only: exactly what the client is told to fly for this leg.
+    // A small point count (or ratio near 1.000) means the mount really does fly one straight line,
+    // which is what the "taxi flew through the mountain" field reports look like.
+    // ASCII only: this file is compiled under codepage 936.
+    if (unit.GetTypeId() == TYPEID_PLAYER && static_cast<Player&>(unit).IsTaxiDebug())
+    {
+        float len = 0.0f;
+        for (size_t i = 1; i < spline.size(); ++i)
+        {
+            const float dx = spline[i].x - spline[i - 1].x;
+            const float dy = spline[i].y - spline[i - 1].y;
+            const float dz = spline[i].z - spline[i - 1].z;
+            len += std::sqrt(dx * dx + dy * dy + dz * dz);
+        }
+        const float direct = (spline.size() >= 2)
+            ? std::sqrt(std::pow(spline.back().x - spline.front().x, 2) + std::pow(spline.back().y - spline.front().y, 2) + std::pow(spline.back().z - spline.front().z, 2))
+            : 0.0f;
+
+        std::ostringstream d;
+        d.setf(std::ios::fixed);
+        d.precision(1);
+        d << "spline sent to client: " << uint32(spline.size()) << " points, polyline " << len << " yd, direct " << direct << " yd, ratio ";
+        d.precision(3);
+        d << (direct > 1.0f ? (len / direct) : 0.0f) << " (near 1.000 = client flies one straight line)";
+        if (!spline.empty())
+        {
+            const float gdx = spline.front().x - unit.GetPositionX();
+            const float gdy = spline.front().y - unit.GetPositionY();
+            const float gdz = spline.front().z - unit.GetPositionZ();
+            const float gap = std::sqrt(gdx * gdx + gdy * gdy + gdz * gdz);
+            d.precision(1);
+            d << ", first node " << gap << " yd from the player";
+            if (gap > 100.0f)
+                d << " *** STRAIGHT CATCH-UP LINE TO THE ROUTE START ***";
+        }
+        d << " | player " << unit.GetName() << " (guid " << unit.GetDbGuid() << ")";
+        if (static_cast<Player&>(unit).GetSession())
+            d << ", client build " << static_cast<Player&>(unit).GetSession()->GetGameBuild();
+        sLog.outString("[TAXI-DIAG] %s", d.str().c_str());
+    }
+
     return bool(init.Launch());
 }
 
@@ -399,6 +444,25 @@ bool TaxiMovementGenerator::Resume(Unit& unit)
         // Load and execute the spline (transitional populating the parent movegen: to be reworked in the future)
 
         auto nodes = player.GetTaxiPathSpline();
+
+        // [TAXI-FIX 2026-09-25] Never hand the client a spline whose nodes live on a map the player is
+        // not on yet: that is what made the client fly one dead straight line across the world while
+        // the map change was still in flight. Player::OnTaxiFlightSplineUpdate() started (or retries)
+        // the transfer; here we just keep this generator alive and try again on the next tick, which
+        // also keeps UNIT_STAT_TAXI_FLIGHT set so the client cannot take over the movement.
+        {
+            const int32 offset = player.GetTaxiPathSplineOffset();
+            const TaxiPathNodeEntry* next = (offset > 0 && size_t(offset) < nodes.size())
+                ? nodes[size_t(offset)] : (nodes.empty() ? nullptr : nodes.front());
+            if (next && next->mapid != player.GetMapId())
+            {
+                if (player.IsTaxiDebug())
+                    sLog.outString("[TAXI-DIAG] waiting for map transfer: next node %u is on map %u, player %s (guid %u) still on map %u",
+                                   next->index, next->mapid, player.GetName(), player.GetGUIDLow(), player.GetMapId());
+                return true;
+            }
+        }
+
         m_path.clear();
         m_spline.clear();
         m_spline.reserve(nodes.size());

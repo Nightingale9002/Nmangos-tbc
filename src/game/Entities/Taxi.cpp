@@ -21,6 +21,7 @@
 #include "Globals/ObjectMgr.h"
 #include "World/World.h"
 #include "Chat/Chat.h"
+#include "Server/WorldSession.h"
 
 #include <sstream>
 
@@ -53,8 +54,11 @@ namespace
 
     void TaxiDiagLog(Player& owner, std::string const& msg)
     {
-        sLog.outString("[TAXI-DIAG] %s | player %s (guid %u, map %u)",
-                       msg.c_str(), owner.GetName(), owner.GetGUIDLow(), owner.GetMapId());
+        // [TAXI-DIAG 2026-09-24] Every taxi line carries the client build, so a reported clipping
+        // can be attributed to 2.4.3 (8606) or to a proxied/newer client without guessing.
+        const uint32 build = (owner.GetSession() ? owner.GetSession()->GetGameBuild() : 0);
+        sLog.outString("[TAXI-DIAG] %s | player %s (guid %u, map %u, client build %u)",
+                       msg.c_str(), owner.GetName(), owner.GetGUIDLow(), owner.GetMapId(), build);
         // also pop it up in the player's chat window (".debug taxi" is on for that player)
         ChatHandler(&owner).PSendSysMessage("[TAXI-DIAG] %s", msg.c_str());
     }
@@ -91,10 +95,12 @@ namespace
             return out.str();
         }
 
-        // always-on uses coarse sampling (every 25yd, max 40 points); ".debug taxi" uses fine sampling
-        const uint32 steps = detailed ? uint32(std::min(200.0f, std::max(2.0f, dist / 10.0f)))
-                                      : uint32(std::min(40.0f, std::max(2.0f, dist / 25.0f)));
-        float worstLow = 0.0f, worstHigh = 0.0f, worstAt = 0.0f;
+        // [TAXI-DIAG 2026-09-24] finer sampling (10yd) and a vmap-aware probe: the old 25yd /
+        // .map-only probe could not see WMO objects (keeps, walls, buildings) and could step
+        // over narrow ridges, which is why a visually clipping flight could log 0.0 everywhere.
+        const uint32 maxSteps = detailed ? 200u : 100u;
+        const uint32 steps = uint32(std::min(float(maxSteps), std::max(2.0f, dist / 10.0f)));
+        float worstMap = 0.0f, worstVmap = 0.0f, worstAt = 0.0f;
         for (uint32 i = 0; i <= steps; ++i)
         {
             const float t = float(i) / float(steps);
@@ -102,19 +108,19 @@ namespace
             const float y = a->y + dy * t;
             const float z = a->z + dz * t;
 
-            const float hLow  = owner.GetMap()->GetHeight(x, y, z, false);
-            const float hHigh = owner.GetMap()->GetHeight(x, y, z + 100.0f, false);
+            const float hMap  = owner.GetMap()->GetHeight(x, y, z, false);
+            const float hVmap = owner.GetMap()->GetHeight(x, y, z, true);
 
-            if (hLow - z > worstLow)
-                worstLow = hLow - z;
-            if (hHigh - z > worstHigh)
+            if (hMap - z > worstMap)
+                worstMap = hMap - z;
+            if (hVmap - z > worstVmap)
             {
-                worstHigh = hHigh - z;
+                worstVmap = hVmap - z;
                 worstAt = dist * t;
             }
         }
 
-        out << " | height above point: low-query " << worstLow << " yd, +100yd-probe " << worstHigh
+        out << " | terrain-above-line: map " << worstMap << " yd, with-vmap " << worstVmap
             << " yd (worst at " << worstAt << " yd from segment start)";
 
         // Endpoint clearance above the ground surface (negative = endpoint itself is underground)
@@ -123,6 +129,37 @@ namespace
         out << " | endpoint clearance " << cA << " / " << cB << " yd";
 
         return out.str();
+    }
+
+    /// Worst ground (map or vmap) height above one straight segment, in yards. 0 = nothing above the line.
+    /// [TAXI-DIAG 2026-09-24] Separate cheap helper so that every segment (not only the >120yd ones)
+    /// can be checked for terrain penetration before deciding whether to print the full diagnostic.
+    float TaxiDiagWorstAbove(Player& owner, TaxiPathNodeEntry const* a, TaxiPathNodeEntry const* b, float& at)
+    {
+        at = 0.0f;
+        if (!a || !b || a->mapid != b->mapid || a->mapid != owner.GetMapId())
+            return 0.0f;
+
+        const float dx = b->x - a->x, dy = b->y - a->y, dz = b->z - a->z;
+        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const uint32 steps = uint32(std::min(200.0f, std::max(2.0f, dist / 10.0f)));
+        float worst = 0.0f;
+        for (uint32 i = 0; i <= steps; ++i)
+        {
+            const float t = float(i) / float(steps);
+            const float x = a->x + dx * t;
+            const float y = a->y + dy * t;
+            const float z = a->z + dz * t;
+            const float hMap  = owner.GetMap()->GetHeight(x, y, z, false);
+            const float hVmap = owner.GetMap()->GetHeight(x, y, z, true);
+            const float h = std::max(hMap, hVmap);
+            if (h - z > worst)
+            {
+                worst = h - z;
+                at = dist * t;
+            }
+        }
+        return worst;
     }
 
     // [TAXI-DIAG 2026-09-24] Geometry of one taxi path: how straight is it really?
@@ -633,8 +670,24 @@ bool Tracker::Prepare(Index nodeResume /*= 0*/)
                 TaxiPathNodeEntry const* a = spline[i - 1];
                 TaxiPathNodeEntry const* b = spline[i];
                 const float dx = b->x - a->x, dy = b->y - a->y, dz = b->z - a->z;
-                if (std::sqrt(dx * dx + dy * dy + dz * dz) < 120.0f)
+                const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+                // [TAXI-DIAG 2026-09-24] Report every segment that either is long or has ground
+                // above the line: a visually clipping flight must show up as one of these.
+                float penAt = 0.0f;
+                const float pen = TaxiDiagWorstAbove(m_owner, a, b, penAt);
+                if (len < 120.0f && pen <= 0.5f)
                     continue;
+
+                if (pen > 0.5f)
+                {
+                    std::ostringstream w;
+                    w.setf(std::ios::fixed);
+                    w.precision(1);
+                    w << "*** SEGMENT GOES THROUGH GROUND: " << pen << " yd below ground at " << penAt
+                      << " yd from node " << a->index << " (path " << a->path << ")";
+                    TaxiDiagLog(m_owner, w.str());
+                }
                 TaxiDiagLog(m_owner, TaxiDiagSegment(m_owner, m_debug, "long-segment", a->path, a->index, a, b->path, b->index, b));
             }
         }

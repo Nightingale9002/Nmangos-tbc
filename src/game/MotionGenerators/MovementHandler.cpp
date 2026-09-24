@@ -241,6 +241,20 @@ void WorldSession::HandleMoveWorldportAckOpcode()
         else
             player->TaxiFlightResume();
 
+        // [TAXI-DIAG 2026-09-24] logging only: which branch the worldport ack took while a taxi
+        // flight was tracked (this is the cross-map hand-off of a flight).
+        if (player->IsTaxiDebug())
+        {
+            float px, py, pz;
+            player->GetPosition(px, py, pz);
+            sLog.outString("[TAXI-DIAG] worldport ack: took %s branch, player pos (%.1f, %.1f, %.1f) map %u, taxi flight state %s, gen type %u"
+                           " | player %s (guid %u)",
+                           player->InBattleGround() ? "INTERRUPT(BG)" : "RESUME", px, py, pz, player->GetMapId(),
+                           player->hasUnitState(UNIT_STAT_TAXI_FLIGHT) ? "YES" : "no",
+                           uint32(player->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+                           player->GetName(), player->GetGUIDLow());
+        }
+
         if (mEntry->IsRaid() && mInstance)
         {
             if (time_t timeReset = sMapPersistentStateMgr.GetScheduler().GetResetTimeFor(mEntry->MapID))

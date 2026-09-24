@@ -4857,3 +4857,75 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
 - **生效时间**：114（`creature_ai_scripts`）、116（`locales_item`）、117（loot 模板 + `gameobject_template`）、118（`ahbot_market_state`）**都只在启动时载入 ⇒ 必须重启**。云端维护窗口 = **03:00 cron 发 `server shutdown 3600` → 04:00 mangosd 关闭 + 整机重启 → 夜间流程编译部署拉起**（含 `apply_dev_sql.sh`；2026-09-24 实测 04:07 完成）⇒ **不需手动重启**。
 - **窗口期为什么安全**：117 设计上**保留全部旧模板**，运行中的 mangosd 用的是启动时载入内存的**旧 data1**，所以从应用完成到凌晨重启之间线上开箱子仍是旧掉落（正常），不会出现"空箱"。
 - **待办**：本机 `git push origin release` 当时不通（`Failed to connect to github.com port 443` / `Connection was reset`）——本地提交已在（`902e8c3a7` = 118，另有 119 + 本文档的提交）；网络恢复后补推，或按 HANDOFF §三"配置与部署"里的 **ssh 直推**路径同步。
+
+
+### 飞行穿模追查（2026-09-24 夜）：云端日志实测 + 提交考古 + 探针升级
+
+站长反馈：**"每次穿模都是完全飞直线，而且不是每次都能复现，偶尔才行；以前从来没遇到过，最近才开始出现；2.4.3 客户端也能复现。"**
+
+#### 一、云端日志（2026-09-24 10:12–23:02，623 行 `[TAXI-DIAG]`，37 次飞行）
+
+| 事件 | 次数 | 判读 |
+|---|---|---|
+| `itinerary`（客户端请求） | 37 | 36 建成 / 1 被拒 |
+| `AddRoute REFUSED: no DBC taxi path for pair (140 -> 100)` | 1（另 1 次同因） | Asggd 10:59/11:01；`D:\Game\70\2.4.3\dbc\TaxiPath.dbc` 与服务器 **md5 相同**（`CA64ADA0…`）⇒ **标准 2.4.3 客户端请求不出这条**，仍是"更新版飞行网客户端（2.5.3+代理）"那条老问题 |
+| `flight END` | 20 | Artemis / 大海铭记不朽 / Everbloom / Spicymode 当天飞行**全部正常结束** |
+| `flight EJECT` | **16** | **15 次挤在 Asggd 10:53–11:03 的 9 分钟里**（同一条 100↔101 / 100↔128 反复），另 1 次 14:48 也是他；触发点 = `PathMovementGenerator.cpp:367` → `Player::OnTaxiFlightUpdate()`（`Player.cpp:18683`：样条结束瞬间要求玩家坐标与**整条航线最后节点** 0.01 码一致）⇒ 是那个客户端乱发移动包（同时段一堆 `BadOrderAck: MSG_MOVE_TELEPORT_ACK / CMSG_MOVE_SET_CAN_FLY_ACK 不在待确认队列`）把自己位置带偏，**不是穿模** |
+| `Initialize Path empty` | 37 | **= 飞行次数 37/37** ⇒ 每次开飞必打一条（Taxi 生成器不填基类 `m_path`），**纯噪声**，以后别当故障 |
+| `junction` | 10 | **全部 `kind = shortcut-data`**，弦长 40–177 码，端点净空 6.7–135 码 |
+| 地形高于航线 | **0** | 当天全部在外域 map 530；`+100yd-probe` 全 0.0 ⇒ **当天日志里没有任何穿地形证据** |
+
+#### 二、提交考古：四个嫌疑人逐个排除/保留
+
+| 提交 | 日期 | 碰了飞行几何吗 | 结论 |
+|---|---|---|---|
+| `9eb768fd7` 修复离空运站太远 | 09-17 | **没有**（只改 `Player.cpp` 的 `ActivateTaxiPathTo` 起飞前校验 + `Creature.cpp` 尸体时间） | 但它**改变了"哪些飞行能起飞"**：`npc` 飞行跳过距离校验、源节点无坐标不再报错而是"continue anyway"（那条日志原本只是 `DEBUG_FILTER_LOG`，**默认被过滤 ⇒ 完全看不见**）|
+| `d7b3ac8a8` 批次2 上游合并 | 09-22 | **没有**（GO 重生 / 34700 / 战斗日志协议：`GameObject.cpp` `Unit.cpp/h` `Spell.cpp` `boss_laj.cpp` + SQL） | 排除 |
+| `29bded4cf` 修传送 use-after-free | 09-22 | 改了 `MotionGenerators/MovementHandler.cpp`（`map->GetPlayer(guid)` 重写 worldport-ack lambda） | **保留为嫌疑人**（见下） |
+| `19964c635` 修复传送宕机 | 09-23 | 同文件 8 行：注释明写"cross-map teleport 期间玩家临时脱离 map 实例，`map->GetPlayer()` 返 null ⇒ 远处的传送全部失败" | **保留为嫌疑人**（见下） |
+
+顺带确认：兜底 trimmer / NG 飞行系统来自上游 **2018** 的 `238ea76fb [s2370]` 与 `953ce9e70 Calibrating the new taxi system's flight path auto-trim`，**在我们第一个自有提交（`00b88870e` 2026-07-17）之前就在树里**；2026-08 以来 `Taxi.cpp` / `PathMovementGenerator.cpp` / `TaxiHandler.cpp` 只有我们两次**纯日志**提交。⇒ **几何引擎本身不是最近引入的**。
+
+#### 三、真正的嫌疑：跨地图换图的传送结果没人检查（"完全直线"的来源）
+
+`Player.cpp` 两处调用**直接丢掉了 `TeleportTo` 的返回值**：
+
+| 位置 | 场景 |
+|---|---|
+| `Player::OnTaxiFlightSplineUpdate()`（原 18845） | **跨地图换图**：`TRACKER_TRANSFER` 分支先 `OnTaxiFlightSplineEnd()` 再 `TeleportTo(first->mapid, …)` |
+| `Player::OnTaxiFlightRouteEnd()`（原 18696） | **落地**：`TeleportTo(GetMap()->GetId(), destination->x, …)` |
+
+一旦这个 `TeleportTo` 返回 false（09-22 那次改动的症状就是"远处的传送失败"；`TeleportTo` 自身还有 `HasCharmer()`、坐标非法、BG 判断等多个静默 false 出口），代码**不重试也不中断**：玩家留在**旧地图**，而剩下的样条在**新地图**上 ⇒ **客户端拿到的起点在另一张地图 ⇒ 它只能拉一条笔直的线飞过去** ——
+完全直线 ✓ / 偶发（取决于这次换图传送是否失败）✓ / 跨地图航线才有 ✓ / 2.4.3 与 2.5.3 都一样（服务端几何）✓ / "以前没遇到"（09-22 之前传送没坏）✓ —— **与站长的四条描述逐条吻合**。
+
+#### 三之补充：换图这一刻，代码其实是"就地终止飞行"，不是"继续飞"
+
+`Player::OnTaxiFlightSplineUpdate()`（跨图分支执行完 `TeleportTo` 之后）**统一 `return false`**（`Player.cpp:18868`，default 分支也是）⇒ `TaxiMovementGenerator::Resume()` 返回 false ⇒ `TaxiMovementGenerator::Update()` 返回 `(movement || Resume)` = false ⇒ **移动生成器被当作结束**（`Finalize()` 会 `clearUnitState(UNIT_STAT_TAXI_FLIGHT)`、清 `UNIT_FLAG_TAXI_FLIGHT/CLIENT_CONTROL_LOST`、把客户端控制权还回去）。也就是说换图的瞬间，服务端把飞行"放掉"了，只指望 worldport-ack 里的 `TaxiFlightResume()` 再拉起来；**传送一旦没成功/没接上，客户端就带着自己的飞行状态自己飞** ⇒ 完全直线。
+
+**修复方向（站长定调：不是让飞行暂停，而是让飞行表现正常）**：换图这一段要"**等传送完成再续飞**"，而不是终止生成器 ——
+1. `TaxiMovementGenerator::Resume()` 里判断"下一个节点是否在当前地图"：不在 ⇒ **不下发样条、返回 true（生成器继续活着，下一个 tick 再试）**，绝不给客户端一条起点在另一张地图的样条；
+2. 传送本身只启动一次（已在传送中就不重复调 `TeleportTo`，避免把延迟传送不断重置），并用返回值判断失败 → 下一 tick 重试；
+3. 传送完成 → worldport-ack → `TaxiFlightResume()` → 用**新地图**的节点重建样条继续飞（和现在的正常路径一致）；
+4. 全程保持 `UNIT_STAT_TAXI_FLIGHT` / 客户端控制权不还给客户端 ⇒ 客户端不会自己算路，也就不可能飞直线。
+
+**修复（2026-09-25 落地，站长定调"先做修复，同时保留日志"；按既有经验只改出错点、不加额外兜底）**：
+- `Player::OnTaxiFlightSplineUpdate()` 跨图分支：传送**只启动一次**（`!IsBeingTeleported()` 守卫，避免把延迟传送反复重置），**检查 `TeleportTo` 返回值**（失败就停在 TRANSFER、下一 tick 重试，日志打 `*** FAILED - will retry next tick ***`），并且**改为 `return true`**（原来是落到函数末尾 `return false`）⇒ 生成器不再被判为"结束"，`UNIT_STAT_TAXI_FLIGHT` / 客户端控制权全程不还回去。
+- `TaxiMovementGenerator::Resume()`：加"**下一个节点是否在当前地图**"判断，不在 ⇒ **不下发样条、返回 true**（生成器等下一个 tick 再看；传送完成由 worldport-ack 与下一 tick 的 `OnTaxiFlightSplineStart` 把 tracker 拉回 FLIGHT）。
+- 传送成功 = 正常过图后继续飞；传送失败 = 保留 TRANSFER 重试，**不会再出现"起点在另一张地图的样条"**，客户端也就没有自己算路（飞直线）的机会。
+- **没有**改动 `TaxiFlightResume()` 的早退逻辑，也没有加任何超时/强制续飞之类的兜底（试加过又按站长要求撤回）。
+- 生效：Player.cpp `777d2d95…` / PathMovementGenerator.cpp `bd779651…`（+ 探针的 Taxi.cpp `5214b5c3…`、MovementHandler.cpp `88b181c4…`）已 scp 到云端 `/root/Nmangos-tbc`，随 **2026-09-25 凌晨夜间流程**编译上线；本地 MSVC 编译通过。
+- **验收点**：`.debug taxi` 后飞一趟**跨地图**航线，日志应出现 `cross-map transfer teleport STARTED`（不再是 `FAILED`），且落地后不再有 `STRAIGHT CATCH-UP LINE` / `SEGMENT GOES THROUGH GROUND`；若仍出现 `*** FAILED - will retry next tick ***`，说明是传送本身在失败，下一轮就照那条日志继续查（那属于传送侧问题，不是飞行交接）。
+
+#### 四、本次落地的探针升级（只记日志，不改行为）
+- `Taxi.cpp`：`TaxiDiagLog()` 每条都带 **client build**（`GetGameSession()->GetGameBuild()`）⇒ 以后能直接分辨 2.4.3(8606) / 代理客户端；
+  - 地形探针改成 **10 码细采样 + `GetHeight(..., true)` 带 VMAP**（旧探针 25 码、只查 `.map`，**看不到守望堡这类 WMO 城墙**，这就是"穿模那次没日志"的技术原因）；
+  - 每个航段都做一次穿透预检：**任何一段只要地面高过航线 >0.5 码**就额外打一条 `*** SEGMENT GOES THROUGH GROUND: X yd below ground at Y yd from node Z (path P)`，长段诊断也从"仅 >120 码"放宽为"长段或有穿透"。
+- `PathMovementGenerator.cpp`（`TaxiMovementGenerator::Move`）：新增 **`spline sent to client: N points, polyline L yd, direct D yd, ratio R`**（R≈1.000 = 客户端被要求飞一条直线）以及 **`first node N yd from the player`**，>100 码时标 `*** STRAIGHT CATCH-UP LINE TO THE ROUTE START ***`；同样带 client build。
+- `Player.cpp`：
+  - 起飞前 `chain check`：打出客户端请求的**完整节点链**、npc、玩家坐标/地图、服务端 DBC 里源节点的坐标与**两者间距**，间距 >31.6 码时标注 `*** the legacy (2*INTERACTION_DISTANCE)^3 check would have REFUSED this flight ***`（即 `9eb768fd` 放行了什么）；
+  - `TaxiFlightResume()`：打出恢复时的坐标/地图/跟踪器状态/生成器类型，以及**下一个节点离玩家多远**（>100 码标 `*** STRAIGHT CATCH-UP LINE TO THE ROUTE ***`）；
+  - `TeleportTo()` 入口：飞行中发生传送时打出**出发/目标地图与坐标**；
+  - **`OnTaxiFlightSplineUpdate()` 跨图传送**与 **`OnTaxiFlightRouteEnd()` 落地传送**：现在记录 `TeleportTo` 的返回值，失败即打 `*** FAILED ***`（这就是上面第三节那条嫌疑的直接取证点）。
+- `MovementHandler.cpp`：worldport-ack 里打出走了哪个分支（`RESUME` / `INTERRUPT(BG)`）、坐标、地图、`UNIT_STAT_TAXI_FLIGHT`、当前生成器类型。
+- **验证方式**：站长上线后 `.debug taxi`（管理员命令，默认关、零开销），**飞一趟跨地图航线**（卡利姆多 ↔ 东部王国 ↔ 外域，例如守望堡方向），日志/游戏内弹窗会直接把上面几类事件打出来。
+- **部署状态**：4 个源文件已 scp 到云端 `/root/Nmangos-tbc`（md5 与本地逐一相同：`Taxi.cpp 5214b5c3…`、`Player.cpp 72497d88…`、`PathMovementGenerator.cpp 30f2a71e…`、`MovementHandler.cpp 88b181c4…`），**随 2026-09-25 凌晨夜间流程编译上线**（云端现跑的仍是 `cd043200…` 那版常开日志）；本地 MSVC `game.lib` 已编译通过。
