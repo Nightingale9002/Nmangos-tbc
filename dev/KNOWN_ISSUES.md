@@ -5243,3 +5243,115 @@ framework 两个新 API 用独立小测试逐条验过（`_agent_tmp/ref_detache
 
 **教训（进流程）**：以后按 Wowhead/AZ 重做掉落表，**必须保留旧表的"负 chance（任务限定）"语义** ——
 Wowhead 的掉率是"所有开箱记录"里的出现率，**不含 QuestRequired 信息**；负数（-X）与 `QuestRequired=1` 才是"只给任务玩家"。
+
+
+### [经济] AH 市场商人：删除「曝光量 + 库存管理」，改为每周期按 target 补满真实货架（dev/132）—— 2026-09-26（**本地 + 云端已部署**）
+
+站长指示：*"我们之前设置的曝光量和库存管理已经没用了 清理这部分代码，按照上一版定的方案做"*
+→ 随后 *"看这个 bdcfaff3ce7854c2ae4fe37a8d89226c72660542 我们好像还没做完是吗"*。
+
+#### 一、先说清「上一版方案」是什么、以及为什么判定"没做完"
+
+`bdcfaff3c`（2026-09-25「修改ahbot，修复宠物卸载宕机」）在 KNOWN_ISSUES 里记下的 **AH 改造三条待办**：
+
+| 待办（原文摘要） | 状态（本次核查结论） | 证据 |
+|---|---|---|
+| ① 成对/共同定价（比例可配置，每周期只重算一次基准价） | ✅ 已做 | `SettleVirtualPrices()` `AuctionHouseBot.cpp:760`，由 `ahbot_virtual_price` + `ahbot_price_pair` + `ahbot_price_recipe` 驱动 |
+| ② 价格发现参数化（每买卖 1 组 ±0.1%、小时 ±1%、日 ±10%） | ✅ 已做 | `MoveBpPerStack`(10) / `MaxHourlyMoveBp`(100) / `MaxDailyMovePct`(10) 三个 conf 键 + 小时/日两级封顶 |
+| ③ **清理 `ahbot_market_state` 废弃列 / 曝光量与库存管理老机制** | ❌ **一直没做** | 当时只删了 `qty`/`avg_cost`；`target`/`capacity` + 曝光切片 + 挂单快照整套原封不动 |
+
+⇒ 站长判断正确：**③ 就是那条一直挂着的尾巴，而 2026-09-26「cat1/cat2 一件都不上架」正是它造成的。**
+
+#### 二、旧口径为什么会让整本书目凭空消失（两坑叠加）
+
+1. **只看曝光切片，不补满货架**：`exposure = target × QuoteExposurePct(25%)`，`toList = exposure - booked`；
+2. **再经"整栈取整"每档归零**：`target=200`（矿石）⇒ `exposure=50` ⇒ 整栈 2 组 = 40 单位 ⇒ 第一档按权重 40% 只拿到 16 单位 ⇒ `16/20` 取整 = **0 组** ⇒ 每一档都是 0 ⇒ **该商品一张单都不挂**。
+
+云端当时的 `[MMDBG]` 诊断日志是直接证据：`booked=0 exposure=50 toList=50`，而 `cat1` 货架 **0 单**、`cat2` **0 单**（只有 category 0 的普通 loot 流程 98 单照常）。
+
+#### 三、新口径（本次实现）
+
+**代码**（`src/game/AuctionHouseBot/AuctionHouseBot.cpp` `QuoteCatalog()`）：
+
+- 每周期**一次遍历真实货架**，统计 `owner == 0`（机器人）挂单的每件商品单位数 `ownShelfUnits`；
+  不足 `GetItemTarget(itemId)` 就补满到 target（`toList = target - listedOwn`）。
+- **幂等**：同一周期重复调用不会重复补满；重启、到期、玩家买走都不会把额度算错（旧的"内存快照"才会）。
+- `target` 的语义回归字面意义：**要维持在货架上的挂单单位数**；`GetItemTarget()` = operator 行
+  `ahbot_market_state.target` 优先，行里为 0 时用 conf `CatalogTarget` 兜底。
+- **保底修正（关键）**：第一档配额取整为 0 时，保底 `min(一整栈, 剩余量)`。
+  不能写成"仅当 `stackMax > 1` 才保底" —— 不可堆叠品（`stackMax = 1`，如 cat2 的固定价配方）
+  会被"第一档 1×40% = 0"彻底饿死（本次本地实测先踩到，已修）。
+
+**删除（代码 + conf 键 + 列）**：`QuoteExposurePct` 曝光切片、`ListBatch` 分批轮转（`m_catalogRotate`）、
+`CatalogCapacity` 库存上限、`DemandBoostPct` 需求加码、`IdleTargetDecayPct` 闲置衰减、
+`DepthTargetHighPct/LowPct/DepthStepPct`（玩家挂单深度调 target）、
+`TransitionItemLevel/TransitionTargetMult`（过渡商品倍率，两侧 conf 都是 0 = 本来就是死代码）、
+`GetBaselineTarget()/EnsureTargets()/GetBookedUnits()/IsTransitionItem()`、
+`introduced` 列的 `capacity`（`qty` 已于 2026-09-25 删除）、临时 `[MMDBG]` 诊断日志、150 秒扫描守卫
+（上架决策不再依赖扫描快照，守卫没意义）、`RefillPerCycle/RefillBatch`（v3 删 RefillCatalog 时漏掉的死键）。
+
+**保留**：阶梯定价（`LadderStep` / `TIER_WEIGHTS`）、探针单（`ProbeUnits`）、吃掉检测（`EatRatio` + `prevTierStock`）、
+flow 结算、成对/虚拟价与复合锭配方。`tierStock` **降级为价格发现的观察量**（不再当挂单额度）。
+
+**记录**：每周期一条 `[MMQUOTE] house=.. book=.. quoted=.. full=.. noState=.. units=..` 汇总日志。
+
+#### 四、数据侧（`dev/132_ahbot去掉曝光与库存上限_按target补满.sql`，本地 + 云端已应用）
+
+| 项 | 处理 | 核对结果 |
+|---|---|---|
+| cat1 可堆叠材料（130 件） | `target = 10 组 = 10 × maxStack` | 库里**本来就是** 200（堆叠 20 × 110 件）/ 100（堆叠 10 × 20 件）⇒ 实际 0 行改动 |
+| cat2 固定商人价配方（292 件，`stackable=1`） | `target = 1`（站长 2026-09-26 确认） | 由 4 → 1；**与改造前可见量一致**（旧口径 `4 × 25% = 1 件`） |
+| `capacity` 列 | 删除（备份 `ahbot_market_state_bak_20260926_cap`，475 行） | 列已消失 |
+| `qty` 列 | 早已删除（2026-09-25） | 列不存在 |
+
+⚠️ **历史 dev SQL 的坑**：`dev/055` 的 `INSERT ... (…, target, capacity, qty)` 仍写着已被删除的两列 ⇒
+**在全新库上重跑 055 会报错**（当前库已应用、marker 已过，不影响线上；将来建新库要把这两列的写入去掉）。
+
+#### 五、本地实测（2026-09-26 02:46~02:49，`x64_Debug`）
+
+| 抽样 | 结果 |
+|---|---|
+| 铜矿石 2840 / 铜锭 2770（target 200） | 各 16 单 / **185 件**（180 = 各档整栈 + 5 探针；差的 15 件是不足整栈的尾数，按策略不挂） |
+| 强效位面精华 22446（target 100） | 10 单 / **95 件** |
+| cat2 配方 728 / 2697（target 1） | 各 **1 单 / 1 件** |
+| 稳态日志 | `[MMQUOTE] quoted=130 full=292 units=0`（书目已满，仅剩不足整栈的尾数） |
+| 机器人总单数（含 loot 流程） | 46354 → 46354（两次采样不变）⇒ **无重复挂单、无越挂越多** |
+
+#### 六、云端部署（2026-09-26 02:5x，站长指令"没问题就上云"）
+
+1. `scp` 4 个文件（`AuctionHouseBot.cpp/.h`、`ahbot.conf.dist.in`、`Level3.cpp`）→ **md5 四个全一致** ✓
+   （云端 `git` 同步在夜间脚本里是关闭的 ⇒ scp 的源码不会被 reset 覆盖，已先核对脚本确认）
+2. `dev/132` 应用到 `tbccharacters`：cat2 `4 → 1`、`capacity` 列删除、备份 475 行 ✓；marker `131 → 132`
+3. `nohup flock /root/nightly_build_restart.sh`：停服 → 增量编译（AuctionHouseBot/Level3/World/AuctionHouseMgr）→ 装二进制（mtime 02:52:37）→ 起服 → realmd 重启验证通过 ✓
+4. **验收（云端实测）**：
+
+| 检查项 | 结果 |
+|---|---|
+| 端口 | `8086` mangosd + `3724` realmd 在听 ✓ |
+| 铜矿石 2840 / 铜锭 2770 / 青铜锭 2841 / 奥法之尘 22445 / 大棱光 22449 | 各 **10 单 / 200 件 = 正好 10 组** ✓ |
+| 强效位面精华 22446（target 100） | 10 单 / **100 件** ✓ |
+| cat2 配方 728 / 2697 | 各 **1 单** ✓ |
+| `[MMQUOTE]` | 稳态 `quoted=2 full=420 units=0`（422 件书目的 420 件已满额）✓ |
+| 成对定价链路 | `price pairs loaded: 19` / `price recipes loaded: 7` / `VPRECIPE` 正常 ✓ |
+| 资源与稳定性 | 内存 available 926MB、mangosd RSS 542MB、运行 6 分钟无崩溃/断言 ✓ |
+| 挂单总量 | 12721 单 / 2704 种（改造前后同量级，无爆炸） |
+
+#### 七、生效 / 验收 / 回滚
+
+- **生效**：`target` 由 AHBot 启动时载入 ⇒ 改行值需重启或 `.ahbot reload`；`capacity` 列删除只需 DB。
+- **验收**：`grep MMQUOTE /opt/mangos/logs/Server.log | tail -3` 应到稳态（`units=0`、`full` ≈ 书目件数）；
+  拍卖行里 cat1 材料每件应≈10 组、cat2 每件配方 1 张单。
+- **回滚**：`dev/rollback/132_回滚_恢复库存上限列与挂单量.sql`（恢复列 + 从备份回填）。
+  ⚠️ **只回滚数据不够**：`capacity` 恢复后没有任何代码再读它，要真正回到旧行为必须 `git revert 75365798e` 并重新编译部署。
+
+#### 八、遗留 / 待观察
+
+1. **云端 conf 里的死键**：`QuoteExposurePct`、`ListBatch`、`CatalogCapacity`、`DemandBoostPct`、
+   `IdleTargetDecayPct`、`DepthTargetHighPct/LowPct`、`DepthStepPct`、`RefillPerCycle/RefillBatch`
+   现在**无代码读取**（不报错、不影响行为），下次改 conf 时顺手删掉。
+2. **本地 conf 与云端仍有差异**（`LadderStep` 50 vs 5、`Time.Min/Max` 24 vs 12、`ProbeUnits` 5 vs 0、
+   `BuyDepth` 10 vs 0、`Value.Epic` 25 vs 50、loot 速率若干）⇒ **本地复现云端行为前必须先对齐**，
+   差异表见 `dev/部署注意事项_conf文件的坑.md` 第五节。
+3. `IdleThreshold` / `IdleDecay`：本次删掉闲置衰减后，这两个键在本文件里已**无代码读取**（待后续确认是否清理）。
+4. **普通 loot 流程的单件挂单量偏多**（如 2934 破损的皮革碎片本地 414 单 / 云端 194 单，单位数≈200 上限）：
+   属旧机制（`m_mmMaxItemUnits` 上限 + 每次扫描补挂），**本次未改**；是否收敛到"整栈 + 10 组"口径待站长决定。

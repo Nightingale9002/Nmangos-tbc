@@ -38,8 +38,9 @@ struct AuctionHouseBotItemData
     uint32 MaxAmount = 0;
 };
 
-// Operator override for one catalog item (ahbot_market_state). target/capacity 0 mean
-// "use the config default". enabled=0 removes the item from the curated universe.
+// Operator override for one catalog item (ahbot_market_state). [v4 2026-09-26] capacity
+// 列已废弃：只保留 target（= 货架上要维持的挂单**单位数**；0 = 用 conf 的 CatalogTarget）。
+// enabled=0 removes the item from the curated universe.
 // (The legacy policy column was folded away; category below supersedes it.)
 //
 // category (operator model):
@@ -58,8 +59,7 @@ struct AuctionHouseBotItemData
 struct AuctionHouseBotCatalogEntry
 {
     bool enabled = true;
-    uint32 target = 0;
-    uint32 capacity = 0;
+    uint32 target = 0;      // 维持的挂单单位数（0 = 用 conf 的 CatalogTarget）
     uint32 category = 0;    // no operator row => category 0 (untouched / NOT a book member)
     uint32 price = 0;       // category==2 fixed unit price
 };
@@ -109,9 +109,9 @@ struct AuctionHouseBotMarketState
     // 涨价必须来自 ≥2 个不同买家，单人自买自卖无法推价。
     std::array<uint32, 8> soldBuyers = {};
     uint32 soldBuyerCount = 0;   // 已记录的不同买家数（最多 8）
-    // quote exposure driver (seeded from catalog/config / static 055 rows)
-    uint32 target = 0;         // desired concurrent exposure = target x QuoteExposurePct
-    uint32 capacity = 0;       // (reserved; kept for the DB row mirror)
+    // [v4 2026-09-26] 上架额度：operator 行/conf 给的"要维持多少单位在货架上"。
+    // 不再乘曝光比例，也不再由机器人自行缩放；每次 QuoteCatalog 直接数真实货架补满。
+    uint32 target = 0;
     // ---- central-bank price discovery ----
     // The fair value is UNKNOWN and is discovered from the bot's own order-flow
     // imbalance over a LONG settle period (default 24h, persisted so it survives
@@ -161,8 +161,7 @@ class AuctionHouseBot
         AuctionHouseBotMarketState* GetMarketState(uint32 itemId, AuctionHouseType houseType);
         // hidden buy depth % (for the quote command display)
         uint32 GetBuyDepth() const { return m_mmBuyDepth; }
-        // concurrent listing exposure % of target (v3: the book quotes straight to it)
-        uint32 GetExposurePct() const { return m_catalogExposurePct; }
+        // [v4 2026-09-26] GetExposurePct() 已删除（曝光切片口径废弃，改为按 target 补满）
         // flow hooks (called from AuctionHouseMgr when an auction settles; v3 keeps
         // only the demand/supply signals + gold observables, no stock movement):
         // a player bought one of our listings (flow_sold/earned) or the bot bought a
@@ -214,19 +213,15 @@ class AuctionHouseBot
         // scope. (Unlike GetCatalogEntry - whose no-row default category is 0 - this
         // first requires the row to EXIST.)
         bool IsMmBookItem(uint32 itemId) const;
-        // true if the item is a low-level transition good (abundant supply)
-        bool IsTransitionItem(uint32 itemId) const;
+        // [v4 2026-09-26] IsTransitionItem() / GetBaselineTarget() / EnsureTargets() /
+        // GetBookedUnits() 已删除：过渡倍率、闲置衰减、玩家深度缩放、内存挂单快照都不再
+        // 参与上架决策；额度只由 operator 行/conf 的 target 决定。
         // fixed unit price of a category-2 (vendor-price) good; 0 unless the item is
         // marked category 2 with a price row (architecture: inert until marked)
         uint32 GetCatalogFixedPrice(uint32 itemId) const;
-        // transition-adjusted baseline holding target for an item
-        uint32 GetBaselineTarget(uint32 itemId) const;
-        // seed target/capacity for a state (transition goods get the multiplier)
-        void EnsureTargets(AuctionHouseBotMarketState& state, uint32 itemId);
-        // units currently listed by us for this state (tierStock + probeStock)
-        uint32 GetBookedUnits(AuctionHouseBotMarketState const& state) const;
-        // [v3] exposure-slice ladder quote + probe orders for a rotating catalog batch
-        // (virtual inventory removed; RefillCatalog deleted)
+        // [v4] 该商品要维持在货架上的挂单单位数（operator 行 target 优先，其次 conf）
+        uint32 GetItemTarget(uint32 itemId) const;
+        // [v4] 每周期把真实货架补满到 target 的阶梯挂单（+ 探针单）：无曝光切片、无库存快照
         void QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 houseIdx);
 
         std::string m_configFileName;
@@ -321,33 +316,17 @@ class AuctionHouseBot
         uint32 m_mmPriceFloor = 5;        // hard price floor as % of original static price
         uint32 m_mmPriceCeil = 300;       // hard price cap as % of original static price
         uint32 m_lastMarketUpdateTime = 0;
-        // ---- curated catalog book (v3: exposure-slice quoting, no virtual inventory) ----
+        // ---- curated catalog book (v4 2026-09-27: 每周期按 target 补满真实货架) ----
         bool m_catalogEnabled = true;     // curated catalog drives book supply
-        uint32 m_catalogTarget = 50;      // default target exposure driver (units) per item
-        uint32 m_catalogCapacity = 200;   // (reserved; kept for row mirror)
-        uint32 m_catalogListBatch = 25;   // catalog items quoted per cycle (rotation)
-        uint32 m_catalogExposurePct = 25; // % of target listed concurrently (rest stays stocked)
-        uint32 m_catalogDemandBoostPct = 50; // target boost % when the price tier is eaten
-        uint32 m_catalogIdleDecayPct = 5; // target decay % per idle scan after threshold
-        uint32 m_catalogRotate = 0;       // rotating cursor for batch cycles
+        uint32 m_catalogTarget = 200;     // 行未配 target 时的兜底（单位数；10 组 × 堆叠 20）
         // ---- central-bank flow price discovery (long settle period) ----
         uint32 m_flowRatio = 150;       // imbalance threshold %: bought>sold*1.5 => lower, sold>bought*1.5 => raise
         uint32 m_flowMoveDownPct = 5;   // anchor move % per settle when OVERPRICED (players flood us -> lower fast)
         uint32 m_flowMoveUpPct = 1;     // anchor move % per settle when UNDERPRICED (raise very slowly - welfare protection)
         uint32 m_flowMinUnits = 20;     // min total flow units in a period before the signal counts
         uint32 m_flowSettleHours = 24;  // settle period in hours (e.g. 24 = daily, 168 = weekly)
-        // ---- player-listing-depth supply regulation (every scan) ----
-        uint32 m_depthHighPct = 200;    // player supply >= target*2 -> shrink our injection (step down)
-        uint32 m_depthLowPct = 50;      // player supply <= target*0.5 -> expand our injection (step up)
-        uint32 m_depthStepPct = 5;      // target move % per scan toward the depth-driven direction
-        // ---- item tiering (welfare supply) ----
-        // Low-level old-world materials are transition goods: players rarely farm
-        // them, so the bot is their only supplier. They get ABUNDANT supply
-        // (target x TransitionTargetMult) so leveling is never starved. Prices are
-        // NOT tiered - the asymmetric flow move (up 1% / down 5%) already keeps
-        // price rises gentle for every good.
-        uint32 m_transitionItemLevel = 40;  // ItemLevel <= this => transition good (0 = tiering off)
-        uint32 m_transitionTargetMult = 3;  // transition goods hold target x this (abundant supply)
+        // [v4 2026-09-26] 玩家深度调节（m_depth*）与过渡商品倍率（m_transition*）已删除：
+        // 两者都是让机器人自行改库存额度的老机制；额度由 operator 行 target 决定。
         // the curated universe: droppable + priceable Class 7 items (from world loot
         // tables at Initialize/reload); operators prune/tune via ahbot_market_state
         std::unordered_set<uint32> m_catalogUniverse;

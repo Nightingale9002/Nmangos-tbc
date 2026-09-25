@@ -235,40 +235,25 @@ AuctionHouseBot.Value.Dynamic = 0
 AuctionHouseBot.Value.DynamicRefresh = 60
 
 ###################################################################################################################
-# Market-maker catalog + virtual inventory (curated Class7 supply)
+# Market-maker catalog (curated supply)
 #
-# The catalog is derived at runtime from world loot tables (droppable + priceable
-# Class 7 items, no BoP/quest, no loot containers). ahbot_catalog (characters db)
-# holds operator overrides: disable an item or tune its target/capacity.
-#   CatalogEnabled   - master switch for the curated catalog supply channel
-#   CatalogTarget    - default desired holdings (units) per item
-#   CatalogCapacity  - default hard cap on holdings per item (bounded book)
-#   RefillPerCycle   - max units of world supply refilled per item per cycle
-#   RefillBatch      - how many catalog items are refilled per cycle (rotation)
-#   ListBatch        - how many catalog items are quoted per cycle (rotation)
-#   QuoteExposurePct - %% of target holdings listed on the AH concurrently (rest stays
-#                      stocked in the virtual warehouse): a thin book that restocks
-#                      every sell phase -> fast price discovery, few wall-of-orders
-#   DemandBoostPct   - target holdings boost %% when the price tier gets eaten
-#   IdleTargetDecayPct - target holdings shrink %% per idle scan after IdleThreshold
+# [v4 2026-09-27 站长定案] 上架口径 = 每周期把机器人在 AH 上的挂单补满到 target（单位数）。
+# target 来自 operator 行 ahbot_market_state.target（数据侧 cat1 = 10 组 = 10 × maxStack，
+# cat2 固定价书架 = 1 件）；行里 target=0 时用下面的 CatalogTarget 兜底。
+# 已删除：曝光切片 QuoteExposurePct、分批轮转 ListBatch、库存上限 CatalogCapacity、
+# 需求加码 DemandBoostPct、闲置衰减 IdleTargetDecayPct、玩家深度调节 DepthTarget*/
+# DepthStepPct —— 这些都属于"机器人自行缩放库存额度"的老机制，与"按 target 补满"冲突。
+# 改挂单量只需改库里的 target（+ .ahbot reload），不改 conf。
+#   CatalogEnabled - master switch for the curated catalog supply channel
+#   CatalogTarget  - 行里未配 target 时的默认挂单单位数
 ###################################################################################################################
 AuctionHouseBot.MarketMaker.CatalogEnabled = 1
-AuctionHouseBot.MarketMaker.CatalogTarget = 50
-AuctionHouseBot.MarketMaker.CatalogCapacity = 200
-AuctionHouseBot.MarketMaker.RefillPerCycle = 100
-AuctionHouseBot.MarketMaker.RefillBatch = 25
-AuctionHouseBot.MarketMaker.ListBatch = 25
-AuctionHouseBot.MarketMaker.QuoteExposurePct = 25
-AuctionHouseBot.MarketMaker.DemandBoostPct = 50
-AuctionHouseBot.MarketMaker.IdleTargetDecayPct = 5
+AuctionHouseBot.MarketMaker.CatalogTarget = 200
 AuctionHouseBot.MarketMaker.FlowRatio = 150
 AuctionHouseBot.MarketMaker.FlowMoveDownPct = 5
 AuctionHouseBot.MarketMaker.FlowMoveUpPct = 1
 AuctionHouseBot.MarketMaker.FlowMinUnits = 20
 AuctionHouseBot.MarketMaker.FlowSettleHours = 24
-AuctionHouseBot.MarketMaker.DepthTargetHighPct = 200
-AuctionHouseBot.MarketMaker.DepthTargetLowPct = 50
-AuctionHouseBot.MarketMaker.DepthStepPct = 5
 
 ###################################################################################################################
 # Disabled consumable subclasses (crafted/welfare goods the bot must NOT supply)

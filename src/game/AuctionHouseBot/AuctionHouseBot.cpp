@@ -246,25 +246,21 @@ void AuctionHouseBot::Initialize()
         m_mmProbeUnits   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.ProbeUnits", 0);
         m_mmPriceFloor  = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.PriceFloor", 5);
         m_mmPriceCeil   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.PriceCeil", 300);
-        // curated catalog book (v3: exposure-slice quoting, no virtual inventory)
+        // curated catalog book
+        // [v4 2026-09-26] 上架口径 = 「每周期把真实货架补满到 target（单位数）」。
+        // 曝光切片(QuoteExposurePct) / 分批轮转(ListBatch) / 库存上限(CatalogCapacity) /
+        // 需求加码(DemandBoostPct) / 闲置衰减(IdleTargetDecayPct) 全部删除：target 只由
+        // operator 行（ahbot_market_state.target）决定，机器人运行期不再自行改额度。
         m_catalogEnabled       = m_ahBotCfg.GetBoolDefault("AuctionHouseBot.MarketMaker.CatalogEnabled", true);
-        m_catalogTarget        = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.CatalogTarget", 50);
-        m_catalogCapacity      = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.CatalogCapacity", 200);
-        m_catalogListBatch     = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.ListBatch", 25);
-        m_catalogExposurePct   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.QuoteExposurePct", 25);
-        m_catalogExposurePct   = std::max<uint32>(1, std::min<uint32>(100, m_catalogExposurePct));
-        m_catalogDemandBoostPct = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.DemandBoostPct", 50);
-        m_catalogIdleDecayPct  = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.IdleTargetDecayPct", 5);
+        m_catalogTarget        = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.CatalogTarget", 200);
         m_flowRatio      = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowRatio", 150);
         m_flowMoveDownPct = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowMoveDownPct", 5);
         m_flowMoveUpPct  = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowMoveUpPct", 1);
         m_flowMinUnits   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowMinUnits", 20);
         m_flowSettleHours = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowSettleHours", 24);
-        m_depthHighPct   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.DepthTargetHighPct", 200);
-        m_depthLowPct    = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.DepthTargetLowPct", 50);
-        m_depthStepPct   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.DepthStepPct", 5);
-        m_transitionItemLevel = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.TransitionItemLevel", 40);
-        m_transitionTargetMult = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.TransitionTargetMult", 3);
+        // [v4 2026-09-26] 玩家挂单深度调节 target（DepthTarget*/DepthStepPct）与过渡商品
+        // 倍率（TransitionItemLevel/TransitionTargetMult）一并删除：两者都是"机器人自行
+        // 改库存额度"的老机制，且 TransitionItemLevel 两侧 conf 都是 0（本来就是死代码）。
         LoadCatalogOverrides();
         LoadInventory();
         if (m_marketEnabled)
@@ -1106,7 +1102,6 @@ void AuctionHouseBot::UpdateMarketPrices()
                 AuctionHouseBotCatalogEntry op = GetCatalogEntry(itemId);
                 if (op.enabled && op.category == 1 && op.price > 0)
                 {
-                    EnsureTargets(state, itemId);
                     if (state.price != op.price)
                     {
                         // [no-insert] update the existing operator row only (see above)
@@ -1126,8 +1121,8 @@ void AuctionHouseBot::UpdateMarketPrices()
             if (!state.ref && staticPrice)
                 state.ref = staticPrice;
 
-            // demand-responsive holding targets (transition goods get xmult supply)
-            EnsureTargets(state, itemId);
+            // [v4 2026-09-26] 上架额度不再在这里 seed：QuoteCatalog 每周期用
+            // GetItemTarget()（operator 行 target / conf 兜底）直接数真实货架补满。
 
             uint32 floor = staticPrice ? (uint32)((uint64)staticPrice * std::min<uint32>(100, m_mmPriceFloor) / 100) : 0;
             // the floor can never sit below the vendor buy-back price (SellPrice):
@@ -1202,7 +1197,8 @@ void AuctionHouseBot::UpdateMarketPrices()
                     // [2026-09-04] no demand-boost target growth: holdings stay at the
                     // operator/DB target, so world-refill & quotes can never overflow
                     // it (a warehouse at capacity is exactly what blocks player sales).
-                    // Fast quote turnover (QuoteExposurePct) already answers demand.
+                    // [v4 2026-09-26] 不再有需求加码/曝光切片：额度固定为 target，
+                    // 每周期补满；需求只体现在价格机制（吃掉检测 + flow 结算）上。
                 }
                 // probe outcome (observation only): a below-quote sale is demand
                 // discovery - recorded for the operator, never a pricing input
@@ -1237,14 +1233,8 @@ void AuctionHouseBot::UpdateMarketPrices()
                 ++state.idleScans;
                 if (state.probeCooldown)
                     --state.probeCooldown;
-                // supply contraction on idle (quantity, not a price cut): an unsold
-                // probe or a quiet book is NOT a reason to lower the price
-                if (state.idleScans >= m_mmIdleThreshold && state.target)
-                {
-                    uint32 baseline = GetBaselineTarget(itemId);
-                    if (state.target > baseline)
-                        state.target = std::max<uint32>(baseline, state.target - state.target * std::min<uint32>(100, m_catalogIdleDecayPct) / 100);
-                }
+                // [v4 2026-09-26] 不再按闲置时长衰减 target：额度完全由 operator 行/
+                // conf 决定，每周期补满即可；机器人自行缩额度属于已废弃的库存管理。
             }
             // stale probe demand evidence fades after ~10 minutes of no outcomes
             if (++state.probeStaleScans > 60)
@@ -1314,22 +1304,11 @@ void AuctionHouseBot::UpdateMarketPrices()
                 }
             }
 
-            // ---- player-listing-depth supply regulation (every scan) ----
-            // [2026-09-04] shrink-only: when players flood supply we step our target
-            // down toward the baseline; the target never expands upward (that caused
-            // warehouse overflow and blocked player sales). Expansion is handled by
-            // the operator rows (target/capacity in the DB), not by the bot.
-            {
-                auto pUnits = playerUnits.find(itemId);
-                uint32 depth = pUnits != playerUnits.end() ? pUnits->second : 0;
-                if (state.target && state.capacity)
-                {
-                    uint32 baseline = GetBaselineTarget(itemId);
-                    uint32 step = std::max<uint32>(1, state.target * std::min<uint32>(50, m_depthStepPct) / 100);
-                    if (depth >= (uint64)state.target * std::max<uint32>(100, m_depthHighPct) / 100)
-                        state.target = std::max<uint32>(baseline, state.target > step ? state.target - step : baseline);
-                }
-            }
+            // ---- player-listing-depth supply regulation: removed 2026-09-27 ----
+            // [v4] 玩家挂单深度不再调节我们的 target。旧机制只在"玩家大量供货"时把
+            // target 往下压（shrink-only），配合曝光切片会让书目越压越少；新口径是
+            // "货架 <= target 就补满"，供给压力交给价格机制（flow 结算 + 吃掉检测）。
+            (void)playerUnits;
 
             // last-trade EMA + rolling trade log (seed for future price-curve feature).
             // Only at-quote (main ladder) sales feed the realized-price EMA: below-quote
@@ -1567,7 +1546,8 @@ void AuctionHouseBot::LoadCatalogOverrides()
     // member too: it is supplied at that fixed price (single tier, no probes) by
     // QuoteCatalog and pinned by UpdateMarketPrices. Before this it was excluded
     // from the universe, so category-2 rows were never listed at all.
-    if (auto result = CharacterDatabase.Query("SELECT item, MAX(enabled), MAX(target), MAX(capacity), MAX(category), MAX(price) FROM ahbot_market_state WHERE auction_house = 2 GROUP BY item"))
+    // [v4 2026-09-26] capacity 列已废弃（库存上限语义被 target 取代），不再读取
+    if (auto result = CharacterDatabase.Query("SELECT item, MAX(enabled), MAX(target), MAX(category), MAX(price) FROM ahbot_market_state WHERE auction_house = 2 GROUP BY item"))
     {
         do
         {
@@ -1575,9 +1555,8 @@ void AuctionHouseBot::LoadCatalogOverrides()
             AuctionHouseBotCatalogEntry e;
             e.enabled = fields[1].GetUInt32() != 0;
             e.target = fields[2].GetUInt32();
-            e.capacity = fields[3].GetUInt32();
-            e.category = fields[4].GetUInt32();
-            e.price = fields[5].GetUInt32();
+            e.category = fields[3].GetUInt32();
+            e.price = fields[4].GetUInt32();
             uint32 itemId = fields[0].GetUInt32();
             m_catalogOverrides[itemId] = e;
             if (e.enabled && (e.category == 1 || e.category == 2))
@@ -1599,7 +1578,6 @@ AuctionHouseBotCatalogEntry AuctionHouseBot::GetCatalogEntry(uint32 itemId) cons
     {
         e.enabled = itr->second.enabled;
         e.target = itr->second.target;
-        e.capacity = itr->second.capacity;
         e.category = itr->second.category;
         e.price = itr->second.price;
     }
@@ -1624,15 +1602,8 @@ bool AuctionHouseBot::IsMmBookItem(uint32 itemId) const
     return itr != m_catalogOverrides.end() && itr->second.enabled && itr->second.category == 1;
 }
 
-bool AuctionHouseBot::IsTransitionItem(uint32 itemId) const
-{
-    // policy is legacy and folded into the unified table (category supersedes it);
-    // only automated ItemLevel tiering remains.
-    if (!m_transitionItemLevel)
-        return false;
-    ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId);
-    return proto && proto->ItemLevel <= m_transitionItemLevel;
-}
+// [v4 2026-09-26] IsTransitionItem() 已删除：过渡商品倍率是"机器人自行加库存额度"的老
+// 机制，两侧 conf 的 TransitionItemLevel 都是 0（从不生效）。
 
 uint32 AuctionHouseBot::GetCatalogFixedPrice(uint32 itemId) const
 {
@@ -1640,28 +1611,15 @@ uint32 AuctionHouseBot::GetCatalogFixedPrice(uint32 itemId) const
     return e.category == 2 ? e.price : 0;
 }
 
-uint32 AuctionHouseBot::GetBaselineTarget(uint32 itemId) const
+// [v4 2026-09-26] GetItemTarget()：机器人该商品要维持在货架上的**单位数**。
+// operator 行（ahbot_market_state.target）优先，未配置(target=0)时退回 conf 的
+// CatalogTarget。数据侧 cat1 = 10 组 = 10 × maxStack（矿石/锭/石头 200、附魔材料 100），
+// cat2 固定价书架 = 1 件。运行期不再有 GetBaselineTarget/EnsureTargets 那套"机器人自行
+// 缩放额度"的写法。
+uint32 AuctionHouseBot::GetItemTarget(uint32 itemId) const
 {
     AuctionHouseBotCatalogEntry cat = GetCatalogEntry(itemId);
-    uint32 base = cat.target ? cat.target : m_catalogTarget;
-    if (IsTransitionItem(itemId))
-        base = std::min<uint32>(m_catalogCapacity, (uint64)base * m_transitionTargetMult / 100);
-    return base;
-}
-
-void AuctionHouseBot::EnsureTargets(AuctionHouseBotMarketState& state, uint32 itemId)
-{
-    if (state.target && state.capacity)
-        return;
-    AuctionHouseBotCatalogEntry cat = GetCatalogEntry(itemId);
-    uint32 target = cat.target ? cat.target : m_catalogTarget;
-    uint32 capacity = cat.capacity ? cat.capacity : m_catalogCapacity;
-    if (!capacity)
-        capacity = m_catalogCapacity;
-    if (IsTransitionItem(itemId))
-        target = std::min<uint32>(capacity, (uint64)target * m_transitionTargetMult / 100);
-    state.target = target;
-    state.capacity = capacity;
+    return cat.target ? cat.target : m_catalogTarget;
 }
 
 // Load the flow/ledger counters (ahbot_market_state). [v3 2026-09-07] the virtual
@@ -1728,15 +1686,9 @@ void AuctionHouseBot::PersistDailyBudget()
         m_dayGoldStart, (unsigned long long)m_dayGoldSpent);
 }
 
-uint32 AuctionHouseBot::GetBookedUnits(AuctionHouseBotMarketState const& state) const
-{
-    uint32 booked = 0;
-    for (uint32 t = 0; t < MARKET_MAKER_MAX_LADDER; ++t)
-        booked += state.tierStock[t];
-    for (uint32 p = 0; p < 5; ++p)
-        booked += state.probeStock[p];
-    return booked;
-}
+// [v4 2026-09-26] GetBookedUnits() 已删除：上架额度不再依赖内存快照（tierStock/
+// probeStock），改为每周期直接数真实货架（见 QuoteCatalog 的 ownShelfUnits）。旧快照
+// 过时会让同一周期重复补满、并和曝光切片一起把书目饿死。
 
 // A player bought one of our listings (or won it at expiry). [v3 2026-09-07] virtual
 // inventory is gone: this only records the demand signal (flow_sold) and the gold the
@@ -1782,14 +1734,15 @@ void AuctionHouseBot::RecordBotPurchase(uint32 itemId, uint32 houseIdx, uint32 c
                                state.spentGold, state.flowBought, itemId, houseIdx);
 }
 
-// (RefillCatalog removed in v3: no virtual inventory; QuoteCatalog mints straight to
-// the exposure slice. m_catalogRotate is shared with QuoteCatalog.)
+// (RefillCatalog removed in v3: no virtual inventory.)
 
-// Inventory-backed ladder quote for a rotating batch of catalog items. The book is
-// topped up to the target exposure but only out of available holdings (inventory -
-// booked), so a drained book stays drained until world supply refills - that is the
-// bounded book that lets the eaten-tier check move the price. Probe orders below
-// the reference also draw from holdings.
+// [v4 2026-09-27 站长定案] 上架口径：每周期把书目商品在 AH 上「我们自己的」挂单单位数
+// 补满到 target（target = 单位数；数据侧 cat1 = 10 组 = 10 × maxStack，cat2 固定价书架
+// 保持 1 件）。"已挂多少"不再走内存快照（tierStock/probeStock/booked），而是每周期直接
+// 数真实货架 —— 旧口径有两个坑叠加：① 只按曝光切片上架（target × QuoteExposurePct）
+// ② 再经"整栈取整"后每档都归零，结果就是"一本书都不上架"（2026-09-26 定位）。
+// 真实货架计数天然幂等：同一周期重复调用不会重复补满，重启/到期也不会把额度算错。
+// 阶梯定价、探针单、吃掉检测照旧（tierStock 只作为价格发现的观察量，不再当作挂单额度）。
 void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 houseIdx)
 {
     if (m_catalogUniverseVec.empty())
@@ -1803,47 +1756,53 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
     // sweep of tier 0 is a meaningful demand signal
     static const uint32 TIER_WEIGHTS[6] = {40, 25, 15, 10, 5, 5};
 
-    uint32 batch = std::max<uint32>(1, m_catalogListBatch);
-    uint32 done = 0;
-    uint32 n = (uint32)m_catalogUniverseVec.size();
-
-    // [booked-guard 2026-09-07] the "booked" (currently listed) count is refreshed
-    // by the periodic market scan (UpdateMarketPrices). Between scans a stale
-    // booked==0 would let every sell phase add the full exposure again, piling up
-    // thousands of lots. If the last scan is older than 150s (or never ran), hold
-    // all new quotes until the scan refreshes the snapshot.
+    // [v4] 一次遍历真实货架：统计 owner==0（机器人）挂单的每件商品单位数
+    std::map<uint32, uint32> ownShelfUnits;
     {
-        uint32 now = time(nullptr);
-        if (now > m_lastMarketUpdateTime + 150)
-            return;
+        AuctionHouseObject::AuctionEntryMapBounds bounds = auctionHouse->GetAuctionsBounds();
+        for (AuctionHouseObject::AuctionEntryMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
+        {
+            AuctionEntry* auction = itr->second;
+            if (auction->owner)
+                continue;                     // 玩家挂单不占我们的额度
+            Item* shelfItem = sAuctionMgr.GetAItem(auction->itemGuidLow);
+            if (!shelfItem)
+                continue;
+            ownShelfUnits[shelfItem->GetEntry()] += std::max<uint32>(1, shelfItem->GetCount());
+        }
     }
 
-    for (uint32 i = 0; i < n && done < batch; ++i)
+    uint32 n = (uint32)m_catalogUniverseVec.size();
+    uint32 quoted = 0, listedUnits = 0, skippedFull = 0, noState = 0;
+
+    for (uint32 i = 0; i < n; ++i)
     {
-        uint32 itemId = m_catalogUniverseVec[(m_catalogRotate + i) % n];
+        uint32 itemId = m_catalogUniverseVec[i];
         if (!IsCatalogItem(itemId))
             continue;
         ItemPrototype const* proto = ObjectMgr::GetItemPrototype(itemId);
         if (!proto || proto->GetMaxStackSize() == 0)
             continue;
         // category 2 (vendor-price good): quote anchored at the fixed row price; only a
-        // single price tier (no ladder above, no probes below the fixed price). Inert
-        // until rows are marked category 2 with a price (state.price is then forced to
-        // the fixed price by UpdateMarketPrices as well).
+        // single price tier (no ladder above, no probes below the fixed price).
         uint32 fixedUnit = GetCatalogFixedPrice(itemId);
         AuctionHouseBotMarketState* state = GetMarketState(itemId, houseType);
         if (!state)
+        {
+            ++noState;
             continue;
-        EnsureTargets(*state, itemId);
-        uint32 booked = GetBookedUnits(*state);
-        // [v3 2026-09-07] no virtual inventory: the book is quoted straight to its
-        // exposure slice (target x QuoteExposurePct) whenever booked falls below it -
-        // supply is the market-maker mint, nothing else gates the quote.
-        uint32 exposure = std::max<uint32>(1, (uint32)(((uint64)state->target * m_catalogExposurePct + 50) / 100));
-        uint32 toList = exposure > booked ? exposure - booked : 0;
-        if (!toList)
+        }
+        // [v4] 上架额度：数真实货架，补满到 target
+        uint32 target = GetItemTarget(itemId);
+        auto shelfItr = ownShelfUnits.find(itemId);
+        uint32 listedOwn = shelfItr != ownShelfUnits.end() ? shelfItr->second : 0;
+        if (target && listedOwn >= target)
+        {
+            ++skippedFull;
             continue;
-        ++done;
+        }
+        uint32 toList = target > listedOwn ? target - listedOwn : 0;
+        ++quoted;
 
         uint32 quotePrice = fixedUnit ? fixedUnit : state->price;
         if (!quotePrice)
@@ -1862,7 +1821,6 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
         }
         uint32 step = GetLadderStep(quotePrice);
         uint32 mainDepth = fixedUnit ? 1 : std::min<uint32>(MARKET_MAKER_MAX_LADDER, (50 / std::max<uint32>(1, step)) + 1);
-        uint32 listedThisCycle = 0;
 
         // [group-listing 2026-09-05] stackable goods are packed into FULL stacks
         // (maxstack) so a handfull of rows carries the book instead of hundreds of
@@ -1877,21 +1835,20 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
             uint32 wholeGroups = remaining / stackMax;
             if (wholeGroups == 0)
             {
-                if (booked > 0)
-                    continue;              // something is already listed; no tail-lot spam
+                if (listedOwn > 0)
+                    continue;              // 已有挂单；不做零碎尾单
                 Item* partial = Item::CreateItem(itemId, std::min<uint32>(stackMax, remaining));
                 if (!partial)
                     continue;
                 uint32 buyoutPrice = (uint32)std::min<uint64>((uint64)quotePrice * partial->GetCount(), 2000000000ull);
                 uint32 bidPrice = std::min(buyoutPrice, buyoutPrice * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
                 auctionHouse->AddAuction(houseEntry, partial, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, bidPrice, buyoutPrice);
-                state->tierStock[0] += partial->GetCount();   // [booked-fix] immediate bookkeeping (see main tier below)
-                listedThisCycle += partial->GetCount();
-                (void)listedThisCycle;
+                listedUnits += partial->GetCount();
                 continue;                  // next catalog item
             }
             remaining = wholeGroups * stackMax;   // full stacks only
         }
+
 
         for (uint32 t = 0; t < mainDepth && remaining > 0; ++t)
         {
@@ -1902,6 +1859,16 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
             // [group-listing] tier volume is a whole number of stacks
             if (stackMax > 1)
                 tierUnits = (tierUnits / stackMax) * stackMax;
+            // [stack-floor 2026-09-26] Never let tier rounding starve the book: when the
+            // first tier's share rounds to zero every tier does, and the item is never
+            // listed at all. 两种触发情形：
+            //   ① 可堆叠品：target 小 / 曝光切片小 ⇒ 第一档不足一整栈
+            //      （例：exposure 50、maxstack 20、权重 40% ⇒ 16 ⇒ 0 栈）；
+            //   ② 不可堆叠品（maxstack=1，例如 cat2 的固定价配方 target=1）：
+            //      第一档 1×40% = 0 ⇒ 必须保底 1 件，否则整本书架一张单都没有。
+            // 保底量 = min(一整栈, 剩余量)：可堆叠品给一整栈，不可堆叠品给 1 件。
+            if (!tierUnits && t == 0 && remaining > 0)
+                tierUnits = std::min<uint32>(stackMax, remaining);
             if (!tierUnits)
                 continue;
             uint32 unitPrice = (uint32)(((uint64)quotePrice * (100 + t * step) + 50) / 100);
@@ -1917,20 +1884,13 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
                     break;
                 uint32 bidPrice = std::min(buyoutPrice, buyoutPrice * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
                 auctionHouse->AddAuction(houseEntry, item, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, bidPrice, buyoutPrice);
-                // [booked-fix 2026-09-07] count listed units into tierStock IMMEDIATELY
-                // (same as the probe guard below). Without this the booked snapshot only
-                // refreshes on the next 60s market scan, so every quote cycle inside the
-                // scan window re-adds the full exposure on top of what is already listed -
-                // high-value stackables (Void Crystal, Large Prismatic Shard) piled up
-                // 300+ lots within an hour. The scan re-buckets tierStock from the real
-                // shelf on its next pass, so this stays consistent.
-                state->tierStock[t] += count;
+                // [v4 2026-09-26] 不再累加 tierStock（挂单额度改由真实货架计数决定）；
+                // 每周期开始时扫描会把 tierStock 从真实货架重新分桶，仅供价格发现观察。
                 unitsLeft -= count;
-                listedThisCycle += count;
+                listedUnits += count;
                 remaining -= count;
             }
         }
-        (void)listedThisCycle;
 
         // probe order: one small sell order below the reference, placed only when
         // the current probe tier is empty and the cooldown elapsed. [v3] no inventory
@@ -1958,7 +1918,10 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
             }
         }
     }
-    m_catalogRotate = (m_catalogRotate + batch) % n;
+    // [v4 2026-09-26] 每周期一条汇总日志（替代临时 [MMDBG] 诊断）：书目件数 / 需补满
+    // 件数 / 已满 / 无 state / 本轮实际上架单位数。
+    sLog.outError("[MMQUOTE] house=%u book=%u quoted=%u full=%u noState=%u units=%u",
+                  houseIdx, n, quoted, skippedFull, noState, listedUnits);
 }
 
 bool AuctionHouseBot::ReloadAllConfig()
@@ -2061,7 +2024,7 @@ void AuctionHouseBot::SetItemData(uint32 item, AuctionHouseBotItemData& itemData
     // only house Initialize() (override load) and LoadCatalogOverrides() read. They
     // used to go to the house=0 row, which nothing reads - .ahbot item overrides
     // (Value/AddChance/MinAmount/MaxAmount) silently vanished on the next restart.
-    CharacterDatabase.PExecute("INSERT INTO ahbot_market_state (item, auction_house, override_base_price, override_add_chance, override_min_amount, override_max_amount, enabled, category, price, target, capacity) VALUES (%u, %u, %u, %u, %u, %u, 1, 1, 0, 500, 1500) AS new ON DUPLICATE KEY UPDATE override_base_price = new.override_base_price, override_add_chance = new.override_add_chance, override_min_amount = new.override_min_amount, override_max_amount = new.override_max_amount", item, 2, itemData.Value, itemData.AddChance, itemData.MinAmount, itemData.MaxAmount);
+    CharacterDatabase.PExecute("INSERT INTO ahbot_market_state (item, auction_house, override_base_price, override_add_chance, override_min_amount, override_max_amount, enabled, category, price, target) VALUES (%u, %u, %u, %u, %u, %u, 1, 1, 0, 200) AS new ON DUPLICATE KEY UPDATE override_base_price = new.override_base_price, override_add_chance = new.override_add_chance, override_min_amount = new.override_min_amount, override_max_amount = new.override_max_amount", item, 2, itemData.Value, itemData.AddChance, itemData.MinAmount, itemData.MaxAmount);
 }
 
 AuctionHouseBotItemData AuctionHouseBot::GetItemData(uint32 item)
