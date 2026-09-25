@@ -656,8 +656,349 @@ void AuctionHouseBot::Update()
 // Scan all auction houses for player listings and record the real per-unit market
 // price (median buyout) per item and house. Persisted into ahbot_market_state (price_ref) so prices
 // survive restarts and are visible/editable via the database.
+// =====================================================================================
+// [2026-09-25] 成对/成族商品「共同定价」—— 站长设计（虚拟商品做基准，防止递归）
+//   * 一对商品（base = 基准件 / derived = 派生件）挂到同一个虚拟商品 virtual_item 上；
+//   * 每周期把**两个成员**的成交量各自折算成"虚拟基准份数"（组数 × equiv）并累加，
+//     累加后**立即清零成员的 flow 列** ⇒ 成员自己的流水结算不会再动一次价（无双重信号）；
+//   * 虚拟商品按自己的小时窗口结算一次：净流入份数 × MoveBpPerStack（默认 0.1%/份）移动虚拟价，
+//     再按"小时 ±MaxHourlyMoveBp（默认 1%）"与"24h ±MaxDailyMovePct（默认 10%）"两级封顶；
+//   * 最后按 equiv 把虚拟价**反馈**给两个成员：成员价 = 虚拟价 × equiv。
+//   ⇒ 两件商品的买卖量作用在**同一个**虚拟价上（同时收到信号），双方都只读虚拟价、互不写对方 ⇒ 无递归。
+//   ⇒ 只写 ahbot_market_state.price_ref（书目报价），**一律不碰已经挂出去的拍卖单价格**。
+// =====================================================================================
+namespace
+{
+    struct VpPair
+    {
+        uint32 house = 2;
+        uint32 baseItem = 0;
+        uint32 derivedItem = 0;
+        uint32 ratio = 1;
+        uint32 virtualItem = 0;
+        uint32 equivBase = 1;
+        uint32 equivDerived = 1;
+    };
+
+    std::vector<VpPair> g_vpPairs;
+    bool g_vpLoaded = false;
+
+    void LoadVpPairs()
+    {
+        g_vpPairs.clear();
+        if (auto result = CharacterDatabase.Query("SELECT auction_house, base_item, derived_item, ratio, virtual_item, equiv_base, equiv_derived FROM ahbot_price_pair WHERE enabled = 1 AND virtual_item <> 0"))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                VpPair p;
+                p.house = fields[0].GetUInt32();
+                p.baseItem = fields[1].GetUInt32();
+                p.derivedItem = fields[2].GetUInt32();
+                p.ratio = std::max<uint32>(1, fields[3].GetUInt32());
+                p.virtualItem = fields[4].GetUInt32();
+                p.equivBase = std::max<uint32>(1, fields[5].GetUInt32());
+                p.equivDerived = std::max<uint32>(1, fields[6].GetUInt32());
+                g_vpPairs.push_back(p);
+            } while (result->NextRow());
+        }
+        g_vpLoaded = true;
+        sLog.outString("[AHBOT] price pairs loaded: %u", uint32(g_vpPairs.size()));
+    }
+
+    /// 成交量（单位 units）换算成"组数"：组 = units / 该物品最大堆叠
+    uint32 VpStacksFor(uint32 itemId, uint32 units)
+    {
+        uint32 stack = 1;
+        if (ItemPrototype const* proto = sObjectMgr.GetItemPrototype(itemId))
+            stack = std::max<uint32>(1, proto->GetMaxStackSize());
+        return units / stack;
+    }
+
+    /// 读一个表里的成员流水并折算加总，同时清零该行的 flow 列
+    void VpDrainMember(uint32 house, uint32 itemId, uint32 equiv, uint64& accBought, uint64& accSold)
+    {
+        uint32 fb = 0, fs = 0;
+        if (auto result = CharacterDatabase.PQuery("SELECT flow_bought, flow_sold FROM ahbot_market_state WHERE auction_house = %u AND item = %u", house, itemId))
+        {
+            Field* f = result->Fetch();
+            fb = f[0].GetUInt32();
+            fs = f[1].GetUInt32();
+        }
+        if (!fb && !fs)
+            return;
+
+        accBought += (uint64)VpStacksFor(itemId, fb) * equiv;
+        accSold += (uint64)VpStacksFor(itemId, fs) * equiv;
+        CharacterDatabase.PExecute("UPDATE ahbot_market_state SET flow_bought = 0, flow_sold = 0 WHERE auction_house = %u AND item = %u", house, itemId);
+    }
+
+    /// [2026-09-26] 最小步进（MinMoveCopper）：便宜物品上"百分比移动"会被整数铜四舍五入彻底抹平
+    /// （铜矿 20 铜走 10bp = 0.02 铜 ⇒ 算出来还是 20），机制等于失效。只要**方向明确**
+    /// （direction > 0 涨价 / < 0 降价 / 0 不动）而取整后价格没变，就至少动 minStep 铜。
+    /// minStep <= 0 表示关闭该行为；降价不会低于 1 铜。
+    uint32 ApplyMinPriceStep(uint32 oldPrice, uint32 newPrice, int64 direction, int minStep)
+    {
+        if (!oldPrice || !direction || minStep <= 0 || newPrice != oldPrice)
+            return newPrice;
+        if (direction > 0)
+            return oldPrice + (uint32)minStep;
+        return oldPrice > (uint32)minStep ? oldPrice - (uint32)minStep : 1;
+    }
+
+    void SetMemberPrice(uint32 house, uint32 itemId, uint32 newPrice)
+    {
+        if (auto result = CharacterDatabase.PQuery("SELECT price_ref FROM ahbot_market_state WHERE auction_house = %u AND item = %u", house, itemId))
+        {
+            Field* f = result->Fetch();
+            if (f[0].GetUInt32() != newPrice)
+                CharacterDatabase.PExecute("UPDATE ahbot_market_state SET price_ref = %u WHERE auction_house = %u AND item = %u AND price_ref <> %u",
+                                           newPrice, house, itemId, newPrice);
+        }
+    }
+
+    void SettleVirtualPrices(int moveBpPerStack, int maxHourlyBp, int maxDailyPct, int minMoveCopper)
+    {
+        if (!g_vpLoaded)
+            LoadVpPairs();
+        if (g_vpPairs.empty())
+            return;
+
+        std::map<uint32, std::vector<VpPair> > groups;
+        for (auto const& p : g_vpPairs)
+            groups[p.virtualItem].push_back(p);
+
+        uint32 const now = uint32(time(nullptr));
+        uint32 const hourWindow = 3600;
+
+        for (auto const& g : groups)
+        {
+            uint32 const vid = g.first;
+            std::vector<VpPair> const& members = g.second;
+
+            uint32 vPrice = 0, vHourPrice = 0, vHourStart = 0, vDayPrice = 0, vDayStart = 0, vLastSettle = 0;
+            uint64 vFlowBought = 0, vFlowSold = 0;
+            if (auto result = CharacterDatabase.PQuery("SELECT price, flow_bought, flow_sold, hour_price, hour_start, day_price, day_start, last_settle_time FROM ahbot_virtual_price WHERE virtual_item = %u", vid))
+            {
+                Field* f = result->Fetch();
+                vPrice = f[0].GetUInt32();
+                vFlowBought = f[1].GetUInt32();
+                vFlowSold = f[2].GetUInt32();
+                vHourPrice = f[3].GetUInt32();
+                vHourStart = f[4].GetUInt32();
+                vDayPrice = f[5].GetUInt32();
+                vDayStart = f[6].GetUInt32();
+                vLastSettle = f[7].GetUInt32();
+            }
+            if (!vPrice)
+                continue;
+
+            // 1) 两个成员的成交量都折算成虚拟基准份数并累加（累加完立即清零成员流水）
+            for (auto const& p : members)
+            {
+                VpDrainMember(p.house, p.baseItem, p.equivBase, vFlowBought, vFlowSold);
+                VpDrainMember(p.house, p.derivedItem, p.equivDerived, vFlowBought, vFlowSold);
+            }
+
+            uint32 newV = vPrice;
+            if (moveBpPerStack > 0 && (!vLastSettle || now - vLastSettle >= hourWindow))
+            {
+                // 2) 结算虚拟价：净流入（卖出 - 买入）× 每份 bp，小时/日两级封顶
+                int64 net = (int64)vFlowSold - (int64)vFlowBought;      // >0 = 玩家买走多 = 需求强 => 抬价
+                int64 capHour = std::max<int32>(0, maxHourlyBp);
+                int64 deltaBp = net * moveBpPerStack;
+                deltaBp = std::max<int64>(-capHour, std::min<int64>(capHour, deltaBp));
+                newV = (uint32)(((int64)vPrice * (10000 + deltaBp) + 5000) / 10000);
+
+                if (!vHourStart || now - vHourStart >= hourWindow)
+                {
+                    vHourPrice = vPrice;
+                    vHourStart = now;
+                }
+                if (vHourPrice && capHour)
+                {
+                    uint32 lo = (uint32)((uint64)vHourPrice * (10000 - (uint32)capHour) / 10000);
+                    uint32 hi = (uint32)((uint64)vHourPrice * (10000 + (uint32)capHour) / 10000);
+                    if (newV < lo) newV = lo;
+                    if (newV > hi) newV = hi;
+                }
+                if (maxDailyPct > 0)
+                {
+                    if (!vDayStart || now - vDayStart >= 24 * HOUR)
+                    {
+                        vDayPrice = newV;
+                        vDayStart = now;
+                    }
+                    if (vDayPrice)
+                    {
+                        uint32 cap = std::min<uint32>(100, uint32(maxDailyPct));
+                        uint32 dlo = (uint32)((uint64)vDayPrice * (100 - cap) / 100);
+                        uint32 dhi = (uint32)((uint64)vDayPrice * (100 + cap) / 100);
+                        if (newV < dlo) newV = dlo;
+                        if (newV > dhi) newV = dhi;
+                    }
+                }
+
+                // [2026-09-26] 最小步进：放在小时/日封顶**之后** —— 封顶仍是"百分比上限"，
+                // 只有在"本来就要动、却被整数铜抹平"时补最小步进（低价品上 1 铜就是最小可表示变化）。
+                newV = ApplyMinPriceStep(vPrice, newV, net, minMoveCopper);
+
+                if (newV != vPrice || vFlowBought || vFlowSold)
+                    sLog.outError("[AHBOT] VPSETTLE virtual=%u bought=%llu sold=%llu old=%u new=%u (bp/stack=%d hourCap=%d%% dayCap=%d%%)",
+                                  vid, (unsigned long long)vFlowBought, (unsigned long long)vFlowSold, vPrice, newV,
+                                  moveBpPerStack, maxHourlyBp / 100, maxDailyPct);
+
+                CharacterDatabase.PExecute("UPDATE ahbot_virtual_price SET price = %u, flow_bought = 0, flow_sold = 0, "
+                                           "hour_price = %u, hour_start = %u, day_price = %u, day_start = %u, last_settle_time = %u WHERE virtual_item = %u",
+                                           newV, vHourPrice, vHourStart, vDayPrice, vDayStart, now, vid);
+            }
+            else
+            {
+                // 窗口未到：把累加到的流水存进虚拟行（成员流水已清零，信号不会丢）
+                CharacterDatabase.PExecute("UPDATE ahbot_virtual_price SET flow_bought = %llu, flow_sold = %llu WHERE virtual_item = %u",
+                                           (unsigned long long)vFlowBought, (unsigned long long)vFlowSold, vid);
+            }
+
+            // 3) 虚拟价按 equiv 反馈给两个成员（只写 price_ref，不碰已挂单价格）
+            for (auto const& p : members)
+            {
+                uint32 const derivedMult = (p.equivDerived > 1 ? p.equivDerived : p.ratio);
+                SetMemberPrice(p.house, p.baseItem, newV * p.equivBase);
+                SetMemberPrice(p.house, p.derivedItem, newV * derivedMult);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // [2026-09-26] Composite products (multi-ingredient recipes, ahbot_price_recipe):
+    // product price_ref = SUM(ingredient price_ref * count). Ingredients are priced by the pair
+    // mechanism above (ore -> bar -> composite), so the whole chain always stays explainable
+    // from material cost. Operator decree (2026-09-25): ONE-WAY only - player trades of the
+    // composite must never push the materials or the virtual price, so the composite's own
+    // flow counters are logged once for observation and then cleared on both sides (DB + the
+    // in-memory state used by the per-item flow settlement). No auction price is ever touched.
+    // ---------------------------------------------------------------------------------------
+    struct VpRecipe
+    {
+        uint32 house = 2;
+        uint32 productItem = 0;
+        uint32 ingredientItem = 0;
+        uint32 count = 1;
+    };
+
+    std::vector<VpRecipe> g_vpRecipes;
+    bool g_vpRecipeLoaded = false;
+
+    void LoadVpRecipes()
+    {
+        g_vpRecipes.clear();
+        if (auto result = CharacterDatabase.Query("SELECT auction_house, product_item, ingredient_item, count FROM ahbot_price_recipe WHERE enabled = 1"))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                VpRecipe r;
+                r.house = fields[0].GetUInt32();
+                r.productItem = fields[1].GetUInt32();
+                r.ingredientItem = fields[2].GetUInt32();
+                r.count = std::max<uint32>(1, fields[3].GetUInt32());
+                g_vpRecipes.push_back(r);
+            } while (result->NextRow());
+        }
+        g_vpRecipeLoaded = true;
+        sLog.outString("[AHBOT] price recipes loaded: %u", uint32(g_vpRecipes.size()));
+    }
+
+    /// touched = (auction_house, product item) rows actually priced this cycle, so the caller can
+    /// clear the matching in-memory flow counters as well.
+    void SettleRecipePrices(std::vector<std::pair<uint32, uint32> >& touched)
+    {
+        if (!g_vpRecipeLoaded)
+            LoadVpRecipes();
+        if (g_vpRecipes.empty())
+            return;
+
+        std::map<std::pair<uint32, uint32>, std::vector<VpRecipe> > groups;   // (house, product) -> ingredients
+        for (auto const& r : g_vpRecipes)
+            groups[std::make_pair(r.house, r.productItem)].push_back(r);
+
+        for (auto const& g : groups)
+        {
+            uint32 const house = g.first.first;
+            uint32 const product = g.first.second;
+
+            uint32 curPrice = 0, flowBought = 0, flowSold = 0;
+            if (auto result = CharacterDatabase.PQuery("SELECT price_ref, flow_bought, flow_sold FROM ahbot_market_state WHERE auction_house = %u AND item = %u", house, product))
+            {
+                Field* f = result->Fetch();
+                curPrice = f[0].GetUInt32();
+                flowBought = f[1].GetUInt32();
+                flowSold = f[2].GetUInt32();
+            }
+            else
+                continue;                                       // not in the operator book: leave it alone
+
+            uint64 sum = 0;
+            bool complete = true;
+            for (auto const& r : g.second)
+            {
+                uint32 ingredient = 0;
+                if (auto result = CharacterDatabase.PQuery("SELECT price_ref FROM ahbot_market_state WHERE auction_house = %u AND item = %u", house, r.ingredientItem))
+                    ingredient = result->Fetch()[0].GetUInt32();
+                if (!ingredient)
+                {
+                    complete = false;                           // ingredient has no reference price yet
+                    break;
+                }
+                sum += (uint64)ingredient * r.count;
+            }
+            if (!complete || !sum)
+            {
+                sLog.outString("[AHBOT] VPRECIPE product=%u skipped (ingredient reference price missing)", product);
+                continue;
+            }
+
+            uint32 const newPrice = (uint32)std::min<uint64>(sum, 4000000000ull);
+            SetMemberPrice(house, product, newPrice);
+            if (flowBought || flowSold || newPrice != curPrice)
+                sLog.outError("[AHBOT] VPRECIPE product=%u price=%u (old=%u) bought=%u sold=%u ingredients=%u",
+                              product, newPrice, curPrice, flowBought, flowSold, uint32(g.second.size()));
+            if (flowBought || flowSold)                         // one-way: observation only, then cleared
+                CharacterDatabase.PExecute("UPDATE ahbot_market_state SET flow_bought = 0, flow_sold = 0 WHERE auction_house = %u AND item = %u", house, product);
+
+            touched.push_back(std::make_pair(house, product));
+        }
+    }
+}
+
 void AuctionHouseBot::UpdateMarketPrices()
 {
+    // [2026-09-25] 成对商品共同定价：先把上一窗口成员流水汇入虚拟商品、移动虚拟价、再反馈给成员。
+    // 参数（每份 bp / 小时上限 bp / 日上限 %）每周期从 conf 读一次 ⇒ .ahbot reload 即生效。
+    // 最小步进（铜）：0 = 关闭；默认 1，保证低价品的价格移动不被整数取整吃掉。
+    int const minMoveCopper = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MinMoveCopper", 1);
+    SettleVirtualPrices(m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MoveBpPerStack", 10),
+                        m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MaxHourlyMoveBp", 100),
+                        m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MaxDailyMovePct", 10),
+                        minMoveCopper);
+
+    // [2026-09-26] 复合产物（青铜/钢/魔钢/硬化精金锭）：按配方由材料单向定价。
+    // 必须在成对定价之后跑 —— 材料（锭）的 price_ref 刚被虚拟价刷新过。
+    {
+        std::vector<std::pair<uint32, uint32> > recipePriced;
+        SettleRecipePrices(recipePriced);
+        // 单向定价：产物自己的流水只作观察，随后把内存侧的计数也清零，
+        // 否则下面每周期扫描里的逐件流水结算仍会用它的成交量去推价（反向传导）。
+        for (auto const& t : recipePriced)
+        {
+            if (AuctionHouseBotMarketState* st = GetMarketState(t.second, AuctionHouseType(t.first)))
+            {
+                st->flowBought = 0;
+                st->flowSold = 0;
+            }
+        }
+    }
+
     // [2026-09-18] 熔断②：本刷新周期的【全局】金币预算从 0 起算（周期 ≈ m_marketRefresh）
     m_cycleGoldSpent = 0;
     m_cycleBreakerTripped = false;
@@ -929,12 +1270,14 @@ void AuctionHouseBot::UpdateMarketPrices()
                     // NOTE: the counters are zeroed below either way, so flow that stays
                     // under the gate is DISCARDED, not carried into the next period.
                     const char* outcome = "under-gate";
+                    int64 minDir = 0;                       // >0 涨 / <0 跌，供最小步进用
                     if (flowTotal >= m_flowMinUnits)
                     {
                         if (state.flowBought > (uint64)state.flowSold * m_flowRatio / 100)
                         {
                             newPrice = (uint32)(((uint64)oldPrice * (100 - std::min<uint32>(50, m_flowMoveDownPct)) + 50) / 100);
                             outcome = "down";
+                            minDir = -1;
                         }
                         else if (state.flowSold > (uint64)state.flowBought * m_flowRatio / 100)
                         {
@@ -946,12 +1289,16 @@ void AuctionHouseBot::UpdateMarketPrices()
                             {
                                 newPrice = (uint32)(((uint64)oldPrice * (100 + std::min<uint32>(50, m_flowMoveUpPct)) + 50) / 100);
                                 outcome = "up";
+                                minDir = 1;
                             }
                             else
                                 outcome = "up-blocked-1buyer";
                         }
                         else
                             outcome = "balanced";
+
+                        // [2026-09-26] 最小步进：低价品上 1% 的移动同样会被整数铜抹平（20 铜 × 1% = 0.2）
+                        newPrice = ApplyMinPriceStep(oldPrice, newPrice, minDir, minMoveCopper);
                     }
                     if (flowTotal)
                         sLog.outError("[AHBOT] SETTLE item=%u house=%u bought=%u sold=%u total=%u gate=%u buyers=%u old=%u new=%u result=%s",
@@ -1616,6 +1963,10 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
 
 bool AuctionHouseBot::ReloadAllConfig()
 {
+    // [2026-09-26] 让 .ahbot reload 重新读取定价定义表（成对表 + 复合配方表），
+    // 改 ahbot_price_pair / ahbot_price_recipe 后不必重启即可生效。
+    g_vpLoaded = false;
+    g_vpRecipeLoaded = false;
     Initialize();
     return true;
 }

@@ -85,6 +85,16 @@ class Reference : public LinkedListElement
             iRefTo = nullptr;
         }
 
+        // [MEMFIX] Drop a link whose target object is already destroyed: unlike
+        // unlink()/invalidate() this must not call into the target (decSize() would
+        // write into freed memory) and must not walk the already freed neighbours.
+        void unlinkDetached()
+        {
+            delinkDetached();
+            iRefTo = nullptr;
+            iRefFrom = nullptr;
+        }
+
         bool isValid() const                                // Only check the iRefTo
         {
             return iRefTo != nullptr;

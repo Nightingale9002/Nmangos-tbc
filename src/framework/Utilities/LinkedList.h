@@ -63,6 +63,15 @@ class LinkedListElement
             }
         }
 
+        // [MEMFIX] Reset this element's own list pointers WITHOUT touching the
+        // neighbours. Only use it when the list itself is already destroyed
+        // (e.g. the grid that owned this element has been unloaded and deleted).
+        void delinkDetached()
+        {
+            iNext = nullptr;
+            iPrev = nullptr;
+        }
+
         void insertBefore(LinkedListElement* pElem)
         {
             pElem->iNext = this;

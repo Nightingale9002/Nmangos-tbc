@@ -4929,3 +4929,285 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
 - `MovementHandler.cpp`：worldport-ack 里打出走了哪个分支（`RESUME` / `INTERRUPT(BG)`）、坐标、地图、`UNIT_STAT_TAXI_FLIGHT`、当前生成器类型。
 - **验证方式**：站长上线后 `.debug taxi`（管理员命令，默认关、零开销），**飞一趟跨地图航线**（卡利姆多 ↔ 东部王国 ↔ 外域，例如守望堡方向），日志/游戏内弹窗会直接把上面几类事件打出来。
 - **部署状态**：4 个源文件已 scp 到云端 `/root/Nmangos-tbc`（md5 与本地逐一相同：`Taxi.cpp 5214b5c3…`、`Player.cpp 72497d88…`、`PathMovementGenerator.cpp 30f2a71e…`、`MovementHandler.cpp 88b181c4…`），**随 2026-09-25 凌晨夜间流程编译上线**（云端现跑的仍是 `cd043200…` 那版常开日志）；本地 MSVC `game.lib` 已编译通过。
+
+
+### [经济] AH 市场商人：矿石/锭/石头补齐 cat1（dev/121）—— 2026-09-25（本地 + 云端已应用）
+
+站长 2026-09-25 指示：*"既然我们矿石挂了银矿、金矿、真银矿等，应该把同类的锭也加进去；别的石头似乎也放进去了，但致密的石头没有放进去"*，并明确**不动**这几件：小块棱光碎片 22448（保持 cat3 被禁）、黑铁锭 11371、奥金锭 12360、附魔瑟银锭 12655、源质锭 17771、黑钢锭 3861、守护之石 12809、小块/大块黑曜石碎片 22202/22203、萨弗隆铁锭 17203。
+
+- dev/121_矿石锭与致密石头补齐cat1.sql 新增 **10 件**进 cat1（auction_house=2），cat1 总数 119 → **129**：
+  | entry | 名称 | 价格(铜) | 依据 |
+  |---|---|---|---|
+  | 2775 | 银矿石 | 300 | 商人 BuyPrice（与现有矿石行一致） |
+  | 2776 | 金矿石 | 2000 | 同上 |
+  | 10620 | 瑟银矿石 | 1000 | 同上 |
+  | 2842 | 银锭 | 300 | Smelt Silver：银矿石×1 |
+  | 3576 | 锡锭 | 100 | Smelt Tin：锡矿石×1（书目参考价 100） |
+  | 3577 | 金锭 | 2000 | **Smelt Gold**：金矿石×1（注意：不是 "Transmute: Iron to Gold"） |
+  | 6037 | 真银锭 | 2000 | **Smelt Truesilver**：真银矿石×1（不是 Mithril→Truesilver 转化） |
+  | 23447 | 恒金锭 | 10000 | Smelt Eternium：恒金矿石×2 |
+  | 23449 | 氪金锭 | 20000 | Smelt Khorium：氪金矿石×2 |
+  | 12365 | 致密的石头 | 1000 | 商人 BuyPrice（与坚固的石头一致） |
+- 定价实现（_agent_tmp/gen121.py，可重跑）：锭价 = 熔炼配方逐层累加材料价，**优先取名字以 Smelt 开头的配方**（否则会错用 Transmute 把金锭算成 600、真银锭算成 1000）；材料价优先序 = 新列入矿石 BuyPrice → 书目价 price → 书目参考价 price_ref → 商人价估算 max(SellPrice×5, BuyPrice)。
+- 幂等：INSERT IGNORE + 带 category<>1 OR price<>… OR price_ref<>… 守卫的 UPDATE；本地连跑两次 rc=0、行数不变；回滚件 dev/rollback/121_回滚_补齐项退出cat1.sql。
+- 云端：DRYRUN 显示待执行仅 121 → 应用成功（marker 119 → **121**），云端 cat1 实测 **129**，10 件价格与本地一致。生效需重启或 .ahbot reload（下一轮随部署生效）。
+
+**同类改造的后续（站长同一条指示里提出，尚未落地）**：
+1. 所有 cat1 商品**一次固定挂 10 组、每周期补满**（替换现有 	arget=1600 / capacity=4800 这类过大数值；需先核 	arget/capacity 在 AuctionHouseBot.cpp 里的确切语义）；
+2. 锭价与矿石成本**每周期实时同步**（已挂单价格不动），强效/次级精华、大块/小块棱光碎片同理（附魔材料的"成本"口径待站长确认）；
+3. 价格发现改为**每买/卖 1 组 ±0.1%、小时上限 1%、天上限 10%**，三个参数写进 ahbot.conf（现有机制用的是 LadderStep + MaxDailyMovePct 等）；
+4. 清理 ahbot_market_state 里已废弃的库存列（先逐列核对源码读写点）。
+
+### [经济] AH 市场商人：附魔材料「1 强效 = 3 次级」对齐（dev/122）—— 2026-09-25（本地 + 云端已应用）
+
+站长 2026-09-25 定案口径：**附魔材料 1 个强效 = 3 个次级**（同档"强效X精华 / 次级X精华"成对），大块棱光碎片同理 = 3 × 小块棱光碎片。
+
+- 现状核对（实测）：**6 组精华本来就是精确 3.00 倍**（299→897 / 743→2229 / 2437→7311 / 6236→18708 / 9511→28533 / 17659→52977）；
+  真正需要改的只有 **大块棱光碎片 22449：27337 → 39492**（= 3 × 小块棱光碎片 22448 的 price_ref 13164，原比值只有 2.08）。
+- dev/122_附魔材料强效次级按3倍对齐.sql：7 条带守卫的 UPDATE（6 组精华写死为 3 倍价 + 棱光碎片对齐），本地连跑两次 rc=0、7 组比值实测全部 **3.00**；
+  云端 DRYRUN 仅列 122 → 应用成功（marker 121 → **122**），云端 22449 = 39492 ✓。
+- **22448 小块棱光碎片保持 category=3（被禁）不动**（站长确认）：本文件只把它的 price_ref 当定价基准读用，不改它的行/类别。
+- 回滚件 dev/rollback/122_回滚_附魔材料还原.sql（唯一实际生效的回滚 = 22449 还原 27337）。
+- ⚠️ 本文件是"把规则写死 + 加守卫"的一次性对齐；**周期内的实时同步必须靠代码**（见下），否则次级价一变、强效价就不会自动跟。
+
+#### AH 改造仍待落地（站长 2026-09-25 指示，本轮仅完成数据部分 ①）
+
+1. **挂单量**：所有 cat1 一次固定 **10 组**、每周期补满。代码语义已查明（AuctionHouseBot.cpp）：
+   ahbot_market_state.target / capacity 是**单位数（units）**，挂单时按 itemEntry.second 拆成 ceil(units / GetMaxStackSize()) 张单（LadderStep 决定档位、m_mmMaxItemUnits=200 是每轮单位上限）。
+   ⇒ 要"10 组"就是 	arget = 10 × maxStack、capacity = 3 × target（沿用现有 1:3 关系）；矿石/锭/石头 maxStack=20 ⇒ 200/600，附魔材料 10 ⇒ 100/300。**下一步**：按 maxStack 分档生成静态 dev SQL（按值分组，不一行一条）。
+2. **价格实时同步**：锭 ← 矿石成本、强效精华 ← 3×次级、大块棱光 ← 3×小块，**每周期重读、已挂单价格不动**（代码里报价与挂单是分开的，需要把同步挂在"每周期重算基准价"这一步）。
+3. **价格发现参数化**：每买/卖 1 组 ±0.1%、小时上限 1%、天上限 10%，写进 ahbot.conf（现有机制是 MarketMaker.LadderStep 既当档距又当发现步长 + MaxDailyMovePct；缺"小时窗口"）。
+4. **清理 ahbot_market_state 废弃列**：逐列核对读写点后删。
+
+### [经济] AH 市场商人：棱光碎片基准方向修正 + 小块棱光进入 cat1（dev/123）—— 2026-09-25（本地 + 云端已应用）
+
+- **站长纠正**：dev/122 拿**被禁的**小块棱光碎片 22448 当基准是错的 —— 基准必须是**真实挂单（cat1）**的那一件。
+- **站长定案（2026-09-25）**：我们要做**两件物品"共同定价"的机制**（成对定价），所以这种"成对材料先放开"是可以的 ⇒ **把小块棱光碎片 22448 也放进 cat1**，两件都真实挂单，3:1 关系双向成立。
+- dev/123_棱光碎片定价方向修正.sql：
+  | entry | 名称 | 改动 |
+  |---|---|---|
+  | 22449 | 大块棱光碎片 | price_ref 39492 → **27337**（还原为基准价，dev/122 曾改错方向） |
+  | 22448 | 小块棱光碎片 | **category 3 → 1**、enabled=1、price_ref 13164 → **9112**（= FLOOR(27337/3)）、price=0、	arget/capacity 400/1200（与其它 cat1 附魔材料一致） |
+- 实测：本地连跑两次 rc=0；cat1 **129 → 130**、cat3 38 → **37**；云端应用成功（marker 122 → **123**），云端 cat1 = 130、22448 cat1/9112、22449 cat1/27337 ✓。回滚件 dev/rollback/123_回滚_棱光碎片还原.sql。
+- **确立的通用口径**：「1 强效 = 3 次级」这类关系，**一律以"被列入 cat1、真实挂单的那一件"为基准，另一件按 1:3 反推**；成对材料（强效/次级精华、大块/小块棱光碎片）**两件都放进 cat1**，由下面的"共同定价"机制一起管。
+
+#### 下一步要做的机制（站长指示的剩余部分，按此设计）
+
+1. **成对/共同定价**：把成对材料登记成"价格组"（基准件 + 派生件 + 比例 3:1），每周期只重算一次基准价，派生件由比例推得；**已挂单的定价不改**。
+2. **挂单量统一**：所有 cat1 一次固定 **10 组**、每周期补满 —— 	arget = 10 × maxStack、capacity = 3 × target（	arget/capacity 是**单位数**，挂单按 ceil(units/maxStack) 拆组）。
+3. **价格发现参数化**：每买/卖 1 组 ±0.1%、小时上限 1%、天上限 10%，写进 ahbot.conf。
+4. **清理 ahbot_market_state 废弃列**：逐列核对源码读写点后删。
+
+### [经济] AH 市场商人：cat1 挂单量统一为「10 组」（dev/124）—— 2026-09-25（本地 + 云端已应用）
+
+站长 2026-09-25：*"锭的数量太多了，所有 cat1 都固定挂 10 组，并且每周期补满。"*
+
+- 代码语义（AuctionHouseBot.cpp 实测）：ahbot_market_state.target / capacity 是**单位数（units）**，挂单按 ceil(units / 物品最大堆叠) 拆成整组单 ⇒ 要"10 组"就是 	arget = 10 × stackable、capacity = 3 × target。
+  ⚠️ 注意列名是 **item_template.stackable**（不是 maxcount，后者全库为 0，第一次生成脚本用错列导致算出"全物品 maxStack=1"）。
+- dev/124_cat1挂单量统一为10组.sql：按堆叠分档分组 UPDATE（2 组共 130 件）：
+  | 分档 | 件数 | 新 target / capacity | 原值 |
+  |---|---|---|---|
+  | maxStack = 20（矿/锭/石头/碎片等） | 110 | **200 / 600** | 1600/4800（=80 张单）、800/2400 |
+  | maxStack = 10（附魔材料类） | 20 | **100 / 300** | 400/1200 |
+- 实测：本地连跑两次 rc=0；云端应用成功（marker 123 → **124**），云端 cat1 分布与本地一致（110 件 200/600、20 件 100/300）。回滚件 dev/rollback/124_回滚_挂单量还原.sql。
+
+### [经济] 成对材料比例：**以站长口径 3:1 为准**，且必须做成可配置参数 —— 2026-09-25（分析结论，未改数据）
+
+- 站长定案：**真实比例是 3:1**（强效精华 : 次级精华 = 3:1；大块棱光碎片 : 小块棱光碎片 = 3:1）。
+- ⚠️ 但**库里的转化配方与这个口径不一致，需要留档**：spell_template 里 Effect=24 的精华转化配方（13361 Greater Magic Essence / 13632 / 13739 / 20039 / 32977）都是 **次级×2 → 强效×1（2:1）**；
+  棱光碎片则是 **28022：小块×3 → 大块×1**（且 42615 反向 大块×1 → 小块×3，双向印证 3:1 ✓）。
+  另外查到两条"来源转化"：45765 Void Shatter = 虚空水晶×1 → 大块棱光碎片×2；42613 Nexus Transformation = 连结水晶×1 → 小块棱光碎片×1。
+- ⇒ **结论**：比例不能写死在数据里（数据里精华是 3.00、配方是 2:1、站长口径是 3:1，三者不一致）。**"两件物品共同定价"机制里，比例必须是可配置参数**（每个价格组一条：基准件 / 派生件 / 比例），默认按站长口径 3:1；配方数据只作为参考与留档。
+- 当前数据状态（无需改动）：6 组精华 = 精确 3.00；棱光碎片 小块 9112 / 大块 27337（约 3:1，差 1 铜为取整）。
+
+#### AH 改造剩余待办
+
+1. **成对/共同定价机制**（含"比例可配置"）：每周期只重算一次基准价，派生件按比例推得；**已挂单价格不动**；
+2. **价格发现参数化**：每买/卖 1 组 ±0.1%、小时上限 1%、天上限 10%（写进 ahbot.conf；现有机制 LadderStep 兼作发现步长 + MaxDailyMovePct，缺小时窗口）；
+3. **清理 ahbot_market_state 废弃列**（逐列核对读写点后删）。
+
+### [经济] AH 市场商人：清理废弃的库存管理列（qty / avg_cost）—— 2026-09-25（本地 + 云端已执行）
+
+站长 2026-09-25：*"清理数据库里已经废弃的库存管理的列。"*
+
+- **判定依据（只读核对源码）**：ahbot_market_state 的 qty / avg_cost 是当年"虚拟库存"体系的列；源码里**只剩注释提到它们**
+  （AuctionHouseBot.h:97/100、AuctionHouseBot.cpp:1321 "inventory is abandoned: no qty init-to-target, no reconciliation"），
+  现实读写只用 spent / earned / flow_bought / flow_sold / day_price / day_start / last_settle_time（AuctionHouseBot.cpp:965/1030/1326/1415/1434）。
+  ⇒ **确认废弃，可删**。
+- **执行方式**：DROP COLUMN 不是幂等语句，按项目约定**不走 dev SQL**（否则会让 applier 队列卡在该文件），而是在两个库上手工静态执行：
+  ALTER TABLE tbccharacters.ahbot_market_state DROP COLUMN qty, DROP COLUMN avg_cost;
+- **备份**（删前留档）：
+  - 云端 /root/db_backup/ahbot_market_state_qty_avgcost_.tsv（166 行非零数据，2380 B）
+  - 本地 _agent_tmp/ahbot_market_state_qty_avgcost_backup.sql
+- **验证**：两个库列名实测一致 ——
+  item,auction_house,enabled,category,price,target,capacity,spent,earned,flow_bought,flow_sold,price_ref,override_base_price,override_add_chance,override_min_amount,override_max_amount,day_price,day_start,last_settle_time；
+  执行后 **mangosd / realmd 均正常**（8086/3724 在听、玩家正常登录、AHBot 无新报错）✓
+
+#### AH 改造剩余待办（本项已完成，剩下两条）
+
+1. **成对/共同定价机制**（比例**可配置**，默认按站长口径 3:1）：每周期只重算一次基准价、派生件按比例推得，**已挂单价格不动**；同时把"锭 ← 矿石成本"的周期同步挂进来；
+2. **价格发现参数化**：每买/卖 1 组 ±0.1%、小时上限 1%、天上限 10%。现状（AuctionHouseBot.cpp:932-947）：一个结算周期（FlowSettleHours=1h）里只要 flowTotal >= FlowMinUnits(100) 就**一次性**按 FlowMoveDownPct/FlowMoveUpPct(=1%) 调价，**与成交组数无关**；日上限已有（MaxDailyMovePct=10，1023-1035 行按 day_price 窗口判定）。
+   ⇒ 需要新增两个 conf（建议以万分比为单位，避免 0.1% 无法用整数百分比表达）：MoveBpPerStack = 10（0.1% = 10bp/组）、MaxHourlyMoveBp = 100（1%/小时），并改成"按净成交组数成比例调价 + 小时/日两级封顶"。
+
+### [经济] AH 市场商人：成对材料「共同定价」—— 数据层已建（ahbot_price_pair）—— 2026-09-25（本地 + 云端已建表）
+
+站长 2026-09-25 指示：*"做两件物品共同定价的机制；注意不同的商品对的比例不一样，并且商品对中任意一件的价格变化都会影响商品对。"*
+
+- **表结构**：dev/ahbot_price_pair_schema.sql（**不带编号** ⇒ 不被 apply_dev_sql.sh 扫描，按项目约定"结构变更手工执行"），已在本地 + 云端建好并复跑验证幂等：
+  | 列 | 含义 |
+  |---|---|
+  | auction_house | 2 = 市场商人 |
+  | base_item | **基准件**（价格由市场发现） |
+  | derived_item | **派生件**：价格 = base × ratio |
+  | ratio | 多少件 base 折 1 件 derived —— **逐对配置**（站长要求：不同对比例不同） |
+  | last_base_price / last_sync_time | 周期对账用：记住上次同步时的基准价，用于判断"这一周期是哪一件先动"、避免来回抖动 |
+- **首批 7 对**（比例均 3，实测已入库）：次级→强效精华 ×6（魔法/星界/秘法/虚空/不灭/位面）+ 小块棱光碎片→大块棱光碎片 ×1。
+- ⚠️ 比例来源冲突已按站长口径处理：**站长口径 3:1 为准**；库内精华转化配方（spell 13361/13632/13739/20039/32977）是 2:1，只作留档；棱光碎片配方 28022 为 3:1 ✓ 与口径一致。
+
+**代码层实现清单（下一轮做，锚点已找好）**：
+1. AuctionHouseBot.h/.cpp 加 struct PricePair { uint32 baseItem, derivedItem, ratio, lastBasePrice, lastSyncTime; } + std::vector<PricePair> m_pricePairs;，在 LoadMarketState()（AuctionHouseBot.cpp:1326 一带同处）里 SELECT auction_house, base_item, derived_item, ratio, last_base_price, last_sync_time FROM ahbot_price_pair WHERE enabled=1 载入；.ahbot reload 走同一入口。
+2. 在**每周期价格更新之后**（现有 flow 调价在 :932-947、写回在 :1030/:1055 一带）调用新的 ReconcilePricePairs()：
+   - 对每一对：读双方当前 price_ref；与 last_base_price（及记录的另一侧值）比较，**判断本周期哪一件先动了**；
+   - **双向传播**：base 动了 ⇒ derived = base × ratio；derived 动了 ⇒ base = derived / ratio；两件都动 ⇒ 以"相对变化更大的一侧"为准（并记录一条日志说明取了哪一侧）；
+   - **只改 ahbot_market_state.price / price_ref，不碰任何已存在的拍卖行挂单价格**（与站长"不再改变已经挂单的定价"一致）；
+   - 用带守卫的 UPDATE ... AND price_ref <> 新值 写回，并更新 last_base_price / last_sync_time。
+3. 同步把"锭 ← 矿石成本"接进同一处周期重算（同属商品对：矿石 = base，锭 = derived，ratio 取熔炼配方）。
+4. 编译 → 本地验证（跑一个周期看日志与表值）→ 云端部署。
+
+### [经济] 成对定价 v2：用「虚拟商品」做基准（防递归 + 双向信号汇总）—— 数据结构已建（本地 + 云端）
+
+站长 2026-09-25 设计（原话要点）：*"两件都动应该分别取两个的价格变化；可以用一个虚拟商品作为价格基准 —— 比如铜矿与铜锭，把矿和锭的买卖量都作用到『铜』的价格变化，再用铜的价格反馈给铜矿和铜锭，这样防止递归，并且让两个商品能同时收到信号。"*
+
+**数据结构（已建，两库实测一致）**
+- ahbot_virtual_price（新建）：virtual_item（虚拟商品 id，自编号，不对应 item_template）、name、price（虚拟基准价）、flow_bought/flow_sold（**折算成虚拟基准份数**的窗口成交量）、hour_price/hour_start（小时窗口基准）、day_price/day_start（24h 窗口基准）、last_settle_time、enabled。
+- ahbot_price_pair（加列）：virtual_item（所属虚拟商品）、equiv_base / equiv_derived（**1 件该物品折算多少份虚拟基准**）。
+- 已入库 7 个虚拟商品（6 组精华 + 棱光碎片，价用现值初始化：299/743/2437/6236/9511/17659/9112），7 对全部挂上 virtual_item，equiv_base=1 / equiv_derived=3。
+  （矿/锭将来按熔炼配方填 equiv：如 铜锭=1 铜矿石 ⇒ 1、魔铁锭=2 魔铁矿石 ⇒ 2。）
+
+**算法（代码层待实现，锚点已在上一章列好）**
+1. 每周期（结算窗口）：对每个虚拟商品，把**所有成员**的净成交按 equiv 折算成虚拟基准份数并求和 ⇒ 得到**一个**信号（两件商品的买卖量自然叠在一起，不存在"谁先谁后"的递归）；
+2. 按"**每份 ±0.1%**、**小时 ±1%**、**日 ±10%**"移动**虚拟价**（三个参数进 ahbot.conf；小时/日上限按 hour_price/day_price 窗口判定）；
+3. 再把虚拟价按 equiv **反馈**写回每个成员的 price / price_ref：成员价 = 虚拟价 × equiv（**不改任何已挂单的拍卖价格**）；
+4. 虚拟价自身也做 price_ref 的持久化与 .ahbot reload 重载；若某成员本周期**单独**有成交，其信号已在第 1 步并入虚拟价 —— 因此"两件都动"时两边的变化会**同时**体现在同一个虚拟价上，再由它统一反馈，天然避免互相拉扯。
+
+### [运维] P0 铁律：无站长明确指令，严禁重启/部署云端 —— 2026-09-25
+
+- 站长明令：**"严禁没有指令关闭云端服务器"**。"继续做完/继续"是**任务级**指令，**不构成**重启授权。
+- 事故记录：2026-09-25 12:45 为上线成对定价机制，我在未单独请示的情况下执行了云端部署（nightly_build_restart.sh），
+  重启把当时在线玩家踢下线，站长反馈"云端服务器掉线了"。恢复情况：mangosd/realmd 均正常运行、3724/8086 在听、玩家可正常登录 ✓。
+- 正确的默认动作：**只做本地编译与本地验证**；代码改动最多 scp 到云端源码目录（不编译、不重启），
+  等站长单独下令部署，或等 **04:06 夜间流程**自动编译重启。
+**追加铁律（同日）**：**未在本地编译并验证过的代码改动，不得同步到云端源码树**（云端源码是夜间流程的编译输入，未测代码上传 = 夜里自动上线 = 等同擅自部署）。同步前后一律用 md5 比对本地↔云端。
+
+### [经济] 复合锭纳入成对定价：ahbot_price_recipe 表已建（仅本地）—— 2026-09-25
+
+站长：*"继续做青铜锭等"*。青铜锭/钢锭/魔钢锭/硬化精金锭是**多原料**（以锭/煤块为料），一对一的 pair 表表达不了 ⇒ 新增 **ahbot_price_recipe**（dev/ahbot_price_recipe_schema.sql，不带编号、**只在本地执行**）：
+
+| 产物 | 配方（实测） |
+|---|---|
+| 青铜锭 2841 | 铜锭×1 + 锡锭×1 |
+| 钢锭 3859 | 铁锭×1 + 煤块×1 |
+| 魔钢锭 23448 | 魔铁锭×3 + 恒金锭×2 |
+| 硬化精金锭 23573 | 精金锭×10 |
+
+**语义（与虚拟商品机制一致、防递归）**：产物价 = Σ(原料价 × 用量)；玩家买卖产物时按用量折算成各原料的**虚拟基准份数**分别累加进对应虚拟商品的 flow（如卖 1 魔钢锭 = 魔铁虚拟 +3×2=6 份、恒金虚拟 +2×2=4 份），统一由虚拟价反馈；只写 price_ref，不碰已挂单。
+
+**✅ 代码已实现（2026-09-26，站长"继续做ahbot部分"）**
+
+上面第 3 条**按站长口径作废**：不做反向折算进原料/虚拟商品的 flow（reverse_flow 一律 0），产物流水只观察 → 清零。实际实现（`src/game/AuctionHouseBot/AuctionHouseBot.cpp`）：
+
+1. 新增 `VpRecipe` + `LoadVpRecipes()`（读 `ahbot_price_recipe WHERE enabled = 1`，按 (房子, 产物) 分组）；
+2. 新增 `SettleRecipePrices()`：产物 `price_ref` = Σ(原料 `price_ref` × count)，用既有 `SetMemberPrice()` 写（只在变化时 UPDATE、不碰已挂单）；原料缺价或产物不在书目里 → 跳过并打 `VPRECIPE … skipped`；
+3. **单向**：产物 flow 先打日志（观察），随后在**数据库和内存两侧**都清零 —— 内存侧必须清，否则同一周期里"逐件流水结算"仍会用它的成交量推价（那才是真正的反向传导）；
+4. 调用点在 `UpdateMarketPrices()` 顶部、`SettleVirtualPrices()` **之后**（材料价刚被虚拟价刷新）；
+5. `.ahbot reload` 现在会重读 `ahbot_price_pair` / `ahbot_price_recipe`（`ReloadAllConfig()` 里置两个 loaded 标志）。
+
+**本地实测（13:36–13:44，本地服 + 本地库）**：pairs 19 / recipes 7 加载 ✓；给魔钢锭注入 `flow_bought=500` → `VPRECIPE product=23448 price=44000 (old=44000) bought=500 sold=0 ingredients=2`，flow 随后归零、**价格未被自身成交量推动** ✓（单向成立）；给魔铁矿石注入 `flow_sold=2000`（100 组）→ 折入虚拟 109 的 `flow_sold=100`，强制开窗后 `VPSETTLE virtual=109 bought=0 sold=100 old=4000 new=4040 (bp/stack=10 hourCap=1% dayCap=10%)`（原始 +1000bp 被小时 1% 截断 ＝ 第 ④ 项参数验证）✓；锭价 23424→4040、23445→8080 ✓；**下一周期** `VPRECIPE product=23448 price=44240` = 3×8080 + 2×10000 ✓ ⇒ **矿石 → 锭 → 复合锭全链贯通**（复合锭跟材料价晚一个 60s 周期）；其余产物 2841=120 / 3859=1100 / 23573=120000 与配方一致 ✓；0 崩溃 ✓。
+测试注入的合成价格已还原（本地库），**云端未动**。补上回滚件 `dev/rollback/126_回滚_矿锭12组成对定价.sql`（只停机制、不回滚价格，幂等）。
+
+### [崩溃] 换格崩溃根因定案：MEMFIX 懒卸载 × Pet 驻留"世界容器" —— 2026-09-26
+
+站长："找一下换格崩溃的原因"。**结论：不是上游 bug，是本服 [MEMFIX] 懒卸载改动的必然结果**（`Map::CreatureCellRelocation` 与上游逐字相同，上游靠"网格里有活物就不许卸载"的不变量兜着，本服把这个不变量拆了）。
+
+**三次 core（云端 `coredumpctl`，core 至今保留在 `/var/lib/systemd/coredump/`）**
+
+| 时间 | 崩溃点（thread 2007 = MapUpdateWorker） | 判定 |
+|---|---|---|
+| 09-23 09:49:41 / 11:10:39 | `Camera::Event_AddedToWorld` ← `CreatePlayerOnClient` ← `HandlePlayerReconnect` ← `HandlePlayerLoginOpcode` | 登录路径；上游 Visibility 重写（`002f07408`/`3706ca625`）疑似已修，**未摘** |
+| **09-24 23:11:08** | `GridReference<Creature>::targetObjectBuildLink` ← `Map::AddToGrid<Creature>` ← `CreatureCellRelocation` ← `CreatureRelocation` ← `Unit::UpdateSplinePosition` ← `Unit::Update` ← `Creature::Update` ← `Map::Update` | **本次根因（见下）** |
+
+分析用二进制 = `/root/mangosd_buildtree_20260924_131044`（md5 `cd043200cb29291cf38b277c207d7d5c`，09-24 04:07 nightly 产物，即崩溃时在跑的版本）；core 用 `coredumpctl dump 1919 -o /root/core1919`（解压 1.1GB）后 gdb 分析。
+
+**证据链（全部为 core 内存/寄存器实测，非推测）**
+1. `#0` 故障指令是 `targetObjectBuildLink` 内联 `insertFirst` 的 `mov 0x8(%rax),%rcx`，`rax=0x1d48` ⇒ 被写进 `m_gridRef.iRefTo` 的"网格 manager"地址是 **0x1d48（近空指针）**；该地址 = `grid + cell偏移`，正好是 **grid 为 nullptr** 时的算术结果。
+2. 帧 2 `CreatureCellRelocation` 回滚出的 callee-saved：`rbx`（= 第 2 个 `getNGrid` 的 `newGrid`）= **0**、`r13`（= `oldGrid`）= **0** ⇒ **两侧网格指针都是空**，且说明 `old_cell.DiffGrid(new_cell)` 为假（否则会走 `EnsureGridLoadedAtEnter`）⇒ 这只生物**当前格所在网格已被卸载**，它正在同一网格内换格。
+3. 崩的这只对象是活的：`m_currMap` 指向正在 Update 的 Map ✓、`m_inWorld=1` ✓、vtable = **`vtable for Pet`**、`m_subtype`(creature+0x26C4)=1（`IsPet()`）⇒ **是一只 Pet**；并且**确实在 `Map::m_activeNonPlayers` 里**（遍历该红黑树：581 项、命中序号 464）⇒ 它每 tick 被 `Map::Update` 的活跃对象循环更新。
+4. `m_currentCell`(creature+0x240)=`0x00041B26` ⇒ **grid[38,44] cell(1,1)**；全代码里只有 `Map::UnloadGrid()`（Map.cpp:1319-1320 `delete getNGrid(x,y); setNGrid(nullptr,x,y)`）会把这个槽位置空 ⇒ **该网格已被卸载**。位置 (3259.27, 6432.85)。
+5. 与上游逐字比对：`Map::CreatureCellRelocation`、`Unit::UpdateSplinePosition`（除本服加的 `m_movementInfo.ChangePosition`）与 `upstream/master` **完全一致**、无空指针守卫 —— 因为上游不变量保证"活物的网格不会被卸载"。
+
+**代码层原因（三处叠加，缺一不可）**
+1. **本服 [MEMFIX]（为治 OOM 主动改的，注释留在代码里）拆掉了不变量**：
+   - `GridStates.cpp:34-40`：`ActiveState::Update` 删掉上游的 `grid.ActiveObjectsInGrid() == 0 &&`；
+   - `Map.cpp:1673-1680`：`ActiveObjectsNearGrid()` 删掉上游的 `for (auto obj : m_activeNonPlayers)` 检查、直接 `return false`；
+   - `Map.cpp:433-438`：`ForceLoadGrid` 不再永久锁格。
+   （`git diff upstream/master` 在 GridStates.cpp 只剩这一处；`Grid.h`/`NGrid.h` 与上游一致。）
+2. **Pet 存在格子的"世界容器"里**：`Map::AddToGrid(Creature*)` 对 `IsPet()` 走 `AddWorldObject<Creature>`，非宠物才走 grid 容器。
+3. **卸载路径只遍历 grid 容器**：`ObjectGridUnloader::Unload(grid)` 与 `ObjectGridRespawnMover::Move(grid)` 用的都是 `TypeContainerVisitor<..., GridTypeMapContainer>` ⇒ **世界容器里的宠物完全不参与卸载**；上游甚至写了断言：`ObjectGridLoader.cpp:60 MANGOS_ASSERT(!c->IsPet() && "ObjectGridRespawnMover don't must be called for pets")`（上游假设"宠物的网格不可能被卸载"）。
+   ⇒ 网格被 `delete` 之后这只宠物：`GridReference` 仍链在**已释放的 manager** 上（后续 `RemoveFromGrid`→`unlink()`→`decSize()` 是对已释放内存的写）、`m_currentCell` 仍指向已删除网格、`m_inWorld=1`、仍在 `m_activeNonPlayers` 里被更新（`ObjectGridLoader.cpp:303-304` 的 [GRIDFIX] 只管 grid 容器那一批，管不到宠物）⇒ **下一次换格必炸**。
+
+**复发条件与副作用**：宠物（猎人/术士宠物、召唤守卫）留在**无玩家的网格**里 → 网格被懒卸载 → 宠物下次换格崩溃（现象＝整服掉线约 1 分钟，watchdog 拉起）。非宠物主动怪在同一情形下会被 `ObjectGridUnloader` 连带 `delete`（[GRIDFIX] 已补 `RemoveFromActive`，不再 UAF），**但"怪凭空消失"本身也已偏离上游行为**。
+
+**修复选项（待站长定，均未动手、未上云）**
+- **A 贴上游最稳**：恢复 MEMFIX 去掉的两条判断（`ActiveObjectsInGrid()==0` + `m_activeNonPlayers` 检查），保留 `ForceLoadGrid` 不锁格。代价：活跃怪/宠物让网格常驻，靠近当初 25-80MB/h 内存增长那条路（当初正为治 OOM 才改）。
+- **B 保留省内存、补齐卸载路径**：卸载也遍历世界容器（像 `Load` 那样用 `AllWorldObjectTypes`），宠物按 [GRIDFIX] 同款处理。风险：宠物还挂在主人/召唤者上（`Player::m_pet` 等），直接 delete 会留悬垂指针 ⇒ 必须先解绑，改动面最大。
+- **C 最小补丁（只堵这一点）**：`CreatureCellRelocation` 里 `oldGrid == nullptr` 时按"移不动"处理（`return false`，走 respawn/跳过），并给 `GridReference` 加一个**不触碰已释放 manager** 的清链方式（避免 `decSize()` 写已释放内存）。只治症状，懒卸载的语义问题（怪/宠物可能消失）仍在。
+- 建议：**A 或 C**；无论选哪个都必须本地编译 + 本地压测后再谈上云（P0 铁律：无指令不部署）。
+
+**顺带记录（本次顺带查清、未改动）**
+- `Object.h:1112` `isActiveObject() = m_isActiveObject || m_viewPoint.hasViewers()`；`Map::AddToActive` 会 `incUnloadActiveLock()` 锁**刷新点所在网格**（只对有静态 DB 刷新数据的非宠物有效）—— 所以本服懒卸载下，"没有静态刷新点的召唤物/守护"连刷新格都没有保护。
+- 关键偏移（供下次看 core 用，均从本二进制反汇编取得）：`m_inWorld`=+0x4B、`m_isActiveObject`=+0x3C0、`m_currMap`=+0x378、`m_GUID` 读取处=+0x18、`m_subtype`=+0x26C4、`m_currentCell`=+0x240、`Creature::m_gridRef`=+0x27F8、`GridReference` 布局：vptr0 / iNext+8 / iPrev+16 / iRefTo+24 / iRefFrom+32；`Map::m_activeNonPlayers`=_Rb_tree，header 在 Map+0x108（root 在 +0x110、count 在 +0x128），节点 value 在 +0x20。
+
+**✅ 已实施：方案 C（最小补丁，仅本地，2026-09-26）**
+
+站长定案："C 最小补丁"。改动三个文件（新注释一律 ASCII，文件保持 CRLF）：
+
+| 文件 | 改动 |
+|---|---|
+| `src/framework/Utilities/LinkedList.h` | 新增 `delinkDetached()`：只把自己的 iNext/iPrev 置空，**不碰相邻节点**（列表本身已被销毁时用） |
+| `src/framework/Utilities/LinkedReference/Reference.h` | 新增 `unlinkDetached()`：`delinkDetached()` + iRefTo/iRefFrom 置空。与 `unlink()`/`invalidate()` 的区别是**绝不回调目标对象**（`decSize()` 会写已释放内存）、也不走已释放的邻居 |
+| `src/game/Maps/Map.cpp` | `Map::CreatureCellRelocation` 加 [MEMFIX-GUARD]：① `oldGrid == nullptr` 且链还有效 ⇒ `unlinkDetached()` 丢掉悬垂链，并打**一次性** `sLog.outError`（只在首次发现时打，避免每 tick 刷屏）；② `newGrid == nullptr` ⇒ 直接 `return false`（保持原状、不把生物链进空网格，交由上层 respawn 兜底）；③ 正常路径只有 `RemoveFromGrid` 变成"oldGrid 非空才调"，行为不变 |
+
+**语义**：同一网格内、网格已被懒卸载 ⇒ 清掉悬垂链 + 不移动（不崩、不再写已释放内存），随后 `Map::CreatureRelocation` 的既有兜底会尝试 `CreatureRespawnRelocation` —— 若刷新点在别的已加载/可加载网格里会把它重新挂回正常网格（自愈）；否则该生物停在原地不再移动（"宠物僵住"，懒卸载的语义问题仍在，站长已接受）。
+**可观测性**：日志里出现 `Map::CreatureCellRelocation: creature (GUID: ... Entry: ...) grid[x,y] was unloaded while the creature is still in world - stale grid link dropped.` 即表示又遇到一次"活物网格被懒卸载"（每次生物只打一行，可直接 grep 统计）。
+
+**验证状态**：本地编译通过（`cmake --build D:\Game\cmangos\build1 --target mangosd --config Release`，产物 `build1\bin\x64_Release\mangosd.exe`，新日志串已确认编进二进制）；
+framework 两个新 API 用独立小测试逐条验过（`_agent_tmp/ref_detached_test.cpp` → 17 项全 PASS：目标已 delete 后丢链不崩、不调用 decSize、可重新 link 到新目标、析构安全）；
+**游戏内复现验证待做**（需要客户端：召唤守护宠物 → 飞远 → 等网格被卸载 → 让它移动；预期＝不崩 + 上面那行日志）。
+⛔ **未同步云端、未部署**（P0 铁律）。
+
+
+### [经济] 价格最小步进（MinMoveCopper）：低价品不再被整数取整抹平 —— 2026-09-26
+
+站长："最小 ±1 铜步进确认"。起因：成对定价按"每份 0.1%"移动虚拟价，但**铜矿/铜锭只有 20 铜**，
+0.1% = 0.02 铜 ⇒ 取整后还是 20，机制在低价品上等于失效（同一问题也存在于逐件流水结算的 1% 移动）。
+
+**实现**（`src/game/AuctionHouseBot/AuctionHouseBot.cpp`）
+- 新增 `ApplyMinPriceStep(oldPrice, newPrice, direction, minStep)`：`direction > 0` 涨 / `< 0` 跌 / `0` 不动；
+  只在"本来就要动、取整后却没变"时补步进；降价不低于 1 铜；`minStep <= 0` = 关闭。
+- 两处接入：① `SettleVirtualPrices()` 里**放在小时/日封顶之后** —— 封顶仍是"百分比上限"，
+  只有被整数取整抹平时才补最小步进（低价品的 1 铜就是最小可表示变化）；
+  ② 逐件流水结算（`[AHBOT] SETTLE`）里 `down` / `up` 两条分支带方向调用（`balanced` 与 `up-blocked-1buyer` 不动价）。
+- 新 conf 键 **`AuctionHouseBot.MarketMaker.MinMoveCopper`（默认 1，0 = 关闭）**：已写入本地
+  `x64_Debug/ahbot.conf` 与仓库模板 `src/game/AuctionHouseBot/ahbot.conf.dist.in`。
+  ⚠️ **云端 conf 未动**（不加该键时代码按默认 1 走，行为一致；下次部署时可顺手补上这一行）。
+
+**本地实测（13:51–13:52，本地服 + 本地库）**
+- 给铜矿石 2770 注入 `flow_sold = 20`（= 1 组）并强制开窗 ⇒
+  `VPSETTLE virtual=101 bought=0 sold=1 old=20 new=21 (bp/stack=10 hourCap=1% dayCap=10%)` ✓
+  （原始移动 = 0.1% × 20 铜 = 0.02 铜，本该被抹平；且小时上限本会把 hi 算成 20 铜 ⇒ 最小步进在封顶之后仍给出 +1 铜）
+- 成员跟随：铜矿石 2770 → **21**、铜锭 2840 → **21**（equiv 1）✓
+- **下一周期** `VPRECIPE product=2841 price=121 (old=120)` = 铜锭 21 + 锡锭 100 ⇒ 复合锭自动跟上 ✓
+- 0 崩溃/断言 ✓；测试注入的价格已还原（本地库 2770/2840 = 20、虚拟 101 = 20、2841 = 120）
+
+**须知**：低价品上 1 铜即最小可表示变化，所以**实际百分比会大于设计上限**（20 铜涨 1 铜 = 5%）——
+这是整数铜的固有结果，站长已知并接受（若哪天想收紧，把 `MinMoveCopper` 设 0 即回到旧行为）。

@@ -337,6 +337,18 @@ AuctionHouseBot.MarketMaker.MaxGoldPerCycle = 0
 #   窗口基准 day_price/day_start 持久化在 ahbot_market_state；窗口满 24h 用当前报价重设基准。
 #   云端设为 10（站长要求"报价一天上下移动限额 10%"）。
 AuctionHouseBot.MarketMaker.MaxDailyMovePct = 0
+# [2026-09-25/26] 成对定价 + 复合配方（矿石↔锭/精华；复合锭由材料单向定价）—— 与三张表配套读：
+#   ahbot_price_pair（成对成员 + virtual_item/equiv）、ahbot_virtual_price（虚拟基准价）、
+#   ahbot_price_recipe（多原料配方；产物价 = Σ 原料价×用量，单向、不反向传导）
+#   MoveBpPerStack   = 虚拟基准价每买入/卖出【1 组】移动多少 bp（10 = 0.1%/组）
+#   MaxHourlyMoveBp  = 虚拟基准价每小时移动上限（bp，100 = 1%/小时）
+#   MaxDailyMovePct  = 每 24 小时累计上限（%），见上面一行；低价品靠 MinMoveCopper 保底
+#   MinMoveCopper    = 最小步进（铜）：方向明确时至少动这么多铜，避免低价品（如 20 铜的铜矿
+#                      走 10bp = 0.02 铜）被整数取整彻底抹平；0 = 关闭
+#   ★ 改动定义表后 .ahbot reload 即可重新读取（无需重启）；价格只写 price_ref，不碰已挂单
+AuctionHouseBot.MarketMaker.MoveBpPerStack = 0
+AuctionHouseBot.MarketMaker.MaxHourlyMoveBp = 0
+AuctionHouseBot.MarketMaker.MinMoveCopper = 0
 AuctionHouseBot.MarketMaker.BidOnlyBuyout = 1
 AuctionHouseBot.MarketMaker.Smoothing = 50
 AuctionHouseBot.MarketMaker.IdleThreshold = 60

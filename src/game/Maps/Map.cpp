@@ -1250,7 +1250,27 @@ bool Map::CreatureCellRelocation(Creature* c, const Cell& new_cell)
         DEBUG_FILTER_LOG(LOG_FILTER_CREATURE_MOVES, "Creature (GUID: %u Entry: %u) moved in grid[%u,%u] from cell[%u,%u] to cell[%u,%u].", c->GetGUIDLow(), c->GetEntry(), old_cell.GridX(), old_cell.GridY(), old_cell.CellX(), old_cell.CellY(), new_cell.CellX(), new_cell.CellY());
         NGridType* oldGrid = getNGrid(old_cell.GridX(), old_cell.GridY());
         NGridType* newGrid = getNGrid(new_cell.GridX(), new_cell.GridY());
-        RemoveFromGrid(c, oldGrid, old_cell);
+
+        // [MEMFIX-GUARD] The lazy grid unload (see the MEMFIX notes in ActiveObjectsNearGrid
+        // and ActiveState) can drop the grid a creature is still standing in: creatures that
+        // live in the world object container (pets) are not visited by ObjectGridUnloader, so
+        // they survive with a stale current cell and a GridReference into the deleted grid.
+        // Relinking such a creature used to crash in GridReference<Creature>::targetObjectBuildLink
+        // (null grid -> near null container). See KNOWN_ISSUES 2026-09-26.
+        if (!oldGrid && c->GetGridRef().isValid())
+        {
+            c->GetGridRef().unlinkDetached();               // must not touch the deleted grid
+            sLog.outError("Map::CreatureCellRelocation: creature (GUID: %u Entry: %u) grid[%u,%u] was unloaded while the creature is still in world - stale grid link dropped.", c->GetGUIDLow(), c->GetEntry(), old_cell.GridX(), old_cell.GridY());
+        }
+
+        if (!newGrid)
+        {
+            DEBUG_FILTER_LOG(LOG_FILTER_CREATURE_MOVES, "Creature (GUID: %u Entry: %u) move from grid[%u,%u]cell[%u,%u] to unloaded grid[%u,%u]cell[%u,%u] dropped.", c->GetGUIDLow(), c->GetEntry(), old_cell.GridX(), old_cell.GridY(), old_cell.CellX(), old_cell.CellY(), new_cell.GridX(), new_cell.GridY(), new_cell.CellX(), new_cell.CellY());
+            return false;
+        }
+
+        if (oldGrid)
+            RemoveFromGrid(c, oldGrid, old_cell);
         AddToGrid(c, newGrid, new_cell);
         c->GetViewPoint().Event_GridChanged(&(*newGrid)(new_cell.CellX(), new_cell.CellY()));
     }
