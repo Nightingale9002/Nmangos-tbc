@@ -449,16 +449,24 @@ void WorldSession::HandleQuestLogRemoveQuest(WorldPacket& recv_data)
                 if (pQuest->HasSpecialFlag(QUEST_SPECIAL_FLAG_TIMED))
                     _player->RemoveTimedQuest(quest);
 
-                // [QUESTFIX] 放弃任务时清理该任务收集的任务物品（ReqItemId，含银行）。
-                // 只清理本任务要求的数量（ReqItemCount），避免误删其他任务还需要同种物品的持有量；
-                // 跳过 SrcItemId（已由上方 TakeQuestSourceItem 处理），避免同一物品被销毁两次。
+                // [QUESTFIX 2026-09-26] Destroy the COLLECTED quest items (ReqItemId) on abandon, but
+                // only the ones that are BIND_QUEST_ITEM - that is exactly the set the client names in
+                // its "abandon and destroy ..." confirmation (e.g. 10853 announces both its source
+                // totem and its 8 collected drake spirits), and the same filter upstream already uses
+                // for ReqSourceId below.
+                // The previous version dropped EVERY ReqItemId: 10776/10769 collect a plain
+                // pick-up-bound flare gun (31310/31108) handed out by the NON-repeatable 10772/10750,
+                // so it was destroyed without any client warning and the line became unplayable.
                 uint32 const questSrcItemId = pQuest->GetSrcItemId();
                 for (int i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
                 {
-                    if (pQuest->ReqItemId[i] && pQuest->ReqItemCount[i] && pQuest->ReqItemId[i] != questSrcItemId)
+                    if (!pQuest->ReqItemId[i] || !pQuest->ReqItemCount[i] || pQuest->ReqItemId[i] == questSrcItemId)
+                        continue;
+
+                    ItemPrototype const* reqProto = ObjectMgr::GetItemPrototype(pQuest->ReqItemId[i]);
+                    if (reqProto && reqProto->Bonding == BIND_QUEST_ITEM)
                         _player->DestroyItemCount(pQuest->ReqItemId[i], pQuest->ReqItemCount[i], true, false, true);
                 }
-
                 for (int i = 0; i < QUEST_SOURCE_ITEM_IDS_COUNT; ++i)
                 {
                     if (pQuest->ReqSourceId[i])

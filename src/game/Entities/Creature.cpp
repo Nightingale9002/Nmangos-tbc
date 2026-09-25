@@ -799,6 +799,17 @@ void Creature::Update(const uint32 diff)
                 if (m_isCreatureLinkingTrigger)
                     GetMap()->GetCreatureLinkingHolder()->DoCreatureLinkingEvent(LINKING_EVENT_RESPAWN, this);
 
+                // [LINKFIX 2026-09-26] A linking FOLLOWER only receives its follow order when its MASTER
+                // respawns (CreatureLinkingMgr.cpp:499-501 / :629). A follower that respawns while the
+                // master is still alive therefore never got the order back and simply stood still
+                // (19795 Eclipsion Blood Knight follows 21979 Val'zareq: follower 300s vs master 600s,
+                // the only such pair in the DB - same-map precedents all use equal respawn times).
+                // Ask for the master again here so a respawn behaves exactly like the initial load.
+                // TryFollowMaster() already checks FLAG_FOLLOW / master alive / search range, and
+                // MoveFollow() clears then mutates, so calling it twice is harmless.
+                if (m_isCreatureLinkingTrigger)
+                    GetMap()->GetCreatureLinkingHolder()->TryFollowMaster(this);
+
                 if (GetCreatureGroup())
                     GetCreatureGroup()->TriggerLinkingEvent(CREATURE_GROUP_EVENT_RESPAWN, this);
 
