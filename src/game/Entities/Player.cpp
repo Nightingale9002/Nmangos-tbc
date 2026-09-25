@@ -5645,6 +5645,13 @@ void Player::UpdateWeaponSkill(WeaponAttackType attType)
     UpdateAllCritPercentages();
 }
 
+// [FASTMODE] "Hard training" fast-leveling track (Kabu, dev/131 + dev/135):
+//   - spell 900001 is the permanent 3x XP aura, granted by the hidden flag quest 90350
+//   - its owner also gains weapon/defense skill 5x faster (see Player::UpdateCombatSkills),
+//     so that skill growth keeps pace with the higher XP rate
+#define SPELL_FAST_GROWTH            900001
+#define FAST_GROWTH_SKILL_GAIN_MULT  5.0f
+
 void Player::UpdateCombatSkills(uint32 procEx, WeaponAttackType attType, bool defence)
 {
     const uint16 skillId = (defence ? SKILL_DEFENSE : GetWeaponSkillIdForAttack(attType));
@@ -5697,7 +5704,12 @@ void Player::UpdateCombatSkills(uint32 procEx, WeaponAttackType attType, bool de
     }
 
     // Final skill-up probability
-    const float finalChance = std::clamp(baseChance + intellectBonus, 0.0, 1.0) * 100.0f;
+    float finalChance = std::clamp(baseChance + intellectBonus, 0.0, 1.0) * 100.0f;
+
+    // [FASTMODE] Players on the fast-leveling track (the 3x XP aura, spell 900001, dev/131) gain
+    // weapon and defense skill faster as well, so that skill growth keeps pace with the XP rate.
+    if (HasAura(SPELL_FAST_GROWTH, EFFECT_INDEX_0))
+        finalChance = std::min(finalChance * FAST_GROWTH_SKILL_GAIN_MULT, 100.0f);
 
     if (roll_chance_f(finalChance))
     {
@@ -13502,7 +13514,15 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, Object* questGiver,
     // Used for client inform but rewarded only in case not max level
     uint32 xp = uint32(pQuest->XPValue(this) * GetMap()->GetXPModRate(RateModType::QUEST));
 
-    if (GetLevel() < GetMaxAttainableLevel())
+    // [WARPREP] The war-preparation training quests (90140-90158) lift a recruit straight to level 60
+    // instead of handing out XP, so the front line catches new soldiers up regardless of any XP-bonus aura.
+    // Level up one step at a time: skills, talents and stats are processed per level.
+    if (quest_id >= 90140 && quest_id <= 90158)
+    {
+        while (GetLevel() < 60 && GetLevel() < GetMaxAttainableLevel())
+            GiveLevel(GetLevel() + 1);
+    }
+    else if (GetLevel() < GetMaxAttainableLevel())
         GiveXP(xp, nullptr);
     else
         ModifyMoney(int32(pQuest->GetRewMoneyMaxLevel() * sWorld.getConfig(CONFIG_FLOAT_RATE_DROP_MONEY)));
@@ -13643,8 +13663,14 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, Object* questGiver,
     // Custom: after completing "Practical Training" (90140-90158), learn all class skills usable at the current level
     if (quest_id >= 90140 && quest_id <= 90158)
     {
-        LearnAllClassTrainerSpells();
-        LearnClassQuestRewardSpells();
+        // Two rounds on purpose: some class skills are gated by spells that only come from class
+        // quests (druid Bear Form gates the whole feral line), so the trainer pass must run again
+        // after the quest-reward spells have been learned.
+        for (int round = 0; round < 2; ++round)
+        {
+            LearnAllClassTrainerSpells();
+            LearnClassQuestRewardSpells();
+        }
         LearnAllWeaponSkillsTo300();
     }
 
