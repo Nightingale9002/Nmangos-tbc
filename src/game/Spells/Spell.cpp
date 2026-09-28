@@ -2243,17 +2243,36 @@ void Spell::SetTargetMap(SpellEffectIndex effIndex, uint32 targetMode, bool targ
                     break;
             }
 
-            // 2026-09-22 卡布修复：上面的硬编码表没收录的地区会落到兜底值 500，结果是**该地区任何技能都下不了钩**
-            // （客户端提示"技能等级不够" = SPELL_FAILED_LOW_CASTLEVEL）。站长在悲伤沼泽 · 芦苇海滩（zone 8）实测触发：
-            // 那里是 225 钓鱼任务「纳特·帕格的钓鱼大师」的必钓点，zone 8 不在表里 ⇒ 225 < 500 ⇒ 永远钓不了。
-            // 这里改为：硬编码表未收录时回退查 DB 表 `skill_fishing_base_level`（与 GameObject.cpp 钓鱼掉落用的是同一张表，
-            // 先查子区域 area、再查 zone），两处都查不到就不再阻止施法（原来会卡死在 500）。
-            if (minimumRequiredSkill >= 500)
+            // [2026-09-27 站长定案] 钓鱼门槛改为 **DB 优先**：`skill_fishing_base_level`（world 库）是权威
+            // 数据源 —— 它同时也是 GameObject.cpp 里"渔获 / 垃圾几率"用的那张表
+            // （chance = skill - zone_skill + 5）。两处必须同源，否则会出现"能下钩却钓不到鱼"或反之。
+            // 规则：
+            //   1) 先查子区域 area、再查 zone；DB 有记录就用它（**负值 = 比 1 还容易 ⇒ clamp 到 0**）；
+            //   2) DB 没有该区域时才回退到上面那张硬编码表；
+            //   3) 两处都没有 ⇒ 不再阻拦施法（硬编码表的 500 兜底会让"没收录的地区永远钓不了"，
+            //      2026-09-22 悲伤沼泽 · 芦苇海滩（zone 8）就是这么被坑的）。
+            // ⚠️ 上面 switch 里有一批 case 是 **地图 id**（副本/团本：43 哀嚎、48 黑暗深渊、189 血色、
+            //    289 通灵、309 祖格、329 斯坦索姆、349 玛拉顿、429 厄运，以及 534/545/546/547/548/560/
+            //    568/580/585），而 `skill_fishing_base_level` 是按 **area id** 索引的（加载时用 AreaTable.dbc
+            //    校验），表达不了"整张副本图"的要求 ⇒ 这些地图级的门槛继续由硬编码表负责，DB 不覆盖它们。
+            //    （2026-09-27 踩过：把 43/48/… 当成 area 往表里插，48/329 被加载器判为"不存在"，
+            //      43/189/289/309/349/429 则命中无关的同号 area，等于给别的区域乱加门槛。）
+            bool mapLevelRequirement =
+                mapId == 43 || mapId == 48 || mapId == 189 || mapId == 349 || mapId == 289 || mapId == 309 ||
+                mapId == 329 || mapId == 429 ||
+                mapId == 534 || mapId == 545 || mapId == 546 || mapId == 547 || mapId == 548 || mapId == 560 ||
+                mapId == 568 || mapId == 580 || mapId == 585;
+
+            if (!mapLevelRequirement)
             {
-                int32 baseSkill = sObjectMgr.GetFishingBaseSkillLevel(area);
-                if (baseSkill <= 0)
-                    baseSkill = sObjectMgr.GetFishingBaseSkillLevel(zone);
-                minimumRequiredSkill = (baseSkill > 0) ? uint32(baseSkill) : 0u;
+                int32 dbSkill = sObjectMgr.GetFishingBaseSkillLevel(area);
+                if (dbSkill == 0)                                   // 0 = 该 area 没有记录（表里不存在 0 值）
+                    dbSkill = sObjectMgr.GetFishingBaseSkillLevel(zone);
+
+                if (dbSkill != 0)                                   // DB 命中（含负值）⇒ 以 DB 为准
+                    minimumRequiredSkill = (dbSkill > 0) ? uint32(dbSkill) : 0u;
+                else if (minimumRequiredSkill >= 500)               // DB 也没收录 ⇒ 放行（不再用 500 卡死）
+                    minimumRequiredSkill = 0u;
             }
 
             uint32 fishingSkill = m_caster->IsPlayer() ? static_cast<Player*>(m_caster)->GetSkillValue(SKILL_FISHING) : 0;
