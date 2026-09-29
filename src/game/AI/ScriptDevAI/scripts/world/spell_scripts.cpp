@@ -1033,8 +1033,118 @@ struct SummonPedestalNpc : public SpellScript
     }
 };
 
+// 40075 "Fel Flak Fire" - Legion Flak Cannon (creature 23076, Blade's Edge Mountains, Forge Camps).
+// The client data aims this spell at LOCATIONS, not at units: Effect1 (108 SPELL_EFFECT_DISPEL_MECHANIC,
+// misc 21 = MECHANIC_MOUNTED) uses TARGET_LOCATION_CASTER_DEST and Effect2 (98 SPELL_EFFECT_KNOCK_BACK,
+// misc 150 / base points 49) uses TARGET_LOCATION_CASTER_SRC, both with EffectRadiusIndex 29 (6 yards).
+// Live servers resolve such effects against every unit inside the radius around the impact point, but
+// our core implements 98/108 for unit targets only - Spell::EffectDispelMechanic and Spell::EffectKnockBack
+// both return early when unitTarget is null, which a location target never provides. The spell therefore
+// casts "successfully" while doing absolutely nothing.
+// This script restores the intended behaviour: every hostile player within the spell radius of the impact
+// point (the destination when the spell was aimed there, otherwise the spell's unit target) is dismounted
+// and knocked back.
+// Radius and knock back values live on the "Fel Flak Fire" burst spell (40075) - the bolt spell only
+// carries the projectile (its SpellVisual 9092 has the missile model 3407, while 40075's visual 9104 has
+// no missile at all, which is why the shell was invisible while casting 40075 directly).
+enum
+{
+    SPELL_FEL_FLAK_FIRE = 40075,
+};
+
+// Applies the flak burst at its impact point: every hostile player inside the radius gets dismounted
+// (the mount aura carries MECHANIC_MOUNTED / SPELL_AURA_MOUNTED) and knocked back. Kept as a free
+// function so the delayed burst can run it from the event lambda.
+static void FelFlakBurst(Unit* caster, float x, float y, float z, float radius, float horizontalSpeed, float verticalSpeed)
+{
+    for (auto& playerRef : caster->GetMap()->GetPlayers())
+    {
+        Player* player = playerRef.getSource();
+        if (!player || !player->IsAlive() || player->IsGameMaster())
+            continue;
+
+        if (!caster->IsEnemy(player))
+            continue;
+
+        float const dist = player->GetDistance(x, y, z);
+        if (dist > radius)
+            continue;
+
+        bool const wasMounted = player->IsMounted();
+        if (wasMounted)
+            player->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
+
+        player->KnockBackFrom(caster, horizontalSpeed, verticalSpeed);
+    }
+}
+
+struct FelFlakFire : public SpellScript
+{
+    // The shell is a projectile aimed at coordinates, and the cast therefore has to carry a destination.
+    // The core never fills one here: effects 108/98 are registered as unit effects in SpellTargets.cpp, so
+    // the "location dest" execution path (and its OnDestTarget() hook) is never taken for this spell - the
+    // destination keeps the TARGET_LOCATION_CASTER_DEST value, i.e. the cannon's own position, which makes
+    // the shell "burst" on the cannon instead of flying anywhere.
+    // OnSuccessfulStart() runs right before SendSpellGo() (Spell.cpp:3268 vs 3500), which is the last point
+    // where the outgoing packet can still be influenced.
+    void OnSuccessfulStart(Spell* spell) const override
+    {
+        Unit* unitTarget = spell->m_targets.getUnitTarget();
+        if (!unitTarget)
+            return;
+
+        // aim the shell at the target's current coordinates - the burst is resolved there when it lands,
+        // so a player who keeps moving dodges it.
+        // NOTE: the unit target is deliberately KEPT in the packet - the client only animates a flying
+        // shell when the spell has a unit target, dropping TARGET_FLAG_UNIT made the projectile disappear.
+        spell->m_targets.setDestination(unitTarget->GetPositionX(), unitTarget->GetPositionY(), unitTarget->GetPositionZ());
+    }
+
+    void OnSuccessfulFinish(Spell* spell) const override
+    {
+        Unit* caster = spell->GetCaster();
+        if (!caster)
+            return;
+
+        // Impact point of the flak burst - the coordinates the shell was aimed at, which OnDestTarget()
+        // set to the target's cast-time position. The burst must be resolved there and only when the shell
+        // lands: a player who keeps moving dodges it, exactly like on live servers.
+        float x, y, z;
+        if (spell->m_targets.m_targetMask & TARGET_FLAG_DEST_LOCATION)
+            spell->m_targets.getDestination(x, y, z);
+        else
+        {
+            x = caster->GetPositionX();
+            y = caster->GetPositionY();
+            z = caster->GetPositionZ();
+        }
+
+        // Radius and knock back speeds are read from the flak burst spell (40075): the bolt we are
+        // reacting to has neither, and hardcoding game data in a script is not an option.
+        SpellEntry const* flakInfo = sSpellTemplate.LookupEntry<SpellEntry>(SPELL_FEL_FLAK_FIRE);
+
+        float radius = 6.0f;                                    // SpellRadius.dbc 29
+        if (flakInfo)
+            if (uint32 radiusIndex = flakInfo->EffectRadiusIndex[EFFECT_INDEX_0])
+                if (SpellRadiusEntry const* radiusEntry = sSpellRadiusStore.LookupEntry(radiusIndex))
+                    radius = GetSpellRadius(radiusEntry);
+
+        // knock back speeds are taken straight from the dbc, exactly like Spell::EffectKnockBack does
+        float const horizontalSpeed = flakInfo ? float(flakInfo->EffectMiscValue[EFFECT_INDEX_1]) / 10.0f : 15.0f;
+        float const verticalSpeed = flakInfo ? float(flakInfo->EffectBasePoints[EFFECT_INDEX_1] + 1) / 10.0f : 5.0f;
+
+        // NOTE: no scheduling here on purpose. This core keeps the spell in SPELL_STATE_TRAVELING until
+        // the missile lands (Spell::AddUnitTarget() sets timeDelay = distance / speed and SpellEvent
+        // re-plans itself for that moment), so OnSuccessfulFinish() already runs exactly when the shell
+        // arrives. Adding our own delay on top doubled the wait - the player was knocked down seconds
+        // after the shell had visibly landed.
+        FelFlakBurst(caster, x, y, z, radius, horizontalSpeed, verticalSpeed);
+    }
+};
+
 void AddSC_spell_scripts()
 {
+    RegisterSpellScript<FelFlakFire>("spell_fel_flak_fire");
     RegisterSpellScript<CastFishingNet>("spell_cast_fishing_net");
     RegisterSpellScript<MelodiousRapture>("spell_melodious_rapture");
     RegisterSpellScript<DetectThroughInvisibilityMob>("spell_detect_through_invisibility_mob");

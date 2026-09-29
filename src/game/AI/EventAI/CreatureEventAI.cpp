@@ -1671,6 +1671,7 @@ void CreatureEventAI::MoveInLineOfSight(Unit* who)
 {
     // Check for OOC LOS Event
     IncreaseDepthIfNecessary();
+
     if (m_HasOOCLoSEvent && !m_creature->GetVictim())
     {
         for (auto& itr : m_CreatureEventAIList)

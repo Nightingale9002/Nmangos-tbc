@@ -253,11 +253,17 @@ void AuctionHouseBot::Initialize()
         // operator 行（ahbot_market_state.target）决定，机器人运行期不再自行改额度。
         m_catalogEnabled       = m_ahBotCfg.GetBoolDefault("AuctionHouseBot.MarketMaker.CatalogEnabled", true);
         m_catalogTarget        = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.CatalogTarget", 200);
+        // [2026-09-29 站长定案] 下面 4 个键已废弃（流程见 ahbot.conf.dist.in）：仍照旧读取，
+        // 但结算不再使用它们 —— 单位数门槛/买卖比门槛/单次幅度封顶全部取消。
         m_flowRatio      = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowRatio", 150);
         m_flowMoveDownPct = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowMoveDownPct", 5);
         m_flowMoveUpPct  = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowMoveUpPct", 1);
         m_flowMinUnits   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowMinUnits", 20);
         m_flowSettleHours = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.FlowSettleHours", 24);
+        // [2026-09-29 站长定案] 新结算口径：金币流水每满 100 金 ⇒ 移动这么多 bp（默认 10 = 0.1%）。
+        // 读法与 m_flowRatio 等一致 ⇒ .ahbot reload 即生效，无需重启。
+        m_flowMoveDownBpPer100Gold = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MoveDownBpPer100Gold", 10);
+        m_flowMoveUpBpPer100Gold   = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MoveUpBpPer100Gold", 10);
         // [v4 2026-09-26] 玩家挂单深度调节 target（DepthTarget*/DepthStepPct）与过渡商品
         // 倍率（TransitionItemLevel/TransitionTargetMult）一并删除：两者都是"机器人自行
         // 改库存额度"的老机制，且 TransitionItemLevel 两侧 conf 都是 0（本来就是死代码）。
@@ -726,6 +732,9 @@ namespace
 
         accBought += (uint64)VpStacksFor(itemId, fb) * equiv;
         accSold += (uint64)VpStacksFor(itemId, fs) * equiv;
+        // [2026-09-29 快照口径] 这里只清【单位数】流水，**不清金币列**：金币流水是
+        // spent/earned 与快照的差值，spent/earned 是累计值（金币唯一真相），
+        // 被成对定价抽走的单位数不该去动金币快照。
         CharacterDatabase.PExecute("UPDATE ahbot_market_state SET flow_bought = 0, flow_sold = 0 WHERE auction_house = %u AND item = %u", house, itemId);
     }
 
@@ -977,6 +986,7 @@ void AuctionHouseBot::UpdateMarketPrices()
         SettleRecipePrices(recipePriced);
         // 单向定价：产物自己的流水只作观察，随后把内存侧的计数也清零，
         // 否则下面每周期扫描里的逐件流水结算仍会用它的成交量去推价（反向传导）。
+        // [2026-09-29 快照口径] 只清单位数；金币快照列不许被这条路径清（见 lastSettleSpent/Earned）。
         for (auto const& t : recipePriced)
         {
             if (AuctionHouseBotMarketState* st = GetMarketState(t.second, AuctionHouseType(t.first)))
@@ -1236,63 +1246,90 @@ void AuctionHouseBot::UpdateMarketPrices()
             }
 
             // ---- long-period flow settlement (price anchor moves) ----
-            // flowBought/flowSold accumulate across scans and restarts (persisted in
-            // ahbot_market_state). Once per FlowSettleHours the anchor moves if the flow
-            // is clearly one-sided; otherwise the price holds. The move is ASYMMETRIC:
-            // overpriced (players flood us with supply) corrects down fast (5%),
-            // underpriced (players consume us) rises very slowly (1%) - welfare
-            // protection: prices never run away upward, but bad prices get fixed.
+            // [2026-09-29 站长定案 / 二次定案改为快照差值] 结算口径按【金币流水】动价：
+            //   · 窗口金币**不再由窗口累加器维护**，而是"累计值 - 上次结算快照"之差：
+            //       windowBoughtGold = spentGold  - lastSettleSpent   （机器人收货花出去 ⇒ 降价侧）
+            //       windowSoldGold   = earnedGold - lastSettleEarned  （玩家买走花掉 ⇒ 涨价侧）
+            //     spent/earned 是累计值、是金币的唯一真相（PnL 观测），结算后把快照推进到当前值；
+            //   · 降价 = windowBoughtGold，每满 100 金（1,000,000 铜）
+            //     ⇒ 降 AuctionHouseBot.MarketMaker.MoveDownBpPer100Gold bp（默认 10 bp = 0.1%）；
+            //   · 涨价 = windowSoldGold，每满 100 金 ⇒ 涨 MoveUpBpPer100Gold bp（默认 10 bp = 0.1%），
+            //     且**必须来自 ≥2 个不同买家**（soldBuyerCount >= 2）：单人自买自卖（"养价"）
+            //     不算需求 ⇒ 本窗口涨价额度作废（日志 result=up-blocked-1buyer）；
+            //     降价不设该限制（单人砸货是真实的供给信号）；
+            //   · 两个方向都有流水：先各自算 bp 再相减 netBp = upBp - downBp，
+            //     >0 涨 / <0 跌 / ==0 不动（balanced）；
+            //   · 旧的"单位数门槛 FlowMinUnits + 买卖比门槛 FlowRatio"与"单次幅度封顶
+            //     FlowMove*Pct"全部取消：幅度只由金币流水决定，**唯一封顶**是下面
+            //     24h ±MaxDailyMovePct（day_price 窗口，照旧生效）；
+            //   · 不足 100 金的尾数按整百金【向下取整丢弃】（steps = goldCopper / 1000000），
+            //     每次结算后窗口重新开始（快照推进 ⇒ 尾数自然不结转）。
+            // 单位数 flowBought/flowSold 保留累加/清零（observability），但不再参与判断。
             {
                 uint32 now = time(nullptr);
                 if (oldPrice && (!state.lastSettleTime || now - state.lastSettleTime >= m_flowSettleHours * HOUR))
                 {
-                    uint32 flowTotal = state.flowBought + state.flowSold;
-                    // [2026-09-20] settlement log - the ONLY way to tune FlowMinUnits /
-                    // FlowRatio / FlowSettleHours from real data instead of guessing.
-                    // NOTE: the counters are zeroed below either way, so flow that stays
-                    // under the gate is DISCARDED, not carried into the next period.
-                    const char* outcome = "under-gate";
+                    // 100 金 = 100 × 100 × 100 铜 = 1,000,000 铜；整百金步进 = 向下取整
+                    uint64 const goldStepCopper = 100ull * 100ull * 100ull;
+                    // 快照差值口径（无符号下溢保护：快照异常大于当前累计值时夹到 0）
+                    uint32 const windowBoughtGold = state.spentGold  >= state.lastSettleSpent
+                                                  ? state.spentGold  - state.lastSettleSpent  : 0;
+                    uint32 const windowSoldGold   = state.earnedGold >= state.lastSettleEarned
+                                                  ? state.earnedGold - state.lastSettleEarned : 0;
+                    uint32 const downSteps = uint32(windowBoughtGold / goldStepCopper);
+                    uint32 const upSteps   = uint32(windowSoldGold / goldStepCopper);
+                    int64 const downBp = (int64)downSteps * (int64)m_flowMoveDownBpPer100Gold;
+                    int64 const upBp   = (int64)upSteps * (int64)m_flowMoveUpBpPer100Gold;
+                    int64 const netBp  = upBp - downBp;
+                    // [2026-09-20] settlement log - the ONLY way to tune Move*BpPer100Gold /
+                    // FlowSettleHours from real data instead of guessing.
+                    const char* outcome = "no-flow";
                     int64 minDir = 0;                       // >0 涨 / <0 跌，供最小步进用
-                    if (flowTotal >= m_flowMinUnits)
+                    if (netBp > 0)
                     {
-                        if (state.flowBought > (uint64)state.flowSold * m_flowRatio / 100)
+                        // [2026-09-21] 去重后的单边性判定：涨价必须来自 ≥2 个不同买家。
+                        // 单人自己反复买（"养价"）无论买多少都不算需求信号。
+                        // 降价不设这个限制：单个玩家大量砸货本来就是"供给过剩"的真实信号，
+                        // 且价格跌得快是该机制有意的保护（宁可低也不要虚高）。
+                        if (state.soldBuyerCount >= 2)
                         {
-                            newPrice = (uint32)(((uint64)oldPrice * (100 - std::min<uint32>(50, m_flowMoveDownPct)) + 50) / 100);
-                            outcome = "down";
-                            minDir = -1;
-                        }
-                        else if (state.flowSold > (uint64)state.flowBought * m_flowRatio / 100)
-                        {
-                            // [2026-09-21] 去重后的单边性判定：涨价必须来自 ≥2 个不同买家。
-                            // 单人自己反复买（"养价"）无论买多少都不算需求信号。
-                            // 降价不设这个限制：单个玩家大量砸货本来就是"供给过剩"的真实信号，
-                            // 且价格跌得快是该机制有意的保护（宁可低也不要虚高）。
-                            if (state.soldBuyerCount >= 2)
-                            {
-                                newPrice = (uint32)(((uint64)oldPrice * (100 + std::min<uint32>(50, m_flowMoveUpPct)) + 50) / 100);
-                                outcome = "up";
-                                minDir = 1;
-                            }
-                            else
-                                outcome = "up-blocked-1buyer";
+                            int64 const moved = ((int64)oldPrice * (10000 + netBp) + 5000) / 10000;
+                            newPrice = moved < 1 ? 1 : (uint32)moved;
+                            outcome = "up";
+                            minDir = 1;
                         }
                         else
-                            outcome = "balanced";
-
-                        // [2026-09-26] 最小步进：低价品上 1% 的移动同样会被整数铜抹平（20 铜 × 1% = 0.2）
-                        newPrice = ApplyMinPriceStep(oldPrice, newPrice, minDir, minMoveCopper);
+                            outcome = "up-blocked-1buyer";
                     }
-                    if (flowTotal)
-                        sLog.outError("[AHBOT] SETTLE item=%u house=%u bought=%u sold=%u total=%u gate=%u buyers=%u old=%u new=%u result=%s",
-                                      itemId, uint32(houseIndex), state.flowBought, state.flowSold,
-                                      flowTotal, m_flowMinUnits, state.soldBuyerCount, oldPrice, newPrice, outcome);
+                    else if (netBp < 0)
+                    {
+                        int64 const moved = ((int64)oldPrice * (10000 + netBp) + 5000) / 10000;
+                        newPrice = moved < 1 ? 1 : (uint32)moved;
+                        outcome = "down";
+                        minDir = -1;
+                    }
+                    else if (upBp || downBp)
+                        outcome = "balanced";
+
+                    // [2026-09-26] 最小步进：低价品上百分比移动同样会被整数铜抹平
+                    //（20 铜走 10bp = 0.02 铜 ⇒ 算出来还是 20）；方向不明确时 minDir=0，不动作。
+                    newPrice = ApplyMinPriceStep(oldPrice, newPrice, minDir, minMoveCopper);
+
+                    if (windowBoughtGold || windowSoldGold || state.flowBought || state.flowSold)
+                        sLog.outError("[AHBOT] SETTLE item=%u house=%u boughtGold=%u soldGold=%u upBp=%d downBp=%d buyers=%u old=%u new=%u result=%s",
+                                      itemId, uint32(houseIndex), windowBoughtGold, windowSoldGold,
+                                      int32(upBp), int32(downBp), state.soldBuyerCount, oldPrice, newPrice, outcome);
                     state.flowBought = 0;
                     state.flowSold = 0;
                     state.soldBuyerCount = 0;               // 买家去重集合随窗口清零
                     state.soldBuyers.fill(0);
                     state.lastSettleTime = now;
-                    CharacterDatabase.PExecute("UPDATE ahbot_market_state SET flow_bought = 0, flow_sold = 0, last_settle_time = %u WHERE item = %u AND auction_house = %u",
-                                               state.lastSettleTime, itemId, houseIndex);
+                    // [2026-09-29 快照口径] 快照推进到当前累计值 ⇒ 下一窗口从 0 起算
+                    // （尾数随之丢弃，不结转）；与既有字段复用同一条 UPDATE 一起写回。
+                    state.lastSettleSpent = state.spentGold;
+                    state.lastSettleEarned = state.earnedGold;
+                    CharacterDatabase.PExecute("UPDATE ahbot_market_state SET flow_bought = 0, flow_sold = 0, last_settle_time = %u, last_settle_spent = %u, last_settle_earned = %u WHERE item = %u AND auction_house = %u",
+                                               state.lastSettleTime, state.lastSettleSpent, state.lastSettleEarned, itemId, houseIndex);
                 }
             }
 
@@ -1610,7 +1647,10 @@ uint32 AuctionHouseBot::GetItemTarget(uint32 itemId) const
 // restored so price settlement and the operator log stay continuous across restarts.
 void AuctionHouseBot::LoadInventory()
 {
-    if (auto result = CharacterDatabase.Query("SELECT item, auction_house, spent, earned, flow_bought, flow_sold, day_price, day_start, last_settle_time FROM ahbot_market_state"))
+    // [2026-09-29 快照口径] 新增 last_settle_spent / last_settle_earned（dev/136 加列）：
+    // "上次结算时"的 spent/earned 快照，窗口金币 = 当前累计值 - 快照。
+    // 列写在 SELECT 末尾，保持既有字段序号不变。
+    if (auto result = CharacterDatabase.Query("SELECT item, auction_house, spent, earned, flow_bought, flow_sold, day_price, day_start, last_settle_time, last_settle_spent, last_settle_earned FROM ahbot_market_state"))
     {
         do
         {
@@ -1629,6 +1669,9 @@ void AuctionHouseBot::LoadInventory()
             state.dayStart = fields[7].GetUInt32();
             // [2026-09-21] 结算时钟同样持久化：原先只在内存 ⇒ 每次重启都会"提前结算一次"
             state.lastSettleTime = fields[8].GetUInt32();
+            // [2026-09-29 快照口径] 上次结算时的 spent/earned 快照（铜）：窗口金币 = 累计值 - 快照
+            state.lastSettleSpent = fields[9].GetUInt32();
+            state.lastSettleEarned = fields[10].GetUInt32();
         } while (result->NextRow());
     }
 
@@ -1683,6 +1726,8 @@ void AuctionHouseBot::DeductInventory(uint32 itemId, uint32 houseIdx, uint32 cou
     AuctionHouseBotMarketState& state = m_marketState[itemId][houseIdx];
     state.earnedGold += goldReceived;
     state.flowSold += count; // central-bank flow signal: players consumed our supply
+    // [2026-09-29 快照口径] 这里**不再累加窗口金币**：earnedGold 本身是累计值，
+    // 结算时用 "earnedGold - lastSettleEarned" 得到窗口内玩家花掉的金币。
     // [2026-09-21] 记录本窗口内的不同买家（去重）：涨价要求 ≥2 个不同买家，
     // 单人自买自卖（"养价"）不能构成涨价依据。
     if (buyerGuid)
@@ -1712,6 +1757,8 @@ void AuctionHouseBot::RecordBotPurchase(uint32 itemId, uint32 houseIdx, uint32 c
     AuctionHouseBotMarketState& state = m_marketState[itemId][houseIdx];
     state.spentGold += goldPaid;
     state.flowBought += count; // central-bank flow signal: players sold us supply
+    // [2026-09-29 快照口径] 这里**不再累加窗口金币**：spentGold 本身是累计值，
+    // 结算时用 "spentGold - lastSettleSpent" 得到窗口内机器人花出去的金币。
     CharacterDatabase.PExecute("UPDATE ahbot_market_state SET spent = %u, flow_bought = %u WHERE item = %u AND auction_house = %u",
                                state.spentGold, state.flowBought, itemId, houseIdx);
 }

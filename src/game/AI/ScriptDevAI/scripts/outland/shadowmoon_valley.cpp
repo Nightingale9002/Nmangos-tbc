@@ -2047,6 +2047,11 @@ struct npc_spawned_oronok_tornheartAI : public ScriptedAI, private DialogueHelpe
 
         m_bHasAttackStart   = false;
 
+        // [2026-09-29 崩溃修复] 这两个成员只在 WAYPOINT_ID_INTRO_FINAL 那一步才被赋值，必须显式置空；
+        // 否则 SummonedCreatureDespawn() 里的裸解引用会读到未初始化值
+        //（本地转储 mangosd.exe.34028.dmp：0xC0000005，读取位置 0xFFFFFFFFFFFFFFFF）。
+        m_borak             = nullptr;
+        m_gromtor           = nullptr;
     }
 
     void JustRespawned() override
@@ -2182,9 +2187,11 @@ struct npc_spawned_oronok_tornheartAI : public ScriptedAI, private DialogueHelpe
             // despawn the others if they're dead
             if (!m_creature->IsAlive())
                 m_creature->ForcedDespawn();
-            if (!m_borak->IsAlive())
+            // [2026-09-29 崩溃修复] m_borak / m_gromtor 只有在 WAYPOINT_ID_INTRO_FINAL 之后才非空，
+            // 之前裸解引用会段错误。本地 map 定位：npc_spawned_oronok_tornheartAI::SummonedCreatureDespawn+0x8B。
+            if (m_borak && !m_borak->IsAlive())
                 m_borak->ForcedDespawn();
-            if (!m_gromtor->IsAlive())
+            if (m_gromtor && !m_gromtor->IsAlive())
                 m_gromtor->ForcedDespawn();
         }
     }

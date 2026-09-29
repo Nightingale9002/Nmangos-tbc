@@ -235,6 +235,13 @@ void TemporarySpawn::Summon(TempSpawnType type, uint32 lifetime)
 
 void TemporarySpawn::UnSummon()
 {
+    // [SGDBG 2026-09-29] 临时诊断：定位刀锋山食人魔之魂(22912)"没打死就消失"的卸载点。
+    // dead=1 ⇒ 是"死亡"触发的（CORPSE_DESPAWN 会立刻抹掉尸体 ⇒ 看起来像凭空消失）；
+    // dead=0 ⇒ 是被脚本/核心主动收走的。
+    if (GetEntry() == 22912)
+        sLog.outError("[SGDBG] spirit 22912 guid=%u UnSummon: type=%u dead=%u health=%u",
+                      GetGUIDLow(), (uint32)m_type, IsDead() ? 1 : 0, GetHealth());
+
     UnsummonCleanup();
 
     if (m_linkedToOwnerAura & TEMPSPAWN_LINKED_AURA_REMOVE_OWNER)

@@ -609,7 +609,10 @@ void GameObject::Update(const uint32 diff)
                     }
 
                     SetGoState(GO_STATE_READY);
-                    // research - 185861 needs to be able to despawn as well TODO: fixup
+                    // 185861 (Fel Cannonball Stack) is deactivated by spell 40160 "Throw Bomb" and is
+                    // supposed to vanish even though its template is not flagged consumable - see the
+                    // explicit exception in the "non-consumable chests and goobers" check below.
+                    break;
 
                     // any return here in case battleground traps
                     break;
@@ -682,7 +685,11 @@ void GameObject::Update(const uint32 diff)
             SetLootState(GO_READY);
 
             // non-consumable chests and goobers should never despawn
-            if ((GetGoType() == GAMEOBJECT_TYPE_CHEST || GetGoType() == GAMEOBJECT_TYPE_GOOBER) && !GetGOInfo()->IsDespawnAtAction() && !m_forcedDespawn)
+            // exception: 185861 Fel Cannonball Stack - it is deactivated by spell 40160 "Throw Bomb"
+            // (Blade's Edge bombing run quests) and must actually vanish, then come back through its own
+            // spawn timer (60-180s). Upstream left this as a TODO in the GOOBER case above.
+            if ((GetGoType() == GAMEOBJECT_TYPE_CHEST || GetGoType() == GAMEOBJECT_TYPE_GOOBER)
+                    && !GetGOInfo()->IsDespawnAtAction() && !m_forcedDespawn && GetEntry() != 185861)
                 return;
 
             if (!m_respawnDelay)

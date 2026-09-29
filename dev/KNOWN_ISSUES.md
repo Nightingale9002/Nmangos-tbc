@@ -5430,3 +5430,143 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 - **生效**：world 库数据 ⇒ 重启或 `.reload skill_fishing_base_level`（`Level3.cpp:687` 已有该命令）。
 - **回滚**：`dev/rollback/133_回滚_删除补全的钓鱼区域.sql`（删 6 行 + 清 8 个误插行）；⚠️ 只回滚数据不等于回到旧行为，必须同时 `git revert` 掉 `Spell.cpp` 这次改动并重新编译。
 - **云端**：**尚未部署**。已核对：云端 `Spell.cpp` 与本地**只差这一处钓鱼改动**（其余 66 行上游合并在云端已有；之前 md5 不同只是 CRLF/LF 差异）⇒ 上云只带这一处。
+
+---
+
+### [崩溃] Oronok 链第二次崩溃：召唤物回调里的未初始化指针（`0cb0058d0`）—— 2026-09-29（本地已验证通过，云端未部署）
+
+站长报告：*"又宕机了 检查"*。
+
+#### 一、崩溃点定案
+
+| 时间 | 位置 | 进程 | 异常 | Fault offset |
+|---|---|---|---|---|
+| 09-29 11:57:50 | 云端 | mangosd[2036]（11:59 被 watchdog 拉起） | `segfault at c0 ip 0xed173f` | — |
+| 09-29 12:01:35 | 云端 | mangosd[19167]（12:02 被拉起） | 同上 | — |
+| 09-29 13:42:25 | 本地 | 34028 | `0xC0000005` | **0x65881b** |
+| 09-29 13:59:02 | 本地 | 38400 | `0xC0000005` | **0x65881b** |
+| 09-29 17:18:42 | 本地 | 37244 | `0xC0000005` | **0x65881b** |
+
+- **云端**（`dmesg -T` + `coredumpctl` + gdb backtrace，符号来自 `/opt/mangos/bin/mangosd`）⇒ `npc_spawned_oronok_tornheartAI::MovementInform+335`：`GetCreatureGroup()->GetFormationData()->Compact(false)` 三处链式裸调用。已由 `3e664d9c5` 加守卫，**12:06:37 部署**，此后云端 segfault 计数停在 2（截至 17:19 仍为 2）。
+- **本地**（WER 转储 `%LOCALAPPDATA%\CrashDumps\mangosd.exe.<pid>.dmp` + 事件日志 Fault offset）⇒ 偏移 `0x65881b` 用 `build1\bin\x64_Release\mangosd.map` 解析（RVA = 绝对地址 − 首选基址 `0x140000000`）⇒ `npc_spawned_oronok_tornheartAI::SummonedCreatureDespawn`（+0x8B），**读取地址 `0xFFFFFFFFFFFFFFFF`**：成员 `m_borak` / `m_gromtor` 从未初始化，召唤物先消失时回调里直接解引用。
+  - 三次本地崩溃偏移**完全一致** ⇒ 同一个 bug；17:18 那次仍崩是因为本地运行目录里还是 **12:48 的旧 exe**（新 exe 无法覆盖：文件被外部句柄独占，重命名/覆盖均失败，且无任何进程把它当映像加载 ⇒ 最后是站长关掉占用者后才换成 13:49 构建）。
+
+#### 二、改动（`0cb0058d0`）
+
+`src/game/AI/ScriptDevAI/scripts/outland/shadowmoon_valley.cpp`：
+
+1. `Reset()` 里把 `m_borak` / `m_gromtor` 显式初始化为 `nullptr`（根因）；
+2. `SummonedCreatureDespawn` 中给二者加空指针守卫（防御）。
+
+#### 三、本地实测（2026-09-29 17:22:10 起）
+
+| 项 | 结果 |
+|---|---|
+| 部署 | `build1\bin\x64_Release\mangosd.exe`（MD5 `E83D38980DB77979CA00F0EA50E12CAD`）→ `x64_Debug\mangosd.exe`，md5 一致 |
+| 测试内容 | 站长实际跑完**诅咒密码 / Oronok 链**（就是崩过的场景） |
+| 在线证据 | `[MEMSTAT]` 17:27:20、17:32:20 均 `players=1`，进程存活、8086 正常 |
+| 崩溃证据 | `CrashDumps` 最新仍是修复前的 **17:18:44**；事件日志最新 Application Error 仍是 **17:18:42** |
+
+⇒ **修复有效**。⚠️ 云端仍是含此 bug 的版本，`0cb0058d0` **尚未部署**（站长 2026-09-29 决定"暂不部署，继续观察"）。
+
+---
+
+### [机制] 刀锋山：军团高射炮不开火（dev/137）+ 邪能炮弹堆被炸后不消失（`GameObject.cpp` 显式例外）—— 2026-09-29（本地待验证）
+
+站长报告：*"刀锋山的军团高射炮还是不会开火"*、*"邪能炮弹堆刷新出来的兔子……只是这个过程中炮弹 go 没有消失"*。
+
+#### 一、高射炮 23076 不开火 ⇒ 法术本身没有任何客户端表现
+
+| 数据 | 内容 |
+|---|---|
+| `creature_ai_scripts.id=2307601`（23076 唯一动作） | `EVENT_T_OOC_LOS`（敌对目标、60 码、重复 7~10 秒）→ `ACTION_T_CAST` 法术 **41598**（castFlags=2 TRIGGERED） |
+| `spell_template.Id=41598`「Knockdown Felcannon: The Bolt Pair」 | **SpellVisual = 0**；Effect1=3(DUMMY) + Effect2=6(APPLY_AURA, 4=DUMMY)；`spell_scripts` 无该 Id |
+| `spell_template.Id=40109`「Knockdown Fel Cannon: The Bolt」 | **SpellVisual = 9092**（可见弹道），Effect1=3(DUMMY) |
+| `spell_template.Id=40111`「…The Aggro bunny」 | SpellVisual 9092，Effect1/2=28 召唤 23077（`[PH]Knockdown Fel Cannon Dummy`）×2 |
+
+- 客户端表现取自 **SpellVisual**；EventAI 触发与施法**再正确**，41598 也不会有任何表现 —— 它是原版内部的隐形触发器法术。
+- 全库**没有任何** EventAI 施放 40109/40111/40112/40113/40119，`spell_scripts` 中也没有这一族脚本 ⇒ 原版「射击 → 击落飞行玩家」的链条在 cmangos **从未实现**（`SpellAuras.cpp:1614`、`:7424` 只剩被注释掉的 `case 40113` / `case 40119`）。
+- 其余前提都正常：`creature_template` 23076 `AIName=EventAI`、`Faction=90`（FactionTemplate 90 = MONSTER 对玩家敌对）、22 个刷点；法术 RangeIndex 13（`SpellRange.dbc` 13 的射程远超事件 60 码）⇒ **唯一问题就是这个不可见法术**。
+
+**改动（`dev/137_刀锋山军团高射炮_改用可见开火法术.sql`，站长 2026-09-29 用正式服记录定案）**
+
+站长提供正式服战斗记录作为权威依据：
+
+```
+SPELL_CAST_SUCCESS ... 23082「军团高射炮」→ 40075「邪能高射炮」
+SPELL_AURA_APPLIED/REMOVED ... 23082 → 41603「邪能高射炮」(DEBUFF, 反复出现)
+```
+
+对照本库 `spell_template`（数值完全吻合）：
+
+| 法术 | 参数 | 作用 |
+|---|---|---|
+| **40075**「Fel Flak Fire」 | `Effect1=108` DISPEL_MECHANIC（**misc 21 = MOUNTED**）+ `Effect2=98` **KNOCK_BACK**(49/150)；SpellVisual **9104**；半径 6 码；持续 10 秒 | **开火**：把玩家**打下坐骑**并击退 ⇒ 摔落伤害。与任务原文 *"Just don't let them shoot you down, too!"* 完全一致 |
+| **41603**「Fel Flak Fire」 | `Effect1/2=129` APPLY_AREA_AURA_ENEMY（光环 77 机制免疫21 / 89 周期伤害 4%）；半径 6 码；持续 **5 秒**；目标=施法者自身 | 炮台脚下 6 码的"火场"光环，与记录里**反复 APPLIED/REMOVED**吻合 |
+
+⇒ `dev/137` 做两件事：① `2307601` 动作法术 **41598 → 40075**（保留 OOC_LOS 敌对 60 码 / 7~10 秒、目标 6=invoker、castFlags=2 CAST_TRIGGERED —— 触发式施法**跳过射程判定**，而 40075 的 `RangeIndex=1`，必须靠它才能远程施放）；② 新增 `2307602`：**EVENT_T_TIMER_OOC 每 4~6 秒给自己挂 41603**。
+
+⚠️ 两点实测结论（2026-09-29 站长亲测）：
+- **"开火"必须先关 GM 模式**：`Player::SetGameMaster(true)` 会 `setFaction(35)`，而 `FactionTemplate 35`（GM 阵营）`ourMask=0` ⇒ 对炮台是**中立**，OOC_LOS 的敌对判定永远不成立（`[FCANDBG] isEnemy=0`）。
+- **"炮弹堆消失"也必须关 GM 才能看见**：`GameObject::isVisibleForInState` 里 `if (!u->IsGameMaster())` 明确跳过了 `!IsSpawned()` 检查 ⇒ GM 本就看得见已消失的物件。
+- 早期用 **40109** 作为开火法术（`409d8e44e`）只有弹道表现、**结构上不可能有伤害**（`Effect1=3` DUMMY），已被 40075 取代。
+
+
+#### 二、邪能炮弹堆 185861 被炸后不消失 ⇒ cmangos 的已知 TODO
+
+**决定性证据（任务原文，`quest_template`）** —— 官方设计意图就是"炸掉 + 之后会补货"：
+
+| 任务 | 原文 | 含义 |
+|---|---|---|
+| **11010 Bombing Run**（Sky Sergeant Vanderlip） | *"the bombing of **15 Fel Cannonball Stacks** … Take these bombs and **knock out their ammo stacks**."* | 炮弹堆被炸＝**被打掉** |
+| **11023 Bomb Them Again!** | *"those damned demons seem to be **replenishing their ammo supplies faster than we can knock them out**."* | 打掉后**会重新补上**（= 重刷） |
+
+配合刷点数据 `spawntimesecsmin/max = 60~180`（短重刷，典型"可消耗任务物件"）⇒ **正确行为 = 消失后再刷**。也就是说：`consumable` 字段回答的是"被玩家右键使用后是否消耗"，与"被法术炸掉"是两件事 ⇒ 它**没有错**，错的是那句守卫把"非消耗 ⇒ 永不消失"推得太宽。
+
+- 法术 **40160「Throw Bomb」** 的脚本效果（`SpellEffects.cpp:2047`）命中时就写了 `go->SetRespawnTime(1); go->SetLootState(GO_JUST_DEACTIVATED);`，意图就是让炮弹堆消失。
+- 但 `GameObject.cpp:685` 有一句：`(CHEST || GOOBER) && !IsDespawnAtAction() && !m_forcedDespawn → return;`（"非消耗型箱子/触发器永不消失"，为 Xabraxxis 的恶魔袋 177624 而加）⇒ 直接 return。
+- `IsDespawnAtAction()`（`GameObject.h:406`）对 GOOBER 取 `goober.consumable != 0`，对应 `gameobject_template.data5`；185861 的 **data5 = 0** ⇒ 永不消失。`GameObject.cpp:612` 的 `// research - 185861 needs to be able to despawn as well TODO: fixup` 正是这个缺口。
+
+**改动（代码修复 —— 站长 2026-09-29 定案）** `src/game/Entities/GameObject.cpp`：在这句"非消耗箱子/触发器永不消失"的守卫上开一个**显式例外**：
+
+```cpp
+if ((GetGoType() == GAMEOBJECT_TYPE_CHEST || GetGoType() == GAMEOBJECT_TYPE_GOOBER)
+        && !GetGOInfo()->IsDespawnAtAction() && !m_forcedDespawn && GetEntry() != 185861)
+    return;
+```
+
+同时把 GOOBER 分支里那句 `// research - 185861 needs to be able to despawn as well TODO: fixup` 改成指向该例外的说明。之后 185861 走正常的"消失"流程：客户端收到 despawn 动画，再按该刷点自身 `spawntimesecsmin/max`（**60~180 秒**）重刷，其他玩家仍可完成任务。
+
+为什么**不用**数据层（备选方案，已试后回滚）：把 185861 的 `goober.consumable`（data5）置 1 也能达到同样效果，且实测幂等；但那是**挪用"使用后消耗"字段的语义**去绕过守卫，而模板里该字段大概率忠实于官方 ⇒ 最终回滚该改法，改用代码例外。
+
+副作用核对（确认不会踩到别的分支）：
+
+| 使用点 | 结论 |
+|---|---|
+| `ObjectMgr.cpp:2539`（告警） | 仅当 `spawntimesecsmin = 0` 才触发；185861 是 **60** ⇒ 不触发 |
+| `ObjectMgr.cpp:7621` `CheckGOConsumable` | 只校验取值 0/1 ⇒ 与本改动无关 |
+| `GameObject.cpp:654/656`（`isNonConsumableLootObj`） | 只对"野外召唤"类 GO 生效；185861 是静态刷点（`HasStaticDBSpawnData()` = true）⇒ 无影响 |
+| `GameObject.h:444` `GetDespawnPossibility()` | 与本路径无关 |
+| `GameObject::Use()` | 185861 无 `spellId/questId/lockId`，玩家无法"使用"它 ⇒ 无影响 |
+
+#### 三、⚠️ 纠错：dev/134（补 185862 陷阱刷点）**已撤销** —— 它导致了「一次轰炸两次计数」
+
+`dev/134` 曾在 38 个可见炮弹堆坐标上补了 38 个 `185862` 陷阱刷点（guid 9000110~9000147），理由是"隐形目标 23118 根本不存在"。**这个判断是错的，且该补丁有害**，已于 `cd99ab2e0` 撤销：
+
+| 事实 | 证据 |
+|---|---|
+| 185862 **本来就不该有刷点** | `GameObject.cpp:1670`（GOOBER `Use()`）会调用 `TriggerLinkedGameObject()`；后者（`:1284`）先在本 GO 0.5 码内找**已存在**的陷阱并 `Use()`，**找不到时走 `:1314` 兜底分支直接施放陷阱法术 40181**。该兜底注释 `[10961]` 写明就是为"linked trap 不在地图数据里"的 GO 准备的（同样没刷点的例子：goober 185500 Bogblossom → trap 185499） |
+| 全库 185862 刷点：**改前 0 行、补后 38 行、撤销后 0 行** | 三个参考库（`tbcmangos` / `tbcmangos_orig` / `acore_world`）同样是 0 ⇒ 上游本来就不需要它 |
+| **双计数的机制** | 补了常驻陷阱后变成**两只兔子**：① 陷阱脚本 `go_fel_cannonball_stack_trap::JustSpawned()`（`go_scripts.cpp:873`）在**堆的位置**常驻召唤一只；② 玩家使用炮弹堆时 `TriggerLinkedGameObject()` 现在**能找到**陷阱 ⇒ `Use()` ⇒ 又召唤一只（在**玩家位置**）。而法术 **40160「Throw Bomb」** 的 `EffectImplicitTargetA1 = 8 = TARGET_ENUM_UNITS_SCRIPT_AOE_AT_DEST_LOC` 是**落点范围效果，范围内每个单位各跑一遍脚本效果** ⇒ 两只兔子各记 1 分 ⇒ **一次轰炸两次计数**，任务进度虚增一倍 |
+| 站长的判断 | *"本来就是正常的，我们又加了一遍"* —— 与代码路径完全一致（兜底分支才是原本的机制） |
+
+⇒ 撤销后：使用炮弹堆 → 兜底施放 40181 → **只有一只**兔子 → 计数恢复 1；兔子在命中后由 40160 的脚本 `ForcedDespawn()` 回收，不需要陷阱的 `JustDespawned()`。
+（`185861` 的 38 个可见刷点**不动**。）
+
+
+#### 四、生效 / 回滚 / 待办
+
+- **生效**：dev/137 是 world 库数据 ⇒ **重启 world**（`.reload creature_ai_scripts` 只热更 EventAI 表且已生成生物的 AI 不会重建）；炮弹堆的代码例外 ⇒ 需**重新编译 + 重启**。
+- **回滚**：`dev/rollback/137_回滚_刀锋山军团高射炮_恢复41598.sql`；炮弹堆改动回滚 = `git revert` 对应提交并重新编译（**无**数据层回滚件，因为最终没走数据方案）。
+- **临时诊断**：`CreatureEventAI.cpp` 给 23076 加了 `[FCANDBG]`（`MoveInLineOfSight` 的触发判定 + `ACTION_T_CAST` 的施法结果，各 1 秒限流）—— 验证完**必须删除，勿上云端**。
+- **待验证**：本地实测"炮口是否开火""炮弹堆是否消失"（需重启后由站长到现场观察）。

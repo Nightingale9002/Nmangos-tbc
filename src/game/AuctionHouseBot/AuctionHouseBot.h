@@ -123,6 +123,17 @@ struct AuctionHouseBotMarketState
     // regulated every scan by PLAYER LISTING DEPTH, never by the price.
     uint32 flowBought = 0;        // units the bot bought from players since last settle (persisted)
     uint32 flowSold = 0;          // units players bought from the bot since last settle (persisted)
+    // [2026-09-29 站长定案 / 2026-09-29 二次定案改为快照差值] 结算口径按【金币流水】动价
+    // （单位：铜）。spentGold / earnedGold 是累计值、是金币的唯一真相（PnL 观测用，不能破坏），
+    // 所以**不再维护两个窗口累加器**，只存"上次结算时"的快照：
+    //   lastSettleSpent  = 上次结算时的 spentGold 快照
+    //   lastSettleEarned = 上次结算时的 earnedGold 快照
+    // 窗口金币 = 本次 spentGold/earnedGold 与其快照之差（结算后把快照推进到当前值）；
+    // 每满 100 金（1,000,000 铜）⇒ 按 Move*BpPer100Gold 移动锚价（默认 10 bp = 0.1%）；
+    // 不足 100 金的尾数按整百金【向下取整丢弃】（每次结算后窗口重新开始）。
+    // 持久化在 ahbot_market_state.last_settle_spent / last_settle_earned（由 dev/136 加列）。
+    uint32 lastSettleSpent = 0;   // snapshot of spentGold taken at the last settlement (persisted)
+    uint32 lastSettleEarned = 0;  // snapshot of earnedGold taken at the last settlement (persisted)
     uint32 lastSettleTime = 0;    // time of the last flow settlement (price anchor move)
     uint32 probeDemandLevel = 0xFF; // deepest probe level (0=85% .. 4=45%) with a sale (observation)
     uint32 probeStaleScans = 0;     // scans since the last probe outcome (evidence decay)
@@ -320,11 +331,19 @@ class AuctionHouseBot
         bool m_catalogEnabled = true;     // curated catalog drives book supply
         uint32 m_catalogTarget = 200;     // 行未配 target 时的兜底（单位数；10 组 × 堆叠 20）
         // ---- central-bank flow price discovery (long settle period) ----
-        uint32 m_flowRatio = 150;       // imbalance threshold %: bought>sold*1.5 => lower, sold>bought*1.5 => raise
-        uint32 m_flowMoveDownPct = 5;   // anchor move % per settle when OVERPRICED (players flood us -> lower fast)
-        uint32 m_flowMoveUpPct = 1;     // anchor move % per settle when UNDERPRICED (raise very slowly - welfare protection)
-        uint32 m_flowMinUnits = 20;     // min total flow units in a period before the signal counts
+        // [2026-09-29 站长定案] 以下 4 个键【已废弃】：不再参与任何判断，只为兼容旧 conf 保留读取。
+        //   单位数门槛（FlowMinUnits）、买卖比门槛（FlowRatio）、单次幅度封顶（FlowMove*Pct）全部取消，
+        //   结算改为"金币流水 × Move*BpPer100Gold"，唯一封顶是 24h ±MaxDailyMovePct。
+        uint32 m_flowRatio = 150;       // [DEPRECATED] imbalance threshold % (no longer used)
+        uint32 m_flowMoveDownPct = 5;   // [DEPRECATED] fixed % move down per settle (no longer used)
+        uint32 m_flowMoveUpPct = 1;     // [DEPRECATED] fixed % move up per settle (no longer used)
+        uint32 m_flowMinUnits = 20;     // [DEPRECATED] min total flow units per period (no longer used)
         uint32 m_flowSettleHours = 24;  // settle period in hours (e.g. 24 = daily, 168 = weekly)
+        // [2026-09-29 站长定案] 新结算口径 = 金币流水：每满 100 金（1,000,000 铜）移动多少 bp（10 = 0.1%）。
+        //   MoveDownBpPer100Gold = 机器人收货花出去的金币（玩家大量供货 ⇒ 供给过剩 ⇒ 降价）
+        //   MoveUpBpPer100Gold   = 玩家买走所花的金币（需求强 ⇒ 涨价；仍需 ≥2 个不同买家）
+        uint32 m_flowMoveDownBpPer100Gold = 10;
+        uint32 m_flowMoveUpBpPer100Gold = 10;
         // [v4 2026-09-26] 玩家深度调节（m_depth*）与过渡商品倍率（m_transition*）已删除：
         // 两者都是让机器人自行改库存额度的老机制；额度由 operator 行 target 决定。
         // the curated universe: droppable + priceable Class 7 items (from world loot

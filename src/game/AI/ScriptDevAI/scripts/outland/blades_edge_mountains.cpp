@@ -2269,6 +2269,8 @@ struct npc_soulgrinderAI : public ScriptedAI
     {
         if (Creature* ogre = m_creature->GetMap()->GetCreature(m_ogreSpirits[m_uiOgreCounter]))
         {
+            // [SGDBG 2026-09-29] 临时诊断：记录"放魂"时刻，便于与消失时刻对齐
+            sLog.outError("[SGDBG] soulgrinder reveal #%u spirit guid=%u alive=%u", (uint32)m_uiOgreCounter, ogre->GetGUIDLow(), ogre->IsAlive() ? 1 : 0);
             ogre->AI()->SetReactState(REACT_DEFENSIVE);
             ogre->CastSpell(ogre, SPELL_SOULGRINDER_GHOST_TRANSFORM, TRIGGERED_NONE);
             ogre->CastSpell(ogre, SPELL_SPIRIT_PARTICLES_PURPLE, TRIGGERED_NONE);
@@ -3437,9 +3439,128 @@ bool AreaTrigger_at_vindicator_vuuleen(Player* player, AreaTriggerEntry const* /
     return true;
 }
 
+// 23076 "Legion Flak Cannon" - the anti air guns of Forge Camp: Terror / Wrath (quests 11010 / 11023).
+// Previously driven by EventAI (rows 2307601 / 2307602), which cannot express two things the live
+// servers do:
+//   1. ACTION_T_CAST always supplies a UNIT target. The client then attaches the flak fire impact
+//      visuals to that unit even when the shell lands somewhere else, so a dodged shell still left
+//      fire on the player. Live servers fire the shell at COORDINATES only.
+//   2. It fired at any hostile player in range. A flak gun only shoots at targets in the air - that is
+//      the whole point of the quest line ("just don't let them shoot you down, too!").
+// The shell itself is spell 40109 (its SpellVisual 9092 carries the missile model), and the burst is
+// applied by the spell script spell_fel_flak_fire when the projectile lands.
+enum
+{
+    NPC_LEGION_FLAK_CANNON          = 23076,
+    NPC_FLAK_CANNON_TARGET          = 23155,    // Invisible Stalker (Scale x3) - the shell's aim point
+    SPELL_FEL_FLAK_BOLT             = 40109,
+    SPELL_FEL_FLAK_FIRE_FIELD       = 41603,
+};
+
+static float const FLAK_CANNON_RANGE = 60.0f;
+
+struct npc_legion_flak_cannonAI : public Scripted_NoMovementAI
+{
+    npc_legion_flak_cannonAI(Creature* creature) : Scripted_NoMovementAI(creature), m_fieldTimer(0), m_fireTimer(0) {}
+
+    uint32 m_fieldTimer;
+    uint32 m_fireTimer;
+
+    void Reset() override
+    {
+        m_fieldTimer = urand(1000, 2000);
+        m_fireTimer = urand(7000, 10000);
+    }
+
+    // Only players in the air are worth shooting at. IsFlying()/IsLevitating()/IsHovering() are NOT set
+    // for a player riding a flying mount in this client build (it tracks that with the separate "can fly"
+    // state), so being mounted and clearly above the gun counts as airborne as well.
+    bool IsAirborne(Player const* player) const
+    {
+        if (player->IsFlying() || player->IsLevitating() || player->IsHovering())
+            return true;
+
+        return player->IsMounted() && player->GetDistanceZ(m_creature) > 5.0f;
+    }
+
+    Player* SelectAirborneTarget() const
+    {
+        Player* target = nullptr;
+        float bestDist = FLAK_CANNON_RANGE;
+
+        for (auto& playerRef : m_creature->GetMap()->GetPlayers())
+        {
+            Player* player = playerRef.getSource();
+            if (!player || !player->IsAlive())
+                continue;
+
+            if (player->IsGameMaster())
+                continue;
+
+            if (!m_creature->IsEnemy(player))
+                continue;
+
+            if (!IsAirborne(player))
+                continue;
+
+            if (!m_creature->IsWithinDistInMap(player, bestDist) || !m_creature->IsWithinLOSInMap(player))
+                continue;
+
+            bestDist = m_creature->GetDistance(player);
+            target = player;
+        }
+
+        return target;
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        // keep the fire field on the cannon itself (live servers do the same)
+        if (m_fieldTimer <= diff)
+        {
+            m_fieldTimer = urand(4000, 6000);
+            DoCastSpellIfCan(m_creature, SPELL_FEL_FLAK_FIRE_FIELD, CAST_TRIGGERED);
+        }
+        else
+            m_fieldTimer -= diff;
+
+        if (m_fireTimer <= diff)
+        {
+            m_fireTimer = urand(7000, 10000);
+
+            if (Player* target = SelectAirborneTarget())
+            {
+                // Live servers fire the shell at coordinates. The client only animates a projectile for a
+                // spell that has a UNIT target, so park an invisible dummy at the target's coordinates and
+                // fire at that: the shell flies to those coordinates, the burst is resolved there, and a
+                // player who keeps moving dodges it - without any impact visuals on the player himself.
+                if (Creature* dummy = m_creature->SummonCreature(NPC_FLAK_CANNON_TARGET, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), 0.0f, TEMPSPAWN_TIMED_DESPAWN, 15000))
+                {
+                    if (SpellCastResult result = m_creature->CastSpell(dummy, SPELL_FEL_FLAK_BOLT, TRIGGERED_OLD_TRIGGERED))
+                        sLog.outError("[FLAKAI] entry=%u failed to fire at %s, cast result %u", m_creature->GetEntry(), target->GetName(), uint32(result));
+                }
+                else
+                    sLog.outError("[FLAKAI] entry=%u failed to summon the shell target dummy", m_creature->GetEntry());
+            }
+        }
+        else
+            m_fireTimer -= diff;
+    }
+};
+
+UnitAI* GetAI_npc_legion_flak_cannon(Creature* pCreature)
+{
+    return new npc_legion_flak_cannonAI(pCreature);
+}
+
 void AddSC_blades_edge_mountains()
 {
     Script* pNewScript = new Script;
+    pNewScript->Name = "npc_legion_flak_cannon";
+    pNewScript->GetAI = &GetAI_npc_legion_flak_cannon;
+    pNewScript->RegisterSelf();
+
+    pNewScript = new Script;
     pNewScript->Name = "mobs_nether_drake";
     pNewScript->GetAI = &GetAI_mobs_nether_drake;
     pNewScript->RegisterSelf();

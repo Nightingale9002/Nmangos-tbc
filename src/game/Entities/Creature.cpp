@@ -2139,6 +2139,11 @@ void Creature::Respawn()
 
 void Creature::ForcedDespawn(uint32 timeMSToDespawn, bool onlyAlive)
 {
+    // [SGDBG 2026-09-29] 临时诊断：谁在收走食人魔之魂（脚本里的 ForcedDespawn 会走到这里）
+    if (GetEntry() == 22912)
+        sLog.outError("[SGDBG] spirit 22912 guid=%u ForcedDespawn: delay=%u onlyAlive=%u alive=%u",
+                      GetGUIDLow(), timeMSToDespawn, onlyAlive ? 1 : 0, IsAlive() ? 1 : 0);
+
     if (timeMSToDespawn)
     {
         ForcedDespawnDelayEvent* pEvent = new ForcedDespawnDelayEvent(*this, onlyAlive);

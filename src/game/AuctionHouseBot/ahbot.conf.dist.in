@@ -249,11 +249,21 @@ AuctionHouseBot.Value.DynamicRefresh = 60
 ###################################################################################################################
 AuctionHouseBot.MarketMaker.CatalogEnabled = 1
 AuctionHouseBot.MarketMaker.CatalogTarget = 200
+# [2026-09-29 站长定案] 下面 4 个键【已废弃】：单位数门槛(FlowMinUnits)、买卖比门槛(FlowRatio)、
+# 单次幅度封顶(FlowMoveDownPct/FlowMoveUpPct) 全部取消参与判断，结算改按"金币流水"（见文件末尾
+# "结算机制"段）。键保留只是为了兼容旧的 ahbot.conf：照旧读取，但不再影响任何价格。
 AuctionHouseBot.MarketMaker.FlowRatio = 150
 AuctionHouseBot.MarketMaker.FlowMoveDownPct = 5
 AuctionHouseBot.MarketMaker.FlowMoveUpPct = 1
 AuctionHouseBot.MarketMaker.FlowMinUnits = 20
 AuctionHouseBot.MarketMaker.FlowSettleHours = 24
+# [2026-09-29 站长定案] 新结算口径：金币流水每满 100 金（1,000,000 铜）⇒ 移动这么多 bp（10 = 0.1%）。
+#   MoveDownBpPer100Gold = 机器人为"从玩家手里收货"花出去的金币触发的【降价】步长
+#   MoveUpBpPer100Gold   = 玩家为"买走我们的挂单"花掉的金币触发的【涨价】步长（仍需 ≥2 个不同买家）
+#   代码默认 10（0.1%/100 金）⇒ 本模板【故意不写这两行】：不设置即用默认值（模板即默认关闭的风格，
+#   只列说明）。需要覆盖时取消注释；0 = 关闭该方向的"金币流水定价"（该方向不再因流水动价）。
+# AuctionHouseBot.MarketMaker.MoveDownBpPer100Gold = 10
+# AuctionHouseBot.MarketMaker.MoveUpBpPer100Gold = 10
 
 ###################################################################################################################
 # Disabled consumable subclasses (crafted/welfare goods the bot must NOT supply)
@@ -348,14 +358,30 @@ AuctionHouseBot.MarketMaker.PriceCeil = 300
 
 
 ###################################################################################################################
-# [2026-09-21] 结算机制（站长定案）—— 与 FlowMinUnits/FlowRatio/FlowSettleHours/FlowMove*Pct 配套读：
-#   FlowMinUnits + FlowRatio = 单次结算的"证据门槛"：窗口内 flowTotal ≥ FlowMinUnits 且单边比 ≥ FlowRatio%
-#                             才动价；低于门槛的流水会被【无条件清零丢弃】（不累积到下期）
+# [2026-09-29 站长定案 / 二次定案改为快照差值] 结算机制 —— 按【金币流水】移动报价锚
+# （旧的单位数/买卖比口径已取消）：
+#   窗口流水 = "累计值 - 上次结算快照"的差值（铜），快照列 = tbccharacters.ahbot_market_state 的
+#              last_settle_spent / last_settle_earned（= 上次结算时的 spent / earned，dev/136 加列）。
+#              spent / earned 是累计值、是金币的唯一真相（PnL 观测），**不再维护窗口累加器**；
+#              结算后把快照推进到当前累计值 ⇒ 窗口自然重新开始
+#              （不足 100 金的尾数随之丢弃，不结转，见下）
+#   降价 = 机器人从玩家手里收货【花出去的金币】= spent - last_settle_spent，每满 100 金（1,000,000 铜）
+#          ⇒ 降 MoveDownBpPer100Gold bp（默认 10 = 0.1%）
+#   涨价 = 玩家买走我们挂单【花掉的金币】= earned - last_settle_earned，每满 100 金
+#          ⇒ 涨 MoveUpBpPer100Gold bp（默认 10 = 0.1%）
+#          ★ 涨价额外要求"≥2 个不同买家"（代码 soldBuyers 去重）：单人自买自卖（养价）无法推价，
+#            该窗口的涨价额度直接作废（日志 result=up-blocked-1buyer）；降价不设该限制 ——
+#            单个玩家大量砸货是真实的供给过剩信号
+#   净额：同一窗口两个方向都有流水 ⇒ 先各自算 bp 再相减 netBp = upBp - downBp，
+#          >0 才算涨 / <0 算跌 / ==0 不动（日志 result=balanced）
+#   尾数：步骤数 = 窗口金币铜数 / 1,000,000（向下取整）⇒ 不足 100 金的部分【丢弃】，不结转到下一窗口
+#   已取消：FlowMinUnits（最少单位数）、FlowRatio（买卖比）、FlowMoveUpPct/FlowMoveDownPct（单次封顶）
 #   FlowSettleHours          = 结算窗口（小时）。1 = 每小时结算一次
-#   FlowMoveUpPct/DownPct    = 每次结算最多移动百分之几 ⇒ 配合 FlowSettleHours=1 即"每小时 ≤1%"
-#   MaxDailyMovePct          = 每 24 小时累计移动上限 ⇒ 即"每天 ≤±10%"（day_price/day_start 持久化）
-#   ★ 涨价额外要求"≥2 个不同买家"（代码 soldBuyers 去重）：单人自买自卖（养价）无法推价；
-#     降价不设该限制 —— 单个玩家大量砸货是真实的供给过剩信号，且价格跌得比涨得快是有意的保护
+#   MaxDailyMovePct          = 【唯一】剩下的封顶：每 24 小时累计移动上限 ⇒ 即"每天 ≤±10%"
+#                              （day_price/day_start 持久化在 ahbot_market_state）
+#   MinMoveCopper            = 最小步进（铜）：方向明确时至少动这么多铜，避免低价品被整数取整抹平
 #   ★ PriceFloor / PriceCeil = 0 ⇒ 不按静态价钳制（静态价是随手设的，不能当"正常区间"）
+#   ★ 结算日志：[AHBOT] SETTLE item=.. house=.. boughtGold=.. soldGold=.. upBp=.. downBp=.. buyers=.. old=.. new=.. result=..
+#              （boughtGold / soldGold = 本窗口的 spent / earned 差值，即窗口金币）
 #   ★ 成交日志：每笔成交写 tbccharacters.auction_history 一行 + Server.log 的 [AHTRADE] 日志
 ###################################################################################################################
