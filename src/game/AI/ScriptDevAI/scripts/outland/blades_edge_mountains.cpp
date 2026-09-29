@@ -3454,6 +3454,7 @@ enum
     NPC_LEGION_FLAK_CANNON          = 23076,
     NPC_FLAK_CANNON_TARGET          = 23155,    // Invisible Stalker (Scale x3) - the shell's aim point
     SPELL_FEL_FLAK_BOLT             = 40109,
+    SPELL_FEL_FLAK_FIRE             = 40075,    // the debuff the target must not already have
     SPELL_FEL_FLAK_FIRE_FIELD       = 41603,
 };
 
@@ -3461,15 +3462,42 @@ static float const FLAK_CANNON_RANGE = 60.0f;
 
 struct npc_legion_flak_cannonAI : public Scripted_NoMovementAI
 {
-    npc_legion_flak_cannonAI(Creature* creature) : Scripted_NoMovementAI(creature), m_fieldTimer(0), m_fireTimer(0) {}
+    npc_legion_flak_cannonAI(Creature* creature) : Scripted_NoMovementAI(creature), m_fieldTimer(0), m_fireTimer(0), m_pendingShots(0), m_shotTimer(0), m_aimX(0.0f), m_aimY(0.0f), m_aimZ(0.0f) {}
 
     uint32 m_fieldTimer;
     uint32 m_fireTimer;
+    uint32 m_pendingShots;      // shells still to fire in the current salvo
+    uint32 m_shotTimer;         // delay until the next shell of the salvo
+    float m_aimX, m_aimY, m_aimZ;
 
     void Reset() override
     {
         m_fieldTimer = urand(1000, 2000);
         m_fireTimer = urand(7000, 10000);
+        m_pendingShots = 0;
+        m_shotTimer = 0;
+    }
+
+    // One shell: park an invisible dummy at the aim coordinates (the client only animates a projectile for
+    // a spell that has a unit target) and fire the bolt at it. The burst is resolved at those coordinates
+    // by the spell script, so a player who keeps moving dodges it.
+    void FireShell()
+    {
+        // Turn the gun towards the impact point before firing. Creatures do not rotate by themselves for
+        // triggered casts, which made the cannon fire "sideways" while the shell flew at the target.
+        m_creature->SetFacingTo(m_creature->GetAngle(m_aimX, m_aimY));
+
+        // All shells of a salvo are aimed at exactly the same coordinates (no spread) - the target either
+        // sits inside the 6 yard impact radius or has moved out of it.
+        if (Creature* dummy = m_creature->SummonCreature(NPC_FLAK_CANNON_TARGET, m_aimX, m_aimY, m_aimZ, 0.0f, TEMPSPAWN_TIMED_DESPAWN, 15000))
+        {
+            // NOTE: SPELL_CAST_OK is 0xFF (non-zero!) in this core - never test the result for truthiness,
+            // it produced a misleading "failed to fire" log on every shot.
+            if (m_creature->CastSpell(dummy, SPELL_FEL_FLAK_BOLT, TRIGGERED_OLD_TRIGGERED) != SPELL_CAST_OK)
+                sLog.outError("[FLAKAI] entry=%u failed to fire a shell", m_creature->GetEntry());
+        }
+        else
+            sLog.outError("[FLAKAI] entry=%u failed to summon the shell target dummy", m_creature->GetEntry());
     }
 
     // Only players in the air are worth shooting at. IsFlying()/IsLevitating()/IsHovering() are NOT set
@@ -3483,7 +3511,9 @@ struct npc_legion_flak_cannonAI : public Scripted_NoMovementAI
         return player->IsMounted() && player->GetDistanceZ(m_creature) > 5.0f;
     }
 
-    Player* SelectAirborneTarget() const
+    // ignoreAura = true is used by the facing/tracking code: a player who is already burning is still the
+    // one the gun is aiming at, so it must keep turning towards him.
+    Player* SelectAirborneTarget(bool ignoreAura = false) const
     {
         Player* target = nullptr;
         float bestDist = FLAK_CANNON_RANGE;
@@ -3498,6 +3528,12 @@ struct npc_legion_flak_cannonAI : public Scripted_NoMovementAI
                 continue;
 
             if (!m_creature->IsEnemy(player))
+                continue;
+
+            // Live servers never apply the flak fire to a target that already burns: in the retail combat
+            // log the applications sit exactly one debuff duration (10s) apart, with no SPELL_AURA_REFRESH
+            // in between. Skip such targets instead of stacking a second aura on them.
+            if (!ignoreAura && player->HasAura(SPELL_FEL_FLAK_FIRE))
                 continue;
 
             if (!IsAirborne(player))
@@ -3524,27 +3560,48 @@ struct npc_legion_flak_cannonAI : public Scripted_NoMovementAI
         else
             m_fieldTimer -= diff;
 
+        // Keep the gun trained on the nearest airborne player: the live cannons visibly swivel towards
+        // their target instead of only snapping to it for the instant of a shot. Only real bearing changes
+        // are sent (0.05 rad threshold), so this does not spam movement updates.
+        if (Player* watched = SelectAirborneTarget(true))
+        {
+            float const bearing = m_creature->GetAngle(watched);
+            if (fabs(m_creature->GetOrientation() - bearing) > 0.05f)
+                m_creature->SetFacingTo(bearing);
+        }
+
         if (m_fireTimer <= diff)
         {
             m_fireTimer = urand(7000, 10000);
 
+            // ONE shell per cycle (站长 2026-09-30). The retail combat log shows several 40075 applications
+            // inside the same second, which we first modelled as a salvo of 2-3 shells - but on this core
+            // every shell resolves its own knock back, so a single visible shot threw the player around
+            // three times. Salvo removed; the aim point is still locked for the whole shot, so a moving
+            // player can still dodge it.
             if (Player* target = SelectAirborneTarget())
             {
-                // Live servers fire the shell at coordinates. The client only animates a projectile for a
-                // spell that has a UNIT target, so park an invisible dummy at the target's coordinates and
-                // fire at that: the shell flies to those coordinates, the burst is resolved there, and a
-                // player who keeps moving dodges it - without any impact visuals on the player himself.
-                if (Creature* dummy = m_creature->SummonCreature(NPC_FLAK_CANNON_TARGET, target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), 0.0f, TEMPSPAWN_TIMED_DESPAWN, 15000))
-                {
-                    if (SpellCastResult result = m_creature->CastSpell(dummy, SPELL_FEL_FLAK_BOLT, TRIGGERED_OLD_TRIGGERED))
-                        sLog.outError("[FLAKAI] entry=%u failed to fire at %s, cast result %u", m_creature->GetEntry(), target->GetName(), uint32(result));
-                }
-                else
-                    sLog.outError("[FLAKAI] entry=%u failed to summon the shell target dummy", m_creature->GetEntry());
+                m_aimX = target->GetPositionX();
+                m_aimY = target->GetPositionY();
+                m_aimZ = target->GetPositionZ();
+                m_pendingShots = 1;
+                m_shotTimer = 0;
             }
         }
         else
             m_fireTimer -= diff;
+
+        if (m_pendingShots)
+        {
+            if (m_shotTimer <= diff)
+            {
+                --m_pendingShots;
+                m_shotTimer = urand(250, 500);
+                FireShell();
+            }
+            else
+                m_shotTimer -= diff;
+        }
     }
 };
 

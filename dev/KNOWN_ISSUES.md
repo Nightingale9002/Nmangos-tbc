@@ -5570,3 +5570,67 @@ if ((GetGoType() == GAMEOBJECT_TYPE_CHEST || GetGoType() == GAMEOBJECT_TYPE_GOOB
 - **回滚**：`dev/rollback/137_回滚_刀锋山军团高射炮_恢复41598.sql`；炮弹堆改动回滚 = `git revert` 对应提交并重新编译（**无**数据层回滚件，因为最终没走数据方案）。
 - **临时诊断**：`CreatureEventAI.cpp` 给 23076 加了 `[FCANDBG]`（`MoveInLineOfSight` 的触发判定 + `ACTION_T_CAST` 的施法结果，各 1 秒限流）—— 验证完**必须删除，勿上云端**。
 - **待验证**：本地实测"炮口是否开火""炮弹堆是否消失"（需重启后由站长到现场观察）。
+
+---
+
+### [机制] 刀锋山军团高射炮：最终实现与引擎踩坑（`dev/137` / `dev/140` / AI 脚本）—— 2026-09-29
+
+> 这一章替换上面章节里"开火链路"的部分结论。最终形态见提交 `8798ee5f2`（前身 `f25a44892` 已上云）。
+
+#### 一、最终实现（三条链路）
+
+| 环节 | 实现 | 位置 |
+|---|---|---|
+| 开火 | ScriptDevAI `npc_legion_flak_cannon`：**只对空中目标**（`IsFlying/Levitating/Hovering`，或"骑坐骑且高出炮口 5 码"）+ **已带 40075 的目标跳过** + 60 码 + 7~10 秒节奏；每轮**齐射 2~3 枚**（间隔 250~500ms、**瞄准同一坐标、无散布**） | `blades_edge_mountains.cpp` |
+| 炮弹 | 每枚先召唤**隐形兔子 23155**（Invisible Stalker）放在目标**开火瞬间的坐标**，再对它施放 **40109「The Bolt」** | 同上 |
+| 命中 | 法术脚本 `spell_fel_flak_fire`（注册在 40109）：`OnSuccessfulStart` 写落点坐标；`OnSuccessfulFinish` 在**落点**半径 6 码内给敌对玩家**移除坐骑光环**（击落）+ `KnockBackFrom(15.0/5.0)`，并**在落点补施放 40075** ⇒ 由核心按 DBC 挂上周期伤害 | `spell_scripts.cpp` |
+| 火场 | `2307602`：每 4~6 秒给炮台自身挂 **41603**（与正式服记录一致） | `dev/137` |
+
+#### 二、⚠️ 五个引擎/数据坑（全部实测踩过）
+
+1. **`SpellVisual.dbc` 的 `HasMissile` 决定"能不能画出炮弹"**：`9092`（40109）有飞弹模型 3407、`Speed=16`；而 `9104`（**40075**）/`9414`（41603）**没有飞弹配置** ⇒ 无论怎么改目标数据，施放 40075 都**看不到炮弹**。正式服的分工也是 40109 飞弹 + 40075 爆开。
+2. **位置型效果在 cmangos 不执行**：40075 的 `Effect1=108 DISPEL_MECHANIC(misc 21=MOUNTED)`、`Effect2=98 KNOCK_BACK` 目标位是 `18/22`（**位置**），而 `SpellEffects.cpp` 里 `EffectDispelMechanic`/`EffectKnockBack` 都是 `if (!unitTarget) return;` ⇒ 位置型目标永远拿不到单位 ⇒ **施放成功但什么都不发生**（日志 `castResult=0` 却毫无反应）。所以击落/击退只能在脚本里做。
+3. **核心自带飞弹飞行延迟，脚本不要重复加**：本 fork 有 `SPELL_STATE_TRAVELING → LANDING → FINISHED` 状态机，`Spell::AddUnitTarget()`（`Spell.cpp:985-994`）按 `dist/speed` 写 `m_delayMoment`，`SpellEvent`（`:7669`）把法术推迟到**弹着点**才 `finish()` ⇒ 脚本钩子本来就在落地那一刻执行。早期脚本又自己等了一遍同样时间 ⇒ **双重延迟**（炮弹早落地、人过几秒才被击落）。
+4. **`SPELL_CAST_OK = 0xFF`（不是 0）**：本 fork 的自定义值（`SpellDefines.h:451`）。写 `if (CastSpell(...))` 判失败 ⇒ **每次成功都误报**"failed to fire, cast result 255"。
+5. **`TARGET_LOCATION_CASTER_DEST` 会被核心填成施法者自身坐标**：`Spell::AddDestExecution()`（`Spell.cpp:1155-1177`）从 `m_targets.getDestination()` 取落点算延迟，而该值默认是**炮台自己** ⇒ 40075 的 `Effect3`（落点 6 码 AE）枚举到的是炮台脚下，玩家在 20~60 码外，**DoT 永远挂不上**。另外 `SpellTargets.cpp` 把 108/98 登记为 `TARGET_TYPE_UNIT`，所以 `OnDestTarget()` 钩子对本法术**不会被调用**（改落点要用 `OnSuccessfulStart`，它早于 `SendSpellGo()`：`:3268` vs `:3500`）。
+
+#### 三、正式服对照（站长提供的战斗记录，BUILD 12.1.0）
+
+| 正式服现象 | 我们的实现 |
+|---|---|
+| 炮台施放 `40075` **不带单位目标、带坐标**（advanced 段末 x/y/z） | 已按"对坐标开火"实现（兔子=瞄准点） |
+| 炮台**周期性给自己挂 `41603`**（DEBUFF，反复 APPLIED/REMOVED，约 5 秒） | `2307602` 每 4~6 秒自挂 ✓（TBC 的 `41603` DurationIndex 28 = 5 秒） |
+| `40075` 命中 = 给玩家**挂 debuff**，随后**周期伤害约 4 跳 / 10 秒** | TBC DBC 的 `Effect3` 同样是 `APPLY_AURA 89 = PERIODIC_DAMAGE_PERCENT`，`basePoints=4`（每跳 **4% 最大生命**）、`Amplitude=2000`（**2 秒**）、`DurationIndex=1`（**10 秒**）⇒ **5 跳**；挂在落点 6 码内的单位上（`EffectImplicitTargetA3 = 8` = 落点 AE 枚举） |
+| **身上已有该 debuff 就不会被重新施加**（4 次施加间隔恰好 10.1/10.2/10.5 秒 = debuff 时长，全程无 `SPELL_AURA_REFRESH`） | AI 侧门禁：目标 `HasAura(40075)` ⇒ 直接跳过；核心侧另有 `AURA_UNIQUE` 兜底（见下节） |
+| 一轮 2~3 发（同组 GUID 在同一两秒内开火） | 同一台炮每轮**连发 2~3 枚**，全部瞄准同一坐标 |
+| ⚠️ 差异 | 正式服跳伤间隔 ≈3 秒（数据被后续资料片改过），我们按 TBC DBC 的 **2 秒**；`Spell.dbc` 一行未改 |
+
+#### 四、光环唯一性：来自不同施法者的同一 buff/debuff 会不会叠加？
+
+**规则**：光环按 **(法术 id, 施法者 GUID)** 存储（`m_spellAuraHolders` 是 multimap，`GetSpellAuraHolderBounds(spell_id)` 返回同一法术的多个 holder）。判定在 `Unit::AddSpellAuraHolder()`（`Unit.cpp:5371-5382`）：
+
+```cpp
+personal = spellProto->HasAttribute(SPELL_ATTR_EX5_AURA_UNIQUE_PER_CASTER);   // 0x20000000
+unique   = (personal || spellProto->HasAttribute(SPELL_ATTR_EX_AURA_UNIQUE));  // 0x800
+if (data && existingData && (data->mask & existingData->mask) != 0)            // spell_group 规则
+{
+    personal = data->rule == SpellGroupRule::UNIQUE_PER_CASTER;
+    unique   = (personal || data->rule == SpellGroupRule::UNIQUE);
+}
+```
+
+| 情况 | 行为 | 实例 |
+|---|---|---|
+| 无任何标志 | 不同施法者**各挂一份**（会同时存在） | **31732 Rallying Cry**（`AttributesEx=0`）、3436 之外的多数 buff |
+| `AttributesEx & 0x800`（`SPELL_ATTR_EX_AURA_UNIQUE`） | **全局唯一**，与施法者无关 ⇒ 不叠加 | **40075**（`0xC00`）、**3436**（`0x800`） |
+| `AttributesEx5 & 0x20000000` | 每个施法者一份 | — |
+| `spell_group` 规则 | 按组唯一/每施法者唯一 | 本库：Food/Drink/Well Fed/Flask/Seal = **1(UNIQUE)**；Judgement/Blessing/Aura/Sting/Aspect = **2(UNIQUE_PER_CASTER)** |
+| 递减组（DR group） | 也按 unique 处理（`Unit.cpp:5386-5389`） | — |
+
+⚠️ **该标志的数据来源**：服务端读的是 world 库表 `spell_template`（`SQLStorages.cpp:58`：`SQLStorage sSpellTemplate(SpellEntryfmt, "id", "spell_template")`），而该表**由客户端 `Spell.dbc` 生成** ⇒ `Attributes`/`AttributesEx*` 各字段值**等同 DBC 原值**（标准做法查 DBC；此处查表即等价）。按"数据不动"原则，这些标志位不改。
+⚠️ 判断"是否同一个 buff"要看**法术 id**：不同 id 的两个 debuff 各自存在是**正确行为**，与 `AURA_UNIQUE` 无关。
+
+#### 五、临时诊断与收尾
+
+- 已删除 `[FCANDBG]`（EventAI）与 `[FLAKAI]`/`[FLAKDBG]` 的每秒刷屏；保留 `[FLAKAI] failed to fire / failed to summon`（**仅出错时**触发）与 `[SGDBG]`（食人魔之魂未结案问题）。
+- 部署：`f25a44892` 已于 20:45 上云；`8798ee5f2` 源码已 scp + md5 校验，等 **04:30 nightly** 自动编译重启。

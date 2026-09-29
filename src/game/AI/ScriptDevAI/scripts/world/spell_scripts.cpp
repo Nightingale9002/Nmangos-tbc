@@ -1074,7 +1074,16 @@ static void FelFlakBurst(Unit* caster, float x, float y, float z, float radius, 
         if (wasMounted)
             player->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
 
-        player->KnockBackFrom(caster, horizontalSpeed, verticalSpeed);
+        // NOTE (2026-09-30): the manual knock back that used to live here is GONE on purpose.
+        // Spell 40075 carries its own knock back effect (Effect2, with the speeds from the dbc) and it only
+        // starts resolving once the cast really has a destination - which is exactly what we now provide in
+        // OnSuccessfulFinish (that change was needed to kill the ~11 s debuff delay, see the note there).
+        // Doing the knock back here as well threw the player twice: once from this script at the moment of
+        // the impact, and a second time together with the debuff. The dbc effect is the faithful one, and
+        // because 40075 is now cast from the shell target dummy at the impact point its direction is
+        // "away from the impact point", which is what the retail logs show.
+        (void)horizontalSpeed;
+        (void)verticalSpeed;
     }
 }
 
@@ -1138,6 +1147,30 @@ struct FelFlakFire : public SpellScript
         // re-plans itself for that moment), so OnSuccessfulFinish() already runs exactly when the shell
         // arrives. Adding our own delay on top doubled the wait - the player was knocked down seconds
         // after the shell had visibly landed.
+        // Fire the original flak fire spell at the impact coordinates as well: its Effect3 is the only
+        // damage source in the client data (APPLY_AURA 89 = SPELL_AURA_PERIODIC_DAMAGE_PERCENT, 4% of max
+        // health per 2s tick, 10s => 5 ticks) and its implicit target is 8 (units in the area at the
+        // destination, radius 6 yards). That effect only ever resolves when the spell really carries a
+        // destination - with the core's CASTER_DEST default it enumerated the cannon's own position and
+        // therefore never hit anybody.
+        if (flakInfo)
+        {
+            // IMPORTANT: cast the burst from the shell target dummy, NOT from the cannon. Spell 40075
+            // carries Speed = 5 in the client data, and this core delays every effect by
+            // caster->destination / speed - casting it from the cannon (~57 yd away, measured in game)
+            // pushed the debuff ~11 s past the impact, so the player was already knocked flying while the
+            // aura only showed up seconds later. The dummy sits exactly at the impact point, hence a zero
+            // travel time. Fall back to the cannon if the target is gone.
+            Unit* burstCaster = caster;
+            if (Unit* shellTarget = spell->m_targets.getUnitTarget())
+                burstCaster = shellTarget;
+
+            SpellCastTargets targets;
+            targets.setDestination(x, y, z);
+            if (burstCaster->CastSpell(targets, flakInfo, TRIGGERED_OLD_TRIGGERED) != SPELL_CAST_OK)
+                sLog.outError("[FLAK] failed to apply the flak fire DoT at the impact point (entry %u)", caster->GetEntry());
+        }
+
         FelFlakBurst(caster, x, y, z, radius, horizontalSpeed, verticalSpeed);
     }
 };
