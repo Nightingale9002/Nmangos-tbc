@@ -498,7 +498,7 @@ void AuctionHouseBot::Update()
                 Item* item = Item::CreateItem(itemEntry.first, count);
                 if (buyoutPrice == 0 || !item)
                     continue; // don't put up items we don't know the value of
-                uint32 bidPrice = std::min(buyoutPrice, buyoutPrice * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
+                uint32 bidPrice = buyoutPrice;   // [2026-09-29 站长] 取消随机差：起拍价 = 一口价
                 if (item)
                     auctionHouse->AddAuction(sAuctionHouseStore.LookupEntry(houseIdx == AUCTION_HOUSE_ALLIANCE ? 1 : (houseIdx == AUCTION_HOUSE_HORDE ? 6 : 7)), item, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, bidPrice, buyoutPrice);
             }
@@ -520,7 +520,7 @@ void AuctionHouseBot::Update()
                         if (probeItem)
                         {
                             uint32 probeBuyout = (uint32)std::min<uint64>((uint64)probeUnitPrice * probeCount, 2000000000ull);
-                            uint32 probeBid = std::min(probeBuyout, probeBuyout * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
+                            uint32 probeBid = probeBuyout;   // [2026-09-29 站长] 取消随机差：起拍价 = 一口价
                             auctionHouse->AddAuction(sAuctionHouseStore.LookupEntry(houseIdx == AUCTION_HOUSE_ALLIANCE ? 1 : (houseIdx == AUCTION_HOUSE_HORDE ? 6 : 7)), probeItem, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, probeBid, probeBuyout);
                             // [probe-guard] mark the tier filled immediately so a probe is
                             // not re-placed every sell phase until the next market scan
@@ -657,8 +657,8 @@ void AuctionHouseBot::Update()
 //   * 一对商品（base = 基准件 / derived = 派生件）挂到同一个虚拟商品 virtual_item 上；
 //   * 每周期把**两个成员**的成交量各自折算成"虚拟基准份数"（组数 × equiv）并累加，
 //     累加后**立即清零成员的 flow 列** ⇒ 成员自己的流水结算不会再动一次价（无双重信号）；
-//   * 虚拟商品按自己的小时窗口结算一次：净流入份数 × MoveBpPerStack（默认 0.1%/份）移动虚拟价，
-//     再按"小时 ±MaxHourlyMoveBp（默认 1%）"与"24h ±MaxDailyMovePct（默认 10%）"两级封顶；
+//   * 虚拟商品按自己的小时窗口结算一次：净流入份数 × MoveBpPerStack（默认 0.1%/份）移动虚拟价；
+//     [2026-09-29 站长] **取消小时封顶**，只保留 "24h ±MaxDailyMovePct（默认 10%）" 一级封顶；
 //   * 最后按 equiv 把虚拟价**反馈**给两个成员：成员价 = 虚拟价 × equiv。
 //   ⇒ 两件商品的买卖量作用在**同一个**虚拟价上（同时收到信号），双方都只读虚拟价、互不写对方 ⇒ 无递归。
 //   ⇒ 只写 ahbot_market_state.price_ref（书目报价），**一律不碰已经挂出去的拍卖单价格**。
@@ -753,7 +753,7 @@ namespace
         }
     }
 
-    void SettleVirtualPrices(int moveBpPerStack, int maxHourlyBp, int maxDailyPct, int minMoveCopper)
+    void SettleVirtualPrices(int moveBpPerStack, int maxDailyPct, int minMoveCopper)
     {
         if (!g_vpLoaded)
             LoadVpPairs();
@@ -799,24 +799,17 @@ namespace
             uint32 newV = vPrice;
             if (moveBpPerStack > 0 && (!vLastSettle || now - vLastSettle >= hourWindow))
             {
-                // 2) 结算虚拟价：净流入（卖出 - 买入）× 每份 bp，小时/日两级封顶
+                // 2) 结算虚拟价：净流入（卖出 - 买入）× 每份 bp
+                // [2026-09-29 站长] **取消小时封顶**，只保留 24h 上限（MaxDailyMovePct）。
+                // 单次结算幅度由"每份 bp × 净份数"决定；hour_price/hour_start 仅作观察量保留。
                 int64 net = (int64)vFlowSold - (int64)vFlowBought;      // >0 = 玩家买走多 = 需求强 => 抬价
-                int64 capHour = std::max<int32>(0, maxHourlyBp);
                 int64 deltaBp = net * moveBpPerStack;
-                deltaBp = std::max<int64>(-capHour, std::min<int64>(capHour, deltaBp));
                 newV = (uint32)(((int64)vPrice * (10000 + deltaBp) + 5000) / 10000);
 
                 if (!vHourStart || now - vHourStart >= hourWindow)
                 {
                     vHourPrice = vPrice;
                     vHourStart = now;
-                }
-                if (vHourPrice && capHour)
-                {
-                    uint32 lo = (uint32)((uint64)vHourPrice * (10000 - (uint32)capHour) / 10000);
-                    uint32 hi = (uint32)((uint64)vHourPrice * (10000 + (uint32)capHour) / 10000);
-                    if (newV < lo) newV = lo;
-                    if (newV > hi) newV = hi;
                 }
                 if (maxDailyPct > 0)
                 {
@@ -840,9 +833,9 @@ namespace
                 newV = ApplyMinPriceStep(vPrice, newV, net, minMoveCopper);
 
                 if (newV != vPrice || vFlowBought || vFlowSold)
-                    sLog.outError("[AHBOT] VPSETTLE virtual=%u bought=%llu sold=%llu old=%u new=%u (bp/stack=%d hourCap=%d%% dayCap=%d%%)",
+                    sLog.outError("[AHBOT] VPSETTLE virtual=%u bought=%llu sold=%llu old=%u new=%u (bp/stack=%d dayCap=%d%%)",
                                   vid, (unsigned long long)vFlowBought, (unsigned long long)vFlowSold, vPrice, newV,
-                                  moveBpPerStack, maxHourlyBp / 100, maxDailyPct);
+                                  moveBpPerStack, maxDailyPct);
 
                 CharacterDatabase.PExecute("UPDATE ahbot_virtual_price SET price = %u, flow_bought = 0, flow_sold = 0, "
                                            "hour_price = %u, hour_start = %u, day_price = %u, day_start = %u, last_settle_time = %u WHERE virtual_item = %u",
@@ -974,7 +967,6 @@ void AuctionHouseBot::UpdateMarketPrices()
     // 最小步进（铜）：0 = 关闭；默认 1，保证低价品的价格移动不被整数取整吃掉。
     int const minMoveCopper = m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MinMoveCopper", 1);
     SettleVirtualPrices(m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MoveBpPerStack", 10),
-                        m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MaxHourlyMoveBp", 100),
                         m_ahBotCfg.GetIntDefault("AuctionHouseBot.MarketMaker.MaxDailyMovePct", 10),
                         minMoveCopper);
 
@@ -1430,21 +1422,11 @@ void AuctionHouseBot::UpdateMarketPrices()
                         // keep bid/startbid within the buyout (no inverted bid > buyout)
                         if (auction->bid > newBuyout)
                             auction->bid = newBuyout;
-                        // [2026-09-20] startbid used to be clamped DOWN only, so an upward reprice
-                        // left the old (lower) startbid in place: after the epic value change
-                        // 25%->50% every repriced epic showed startbid = 49% of buyout, while the
-                        // creation path uses urand(Bid.Min, Bid.Max)% = 95..100%. Pull startbid back
-                        // into that band; a listing already inside it is left untouched (no jitter
-                        // on every reprice).
-                        uint32 bidLo = (uint32)((uint64)newBuyout * m_auctionBidMin / 100);
-                        uint32 bidHi = (uint32)((uint64)newBuyout * m_auctionBidMax / 100);
-                        if (auction->startbid < bidLo || auction->startbid > bidHi)
-                        {
-                            uint32 target = (bidLo >= bidHi) ? bidHi : urand(bidLo, bidHi);
-                            if (auction->bid && target > auction->bid)
-                                target = auction->bid;   // never raise startbid above an existing bid
-                            auction->startbid = target;
-                        }
+                        // [2026-09-29 站长] 取消随机差：起拍价恒等于一口价，两者一起跟随价格发现移动。
+                        // 唯一例外是"已有人出价"的单子：游戏规则不允许起拍价高于当前出价，此时贴住当前出价。
+                        auction->startbid = newBuyout;
+                        if (auction->bid && auction->startbid > auction->bid)
+                            auction->startbid = auction->bid;
                         auction->buyout = newBuyout;
                         CharacterDatabase.PExecute("UPDATE auction SET buyoutprice = %u, lastbid = %u, startbid = %u WHERE id = %u", newBuyout, auction->bid, auction->startbid, auction->Id);
                     }
@@ -1841,7 +1823,7 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
                 if (!partial)
                     continue;
                 uint32 buyoutPrice = (uint32)std::min<uint64>((uint64)quotePrice * partial->GetCount(), 2000000000ull);
-                uint32 bidPrice = std::min(buyoutPrice, buyoutPrice * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
+                uint32 bidPrice = buyoutPrice;   // [2026-09-29 站长] 取消随机差：起拍价 = 一口价
                 auctionHouse->AddAuction(houseEntry, partial, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, bidPrice, buyoutPrice);
                 listedUnits += partial->GetCount();
                 continue;                  // next catalog item
@@ -1882,7 +1864,7 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
                 Item* item = Item::CreateItem(itemId, count);
                 if (!item)
                     break;
-                uint32 bidPrice = std::min(buyoutPrice, buyoutPrice * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
+                uint32 bidPrice = buyoutPrice;   // [2026-09-29 站长] 取消随机差：起拍价 = 一口价
                 auctionHouse->AddAuction(houseEntry, item, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, bidPrice, buyoutPrice);
                 // [v4 2026-09-26] 不再累加 tierStock（挂单额度改由真实货架计数决定）；
                 // 每周期开始时扫描会把 tierStock 从真实货架重新分桶，仅供价格发现观察。
@@ -1909,7 +1891,7 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
                     if (probeItem)
                     {
                         uint32 probeBuyout = (uint32)std::min<uint64>((uint64)probeUnitPrice * probeCount, 2000000000ull);
-                        uint32 probeBid = std::min(probeBuyout, probeBuyout * (urand(m_auctionBidMin, m_auctionBidMax)) / 100);
+                        uint32 probeBid = probeBuyout;   // [2026-09-29 站长] 取消随机差：起拍价 = 一口价
                         auctionHouse->AddAuction(houseEntry, probeItem, urand(m_auctionTimeMin, m_auctionTimeMax) * HOUR, probeBid, probeBuyout);
                         // [probe-guard] mark tier filled immediately (see loot probe)
                         state->probeStock[level] += probeCount;

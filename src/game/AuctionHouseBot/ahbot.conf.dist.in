@@ -198,11 +198,11 @@ AuctionHouseBot.Value.Variance = 10
 ###################################################################################################################
 # Auction min/max bid price (percent)
 #
-# Sets the starting bid price of items sold on AH, a randomly selected percentage of the buyout price.
-# Values must be in range 0-100. Default values are Min(75) and Max(90).
+# [2026-09-29 站长] **已废弃**：取消随机差后，起拍价恒等于一口价（两者一起跟随价格发现移动），
+# 下面两个键不再参与挂单定价（代码仍会读取，仅为兼容旧 conf；改它们不会有任何效果）。
 ###################################################################################################################
-AuctionHouseBot.Bid.Min = 75
-AuctionHouseBot.Bid.Max = 90
+# AuctionHouseBot.Bid.Min = 75
+# AuctionHouseBot.Bid.Max = 90
 
 ###################################################################################################################
 # Auction min/max time
@@ -326,13 +326,13 @@ AuctionHouseBot.MarketMaker.MaxDailyMovePct = 0
 #   ahbot_price_pair（成对成员 + virtual_item/equiv）、ahbot_virtual_price（虚拟基准价）、
 #   ahbot_price_recipe（多原料配方；产物价 = Σ 原料价×用量，单向、不反向传导）
 #   MoveBpPerStack   = 虚拟基准价每买入/卖出【1 组】移动多少 bp（10 = 0.1%/组）
-#   MaxHourlyMoveBp  = 虚拟基准价每小时移动上限（bp，100 = 1%/小时）
-#   MaxDailyMovePct  = 每 24 小时累计上限（%），见上面一行；低价品靠 MinMoveCopper 保底
+#   MaxDailyMovePct  = 每 24 小时累计上限（%）—— [2026-09-29 站长] 取消小时封顶后这是**唯一**封顶；
+#                      低价品靠 MinMoveCopper 保底
 #   MinMoveCopper    = 最小步进（铜）：方向明确时至少动这么多铜，避免低价品（如 20 铜的铜矿
 #                      走 10bp = 0.02 铜）被整数取整彻底抹平；0 = 关闭
 #   ★ 改动定义表后 .ahbot reload 即可重新读取（无需重启）；价格只写 price_ref，不碰已挂单
 AuctionHouseBot.MarketMaker.MoveBpPerStack = 0
-AuctionHouseBot.MarketMaker.MaxHourlyMoveBp = 0
+# AuctionHouseBot.MarketMaker.MaxHourlyMoveBp = 0   # [2026-09-29 站长] 已取消小时封顶，本键不再读取
 AuctionHouseBot.MarketMaker.MinMoveCopper = 0
 AuctionHouseBot.MarketMaker.BidOnlyBuyout = 1
 AuctionHouseBot.MarketMaker.Smoothing = 50
