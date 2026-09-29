@@ -2081,7 +2081,7 @@ struct npc_spawned_oronok_tornheartAI : public ScriptedAI, private DialogueHelpe
             {
                 m_creature->SetFacingTo(4.9f);
                 // make the formation turn around as well
-                m_creature->GetCreatureGroup()->GetFormationData()->Compact(false);
+                if (m_creature->GetCreatureGroup() && m_creature->GetCreatureGroup()->GetFormationData()) m_creature->GetCreatureGroup()->GetFormationData()->Compact(false); // [2026-09-29] 判空：脚本生成的生物没有 creature group，裸用会段错误（奥罗诺克·碎心血条事件崩溃点）
                 Creature* elemental = m_creature->SummonCreature(NPC_REDEEMED_SPIRIT_OF_AIR, aDamnationLocations[0].x, aDamnationLocations[0].y, aDamnationLocations[0].z, aDamnationLocations[0].o, TEMPSPAWN_TIMED_DESPAWN, 32000);
                 elemental->CastSpell(nullptr, SPELL_ELEMENTAL_SPAWN_IN, TRIGGERED_NONE);
                 elemental = m_creature->SummonCreature(NPC_REDEEMED_SPIRIT_OF_EARTH, aDamnationLocations[1].x, aDamnationLocations[1].y, aDamnationLocations[1].z, aDamnationLocations[1].o, TEMPSPAWN_TIMED_DESPAWN, 32000);
@@ -2103,7 +2103,7 @@ struct npc_spawned_oronok_tornheartAI : public ScriptedAI, private DialogueHelpe
                 if (Creature* pTorlok = m_creature->GetMap()->GetCreature(m_torlokGuid))
                 {
                     m_creature->SetFacingToObject(pTorlok);
-                    m_creature->GetCreatureGroup()->GetFormationData()->Compact(false);
+                    if (m_creature->GetCreatureGroup() && m_creature->GetCreatureGroup()->GetFormationData()) m_creature->GetCreatureGroup()->GetFormationData()->Compact(false); // [2026-09-29] 判空：脚本生成的生物没有 creature group，裸用会段错误（奥罗诺克·碎心血条事件崩溃点）
                 }  
                 DoScriptText(EMOTE_GIVE_WEAPONS, m_creature);
                 break;
@@ -2382,7 +2382,7 @@ struct npc_spawned_oronok_tornheartAI : public ScriptedAI, private DialogueHelpe
                 {
                     pCyrukh->GetMotionMaster()->MovePoint(POINT_ID_CYRUKH_APPROACH, aDamnationLocations[7].x, aDamnationLocations[7].y, aDamnationLocations[7].z);
                     m_creature->SetFacingToObject(pCyrukh);
-                    m_creature->GetCreatureGroup()->GetFormationData()->Compact(false);
+                    if (m_creature->GetCreatureGroup() && m_creature->GetCreatureGroup()->GetFormationData()) m_creature->GetCreatureGroup()->GetFormationData()->Compact(false); // [2026-09-29] 判空：脚本生成的生物没有 creature group，裸用会段错误（奥罗诺克·碎心血条事件崩溃点）
                 }
                 
                 break;
