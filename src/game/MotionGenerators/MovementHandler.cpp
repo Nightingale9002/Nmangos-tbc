@@ -489,6 +489,13 @@ void WorldSession::HandleForceSpeedChangeAckOpcodes(WorldPacket& recv_data)
             return;
     }
 
+    // [NO-KICK] 反作弊只记录、不踢人（站长口径）。这里原来在"客户端报的速度比服务端大"时直接
+    // KickPlayer()，把正常玩法也误杀了：玩家操控别的单位时（心智控制 / 魅惑宠物 —— 例如任务
+    // 10857「Teleport This!」用物品 31678「Mental Interference Rod」附身 Netherstorm Forgelord
+    // 16943/20928）客户端 ACK 回来的是被控单位自己的速度，而这两个 Forgelord 的
+    // creature_template.SpeedRun = 0.952381，服务端算出来是 6.666667 —— 与 7.0 不符就被判"作弊"踢下线
+    // （线上日志 2026-09-30 20:00/20:04/20:10：kicked for incorrect speed (must be 6.666667 instead 7.000000)）。
+    // 现在两个方向都只记录：客户端报得更大时照旧纠正服务端速度，报得更小时只写日志并标明是不是玩家自控角色。
     if (!_player->GetTransport() && fabs(mover->GetSpeed(move_type) - newspeed) > 0.01f)
     {
         if (mover->GetSpeed(move_type) > newspeed)        // must be greater - just correct
@@ -497,11 +504,12 @@ void WorldSession::HandleForceSpeedChangeAckOpcodes(WorldPacket& recv_data)
                           move_type_name[move_type], _player->GetName(), mover->GetSpeed(move_type), newspeed);
             mover->SetSpeedRate(move_type, _player->GetSpeedRate(move_type), true);
         }
-        else                                                // must be lesser - cheating
+        else                                                // must be lesser - 只记录，不踢
         {
-            BASIC_LOG("Player %s from account id %u kicked for incorrect speed (must be %f instead %f)",
-                      _player->GetName(), _player->GetSession()->GetAccountId(), mover->GetSpeed(move_type), newspeed);
-            _player->GetSession()->KickPlayer();
+            sLog.outError("[ANTICHEAT] %sSpeedChange player %s (account %u, %s) reported %.6f but server has %.6f - logged only, no kick",
+                          move_type_name[move_type], _player->GetName(), _player->GetSession()->GetAccountId(),
+                          _player->IsSelfMover() ? "moves own character" : "controlling another unit",
+                          newspeed, mover->GetSpeed(move_type));
         }
     }
 }

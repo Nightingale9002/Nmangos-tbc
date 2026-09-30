@@ -5984,3 +5984,75 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 - 详细清单与"弃用后的可见变化"见 `dev/dbc_自定义补丁清单.md`（T6 徽章价回到 75、Delrissa 恢复原版体型/碰撞、
   两个圣印恢复按阵营限制、`Spell.dbc` 无影响）。
 
+---
+
+## [机制] 使用物品 31678（精神干扰棒）导致角色掉线：possess 时的速度 ACK 被误判成作弊
+
+**站长报**：有玩家报告使用物品 **31678「Mental Interference Rod」**会导致角色掉线。
+
+### 一、现场证据（云端 Server.log）
+
+```
+2026-09-30 20:00:26 Player 大海铭记不朽 from account id 23 kicked for incorrect speed (must be 6.666667 instead 7.000000)
+2026-09-30 20:04:51 ... 同样
+2026-09-30 20:10:06 ... 同样
+```
+⇒ 不是崩溃、不是客户端问题，是**服务端主动踢人**（`KickPlayer()`）。
+
+### 二、链路与根因
+
+1. 物品 31678 = 任务 **10857 「Teleport This!」** 的任务物品（`SrcItemId`/`ReqItemId4` 都是它），
+   `spellid_1 = 38915 「Mental Interference」`，on-use、45 秒冷却，DB 里挂了脚本 `spell_scripts → spell_mental_interference`。
+2. `MentalInterferenceSpellScript`（`netherstorm.cpp:4005`）只做目标校验：**只允许对 16943 Cyber-Rage Forgelord /
+   20928 Ironspine Forgelord 使用**；法术效果是 **APPLY_AURA + aura 2 = `SPELL_AURA_MOD_POSSESS`（心智控制）**。
+3. 这两个 Forgelord 的模板速度：`creature_template.SpeedRun = 0.952381` ⇒ 服务端算出来 **7.0 × 0.952381 = 6.666667**，
+   而客户端在控制该生物时 ACK 回来的是 **7.0** —— 与日志里的两个数字**完全对上**。
+4. 踢人点在 `MovementHandler.cpp` 的 `HandleForceSpeedChangeAck`：mover 速度与客户端 ACK 不一致时，
+   如果"客户端报的更大"就判为作弊并 `KickPlayer()`：
+   ```cpp
+   if (!_player->GetTransport() && fabs(mover->GetSpeed(move_type) - newspeed) > 0.01f)
+   {
+       if (mover->GetSpeed(move_type) > newspeed) { ...强制纠正... }
+       else { ...kick for incorrect speed... }      // ← 这里
+   }
+   ```
+   **而这段没有 `IsSelfMover()` 判断**：明明上面第 446 行的反作弊入口就是 `if (_player->IsSelfMover() && ...)`，
+   踢人这一节却对"玩家正在操控别的单位（possess / charm）"的情况也生效 ⇒ 误判 ✓。
+
+### 三、修法：**删掉踢人，改成只记录**（站长口径：反作弊只记录不踢人）
+
+站长补充：**"我们之前已经取消了作弊的踢人 只记录"** —— 反作弊模块（`anticheat.conf`）里各 cheat 的
+`TickAction/TotalAction` 早已被设成 `1`（= `CHEAT_ACTION_INFO_LOG`，只记录）或 `0`（不做任何事），
+但**核心层还留着一个不受配置控制的硬编码踢人**，就是这次这条：
+
+```cpp
+        else                                                // must be lesser - 只记录，不踢
+        {
+            sLog.outError("[ANTICHEAT] %sSpeedChange player %s (account %u, %s) reported %.6f but server has %.6f - logged only, no kick",
+                          move_type_name[move_type], _player->GetName(), _player->GetSession()->GetAccountId(),
+                          _player->IsSelfMover() ? "moves own character" : "controlling another unit",
+                          newspeed, mover->GetSpeed(move_type));
+        }
+```
+- 原来这一支是 `KickPlayer()`（"must be lesser - cheating"）。现在两个方向都不再踢人：客户端报得更大时照旧纠正速度，
+  报得更小时**只写日志**，并在日志里标明是"玩家自控角色"还是"正在操控其他单位"（后者就是本次误杀的场景）。
+- 这样既符合"只记录"口径，又保留了可追溯记录（真加速外挂照样留痕，只是不再自动踢）。
+
+### 四、顺带排查：还有哪些"作弊踢人"残留
+
+| 位置 | 状态 |
+|---|---|
+| `MovementHandler.cpp` 速度 ACK 分支 | **本次修掉**（改为只记录） |
+| 反作弊模块各 cheat 动作（`anticheat.conf`） | `TickAction/TotalAction` 全是 `1`/`0` = 只记录 ✓，唯一例外见下一行 |
+| `Movement.BadFallReset.Penalty = 11`（= INFO_LOG+PROMPT_LOG+**BAN_ACCOUNT**） | ⚠️ **与口径不符**（会封号）⇒ 本地已改成 `1`（`anticheat.conf.bak_20260930` 是原文件）；云端由 10-01 部署脚本一并改成 `1` 并备份 |
+| `Network.KickOnBadPacket` | 0 = 已关闭 ✓ |
+| `ChatStrictLinkChecking.Kick` | 0 = 已关闭 ✓（`Severity` 也是 0） |
+| `MovementHandler.cpp:88`（传送失败踢人）、GM 命令踢人、登录顶号踢人 | 与作弊无关，保持原样 |
+
+### 五、生成 / 部署状态
+
+- 本地：`mangosd.exe` md5 `0F2B0DED67769563CE16B73019BE5C12`，已重启运行 ✓；`anticheat.conf` 已改（只记录）。
+- 云端：`MovementHandler.cpp` 已同步（md5 `691179fd7f983f70d26989911b6c900b`，与本地一致）
+  ⇒ **2026-10-01 凌晨 nightly 自动编译部署**；`anticheat.conf` 的 `BadFallReset.Penalty` 由 04:50 的部署脚本改成 `1`。
+- 待验证：玩家用 31678 控制 Forgelord 后不再掉线；云端日志里改为出现 `[ANTICHEAT] RunSpeedChange ... logged only, no kick`。
+
