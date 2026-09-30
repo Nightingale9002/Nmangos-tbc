@@ -4791,7 +4791,7 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
   而是上游本来就没做。
 - **飞行侧已经做掉的加固（别和上面这条混起来）**：
   1. **反作弊在飞行中放行**：速度检查 `Anticheat/module/Movement/movement.cpp:522` 与传送检查 `:994`
-     都带 `!IsTaxiFlying()` ⇒ 飞行不会被误判（配合 `73f3a1282` 的"只记录不踢"口径）；
+     都带 `!IsTaxiFlying()` ⇒ 飞行不会被误判（配合 `6ddff89a8` 的"只记录不踢"口径）；
   2. 坠落伤害忽略：`MovementHandler.cpp:856` `MSG_MOVE_FALL_LAND && !IsTaxiFlying()`；
   3. **服务端航线修复 `88ee04167`**（站长报的"飞行穿模/直飞"那一半）：用本地航线图从链首到链尾重算合法路线、
      `AddRoutes` 未全建成时**拒绝**（不再下发部分航段），并加 `[TAXI-DIAG]` 旋转链探针。
@@ -5865,7 +5865,7 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 - 修法（`blades_edge_mountains.cpp`，代码层）：在 `npc_simon_game_bunnyAI::ReceiveAIEvent` 的
   `PHASE_INACTIVE + AI_EVENT_CUSTOM_A`（游戏开始，`pInvoker` 就是点碑的玩家）处，先检查再 `DestroyItemCount(32569, 1 或 35, true)`；
   碎片不够就不开局。未改 `spell_template` / 条件表。
-- 本地：编译 ✓、部署 ✓（md5 `B46135E97A0413F1EC4D2A8F4D86E102`，`World initialized`）、提交 `c314d8727`；
+- 本地：编译 ✓、部署 ✓（md5 `B46135E97A0413F1EC4D2A8F4D86E102`，`World initialized`）、提交 `0269ff5f4`；
   云端源码已同步（md5 `6b3d9a1c3ec4143867f2f87e9a84e566`），随 10-01 nightly 编译部署。
 - 待游戏内验证：插碎片开局后背包 `32569` 分别 -1 / -35；不够时不开局。
 
@@ -5874,7 +5874,7 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
   **没有**另加惩罚法术（未采用 41241 替代，避免自行发明机制）。
 - 卫士现在**只在大型游戏第 6 关通关时**出现（`DoCompleteLevel()`，`SIMON_BIG_LEVEL_SUMMON`）。
 - 上游对照：`D:\Game\cmangos\mangos-tbc` 同处是 `if (m_bIsLargeEvent) player->CastSpell(..., SPELL_SIMON_GROUP_REWARD, ...)` ⇒ 这是我们有意偏离上游的一处（已在本注释里写明理由）。
-- 本地：编译 ✓、部署 ✓（md5 `4485D625D35C29EBF97B9B4853A7FF8F`，`World initialized`）、提交 `050836753`；
+- 本地：编译 ✓、部署 ✓（md5 `4485D625D35C29EBF97B9B4853A7FF8F`，`World initialized`）、提交 `0269ff5f4`；
   云端源码已同步（md5 `b714e7f2b31bfcc8ebfa5541a1685579`），随 10-01 nightly 编译部署。
 - 待游戏内验证：故意失败（点错/超时）**不再出现**埃匹希斯卫士；正常通到第 6 关仍会出现。
 
@@ -6196,7 +6196,7 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 
 ### 四、部署与遗留
 
-- 本地提交：`a6badb191`、`a1394f803`（文档）
+- 本地提交：`5eaa528c9`、`5eaa528c9`（文档）
 - 云端：`boss_terokk.cpp` 已同步到 `/root/Nmangos-tbc`（md5 `1e523e4db5c60fdfdea28a23ebfe17e3`，与本地一致）
   ⇒ 10-01 04:06 的 nightly 会自动编译部署；之后按上面步骤在云端复测。
 - **无需新增 dev SQL**：曾一度以为 `condition_id = 919` 悬空，实为查询报错（`conditions` 表**没有** `condition_id` 列，
@@ -6268,7 +6268,7 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 只是把不可见的重复变成了可见的闪烁。影响面：全库 3190 个 spawn_group，凡使用刷怪组的副本（破碎大厅、血熔炉、法力陵墓、
 暗影迷宫、卡拉赞…）都有同一隐患，触发条件是"打死组员 + 组内有随机/多槽位成员"。
 
-### 三、修复（`89ef5b3a4`，两处）
+### 三、修复（`e411017b7`，两处）
 
 1. `Creature::SetDeathState`：组员死亡时也把槽位重生时间写进持久化状态
    （`GetMap()->GetPersistentState()->SaveCreatureRespawnTime(GetDbGuid(), time(nullptr) + m_respawnDelay)`），
@@ -6317,7 +6317,7 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 5. **不是我们改坏的**：本地 `tbcmangos` 与 `tbcdb_ref`、`tbcmangos_orig`、`wotlkmangos` 四个库这三行**逐字段完全一致**。
    即"重复召唤"是 cmangos 系（含 WotLK）的标准数据，而站长要求的"每场战斗一次"是 3.3.5 AC/TC 系 SmartAI 的设计 —— 本次按站长口径改。
 
-### 三、修复（`dev/145_暗影迷宫秘教召唤师_改为每场战斗一次召唤.sql`，`5bc6fe7a1`）
+### 三、修复（`dev/145_暗影迷宫秘教召唤师_改为每场战斗一次召唤.sql`，`8851511a3`）
 
 1. 从法术列表移除两条召唤：`DELETE FROM creature_spell_list WHERE Id IN (1863401,2064801) AND SpellId IN (33506,33507);`
    ⇒ 列表只剩火球（普通 14034 / 英雄 15228，原样保留），普通/英雄差异不受影响。
@@ -6353,7 +6353,7 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 - `TemporarySpawn::Update()` 对该类型的处理是 `if (IsDead()) UnSummon();` ⇒ **一进入尸体状态就被移除**；
 - 客户端因此收不到"死亡→尸体"这段表现：**没有死亡动画、血条也不会走到 0**，视觉上就是"啪一下没了"。
 
-### 三、修复（`4c0071f63`）
+### 三、修复（`46daf5f3e`）
 
 - 26 处召唤类型改为 **`TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000`**（`TemporarySpawn::Update()` 对应分支：
   `if (IsCorpse() && IsExpired()) UnSummon();`）⇒ **尸体保留 3 秒**，死亡动画与血量归零都能看到，之后自动消失。
@@ -6435,7 +6435,7 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
    ⇒ **新实例里池化刷点没有任何人生成**（池只管记账 `SpawnedPoolData`）。
 - 旁证：云端日志里 `DB-SCRIPTS: … buddy 5550003 by pool id 90 and no creature found in map 555`（暗影迷宫的池化怪同样找不到）。
 
-### 五、修复（`530c35b06`）
+### 五、修复（`32f2ae17d`）
 `PoolManager.cpp` 两个 `Spawn1Object`（Creature / GameObject）在"格未加载"分支末尾补一句交接：
 ```cpp
 if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
@@ -6445,7 +6445,7 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
 不会双刷：SpawnManager 用的是"dynguid 列表"（含池化条目），而网格加载器会跳过这些条目。
 
 ### 六、状态与验证
-- 本地：编译 ✓、部署 ✓（`mangosd.exe` md5 `B57B3C587929BB1D2458978959D1C35B`，`World initialized`）；提交 `530c35b06`。
+- 本地：编译 ✓、部署 ✓（`mangosd.exe` md5 `B57B3C587929BB1D2458978959D1C35B`，`World initialized`）；提交 `32f2ae17d`。
 - 云端：`PoolManager.cpp` 已同步（md5 `2ab9221f3a41d5d0f66906c07476e52a`），随 10-01 nightly 编译。
 - **待游戏内验证**：新开蒸汽地窟实例 → 第一/第二 BOSS 池各应出现 **1 个宝箱**（位置随机落在 7 个候选点之一，
   Bound/Solid 由候选随机决定）；`gameobject_respawn` 应能看到所选 guid 的行。若某个实例一个都不出，把
@@ -6537,7 +6537,7 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
 
 ---
 
-## [上游bug] 2026-10-01 旧希尔斯布莱德「萨尔进战斗下马后不再上马」——`IsMounted()` 对脚本坐骑恒为 false（`72c783d04`）
+## [上游bug] 2026-10-01 旧希尔斯布莱德「萨尔进战斗下马后不再上马」——`IsMounted()` 对脚本坐骑恒为 false（`e379374d8`）
 
 - 现象（站长）：旧希尔斯布莱德（map 560）护送事件里，**NPC 17876 萨尔（Thrall，`npc_thrall_old_hillsbrad`）**
   一进战斗就下马，**打完架再也不上马**，后面那段路一直步行。
@@ -6621,7 +6621,7 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
 
 ---
 
-## [工具] 2026-10-01 刷点诊断三件套：启动自检 + `[SGD]` 生成日志 + 离线体检脚本（`702281cb7`）
+## [工具] 2026-10-01 刷点诊断三件套：启动自检 + `[SGD]` 生成日志 + 离线体检脚本（`80a5d723d`）
 
 - 起因：站长"动态 guid 造成的问题太多"的体感里，最难查的一部分是**静默失败** —— `id = 0` 的刷点解析不出 entry 时
   **既不生成对象也不报错**（2026-10-01 禁魔监狱那次误判就是这么来的）。三件东西都**只做诊断**，不改数据、不改游戏行为。
