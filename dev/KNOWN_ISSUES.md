@@ -5632,7 +5632,7 @@ if (data && existingData && (data->mask & existingData->mask) != 0)            /
 
 #### 五、临时诊断与收尾
 
-- 已删除 `[FCANDBG]`（EventAI）与 `[FLAKAI]`/`[FLAKDBG]` 的每秒刷屏；保留 `[FLAKAI] failed to fire / failed to summon`（**仅出错时**触发）与 `[SGDBG]`（食人魔之魂未结案问题）。
+- 已删除 `[FCANDBG]`（EventAI）与 `[FLAKAI]`/`[FLAKDBG]` 的每秒刷屏；保留 `[FLAKAI] failed to fire / failed to summon`（**仅出错时**触发）与 `[SGDBG]`（食人魔之魂问题；**该探针已于 2026-09-30 结案并移除**，见文末「磨魂者/食人魔之魂」章）。
 - 部署：`f25a44892` 已于 20:45 上云；`8798ee5f2` 源码已 scp + md5 校验，等 **04:30 nightly** 自动编译重启。
 
 ---
@@ -5781,6 +5781,25 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 - **复现配方（下次现场直接照做）**：站在记录点 → 选中柱子对面的目标 → `.los` → 记录 `Normal` / `M2` 两列 + 双方 `.gps`；随后本地用
   `python dev/tools/vmap_los_probe.py ray 556 x1 y1 z1 x2 y2 z2 2 2` 直接对照（工具会打印命中点、模型名与 WMO/M2 属性）。
 
+**2026-09-30 二次复查（站长重申"有时挡有时不挡"）—— 做了敏感性扫描 + 增强 `.los` 诊断**：
+
+- 新增离线扫描 `_agent_tmp/los_sweep.py`（复用 `vmap_los_probe.py`）：把起点在 **x/y 各 ±2 码、0.5 码步进（9×9=81 点）**、
+  两端眼高 **0~4 码（0.5 步进，9×9）** 全部组合扫一遍。结果：**81/81 全部"挡"，眼高全组合也全部"挡"，不挡样本 0 个**。
+  ⇒ 用这两个点时，"不挡"**不可能**由几何造成（既不是 M2 与否、也不是高度差）。
+- 于是把剩下的两个成因做成**可现场判定**的诊断（`Chat/Level3.cpp` 的 `.los`，`[LOS-DIAG]`）：
+  现在会打印
+  `Los check: Normal: … M2: … gameplay: … | vmapTile=… losCalc=… heightCalc=… | src=(…) ch=… dst=(…) ch=… | firstHit=hit|none(…)`
+  - `gameplay` = 与法术/近战同款判定（`IsWithinLOSInMap(target, true)`，用**目标自身**碰撞高度）；
+  - `vmapTile` = 该图这一格的 vmap 是否**真的加载了**（`IVMapManager::IsTileLoaded`）；
+    `VMapManager2::isInLineOfSight()` 在 `GetMapTree()` 找不到树时**直接返回 true（通视）**，所以
+    "有时不挡"很可能就是这个（按实例状态，重进本会变）——`vmapTile=0` 即可一眼确认；
+  - `firstHit` = vmap+动态 GO 树的**首个命中点**（`Map::GetHitPosition`），挡在哪一目了然；
+  - 两端各自打印坐标与**碰撞高度**（旧版终点用的是玩家碰撞高度而不是目标的，容易误判）。
+- 另外把"vmap 加载失败"从 `LOG_FILTER_MAP_LOADING` 调试级提升为 **error 级日志**
+  （`Maps/GridMap.cpp`）：以前 vmap 加载失败会**静默**表现为"视线永远通畅"，现在 `Server.log` 里会留下
+  `VMAP: could not load vmap data for map … (id …, tile …)`。
+- **下次现场只需**：选中目标 → `.los` → 把整行贴给我（配合 `.gps`）。若 `vmapTile=0` ⇒ 是加载问题；若 `vmapTile=1` 且 `Normal/gameplay` 不同 ⇒ 是碰撞高度/判定口径；若 `firstHit` 落在两点之外 ⇒ 是测试点与我扫描的两点不同。
+
 ### 3. NPC 23253（Kronk）站姿：官服是坐着的，这里是站着
 
 - `creature_addon` 里 guid **91790** 的行存在，但 `stand_state` 为 **NULL** ⇒ 默认站立。
@@ -5907,6 +5926,7 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
    弄错的表现是"几何合并进去了、导航网格毫无变化"。
 3. `GroupModel::GetBound()` 对部分模型是空的 ⇒ 包围盒要遍历真实 mesh 数据。
 4. 本地 PowerShell 5.1 把脚本按 ANSI 读 ⇒ **脚本里不要写中文**（否则引号被吃掉直接语法错）。
+   同理：**不要用 `Get-Content`/`Set-Content` 去改仓库里带中文的 UTF-8 文件**（会按 ANSI 解码再按 UTF-8 写回 ⇒ 整个文件双编码乱码；2026-09-30 在 `dev/README_文档导航.md` 上踩过一次，`git checkout` 回滚后用编辑器工具重做）。
 
 ### 五、已知限制 / 站长决定不做
 
@@ -6284,4 +6304,75 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 - 云端：`dev/145` 与回滚文件已 scp 到 `/root/Nmangos-tbc/dev/`；`DRYRUN=1 bash /root/apply_dev_sql.sh` 确认
   **142 / 143 / 145 会在 04:06 一并应用**，随后 nightly 编译重启即生效。
 - 待游戏内验证：暗影迷宫拉秘教召唤师 —— 战斗开始后**最多各召唤一次**，之后正常放火球；不再整场刷召唤物。
+
+---
+
+## [机制] 2026-09-30 刀锋山「磨魂者」食人魔之魂"凭空消失" **结案**（＝召唤类型导致死亡动画缺失，已改）
+
+### 一、结论（站长 2026-09-30 现场判定）
+
+站长：**「死亡动画没有，显示的像消失一样；我最后一击是伤害致死，但动画是消失，客户端也没显示血量到 0，所以误判为消失了」**，
+并补充：**「我没打的那几只并不会消失」**。
+
+⇒ 2026-09-29 留下的"食人魔之魂(22912) 没打死就消失"悬案**不是 bug**：魂只在**被打死**后才回收，
+问题是**死亡表现被抹掉了**。
+
+### 二、根因
+
+任务 11000「磨魂者/Into the Soulgrinder」的 `npc_soulgrinderAI::JustRespawned()`
+（`blades_edge_mountains.cpp`）一次性预生成 **26 只**食人魔之魂（22912），原来用的是
+`TEMPSPAWN_CORPSE_DESPAWN, 1000`：
+- `TemporarySpawn::Update()` 对该类型的处理是 `if (IsDead()) UnSummon();` ⇒ **一进入尸体状态就被移除**；
+- 客户端因此收不到"死亡→尸体"这段表现：**没有死亡动画、血条也不会走到 0**，视觉上就是"啪一下没了"。
+
+### 三、修复（`4c0071f63`）
+
+- 26 处召唤类型改为 **`TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000`**（`TemporarySpawn::Update()` 对应分支：
+  `if (IsCorpse() && IsExpired()) UnSummon();`）⇒ **尸体保留 3 秒**，死亡动画与血量归零都能看到，之后自动消失。
+- **移除三处临时探针**（任务完成，避免 ERROR 级刷屏）：
+  `blades_edge_mountains.cpp`（reveal 计数）、`Creature.cpp`（`ForcedDespawn` 只对 22912）、`TemporarySpawn.cpp`（`UnSummon` 只对 22912）。
+- 未改数据（spell_template / creature_template / DB 均为原样）；任务物品不受影响
+  （11000 要的 `32383 斯古洛克的灵魂` 来自 **GO 掉落表 22059**（-100 必掉），不是从魂身上捡的）。
+
+### 四、日志依据（本地 22:01–22:03，玩家 Asggd 在线）
+
+```
+每 6 秒   [SGDBG] soulgrinder reveal #14…#24 spirit guid=9010231…9010241 alive=1   ← 揭示（脚本设计：26 步、每步 6 秒）
+随后      [SGDBG] spirit 22912 … UnSummon: type=2 dead=1 health=0                 ← 已被打死 → 尸体类型触发回收（＝没有动画）
+22:02:47  [SGDBG] spirit 22912 … ForcedDespawn: delay=0 onlyAlive=0 alive=1 ×2    ← 第 25 步脚本正常收尾（收掉仍活着的魂）
+```
+⇒ 全程**没有第三方 despawn**，事件按脚本跑完（揭示 → 25 步收尾 → phase 1）。
+
+### 五、状态
+
+- 本地：编译 ✓、部署 ✓（`mangosd.exe` md5 `C4712AE7C372AA333EE09CB85835852E`，`World initialized`，重启后 `SGDBG` 计数 = 0）。
+- 云端：`blades_edge_mountains.cpp`（md5 `b143ff27b79a076c489f7845a6fd145e`）、`Creature.cpp`（`4f585bbdf12f15e503ad5a361cb3aa0d`）、`TemporarySpawn.cpp`（`a3043ea5c66a8985eaee7f2ae1f90e25`）已同步，随 10-01 nightly 编译部署。
+- **待游戏内验证**：再打一只食人魔之魂 —— 应看到**死亡动画 + 血条归零**，尸体停留约 3 秒后消失。
+
+---
+
+## [数据] 2026-09-30 dev/146：两处静态脏数据清理（队形组 id 笔误 / 无效刷怪组引用）
+
+### 一、`dbscripts_on_relay 5550007` 队形"建在 A、删在 B"
+
+- 该脚本由 EventAI `5550124`（"Cabal DeathSworn - Relay Script"）每 **27 秒**启动一次，其中：
+  - `delay 0, command 51, datalong 150 (SetFormation), datalong2 = 5550013`，注释 "Group 011 - Create Formation"
+    —— 而 **5550013 正是 "Shadow Labyrinth - Group 011 - Cabal Familiar (5)"** ⇒ 注释与 id 吻合；
+  - `delay 20000, command 51, datalong 151 (Remove formation), datalong2 = 5550015` ⇒ **删的是另一个组**。
+- 后果：每轮刷两条错误日志（`formation create(1) failed … 5550013 have already a formation!` /
+  `formation remove(2) failed … 5550015 …`），而且 **5550013 上的动态队形永远不被清理**（魔宠一直保持单列队形状态）。
+- 全库扫描 `command=51 AND datalong IN (150,151)`：**成对出现的只有这一处**，其余都是"只建不删"的巡逻队形（有意为之）。
+- 修法：`UPDATE dbscripts_on_relay SET datalong2 = 5550013 WHERE id=5550007 AND command=51 AND datalong=151 AND delay=20000;`
+
+### 二、`spawn_group_spawn` 两条无效引用
+
+- `Guid 156139`（组 **9100** "Ashenvale - Saltspittle Puddlejumper Formation"）与 `Guid 156135`（组 **9101** "Ashenvale - Forsaken Thug Formation"）
+  在 `creature` 与 `gameobject` 两张表里**都不存在** ⇒ 每次启动 `LoadSpawnGroups` 报
+  `Invalid spawn_group_spawn guid 156139 / 156135. Skipping.`。删除这两行（队形由其余成员继续工作）。
+- 验证：本地重启后启动日志里只剩 `>> Loaded 3190 spawn_group definitions`，两条 Invalid 报错**消失** ✓。
+
+### 三、状态
+
+- 本地：已应用 ✓（`5550007` 两行均为 5550013 ✓、两条 spawn_group_spawn 已删 ✓、重启无报错 ✓）；提交 `dev/146` + 回滚文件。
+- 云端：`dev/146` 与回滚已上传；`DRYRUN=1` 确认 **142 / 143 / 145 / 146** 会在 04:06 一并应用。
 

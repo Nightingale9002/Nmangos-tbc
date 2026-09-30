@@ -2192,32 +2192,36 @@ struct npc_soulgrinderAI : public ScriptedAI
     void JustRespawned() override
     {
         // 26 spawns that are spawned immediately with this NPC
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3574.525f, 5624.78f,  -9.746364f, 5.707227f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3558.613f, 5543.979f, -2.24089f, 0.9948376f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3542.293f, 5546.184f, -2.307737f, 5.096361f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3507.783f, 5607.564f, -2.115761f, 2.146755f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3525.318f, 5624.862f, -5.340961f, 0.2792527f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3573.157f, 5592.371f, -4.614707f, 2.984513f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3542.814f, 5622.923f, -3.886532f, 0.1919862f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3574.056f, 5574.628f, -5.577652f, 0.2792527f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3559.653f, 5559.587f, -2.850421f, 3.01942f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3574.718f, 5609.495f, -3.285291f, 1.32645f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3541.38f,  5559.73f,  -2.665792f, 2.827433f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3542.222f, 5573.395f, -2.64414f, 4.276057f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3557.254f, 5591.203f, -2.993953f, 3.01942f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3558.495f, 5577.132f, -3.076451f, 3.892084f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3557.081f, 5612.431f, -4.562363f, 1.518436f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3542.203f, 5608.064f, -3.378048f, 0.1570796f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3558.009f, 5626.f   , -5.146327f, 3.857178f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3524.67f,  5608.019f, -3.321486f, 2.042035f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3510.031f, 5575.792f, -1.80589f, 4.904375f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3508.348f, 5589.707f, -0.8961017f, 1.623156f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3507.988f, 5561.777f,  1.993673f, 2.80998f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3509.509f, 5625.191f, -4.461998f, 0.06981317f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3525.131f, 5573.122f, -1.622976f, 6.126106f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3493.974f, 5594.064f, -0.03712566f, 2.670354f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3526.678f, 5560.159f, -0.8016807f, 0.9424778f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
-        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3574.228f, 5559.057f, -6.009155f, 6.021386f, TEMPSPAWN_CORPSE_DESPAWN, 1000);
+        // NOTE: TEMPSPAWN_CORPSE_DESPAWN despawns the moment the creature becomes a corpse, so the
+        // client never received the death animation / the health bar never dropped to 0 and players
+        // read it as "the spirit vanished without dying" (SGDBG trail, 2026-09-29/30). CORPSE_TIMED
+        // keeps the body for 3s so the death is visible.
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3574.525f, 5624.78f,  -9.746364f, 5.707227f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3558.613f, 5543.979f, -2.24089f, 0.9948376f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3542.293f, 5546.184f, -2.307737f, 5.096361f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3507.783f, 5607.564f, -2.115761f, 2.146755f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3525.318f, 5624.862f, -5.340961f, 0.2792527f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3573.157f, 5592.371f, -4.614707f, 2.984513f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3542.814f, 5622.923f, -3.886532f, 0.1919862f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3574.056f, 5574.628f, -5.577652f, 0.2792527f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3559.653f, 5559.587f, -2.850421f, 3.01942f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3574.718f, 5609.495f, -3.285291f, 1.32645f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3541.38f,  5559.73f,  -2.665792f, 2.827433f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3542.222f, 5573.395f, -2.64414f, 4.276057f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3557.254f, 5591.203f, -2.993953f, 3.01942f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3558.495f, 5577.132f, -3.076451f, 3.892084f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3557.081f, 5612.431f, -4.562363f, 1.518436f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3542.203f, 5608.064f, -3.378048f, 0.1570796f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3558.009f, 5626.f   , -5.146327f, 3.857178f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3524.67f,  5608.019f, -3.321486f, 2.042035f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3510.031f, 5575.792f, -1.80589f, 4.904375f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3508.348f, 5589.707f, -0.8961017f, 1.623156f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3507.988f, 5561.777f,  1.993673f, 2.80998f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3509.509f, 5625.191f, -4.461998f, 0.06981317f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3525.131f, 5573.122f, -1.622976f, 6.126106f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3493.974f, 5594.064f, -0.03712566f, 2.670354f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3526.678f, 5560.159f, -0.8016807f, 0.9424778f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
+        m_creature->SummonCreature(NPC_OGRE_SPIRIT, 3574.228f, 5559.057f, -6.009155f, 6.021386f, TEMPSPAWN_CORPSE_TIMED_DESPAWN, 3000);
     }
 
     void JustSummoned(Creature* summoned) override
@@ -2286,8 +2290,6 @@ struct npc_soulgrinderAI : public ScriptedAI
     {
         if (Creature* ogre = m_creature->GetMap()->GetCreature(m_ogreSpirits[m_uiOgreCounter]))
         {
-            // [SGDBG 2026-09-29] 临时诊断：记录"放魂"时刻，便于与消失时刻对齐
-            sLog.outError("[SGDBG] soulgrinder reveal #%u spirit guid=%u alive=%u", (uint32)m_uiOgreCounter, ogre->GetGUIDLow(), ogre->IsAlive() ? 1 : 0);
             ogre->AI()->SetReactState(REACT_DEFENSIVE);
             ogre->CastSpell(ogre, SPELL_SOULGRINDER_GHOST_TRANSFORM, TRIGGERED_NONE);
             ogre->CastSpell(ogre, SPELL_SPIRIT_PARTICLES_PURPLE, TRIGGERED_NONE);

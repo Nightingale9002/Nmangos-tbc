@@ -36,6 +36,8 @@
 #include "AI/ScriptDevAI/ScriptDevAIMgr.h"
 #include "Tools/Language.h"
 #include "Grids/GridNotifiersImpl.h"
+#include "Maps/GridDefines.h"
+#include "vmap/VMapFactory.h"
 #include "Grids/CellImpl.h"
 #include "Weather/Weather.h"
 #include "MotionGenerators/PointMovementGenerator.h"
@@ -3280,7 +3282,28 @@ bool ChatHandler::HandleGetLosCommand(char* /*args*/)
     target->GetPosition(x, y, z);
     bool normalLos = player->IsWithinLOS(x, y, z + player->GetCollisionHeight(), false);
     bool m2Los = player->IsWithinLOS(x, y, z + player->GetCollisionHeight(), true);
-    PSendSysMessage("Los check: Normal: %s M2: %s", normalLos ? "true" : "false", m2Los ? "true" : "false");
+
+    // [LOS-DIAG 2026-09-30] "同一根柱子有时挡有时不挡" 需要区分三种成因，只打印两个布尔值分不出来：
+    //   ① 几何本身（vmap 面）——用 firstHit 看挡在哪、由谁挡；
+    //   ② 这张图的 vmap 树没加载 —— VMapManager2::isInLineOfSight() 在 GetMapTree() 找不到树时
+    //      **直接返回 true（= 通视）**，所以"有时不挡"可能是这个（按实例状态，重进本就会变）；
+    //   ③ 测试用的两点与想象的不一样（.los 的终点是**当前选中单位**的位置，且两端用的碰撞高度不同）。
+    // gameplayLOS 用与法术/近战相同的判定（目标自身碰撞高度），便于和实际战斗表现对齐。
+    VMAP::IVMapManager* vmgr = VMAP::VMapFactory::createOrGetVMapManager();
+    GridPair gp = MaNGOS::ComputeGridPair(player->GetPositionX(), player->GetPositionY());
+    bool vmapTile = vmgr->IsTileLoaded(player->GetMap()->GetId(), gp.x_coord, gp.y_coord);
+
+    float hx = x, hy = y, hz = z;
+    bool firstHit = player->GetMap()->GetHitPosition(player->GetPositionX(), player->GetPositionY(),
+        player->GetPositionZ() + player->GetCollisionHeight(), hx, hy, hz, 0.0f);
+
+    PSendSysMessage("Los check: Normal: %s M2: %s gameplay: %s | vmapTile=%d losCalc=%d heightCalc=%d | src=(%.2f, %.2f, %.2f) ch=%.2f dst=(%.2f, %.2f, %.2f) ch=%.2f | firstHit=%s(%.2f, %.2f, %.2f)",
+                    normalLos ? "true" : "false", m2Los ? "true" : "false",
+                    player->IsWithinLOSInMap(target, true) ? "true" : "false",
+                    vmapTile ? 1 : 0, vmgr->isLineOfSightCalcEnabled() ? 1 : 0, vmgr->isHeightCalcEnabled() ? 1 : 0,
+                    player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->GetCollisionHeight(),
+                    x, y, z, target->GetCollisionHeight(),
+                    firstHit ? "hit" : "none", hx, hy, hz);
     return true;
 }
 

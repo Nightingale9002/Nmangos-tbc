@@ -1347,7 +1347,11 @@ GridMap* TerrainInfo::LoadMapAndVMap(const uint32 x, const uint32 y, bool mapOnl
                 DEBUG_FILTER_LOG(LOG_FILTER_MAP_LOADING, "VMAP loaded name:%s, id:%d, x:%d, y:%d (vmap rep.: x:%d, y:%d)", mapName, m_mapId, x, y, x, y);
                 break;
             case VMAP::VMAP_LOAD_RESULT_ERROR:
-                DEBUG_FILTER_LOG(LOG_FILTER_MAP_LOADING, "Could not load VMAP name:%s, id:%d, x:%d, y:%d (vmap rep.: x:%d, y:%d)", mapName, m_mapId, x, y, x, y);
+                // [LOS-DIAG 2026-09-30] 这个以前只在 LOG_FILTER_MAP_LOADING 打开时才可见，于是
+                // "vmap 没加载"会静默表现为"视线永远通畅"（isInLineOfSight 找不到树时直接返回 true）。
+                // 加载失败是真问题，按 error 记录，方便事后从 Server.log 定位。
+                sLog.outError("VMAP: could not load vmap data for map %s (id %u, tile %d,%d) - line of sight and height queries for this map will be MISSING!",
+                              mapName, m_mapId, x, y);
                 break;
             case VMAP::VMAP_LOAD_RESULT_IGNORED:
                 DEBUG_FILTER_LOG(LOG_FILTER_MAP_LOADING, "Ignored VMAP name:%s, id:%d, x:%d, y:%d (vmap rep.: x:%d, y:%d)", mapName, m_mapId, x, y, x, y);
