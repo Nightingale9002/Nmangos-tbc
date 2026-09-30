@@ -82,6 +82,7 @@ void printUsage()
     printf("--silent : Make script friendly. No wait for user input, error, completion.\n");
     printf("--offMeshInput [file.*] : Path to file containing off mesh connections data.\n\n");
     printf("--configInputPath [file.*] : Path to json configuration file.\n\n");
+    printf("--gameObjectInput [file.*] : Path to file listing gameobject collision to bake into the navmesh\n\n");
     printf("--buildGameObjects : builds only gameobject models for transports\n\n");
     printf("--threads [#]: specifies number of threads to use for maps processing\n\n");
     printf("--workdir [directory] : Path to basedir of maps/vmaps.\n\n");
@@ -104,6 +105,7 @@ bool handleArgs(int argc, char** argv,
                 bool& buildGameObjects,
                 const char*& offMeshInputPath,
                 const char*& configInputPath,
+                const char*& gameObjectInputPath,
                 int& threads,
                 const char*& workdir)
 {
@@ -179,6 +181,14 @@ bool handleArgs(int argc, char** argv,
 
             configInputPath = param;
         }
+        else if (strcmp(argv[i], "--gameObjectInput") == 0 && i + 1 < argc)
+        {
+            param = argv[++i];
+            if (!param)
+                return false;
+
+            gameObjectInputPath = param;
+        }
         else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc)
         {
             param = argv[++i];
@@ -249,11 +259,13 @@ int main(int argc, char** argv)
 
     const char* offMeshInputPath = "offmesh.txt";
     const char* configInputPath = "config.json";
+    const char* gameObjectInputPath = "";
     const char* workdir = NULL;
 
     bool validParam = handleArgs(argc, argv, mapIds, tileX, tileY, skipLiquid,
                                  skipContinents, skipJunkMaps, skipBattlegrounds,
-                                 debug, silent, buildGameObjects, offMeshInputPath, configInputPath, threads, workdir);
+                                 debug, silent, buildGameObjects, offMeshInputPath, configInputPath,
+                                 gameObjectInputPath, threads, workdir);
 
     if (!validParam)
     {
@@ -284,7 +296,7 @@ int main(int argc, char** argv)
     if (!checkDirectories(debug, workdir))
         return -3;
 
-    MapBuilder builder(configInputPath, threads, skipLiquid, skipContinents, skipJunkMaps, skipBattlegrounds, debug, offMeshInputPath, workdir);
+    MapBuilder builder(configInputPath, threads, skipLiquid, skipContinents, skipJunkMaps, skipBattlegrounds, debug, offMeshInputPath, workdir, gameObjectInputPath);
 
     if (mapIds.size() == 1 && tileX > -1 && tileY > -1)
         builder.buildSingleTile(mapIds.front(), tileX, tileY);

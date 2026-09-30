@@ -22,6 +22,7 @@
 #include "Entities/Unit.h"
 #include "Entities/Creature.h"
 #include "Log/Log.h"
+#include "World/World.h"
 #include "MotionGenerators/PfDebug.h"
 #include "MotionGenerators/PfProbe.h"
 #include "Maps/TransportSystem.h"
@@ -178,6 +179,45 @@ namespace Movement
             }
         }
 
+        // [AIR-CLAMP] Vertical counterpart of the water handling above, for creatures that
+        // float by template: creature_template.InhabitType carrying the air bit (nether rays,
+        // aether rays, flight-only dragons like 23282 Obsidia) makes Creature::LoadFromDB call
+        // SetLevitate(true) for the creature's whole life, which is faithful to the DB but
+        // leaves the creature's paths - all produced by the ground navmesh - dragging it down
+        // to the walkable floor: a ray patrolling 20 yd above Blade's Edge sinks to the floor
+        // (measured: origin within +-0.3 yd of the navmesh surface) and buries the lower half
+        // of its body (the model's lowest point is 0.49 yd below its origin) the moment it
+        // chases a player, and a flight-only dragon gets pulled out of the sky onto the ground.
+        //
+        // Every point of the path is therefore held at least Creature.AirGroundClearance above
+        // the floor below it. The clamp only engages while the creature is actually airborne
+        // (more than half the clearance above the floor), so a windroc that walks on the ground
+        // - also InhabitType 7 - is left with its feet on it. The clearance only has to cover
+        // the model's own offset below its origin (0.49 yd for the ray, 0.69 for the dragon).
+        if (unit.GetTypeId() == TYPEID_UNIT && unit.IsLevitating() && !unit.IsHovering() && !unit.IsInWater())
+        {
+            Creature* creature = static_cast<Creature*>(&unit);
+            float const clearance = sWorld.getConfig(CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE);
+            if (clearance > 0.0f && !creature->IsClientControlled() &&
+                    (creature->GetCreatureInfo()->InhabitType & INHABIT_AIR) != 0 &&
+                    creature->IsAirbornePosition(unit.GetPositionX(), unit.GetPositionY(), unit.GetPositionZ(), clearance * 0.5f))
+            {
+                Map const* map = unit.GetMap();
+                for (auto& p : args.path)
+                {
+                    float const floorZ = map->GetHeight(p.x, p.y, p.z, false);
+                    if (floorZ <= INVALID_HEIGHT)
+                        continue;
+                    if (p.z < floorZ + clearance)
+                    {
+                        PFDBG_MSG(&unit, "MoveSplineInit air-clamp: pt(%.2f,%.2f) z=%.2f -> %.2f (floor %.2f + clearance %.2f)",
+                                  p.x, p.y, p.z, floorZ + clearance, floorZ, clearance);
+                        p.z = floorZ + clearance;
+                    }
+                }
+            }
+        }
+
         // [FLY-FLAG] Vertical counterpart of the swim flag above: a creature whose path
         // leaves the ground has to carry the gravity flag, otherwise the client animates it
         // running through the air and drops the model to the terrain the moment the spline
@@ -207,7 +247,12 @@ namespace Movement
             }
         }
         else if (unit.GetTypeId() == TYPEID_UNIT && unit.IsLevitating() &&
-                 static_cast<Creature&>(unit).IsAirborneFlagAutomatic())
+                 static_cast<Creature&>(unit).IsAirborneFlagAutomatic() &&
+                 // [AIR-CLAMP] A creature that floats by template (InhabitType air) keeps its
+                 // gravity flag for good: taking it away would drop a nether ray or a
+                 // flight-only dragon onto the floor with the walk animation. Landing is the
+                 // business of the [AIR-CLAMP] block above, not of this flag bookkeeping.
+                 (static_cast<Creature&>(unit).GetCreatureInfo()->InhabitType & INHABIT_AIR) == 0)
         {
             // We set the flag for a flight; if this movement ends on the ground the creature
             // is back to being a land unit (otherwise it would glide/fly along the ground).
@@ -314,6 +359,14 @@ namespace Movement
         args.splineId = splineCounter++;
 
         args.flags = MoveSplineFlag::Done;
+        // [FLY-KEEP] A creature that stays in the air must not lose its flying animation just
+        // because it stopped or turned to face a player: the spline state is what the next
+        // observer is told at create time (Object::BuildMovementUpdate -> WriteCreate) and what
+        // the client keeps between splines, so a plain ground stop for a hovering unit reads as
+        // "stand" and drops the model onto its belly. Keep the catmullrom/flying bit instead.
+        if (unit.GetTypeId() == TYPEID_UNIT && !unit.IsClientControlled() &&
+                (unit.IsLevitating() || unit.IsHovering()))
+            args.flags.flying = true;
         unit.m_movementInfo.RemoveMovementFlag(MovementFlags(MOVEFLAG_FORWARD | MOVEFLAG_SPLINE_ENABLED));
         move_spline.Initialize(args);
 

@@ -1092,11 +1092,30 @@ TalentsInspecting = 1
 #        Time for pickpocket restock in seconds
 #        Default: 600 (10 minutes)
 #
+#    Creature.AirGroundClearance
+#        Minimum height (yards) kept between a creature that levitates by template
+#        (creature_template.InhabitType contains the air bit: 4) and the walkable floor
+#        below it, for every point of every movement path (patrol, chase, wander).
+#        Without it such creatures follow the ground navmesh - a nether ray patrolling
+#        20 yd up sinks to the floor and buries half of its body the moment it chases
+#        a player, and a flight-only dragon is dragged out of the sky onto the ground.
+#        The value only has to cover the model's own offset below its origin
+#        (measured from CreatureModelData.dbc GeoBox: nether ray 0.49 yd, dragon 0.69 yd).
+#        Do NOT raise it to "make the creature look like retail while attacking": the clamp
+#        applies to every path point, so a bigger value lifts the creature's patrol and idle
+#        height as well (tested with 2.5: rays stopped visibly too high). The 2-3 yd hover
+#        seen on retail screenshots while it attacks looks like the client's own attack
+#        animation lifting the model, which the server cannot reproduce.
+#        Creatures that are on the ground (not levitating) are never affected, so a
+#        windroc that walks on the ground keeps its feet on it.
+#        Default: 1.0  (0 = clamp disabled)
+#
 ###################################################################################################################
 
 Rate.Creature.Aggro = 1
 CreatureRespawnAggroDelay = 5000
 LeashRadius = 30
+Creature.AirGroundClearance = 1.0
 CreatureFamilyFleeAssistanceRadius = 30
 CreatureFamilyAssistanceRadius = 5
 CreatureFamilyAssistanceDelay = 1500

@@ -344,9 +344,19 @@ namespace PfProbe
         char vhGpsText[16];
         char vhNoFrontText[16];
 
-        sLog.outError("[PFDBG] VPROBE tag=%s map=%u inst=%u pos=(%.4f,%.4f,%.4f) terrainH=%s vmapTop=%s vmapUnder=%s navmesh=%s area=%s areaId=%u flag=0x%04X polyH=%s dh=%.4f dv=%.4f walkable=%s inc=0x%04X exc=0x%04X"
+        // [WHO] Name the probed unit: without it a VPROBE line cannot be told apart from the
+        // GM's own .gps-self reading, which made an earlier chase/idle comparison unusable.
+        char unitText[128];
+        if (unit)
+            snprintf(unitText, sizeof(unitText), "%s(%s entry=%u guid=%u)",
+                     unit->GetName(), unit->GetTypeId() == TYPEID_UNIT ? "creature" : "player",
+                     unit->GetTypeId() == TYPEID_UNIT ? unit->GetEntry() : 0u, unit->GetGUIDLow());
+        else
+            snprintf(unitText, sizeof(unitText), "-");
+
+        sLog.outError("[PFDBG] VPROBE tag=%s who=%s map=%u inst=%u pos=(%.4f,%.4f,%.4f) terrainH=%s vmapTop=%s vmapUnder=%s navmesh=%s area=%s areaId=%u flag=0x%04X polyH=%s dh=%.4f dv=%.4f walkable=%s inc=0x%04X exc=0x%04X"
                       " vmapCalc=%d%d%d%d grid=(%d,%d) vmapMap=%s vmapFile=%s vmapTile=%s vmapZ2=%.4f vmapH10=%s vmapHL=%s vmapHU=%s vmapHgps=%s vmapNgps=%.2f vmapNoFront=%s",
-                      tag ? tag : "-", map->GetId(), instanceId, x, y, z,
+                      tag ? tag : "-", unitText, map->GetId(), instanceId, x, y, z,
                       HeightText(terrainH, terrainHText, sizeof(terrainHText)),
                       HeightText(vmapTop, vmapTopText, sizeof(vmapTopText)),
                       HeightText(vmapUnder, vmapUnderText, sizeof(vmapUnderText)),

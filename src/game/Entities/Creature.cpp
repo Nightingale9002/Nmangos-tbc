@@ -64,6 +64,11 @@ static float const CREATURE_AIRBORNE_TOLERANCE = 4.0f;
 
 bool Creature::IsAirbornePosition(float x, float y, float z) const
 {
+    return IsAirbornePosition(x, y, z, CREATURE_AIRBORNE_TOLERANCE);
+}
+
+bool Creature::IsAirbornePosition(float x, float y, float z, float tolerance) const
+{
     Map const* map = GetMap();
     if (!map)
         return false;
@@ -71,7 +76,7 @@ bool Creature::IsAirbornePosition(float x, float y, float z) const
     // Cheap first pass: the raw heightmap. Everything that stands somewhere (land, cave,
     // building interior) fails here, so only suspected positions pay for the vmap query.
     float const mapZ = map->GetTerrain()->GetHeightStatic(x, y, z, false);
-    if (mapZ <= INVALID_HEIGHT || z - mapZ <= CREATURE_AIRBORNE_TOLERANCE)
+    if (mapZ <= INVALID_HEIGHT || z - mapZ <= tolerance)
         return false;
 
     float floorZ = map->GetHeight(x, y, z);                 // terrain or WMO floor
@@ -82,7 +87,7 @@ bool Creature::IsAirbornePosition(float x, float y, float z) const
     if (waterZ > floorZ)
         floorZ = waterZ;
 
-    return floorZ > INVALID_HEIGHT && z - floorZ > CREATURE_AIRBORNE_TOLERANCE;
+    return floorZ > INVALID_HEIGHT && z - floorZ > tolerance;
 }
 
 

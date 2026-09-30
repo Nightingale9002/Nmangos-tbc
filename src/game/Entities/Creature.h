@@ -663,6 +663,10 @@ class Creature : public Unit
         // above the water surface - rather than standing on something? Used at spawn and on
         // every movement launch to decide whether the client may apply gravity.
         bool IsAirbornePosition(float x, float y, float z) const;
+        // Same test with an explicit tolerance: the [AIR-CLAMP] code needs the "is it resting
+        // on the floor" question answered with a few yards, not the 4 yd used to classify a
+        // spawn as airborne (a creature hovering at its clearance is still flying).
+        bool IsAirbornePosition(float x, float y, float z, float tolerance) const;
         // True when MOVEFLAG_LEVITATING was set by the core because the creature is in the
         // air, so the core (and only the core) may take it away again once it lands.
         bool IsAirborneFlagAutomatic() const { return m_airborneFlagAutomatic; }

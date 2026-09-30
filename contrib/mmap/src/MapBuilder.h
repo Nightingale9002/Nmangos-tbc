@@ -24,6 +24,7 @@
 #include <map>
 #include <future>
 #include <sstream>
+#include <mutex>
 
 #include "TerrainBuilder.h"
 #include "IntermediateValues.h"
@@ -98,6 +99,22 @@ namespace MMAP
         rcPolyMeshDetail* dmesh;
     };
 
+    // [GOBAKE] One gameobject spawn that gets baked into the terrain navmesh as static
+    // geometry, so creatures path around it instead of walking through the model (the
+    // Sethekk Halls cage 183051 and every other gameobject with a collision model).
+    // The rotation is stored as a ready-made 3x3 matrix (row major) so the generator needs
+    // no quaternion math: the offline tool that writes the input file already resolved
+    // gameobject.rotation0..3 / orientation.
+    struct GameObjectSpawn
+    {
+        std::string model;          // vmaps-relative model file (e.g. "G_Cage02.m2.vmo")
+        uint32 mapId;
+        float x, y, z;
+        float rotDeg[3];            // euler degrees, same convention as the vmap spawn data
+        float scale;
+        float bmin[3], bmax[3];     // world box of the rotated+scaled model
+    };
+
     class MapBuilder
     {
         public:
@@ -109,7 +126,8 @@ namespace MMAP
                        bool skipBattlegrounds   = false,
                        bool debug               = false,
                        const char* offMeshFilePath = NULL,
-                       const char* workdir = NULL);
+                       const char* workdir = NULL,
+                       const char* gameObjectFilePath = NULL);
 
             ~MapBuilder();
 
@@ -122,6 +140,12 @@ namespace MMAP
             // builds all GO models needed for pathfinding
             void buildGameObject(std::string modelName, uint32 displayId);
             void buildTransports();
+
+            // [GOBAKE] reads the gameobject input file (model + transform per spawn) and
+            // merges the listed models into the terrain navmesh of the tiles they touch.
+            void loadGameObjects();
+            void addGameObjectsToTile(uint32 mapID, float bmin[3], float bmax[3], MeshData& meshData);
+            WorldModel* getGameObjectModel(std::string const& name);
 
             bool IsMapDone(uint32 mapId) const;
 
@@ -159,6 +183,12 @@ namespace MMAP
 
             const char* m_offMeshFilePath;
             const char* m_workdir;
+
+            // [GOBAKE] gameobject collision baked into the terrain navmesh
+            const char* m_gameObjectFilePath;
+            std::map<uint32, std::vector<GameObjectSpawn>> m_goSpawns;
+            std::map<std::string, WorldModel*> m_goModelCache;
+            std::mutex m_goModelMutex;
             bool m_skipContinents;
             bool m_skipJunkMaps;
             bool m_skipBattlegrounds;

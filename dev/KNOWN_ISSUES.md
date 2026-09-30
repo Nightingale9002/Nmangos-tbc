@@ -5735,3 +5735,153 @@ if (data && existingData && (data->mask & existingData->mask) != 0)            /
 - **军团高射炮**（40075/40109/41603）：① 命中动画与 debuff 之间存在延迟；② 开火时炮**不转向目标**。
 - **捉以太鳐任务**：无需先把以太鳐打虚弱即可用绳捆。
 - **炮弹 dummy（23155）有名字**，未对普通玩家隐藏。
+
+---
+
+## [寻路] 2026-09-30 站长现场测出的一批待查项（**先记录，未改任何东西**）
+
+站长在本地/云端实测提出的清单，这里先按原文存档，逐条查完再拆成独立章节。
+
+### 1. 塞泰克大厅（map 556，实例 2）：笼子不挡路，怪物能穿过去
+
+站长的 `.gps` 记录（第一点，笼内）：
+```
+X: -160.813004 Y: 157.042999 Z: 0.094095 Orientation: 1.082100
+grid[31,32] cell[11.4] InstanceID: 2
+GroundZ: 5.007812   FloorZ: 0.010762   Have height data (Map: 0 VMap: 1)
+```
+判读：`FloorZ = 0.011` 说明**这个位置 vmap 是命中了的**（笼子作为 WMO/M2 有面），`GroundZ = 5.008`。
+站长原话：「这里有一个笼子，应该是一个卡闪避的脱战点，但是怪物能穿过笼子」。
+
+待查方向：
+- 这是"笼子属于 WMO/M2 vmap 命中但**没有对应碰撞体积**（只有视觉面）"，还是"vmap 命中了但 navmesh 在这格把笼子内部与外部连成一片"（即 mmap 生成时没有把笼壁切出来）。
+- 结论要靠 `mmaps/556*.mmtile` 看该点附近的多边形连通性 + `vmaps` 看笼子模型的碰撞面分布，两边对照。
+
+### 2. 塞泰克大厅：同一根柱子，视野时挡时不挡
+
+站长记录的两个点（柱子两侧）：
+```
+X:  35.339680 Y: 313.308319 Z: 25.336370   grid[32,32] cell[1.9]   GroundZ: -200000  FloorZ: -200000
+X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200000  FloorZ: -200000
+```
+站长原话：「这两个点中间应该有一个柱子，但是不卡视野，需要检查。我再次测试同一个柱子又卡视野了，需要检查」。
+
+待查方向（两个点都在 `Have height data (Map: 0 VMap: 1)` 的格子里，GroundZ/FloorZ 均为 -200000 = 该 2D 位置**没有地形也没有 vmap 命中**，说明这两点本身悬在结构之外）：
+- `WorldModel.cpp:395` 的 `frontFacesOnly`（`|n·ray| >= 0.5`）会在**柱子背面**丢弃碰撞面 ⇒ 从某些角度看穿；
+- 也可能与 M2 柱子只在部分朝向生成碰撞面有关。
+- 复现要求：同一根柱子、两个相反方向各测一次 `Los check`，把 `Normal/M2` 两个结果都记下来再判定。
+
+### 3. NPC 23253（Kronk）站姿：官服是坐着的，这里是站着
+
+- `creature_addon` 里 guid **91790** 的行存在，但 `stand_state` 为 **NULL** ⇒ 默认站立。
+- 修法候选（**数据改动，待批准**）：`UPDATE creature_addon SET stand_state = 1 WHERE guid = 91790;`（1 = SIT）。
+
+### 4. 任务 11010 与 11102 可以同时接（同名 Bombing Run）
+
+- 两行 `quest_template` 数据**完全一致**：`ZoneOrSort = 3522`、`QuestFlags = 128`、`ExclusiveGroup = 0`、`NextQuestInChain = 11023`、`PrevQuestId = 11062`。
+- 给予者也是同一个 NPC **23120**（`creature_questrelation` 两条都在）。
+- **不是我们的数据漂移**：官方参考库 `tbcdb_ref` 同样有这两条给予关系。
+- 修法候选（**数据改动，待批准**）：给两条设同一个非 0 的 `ExclusiveGroup`（接了一个就锁另一个）；或者按官服只保留其中一条。需要先确认官服到底给的是哪一个（11010 是旧版、11102 是补丁后重发的可能性最大）。
+
+### 5. NPC 22275（埃匹希斯卫士）：埃匹希斯纪念碑"没完成也会召唤"
+
+- 纪念碑 = `gameobject_template 185944`（type 2 QUESTGIVER，`data0 = 1690`、`data3 = 8704`、`data9 = 1`），`ScriptName` 为空。
+- 召唤 22275 的应该是法术 **41124「Apexis Summoning」**（`spell_template` 41124 的召唤目标就是 22275）。
+- 已在源码里查过：`GO_APEXIS_MONUMENT` 只在 `blades_edge_mountains.cpp:482` 定义了常量，**没有任何脚本用它**；9 张 `dbscripts_*` 表里也没有 185944 / 41124 / 22275 的行。
+- 待查：到底是谁、在什么条件下放 41124（`gameobject_template` 的哪个 data 字段 / 条件表 / 脚本），以及官服"必须先完成才召唤"的判定在哪一层。
+
+### 6. 欧比迪斯等黑龙"吐火球没有施法动作"
+
+- 技能来源查清了：**EventAI**（`creature_ai_scripts` 2328101..2328111 / 2328201..2328209），不是 `spell_template` 的问题。
+  火系技能：40032 Fiery Breath（6s，castFlags=1=CAST_INTERRUPT_PREVIOUS）、9573 Flame Breath（5s）、
+  40719 Flame Buffet（Insidion）、40717 Hellfire（Obsidia）、另有 40505 Cleave / 15847 Tail Sweep / 36922 Bellowing Roar。
+- **我们的 EventAI 与上游 WotLK cmangos 的 `wotlkmangos.creature_ai_scripts` 逐行一致** ⇒ 不是我们改坏的。
+- `spell_template` 数据（来自客户端 DBC）：40032/40719/40717 的 `CastingTimeIndex = 1`（瞬发），只有 9573 = 5。
+- 待查方向：瞬发法术客户端不播"施法姿态"，动画只来自 `SpellVisual` 套装；但**官服同一份客户端数据却能看到动作**，所以嫌疑落在**服务端给的动画状态**上——这几条龙 `InhabitType = 4` 会永久带 levitate（飞行动画），可能把施法动画压掉了。**[AIR-CLAMP] 上线后要复测这一条**。
+
+### 7. 任务「失落的祭品」召唤出来的单位不消失
+
+站长 2026-09-30 报：**召唤过之后不消失，需要检查**。
+- 待查：先定位是哪个任务/哪次召唤（`quest_template` 里标题含"失落的祭品"的 entry）、召唤走的是 `SummonCreature` 的哪种 despawn 类型（`TEMPSPAWN_*`）、还是 EventAI / dbscript 召唤。
+- 常见根因：`TEMPSPAWN_MANUAL_DESPAWN` 没有对应的手动 despawn、或召唤物没有绑到任务结束事件上。查完再定修法。
+
+### 8. 关于"没有 .map"的重要澄清（站长 2026-09-30）
+
+**有些地图区域没有 `maps/*.map` 是正常的**：那说明该区域**没有 ADT 地面，只有 WMO 模型**（实例图基本都是这种）。
+- 所以 `556`（塞泰克大厅）没有 `.map`、`vmaps` 是 **non-tiled**（只有 `556.vmtree`、没有 `556_xx_yy.vmtile`）**都属于正常**，不是数据缺失 —— 原先"vmap 对 556 缺几何"的推断要按这条重新审视。
+- `.gps` 里 `Map: 0 VMap: 1` 正是这个含义：没有 ADT、但有 WMO 碰撞。
+- 相应地，"柱子不挡视野"**不能再归因于 vmap 数据缺失**：柱子在 WMO 里，LOS 应当命中。两个待查点本身 `vmapH10/HL/HU = NONE` 只说明**那两点所在的竖直列**在搜索距离内没有面（点悬在结构中间是正常的），与"两点之间有没有柱子"无关 —— 要用**沿两点连线的 LOS 射线**判定，而不是这两点的竖直查询。
+
+---
+
+## [寻路] 2026-09-30 全量素材重生成 + GO 碰撞烘焙（**已完成，工具已入库**）
+
+**站长口径**：用我们 fork 的提取器把 dbc / maps / vmaps / mmaps 全量重做一遍；导航网格这一层额外把
+**gameobject 的碰撞模型烘进地形网格**（"GO 全做"）；生成配置"按昨天上云的来"。塞泰克笼子那个"脱战点"
+**不再追**（见文末"已知限制"）。
+
+### 一、做了什么
+
+1. **编译提取器**：`cmake --build build1 --config Release` → `build1\bin\x64_Release\Extractors\` 下的
+   `ad.exe / vmap_extractor.exe / vmap_assembler.exe / MoveMapGen.exe` 全部来自我们 fork 的当前源码。
+2. **阶段 1：dbc + maps**（`ad.exe -i <client> -o <out>`）：**0.9 分钟** → dbc 370 个 / 95.4 MB、maps 3586 个 / 196.1 MB。
+3. **阶段 2：vmaps**：`vmap_extractor.exe -d <client>\Data -o <out>` **1.6 分钟** → `Buildings` 5431 个 / 209.6 MB；
+   再 `vmap_assembler.exe Buildings vmaps` → **vmaps 8607 个 / 398.5 MB**。
+4. **阶段 3：mmaps**（生产配置 + 530 offmesh + 全库 GO 烘焙）：**8.4 分钟**（16 线程）→ 地图格 2819 个。
+   再补 `--buildGameObjects`（18 个 transport/elevator 的 `go*.mmtile`）+ 从归档取回 `0004242.mmtile`
+   ⇒ 合计 **2838 个，与旧集合文件名零差异**。
+5. **GO 碰撞烘焙**（本 fork `MoveMapGen` 新能力，见 `dev/tools/README.md`）：
+   `--gameObjectInput <file>` 把 GO 的碰撞模型按 位置/朝向/尺寸 变换后并进所在 tile 的地形网格，
+   Recast 像对待 WMO 墙一样把它从可行走面里挖掉。
+   - 输入由 `dev/tools/gen_go_bake.py` 从世界库生成：`gameobject` 刷点 63,804 个 → **可烘焙 32,413 个**
+     （其余 31,390 个模型在 vmaps 里只有视觉、没有碰撞几何，用 `vmo_probe.py` 可抽查）。
+6. **本地已换上新 mmaps 供验收**（`maps` / `vmaps` / `dbc` **未动**）：旧的一套保留为
+   `x64_Debug\mmaps_bak_before_gobake`，回滚 = 删 `mmaps` + 把备份目录改回 `mmaps` + 重启。
+
+### 二、新旧数据对比（关键结论）
+
+| 数据 | 结果 |
+|---|---|
+| `maps` | 3586 个，抽样哈希**完全相同** ⇒ 重提取无变化 |
+| `vmaps` | 8607 个，抽样哈希 + `556.vmtree` **字节相同** ⇒ 重提取无变化（**塞泰克那边的 vmap 本来就没缺**） |
+| `dbc` | ⚠️ **不要覆盖**：新提取少一个 `Spell.csv`（无关），但 `Spell.dbc`、`SkillLineAbility.dbc` 内容不同 —— 现用的是**我们改过的** |
+| `mmaps` | **1098 个文件变了**（GO 烘焙 + 生产配置），1721 个不变 |
+
+### 三、生产配置（`dev/tools/config_prod.json`）
+
+= 出厂 `config.json` 的全部 per-map/tile 值（0/429/530-2029/530-4320/540/542/545/553/554/562/572…）
++ **两处修正**：
+1. **删掉 `532/3552` 的 `maxSimplificationError: 1.0`** —— 该值让 `rcBuildContours` 失败（`MapBuilder.cpp:1084`）
+   ⇒ **卡拉赞那一格 `mmaps/5325235.mmtile` 静默不写出**（上次全量重生成后 6.2 MB 的瓦片就是这么丢的）。
+   出厂配置至今带着它，**每次生成前必须处理**；本次生成后该文件正常（4,135,624 B）。
+2. **补上 `530/2234` 蛋加沼泽棚屋 `walkableRadius: 1`** —— 三层螺旋楼梯连通的那处。
+
+（站长确认："我也不知道哪个 A/B 是对的，按昨天上云的来" ⇒ 按上述两条复刻，其余保持出厂值。）
+
+### 四、踩过的坑（下次直接用 `dev/tools/`）
+
+1. `vmap_assembler` 要求输出目录 `vmaps/` **先存在**，否则 `Cannot open .../vmaps/000.vmtree` 直接退出。
+2. GO 烘焙的坐标约定：输入用世界坐标；生成器 mesh 空间 = `(worldY, 高度, worldX)`；
+   mmtile 文件名 = `<map><tileY><tileX>`（`tileY = int(32 - world_x/533.33)`、`tileX = int(32 - world_y/533.33)`）。
+   弄错的表现是"几何合并进去了、导航网格毫无变化"。
+3. `GroupModel::GetBound()` 对部分模型是空的 ⇒ 包围盒要遍历真实 mesh 数据。
+4. 本地 PowerShell 5.1 把脚本按 ANSI 读 ⇒ **脚本里不要写中文**（否则引号被吃掉直接语法错）。
+
+### 五、已知限制 / 站长决定不做
+
+- **"塞泰克笼子当脱战点"不再追**。烘焙本身是生效的（实测笼子正中与路径终点都从"命中 1 个面"
+  变成"**命中 0 个面**"，最近的面被推到 1.1~5.6 码外），但：
+  - 洞沿到玩家只有 1~3 码，而**近战判定半径 5 码** ⇒ 怪贴洞沿就能打到人；
+  - 近战一旦开打不再检查视线，所以光靠导航网格挖洞挡不住；
+  - 那处 `walkableRadius = 1`（原 2）**只写在 530/2234 棚屋那一格**，不影响 556，不是本次原因。
+  - 真要挡人得走"(a) 把烘焙盒子放大"或"(b) 让笼子挡视线(LOS)并让怪脱战"两条路，站长 2026-09-30 决定**不做了**。
+- **全量 GO 烘焙的影响面很大**（1098 个格的文件变了，32,413 个障碍）：本地验收重点看
+  "有没有本来能走、现在走不过去的地方"；不满意可以**不带 `--gameObjectInput` 重跑**（只要 8.4 分钟）。
+
+### 六、仍未动的待办
+
+- 任务「失落的祭品」召唤物不消失（见本章第 7 条）。
+- 塞泰克大厅同一根柱子"视野时挡时不挡"（见本章第 8 条：要按沿连线的 LOS 射线重测）。
+- NPC 22275 埃匹希斯纪念碑的召唤条件（见本章第 5 条）。
+- 欧比迪斯等黑龙的施法/站立动画与"吐火球无动作"（见本章第 6 条，站长决定**先不做**）。
+

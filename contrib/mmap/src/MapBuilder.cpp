@@ -104,14 +104,16 @@ namespace MMAP
     }
 
     MapBuilder::MapBuilder(const char* configInputPath, int threads, bool skipLiquid, bool skipContinents, bool skipJunkMaps,
-                           bool skipBattlegrounds, bool debug, const char* offMeshFilePath, const char* workdir) :
+                           bool skipBattlegrounds, bool debug, const char* offMeshFilePath, const char* workdir,
+                           const char* gameObjectFilePath) :
         m_taskQueue(new TaskQueue(this, threads)),
         m_debug(debug),
         m_skipContinents(skipContinents),
         m_skipJunkMaps(skipJunkMaps),
         m_skipBattlegrounds(skipBattlegrounds),
         m_offMeshFilePath(offMeshFilePath),
-        m_workdir(workdir)
+        m_workdir(workdir),
+        m_gameObjectFilePath(gameObjectFilePath)
     {
         std::ifstream jsonConfig(configInputPath);
         if (jsonConfig)
@@ -121,14 +123,221 @@ namespace MMAP
         m_rcContext = new rcContext(false);
 
         printf("Using %d thread(s) for processing.\n", threads);
+        loadGameObjects();
         discoverTiles();
     }
 
     /**************************************************************************/
     MapBuilder::~MapBuilder()
     {
+        for (auto& model : m_goModelCache)
+            delete model.second;
+        m_goModelCache.clear();
+
         delete m_terrainBuilder;
         delete m_rcContext;
+    }
+
+    /**************************************************************************/
+    // [GOBAKE] GameObject collision as static navmesh geometry.
+    //
+    // Creatures path on the mmaps, which are built from the static terrain and the vmaps -
+    // a gameobject model is in neither, so a mob walks straight through the Sethekk Halls
+    // cage (183051) and every other cage/fence/barrier the client happily renders.
+    // This reads a file listing every gameobject spawn we want to bake:
+    //
+    //   <modelFile> <mapId> <x> <y> <z> <rotXdeg> <rotYdeg> <rotZdeg> <scale>
+    //
+    // where <modelFile> is the vmaps-relative model dump (e.g. "G_Cage02.m2.vmo") and the
+    // rotation is in degrees, exactly like the vmap spawn data the terrain path already
+    // reads. The geometry is merged into the terrain mesh of every tile the model overlaps,
+    // so Recast carves it out of the walkable surface exactly like a wall from a WMO.
+    void MapBuilder::loadGameObjects()
+    {
+        if (!m_gameObjectFilePath || !*m_gameObjectFilePath)
+            return;
+
+        std::ifstream file(m_gameObjectFilePath);
+        if (!file)
+        {
+            printf("* Cannot open gameobject input '%s' - no gameobject geometry baked\n", m_gameObjectFilePath);
+            return;
+        }
+
+        std::string line;
+        uint32 parsed = 0, skipped = 0, missingModels = 0;
+        while (std::getline(file, line))
+        {
+            if (line.empty() || line[0] == '#')
+                continue;
+
+            std::istringstream iss(line);
+            GameObjectSpawn spawn;
+            if (!(iss >> spawn.model >> spawn.mapId >> spawn.x >> spawn.y >> spawn.z
+                      >> spawn.rotDeg[0] >> spawn.rotDeg[1] >> spawn.rotDeg[2] >> spawn.scale))
+            {
+                ++skipped;
+                continue;
+            }
+
+            WorldModel* worldModel = getGameObjectModel(spawn.model);
+            if (!worldModel)
+            {
+                ++missingModels;
+                continue;
+            }
+
+            // same convention as TerrainBuilder::loadVMap
+            G3D::Matrix3 rotation = G3D::Matrix3::fromEulerAnglesXYZ(G3D::pi() * spawn.rotDeg[2] / -180.f,
+                                                                     G3D::pi() * spawn.rotDeg[0] / -180.f,
+                                                                     G3D::pi() * spawn.rotDeg[1] / -180.f);
+
+            // world box of the transformed model. Two details matter here:
+            //  - unlike the vmap spawns (whose positions are stored as world + 32*GRID_SIZE)
+            //    the gameobject input carries plain world coordinates, so no shift is applied;
+            //  - the box comes from the real mesh data, because GroupModel::GetBound() is
+            //    empty for models whose bound chunk was never filled in.
+            std::vector<GroupModel> groupModels;
+            worldModel->getGroupModels(groupModels);
+
+            Vector3 position(-spawn.x, -spawn.y, spawn.z);
+            std::vector<Vector3> corners, transformed;
+            bool haveBounds = false;
+            G3D::Vector3 lmin(1e9f, 1e9f, 1e9f), lmax(-1e9f, -1e9f, -1e9f);
+            for (auto& gm : groupModels)
+            {
+                std::vector<Vector3> verts;
+                std::vector<MeshTriangle> tris;
+                WmoLiquid* liquid = nullptr;
+                gm.getMeshData(verts, tris, liquid);
+                for (Vector3 const& v : verts)
+                {
+                    haveBounds = true;
+                    lmin = lmin.min(v);
+                    lmax = lmax.max(v);
+                }
+            }
+
+            if (!haveBounds)                            // model with no geometry at all
+            {
+                ++missingModels;
+                continue;
+            }
+
+            for (int corner = 0; corner < 8; ++corner)
+                corners.push_back(Vector3((corner & 1) ? lmax.x : lmin.x,
+                                          (corner & 2) ? lmax.y : lmin.y,
+                                          (corner & 4) ? lmax.z : lmin.z));
+            TerrainBuilder::transform(corners, transformed, spawn.scale, rotation, position);
+
+            spawn.bmin[0] = spawn.bmin[1] = spawn.bmin[2] = 1e9f;
+            spawn.bmax[0] = spawn.bmax[1] = spawn.bmax[2] = -1e9f;
+            for (Vector3 const& v : transformed)
+            {
+                // copyVertices() writes (y, z, x) into the mesh arrays, so the tile bounds
+                // are in that permuted space: mesh[1] = height, mesh[2] = vmap x
+                float const mx = v.y;
+                float const my = v.z;
+                float const mz = v.x;
+                spawn.bmin[0] = std::min(spawn.bmin[0], mx);
+                spawn.bmin[1] = std::min(spawn.bmin[1], my);
+                spawn.bmin[2] = std::min(spawn.bmin[2], mz);
+                spawn.bmax[0] = std::max(spawn.bmax[0], mx);
+                spawn.bmax[1] = std::max(spawn.bmax[1], my);
+                spawn.bmax[2] = std::max(spawn.bmax[2], mz);
+            }
+
+            m_goSpawns[spawn.mapId].push_back(spawn);
+            ++parsed;
+        }
+
+        printf("Loaded %u gameobject spawn(s) for navmesh baking (%u lines skipped, %u models not in vmaps)\n",
+               parsed, skipped, missingModels);
+    }
+
+    /**************************************************************************/
+    WorldModel* MapBuilder::getGameObjectModel(std::string const& name)
+    {
+        std::lock_guard<std::mutex> guard(m_goModelMutex);
+
+        auto itr = m_goModelCache.find(name);
+        if (itr != m_goModelCache.end())
+            return itr->second;
+
+        std::string fullName(m_workdir);
+        fullName += "/vmaps/" + name;
+        WorldModel* model = new WorldModel();
+        if (!model->readFile(fullName))
+        {
+            delete model;
+            m_goModelCache[name] = nullptr;
+            return nullptr;
+        }
+
+        m_goModelCache[name] = model;
+        return model;
+    }
+
+    /**************************************************************************/
+    void MapBuilder::addGameObjectsToTile(uint32 mapID, float bmin[3], float bmax[3], MeshData& meshData)
+    {
+        auto itr = m_goSpawns.find(mapID);
+        if (itr == m_goSpawns.end())
+            return;
+
+        float const margin = 1.0f;
+        uint32 accepted = 0, candidates = 0;
+        for (GameObjectSpawn const& spawn : itr->second)
+        {
+            ++candidates;
+            // both boxes are in the same mesh space (TerrainBuilder::transform output)
+            if (spawn.bmax[0] < bmin[0] - margin || spawn.bmin[0] > bmax[0] + margin)
+                continue;
+            if (spawn.bmax[1] < bmin[1] - margin || spawn.bmin[1] > bmax[1] + margin)
+                continue;
+            if (spawn.bmax[2] < bmin[2] - margin || spawn.bmin[2] > bmax[2] + margin)
+                continue;
+            ++accepted;
+
+            WorldModel* worldModel = getGameObjectModel(spawn.model);
+            if (!worldModel)
+                continue;
+
+            std::vector<GroupModel> groupModels;
+            worldModel->getGroupModels(groupModels);
+
+            bool isM2 = spawn.model.find(".m2") != std::string::npos || spawn.model.find(".M2") != std::string::npos;
+
+            G3D::Matrix3 rotation = G3D::Matrix3::fromEulerAnglesXYZ(G3D::pi() * spawn.rotDeg[2] / -180.f,
+                                                                     G3D::pi() * spawn.rotDeg[0] / -180.f,
+                                                                     G3D::pi() * spawn.rotDeg[1] / -180.f);
+            // The mesh space the generator works in is (worldY, height, worldX) - the same
+            // space the vmap spawns end up in after their mirroring - so a gameobject given in
+            // world coordinates has to be mapped the same way. Getting this wrong puts the
+            // model one tile off (it then merges into empty space and nothing changes).
+            Vector3 position(-spawn.x, -spawn.y, spawn.z);
+
+            for (auto& gm : groupModels)
+            {
+                std::vector<Vector3> tempVertices, transformedVertices;
+                std::vector<MeshTriangle> tempTriangles;
+                WmoLiquid* liquid = nullptr;
+                gm.getMeshData(tempVertices, tempTriangles, liquid);
+
+                TerrainBuilder::transform(tempVertices, transformedVertices, spawn.scale, rotation, position);
+
+                int offset = meshData.solidVerts.size() / 3;
+                TerrainBuilder::copyVertices(transformedVertices, meshData.solidVerts);
+                TerrainBuilder::copyIndices(tempTriangles, meshData.solidTris, offset, isM2);
+            }
+        }
+
+        if (accepted)
+            printf("[GOBAKE] tile bbox (%.1f,%.1f,%.1f)-(%.1f,%.1f,%.1f): merged %u of %u candidate spawn(s)\n",
+                   bmin[0], bmin[1], bmin[2], bmax[0], bmax[1], bmax[2], accepted, candidates);
+        else if (candidates)
+            printf("[GOBAKE] tile bbox (%.1f,%.1f,%.1f)-(%.1f,%.1f,%.1f): 0 of %u candidate spawn(s) inside\n",
+                   bmin[0], bmin[1], bmin[2], bmax[0], bmax[1], bmax[2], candidates);
     }
 
     /**************************************************************************/
@@ -675,6 +884,21 @@ namespace MMAP
         // get bounds of current tile
         float bmin[3], bmax[3];
         getTileBounds(tileX, tileY, allVerts.getCArray(), allVerts.size() / 3, bmin, bmax);
+
+        // [GOBAKE] merge the gameobject collision that falls into this tile, then widen the
+        // bounds so Recast keeps the merged geometry (see loadGameObjects()).
+        if (!m_goSpawns.empty())
+        {
+            uint32 const solidBefore = meshData.solidVerts.size();
+            addGameObjectsToTile(mapID, bmin, bmax, meshData);
+            if (meshData.solidVerts.size() != solidBefore)
+            {
+                allVerts.clear();
+                allVerts.append(meshData.liquidVerts);
+                allVerts.append(meshData.solidVerts);
+                getTileBounds(tileX, tileY, allVerts.getCArray(), allVerts.size() / 3, bmin, bmax);
+            }
+        }
 
         m_terrainBuilder->loadOffMeshConnections(mapID, tileX, tileY, meshData, m_offMeshFilePath);
 

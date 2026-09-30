@@ -711,6 +711,9 @@ void World::LoadConfigSettings(bool reload)
     setConfigMinMax(CONFIG_FLOAT_GHOST_RUN_SPEED_BG,      "Death.Ghost.RunSpeed.Battleground", 1.0f, 0.1f, 10.0f);
 
     setConfig(CONFIG_FLOAT_LEASH_RADIUS, "LeashRadius", 30.f);
+    // [AIR-CLAMP] minimum height above the walkable floor kept for creatures that
+    // levitate by template (InhabitType & INHABIT_AIR). 0 disables the clamp.
+    setConfigMin(CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE, "Creature.AirGroundClearance", 1.0f, 0.0f);
     setConfigMin(CONFIG_UINT32_CREATURE_RESPAWN_AGGRO_DELAY, "CreatureRespawnAggroDelay", 5000, 0);
     setConfig(CONFIG_UINT32_CREATURE_PICKPOCKET_RESTOCK_DELAY, "CreaturePickpocketRestockDelay", 600);
 
