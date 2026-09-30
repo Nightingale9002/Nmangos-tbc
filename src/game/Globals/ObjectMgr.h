@@ -767,6 +767,9 @@ class ObjectMgr
 
         void LoadSpawnGroups();
 
+        // Fork addition: report spawn points that can never resolve an entry (see implementation)
+        void CheckSpawnEntryResolvability();
+
         void LoadGameTele();
 
         void LoadNpcGossips();

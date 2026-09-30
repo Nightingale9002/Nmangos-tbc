@@ -99,6 +99,13 @@ struct npc_xiri : public ScriptedAI
     npc_xiri(Creature* creature) : ScriptedAI(creature)
     {
         Reset();
+
+        // Fork fix: these two flags gate the RP triggers in ReceiveAIEvent but were never
+        // initialised anywhere (only assigned inside the handlers), so an AI event arriving from
+        // Akama before Xi'ri's own event read them uninitialised.  They are deliberately NOT reset
+        // in Reset() - that also runs on evade and would clear the state mid-event.
+        m_bVagathDead = false;
+        m_bAkamaInteractionPerformed = false;
     }
 
     GuidList m_lSummonedDeathsworn;

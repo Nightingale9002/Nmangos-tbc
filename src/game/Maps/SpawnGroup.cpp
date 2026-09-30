@@ -28,6 +28,7 @@
 #include "MotionGenerators/TargetedMovementGenerator.h"
 #include "World/World.h"
 #include "Maps/InstanceData.h"
+#include "Config/Config.h"      // fork addition: SpawnGroup.DebugLog conf key
 
 namespace
 {
@@ -64,6 +65,8 @@ namespace
 
 SpawnGroup::SpawnGroup(SpawnGroupEntry const& entry, Map& map, uint32 typeId) : m_entry(entry), m_map(map), m_chosenSquad(-1), m_objectTypeId(typeId), m_enabled(m_entry.EnabledByDefault)
 {
+    // Fork addition: optional per-spawn logging for diagnosing empty packs/instances.
+    m_debugLog = sConfig.GetBoolDefault("SpawnGroup.DebugLog", false);
 }
 
 void SpawnGroup::AddObject(uint32 dbGuid, uint32 entry)
@@ -437,10 +440,21 @@ void SpawnGroup::Spawn(bool forced, bool ignoreRespawntime)
         AddObject(dbGuid, entry);
         if (forced || m_entry.Active || m_map.IsLoaded(x, y))
         {
+            WorldObject* spawned = nullptr;
             if (GetObjectTypeId() == TYPEID_UNIT)
-                WorldObject::SpawnCreature(dbGuid, &m_map, entry);
+                spawned = WorldObject::SpawnCreature(dbGuid, &m_map, entry);
             else
-                WorldObject::SpawnGameObject(dbGuid, &m_map, entry);
+                spawned = WorldObject::SpawnGameObject(dbGuid, &m_map, entry);
+
+            // Fork addition: an entry that resolved to 0 cannot be created - and that used to happen
+            // without any log at all (see the Arcatraz case in dev/KNOWN_ISSUES.md).
+            if (!entry && m_zeroEntryReported.insert(dbGuid).second)
+                sLog.outError("SpawnGroup %u (%s): member guid %u could not resolve an entry (entry 0) - nothing was spawned",
+                              m_entry.Id, m_entry.Name.c_str(), dbGuid);
+
+            if (m_debugLog)
+                sLog.outString("[SGD] group %u (%s) member guid %u -> entry %u : %s", m_entry.Id, m_entry.Name.c_str(), dbGuid, entry,
+                               spawned ? "spawned" : "NOT created");
         }
     }
 }

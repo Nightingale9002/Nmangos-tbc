@@ -1,0 +1,30 @@
+-- 150_禁魔监狱（map 552）"空刷点"复查结论：**本文件不执行任何改动（无操作）**
+-- ===============================================================
+-- 结论更正（2026-10-01，同日撤销本文件的上一版）：
+--   上一版把 map 552 的 42 个 `creature.id = 0` 刷点当成"没有随机候选的死刷点"，并写了
+--   38 条 `UPDATE creature SET id = <tbc-db 的具体 entry>`。**这个判断是错的，已全部回退。**
+--
+-- 真相：这 42 个点是**刷怪组（spawn group）的候选位**，它们的 entry 由 `spawn_group_entry` 提供，
+--       而不是 `creature_spawn_entry`。以站长报的"缺艾瑞达"为例：
+--         · 组 **5520022「The Arcatraz - Group 022 - Eredar Soul-Eater/Eredar Deathbringer」**
+--           MaxCount = 1，成员 = 1（guid 5520064），随机候选 = 20879 / 20880
+--           ⇒ 该点本来就该"随机刷出艾瑞达食魂者或艾瑞达死亡使者之一"；
+--         · 组 5520012「Death Watcher / Entropic Eye」：4 个候选位、候选 20867 / 20868（MinCount 各 1）
+--           ⇒ 4 个点全刷且至少各 1 只；
+--         · 组 5520013/14/15/16/17/18/19/20/21/25「Warder/Defender Corpse」：成员 2~7 个、
+--           MaxCount 1~2、候选 21303 / 21304 ⇒ **随机挑几个点、随机刷成守卫者尸体或看守者尸体**；
+--         · 组 5520024「Unbound Devastator / Spiteful Temptress」：候选 20881 / 20883。
+--
+-- 为什么上一版是错的（代码依据 `SpawnGroup::Spawn` 的 `pickCreatureEntry`）：
+--   entry 选择优先级是 `RandomEntry`（有 `creature_spawn_entry`）> `OwnEntry`（`creature.id <> 0`）
+--   > 组的 `spawn_group_entry` 随机候选。
+--   ⇒ 把那 38 个点写成具体 entry 会让 `OwnEntry` 生效，**直接顶掉组的随机候选**：
+--      "守卫者尸体/看守者尸体"的二选一、"死亡守望者/熵能之眼"的分配就全没了。
+--   ⇒ 因此本文件不执行任何改动，数据维持与 `tbcmangos_orig` 完全一致（42 个 id=0、34 个 entry）。
+--
+-- 反查：上一版从未在云端应用（marker 停在 141）；本地已用同一份回滚件还原
+--       （42 个 id=0 / 34 个 entry / guid 5520064 无候选，与 tbcmangos_orig 逐项一致）。
+-- 保留价值：这正是"动态 guid / 刷怪组"数据模型最容易被误判的地方 —— 一个 `id = 0` 的刷点到底会刷什么，
+--       必须连查 `spawn_group_spawn` + `spawn_group_entry`（或 `creature_spawn_entry`）才能确定，
+--       而核心在解析不出 entry 时**不报错**，肉眼与日志都看不出来。
+-- ===============================================================

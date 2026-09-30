@@ -1719,7 +1719,115 @@ void ObjectMgr::LoadSpawnGroups()
     m_spawnGroupContainer = newContainer;
     sLog.outString(">> Loaded %u spawn_group definitions", uint32(m_spawnGroupContainer->spawnGroupMap.size()));
     sLog.outString();
+
+    CheckSpawnEntryResolvability();
 }
+
+/* Fork addition (2026-10-01): "the instance is missing mobs" sanity pass.
+ *
+ * In the dynguid / spawn-group system a DB spawn row only becomes an object if SOMETHING supplies
+ * its entry:
+ *   * `creature.id` / `gameobject.id` itself (SpawnGroupDbGuids::OwnEntry), or
+ *   * the row's own candidates in `creature_spawn_entry` / `gameobject_spawn_entry` (RandomEntry), or
+ *   * the spawn group the row belongs to, via `spawn_group_entry` / `spawn_group_squad`, or
+ *   * (pools) the pool member's own id - pools do NOT invent entries.
+ * A row with `id = 0` and none of the above resolves to entry 0 and then produces NOTHING: no
+ * object, and no log line either.  Diagnosing "why is this dungeon missing mobs" then means reading
+ * three tables by hand (Arcatraz 2026-10-01, see dev/KNOWN_ISSUES.md).  This pass reports such rows
+ * once at startup.  It is purely diagnostic and never modifies data.
+ */
+void ObjectMgr::CheckSpawnEntryResolvability()
+{
+    auto resolveGroup = [this](uint32 dbGuid, uint32 typeId) -> SpawnGroupEntry const*
+    {
+        if (!m_spawnGroupContainer)
+            return nullptr;
+        auto itr = m_spawnGroupContainer->spawnGroupByGuidMap.find(std::make_pair(dbGuid, typeId));
+        return itr != m_spawnGroupContainer->spawnGroupByGuidMap.end() ? (*itr).second : nullptr;
+    };
+
+    auto groupSuppliesEntry = [](SpawnGroupEntry const* group) -> bool
+    {
+        return group && (!group->RandomEntries.empty() || !group->Squads.empty());
+    };
+
+    auto report = [](char const* what, uint32 total, std::vector<std::string>& samples, uint32 broken)
+    {
+        if (!broken)
+        {
+            sLog.outString(">> Spawn sanity: all %u `%s` rows with id=0 can resolve an entry", total, what);
+            return;
+        }
+
+        sLog.outErrorDb("SPAWN-SANITY: %u of %u `%s` rows with id=0 and no own random-entry candidates are not in "
+                        "a spawn group that supplies an entry either - they will NEVER spawn (no object, no other log).",
+                        broken, total, what);
+        for (std::string const& line : samples)
+            sLog.outErrorDb("SPAWN-SANITY:   %s", line.c_str());
+    };
+
+    uint32 totalCreatures = 0, totalGameobjects = 0;
+    uint32 brokenCreatures = 0, brokenGameobjects = 0;
+    std::vector<std::string> creatureSamples, gameobjectSamples;
+
+    for (auto const& data : mCreatureDataMap)
+    {
+        if (data.second.id != 0)
+            continue;
+
+        ++totalCreatures;
+
+        if (GetAllRandomCreatureEntries(data.first))
+            continue;
+
+        SpawnGroupEntry const* group = resolveGroup(data.first, uint32(TYPEID_UNIT));
+        if (groupSuppliesEntry(group))
+            continue;
+
+        ++brokenCreatures;
+        if (creatureSamples.size() < 20)
+        {
+            std::ostringstream line;
+            line << "creature guid " << data.first << " (map " << uint32(data.second.mapid) << ")";
+            if (group)
+                line << ", its group " << group->Id << " has no spawn_group_entry/squad";
+            else
+                line << ", not in any spawn group";
+            creatureSamples.push_back(line.str());
+        }
+    }
+
+    for (auto const& data : mGameObjectDataMap)
+    {
+        if (data.second.id != 0)
+            continue;
+
+        ++totalGameobjects;
+
+        if (GetAllRandomGameObjectEntries(data.first))
+            continue;
+
+        SpawnGroupEntry const* group = resolveGroup(data.first, uint32(TYPEID_GAMEOBJECT));
+        if (groupSuppliesEntry(group))
+            continue;
+
+        ++brokenGameobjects;
+        if (gameobjectSamples.size() < 20)
+        {
+            std::ostringstream line;
+            line << "gameobject guid " << data.first << " (map " << uint32(data.second.mapid) << ")";
+            if (group)
+                line << ", its group " << group->Id << " has no spawn_group_entry/squad";
+            else
+                line << ", not in any spawn group";
+            gameobjectSamples.push_back(line.str());
+        }
+    }
+
+    report("creature", totalCreatures, creatureSamples, brokenCreatures);
+    report("gameobject", totalGameobjects, gameobjectSamples, brokenGameobjects);
+}
+
 
 void ObjectMgr::LoadEquipmentTemplates()
 {

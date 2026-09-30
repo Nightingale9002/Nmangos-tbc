@@ -6590,3 +6590,67 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
   22421 异端斯卡西斯，而它的 AI（`npc_xiri`）写的是**希里在影月谷的 Ashtongue RP 事件**，对索莉多米基本是空转；
   与"缺路径"无关，但值得记一笔（将来要给索莉多米加对话时别指望这个脚本）。
 
+---
+
+## [数据] 2026-10-01 禁魔监狱 42 个 `id = 0` 刷点＝**刷怪组候选位**（不是死刷点）——我一度误判，已当天回退
+
+- 起因（站长）："禁魔监狱副本里应该缺了几只 **艾瑞达 20880** 和 **艾瑞达食魂者 20879**"。
+- **第一版判断是错的（已回退）**：看到 `creature_spawn_entry` 里没有 map 552 的候选行，就断定这 42 个 `id = 0`
+  刷点是"随机候选刷点却没候选 ⇒ 什么都不刷"，并写了 38 条 `UPDATE creature SET id = <tbc-db 的具体 entry>`
+  （`dev/150` 上一版）。本地应用后当天全部还原，**云端从未应用**（marker 停在 141）。
+- 复查结论：这些点是**刷怪组的候选位**，entry 由 `spawn_group_entry` 提供，而不是 `creature_spawn_entry`：
+  | 刷怪组 | MaxCount | 成员数 | 随机候选 |
+  |---|---|---|---|
+  | **5520022「The Arcatraz - Group 022 - Eredar Soul-Eater/Eredar Deathbringer」** | 1 | **1**（guid **5520064**） | **20879 / 20880** |
+  | 5520012「Death Watcher / Entropic Eye」 | 0（=成员数 4） | 4 | 20867 / 20868（MinCount 各 1） |
+  | 5520013/14/15/16/17/18/19/20/21/25「Warder/Defender Corpse」 | 1~2 | 2~7 | 21303 / 21304 |
+  | 5520024「Unbound Devastator / Spiteful Temptress」 | 1 | 1 | 20881 / 20883 |
+  ⇒ 站长说的那只艾瑞达（坐标 305.736, 148.059, 24.863）**本来就该随机刷出"食魂者或死亡使者之一"**，
+  尸体/守望者也是"多候选点里随机挑几个 + 随机二选一"的设计。
+- **为什么第一版会破坏行为**（`SpawnGroup::Spawn` → `pickCreatureEntry` 的优先级）：
+  `RandomEntry`（有 `creature_spawn_entry`）> **`OwnEntry`（`creature.id <> 0`）** > 组的 `spawn_group_entry` 随机候选
+  ⇒ 把 `creature.id` 写死会让 `OwnEntry` 生效、**直接顶掉组的随机候选**（尸体的"守卫者/看守者"二选一、
+  守望者/熵能之眼的分配全没了）—— 修错了方向，反而制造回归。
+- 现状（与 `tbcmangos_orig` 逐项一致）：42 个 `id = 0`、34 个不同 entry、guid 5520064 无 `creature_spawn_entry` 行；
+  `dev/150` 已改成"无操作"记录文件，回滚件保留为撤销工具。
+- **仍未确认的一层（需要游戏内证据，不是数据问题）**：那个艾瑞达点到底刷没刷出来。若没刷，下一步要查
+  `SpawnGroup::Spawn` 的 `MaxCount`/`m_chosenEntries`/`m_map.IsLoaded` 路径和本 fork 的 `SpawnManager` 交互，
+  **而不是再去改数据**。
+- 教训（写给以后的自己）：**一个 `id = 0` 的刷点会刷什么，必须同时查 `spawn_group_spawn` + `spawn_group_entry`
+  和 `creature_spawn_entry`**；核心在"解析不出 entry"时**不报错**，所以"候选表为空"既不能当结论，也不能指望日志报警。
+
+---
+
+## [工具] 2026-10-01 刷点诊断三件套：启动自检 + `[SGD]` 生成日志 + 离线体检脚本（`702281cb7`）
+
+- 起因：站长"动态 guid 造成的问题太多"的体感里，最难查的一部分是**静默失败** —— `id = 0` 的刷点解析不出 entry 时
+  **既不生成对象也不报错**（2026-10-01 禁魔监狱那次误判就是这么来的）。三件东西都**只做诊断**，不改数据、不改游戏行为。
+- **① 启动自检** `ObjectMgr::CheckSpawnEntryResolvability()`（在 `LoadSpawnGroups()` 末尾调用）：
+  统计「`id = 0`、自身无 `creature_spawn_entry`/`gameobject_spawn_entry`、所在刷怪组也没有
+  `spawn_group_entry`/`spawn_group_squad`」的刷点 ⇒ error 级输出（聚合 + 前 20 条样本）；
+  都干净时打一行 `>> Spawn sanity: all N ... can resolve an entry`。
+- **② `SpawnGroup.DebugLog = 1`**（新 conf 键，默认关）：每个刷怪组成员生成时打一行
+  `[SGD] group <id> (<name>) member guid <guid> -> entry <entry> : spawned|NOT created`；
+  另外"解析成 entry 0"的成员打**一次性** error（`m_zeroEntryReported` 去重，不再每 tick 刷屏）。
+- **③ `dev/tools/spawn_audit.py`**：离线体检（不依赖服务端），输出三类：
+  ①永远刷不出的刷点 ②因属于池/游戏事件而被刷怪组加载器跳过的成员 ③池里挂着不存在本体的成员；
+  支持 `--list N` / `--tsv out.tsv`，发现①时**退出码 1**（可直接进 nightly 报警）。
+- 本地实测（`World initialized` 01:10）：
+  - 自检报出 **6 个 creature + 66 个 gameobject** 刷点永远刷不出（creature：1189 个 `id=0` 里 6 个；gameobject：6181 个里 66 个），其余全部可解析；
+  - `DebugLog=1` 在**世界地图**上验证到真实生成 —— 刀锋山 16 条，例如
+    `group 21640 (Adamantite - BEM - Ogrila) member guid 187169 -> entry 181569 : spawned`
+    ⇒ "组的随机候选 → entry → 真正生成对象"这条链现在**肉眼可见**。
+- **本地"全量加载地图"能测什么**（站长提的测试手段）：
+  - `mangosd.conf` 的 **`LoadAllGridsOnMaps = "mapId[,…]"`** → `ObjectMgr::LoadActiveEntities(Map*)` →
+    `_map->ForceLoadGrid(...)` 把该地图**所有网格**强制加载 ⇒ **世界地图（0/1/530…）可以全量加载来测**，
+    还能让"没有玩家时"的刷怪组正常生成（实测 map 530 生效）；
+  - **实例地图（552 等）不行**：实例对象只在有玩家进入时才创建，没玩家就没有那个 `Map` 实例 ⇒ `LoadAllGridsOnMaps="552"` 不生效。
+    要验证**副本内**的刷怪组（例如禁魔监狱那个艾瑞达点），必须**真的有人进副本**（本地客户端进一次，或云端实测），
+    并保持 `SpawnGroup.DebugLog = 1`，日志里就能看到每个成员解析出的 entry 与是否真的生成。
+- 顺带发现（**待站长定，未动手**）：
+  1. **66 个 gameobject 刷点（map 0）看起来是仲夏火焰节的火盆** —— 对照 AzerothCore 同 guid 的 entry 是
+     **181355「Standing, Exterior, Medium - MFF」**；我们库与 tbc-db 里它们都是 `id = 0` 且**没有任何候选**
+     ⇒ 这些火盆**从来不生成**（节日祭坛/任务点会缺）；
+  2. **6 个 creature 刷点**（map 530 ×4：组 28015/28016；map 0 ×2：组 19980）所在组没有任何随机候选。
+  两类都要"给具体 entry"或"补候选"的**数据决策**，不建议照 AC 直接抄（需逐点核对坐标与用途）。
+
