@@ -36,6 +36,7 @@ cmake --build D:\Game\cmangos\build1 --config Release
 | `ray_ground_probe.py` | mmtile 解析库（被 `check_go_bake.py` import） |
 | `vmtree_probe.py` | 解析 `<map>.vmtree`：tiled 标志、BIH 规模、全局模型 |
 | `vmo_probe.py` | 解析 `*.vmo`：每个 group 的顶点/三角形数（判断模型有没有碰撞几何） |
+| `vmap_los_probe.py` | **vmap 通视探针**：`spawns <map>` 打印 `<map>.vmtree` 的模型刷点；`ray <map> x1 y1 z1 x2 y2 z2 [眼高源] [眼高目标]` 沿连线做 3D 射线求交，分别给出 `ignoreM2Model=false/true`（= `.los` 的 Normal/M2 两列）的命中点、模型名和 WMO/M2 属性。坐标换算与核心一致（`mid-x, mid-y, z`，mid=17066.667） |
 | `dbc_diff.py` / `dbc_dump.py` | 逐条比对两个 DBC / 打印某条记录的全部字段（按字符串块自动解码），用于查"我们改过哪些 DBC 记录" |
 | `replica_monitor.ps1` | 本地 MySQL 从库（3307）复制监控：隧道端口 + IO/SQL 线程 + 延迟；**状态变化才写日志**，异常时 ssh 往云端 watchdog 日志追一行。计划任务 `WoW_ReplicaMonitor` 每 5 分钟跑（口令读 `D:\Game\cmangos\.replica_cred`，**不入库**） |
 | `replica_repair_tool.ps1` | 2026-09-30 从库复制故障的修复脚本（逐条删冲突行；最终改用"全量 dump 重建"，命令见 KNOWN_ISSUES 运维章） |

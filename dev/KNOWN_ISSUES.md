@@ -5757,7 +5757,7 @@ GroundZ: 5.007812   FloorZ: 0.010762   Have height data (Map: 0 VMap: 1)
 - 这是"笼子属于 WMO/M2 vmap 命中但**没有对应碰撞体积**（只有视觉面）"，还是"vmap 命中了但 navmesh 在这格把笼子内部与外部连成一片"（即 mmap 生成时没有把笼壁切出来）。
 - 结论要靠 `mmaps/556*.mmtile` 看该点附近的多边形连通性 + `vmaps` 看笼子模型的碰撞面分布，两边对照。
 
-### 2. 塞泰克大厅：同一根柱子，视野时挡时不挡
+### 2. 塞泰克大厅：同一根柱子，视野时挡时不挡 —— 【2026-09-30 数据层复查：数据是"挡"的，问题不在 vmap】
 
 站长记录的两个点（柱子两侧）：
 ```
@@ -5766,10 +5766,20 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 ```
 站长原话：「这两个点中间应该有一个柱子，但是不卡视野，需要检查。我再次测试同一个柱子又卡视野了，需要检查」。
 
-待查方向（两个点都在 `Have height data (Map: 0 VMap: 1)` 的格子里，GroundZ/FloorZ 均为 -200000 = 该 2D 位置**没有地形也没有 vmap 命中**，说明这两点本身悬在结构之外）：
-- `WorldModel.cpp:395` 的 `frontFacesOnly`（`|n·ray| >= 0.5`）会在**柱子背面**丢弃碰撞面 ⇒ 从某些角度看穿；
-- 也可能与 M2 柱子只在部分朝向生成碰撞面有关。
-- 复现要求：同一根柱子、两个相反方向各测一次 `Los check`，把 `Normal/M2` 两个结果都记下来再判定。
+**2026-09-30 复查结论（用新工具直接在 vmap 网格上打射线，`dev/tools/vmap_los_probe.py`）**：
+
+- 坐标换算按核心同款公式 `VMapManager2::convertPositionToInternalRep`：`(mid - x, mid - y, z)`，`mid = 0.5×64×533.33333 = 17066.667`。
+- 两点换算后 = `(17031.33, 16753.36, 25.34)` 与 `(17055.73, 16763.38, 26.61)`，连线长 **26.41 yd**。
+- 结果：**这条线被 `Demon_Wing.wmo` 的 WMO 碰撞面挡住**（首个交点 t=0.237 落在 game(29.55, 310.93)，第二个 t=0.795 落在 game(15.94, 305.34)，进出各一次）。
+- 扫参：眼高 0/1/2/3/4/5/6/7/8/9/10/12 yd、两端高差 0~8 yd 的各种组合，**全部命中（hits 3~12）**；`ignoreM2Model` 两种模式结果一致（因为挡路的是 WMO，不是 M2）。
+- 因此：
+  1. 这条连线"不卡视野"**不是数据缺失**，`GroundZ/FloorZ = -200000` 只说明那两点所在竖直列没有水平面（层高查询只接受近水平面），与"两点之间有没有柱子"无关；
+  2. 之前文档里"`WorldModel.cpp:395` 的 `frontFacesOnly` 会在柱子背面丢弃碰撞面 ⇒ 从某些角度看穿"的猜测**不成立** —— 该参数**只用于高度查询**（我们自己的补丁，注释里写明"line of sight, object hit 完全不受影响"），LOS 路径始终 `frontFacesOnly=false`；
+  3. 剩下两种可能，都需要一次带坐标的现场复现才能定案：
+     - 复现时用的"目标"不是这两个点（`.los` 取的是**当前选中单位**的位置，且目标的 z 会再加 `player->GetCollisionHeight()`）；
+     - 当时该实例的 vmap 树没加载成功 —— `VMapManager2::isInLineOfSight()` 在 `GetMapTree()` 找不到树时**直接返回 true（= 通视）**，表现为"不卡视野"，重新加载后又恢复（"再测又卡了"）。
+- **复现配方（下次现场直接照做）**：站在记录点 → 选中柱子对面的目标 → `.los` → 记录 `Normal` / `M2` 两列 + 双方 `.gps`；随后本地用
+  `python dev/tools/vmap_los_probe.py ray 556 x1 y1 z1 x2 y2 z2 2 2` 直接对照（工具会打印命中点、模型名与 WMO/M2 属性）。
 
 ### 3. NPC 23253（Kronk）站姿：官服是坐着的，这里是站着
 
@@ -5783,12 +5793,43 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 - **不是我们的数据漂移**：官方参考库 `tbcdb_ref` 同样有这两条给予关系。
 - 修法候选（**数据改动，待批准**）：给两条设同一个非 0 的 `ExclusiveGroup`（接了一个就锁另一个）；或者按官服只保留其中一条。需要先确认官服到底给的是哪一个（11010 是旧版、11102 是补丁后重发的可能性最大）。
 
-### 5. NPC 22275（埃匹希斯卫士）：埃匹希斯纪念碑"没完成也会召唤"
+### 5. NPC 22275（埃匹希斯卫士）/ 埃匹希斯纪念碑"没完成也会召唤" —— 【2026-09-30 链条查清 + 扣碎片已修，失败也召唤待站长定】
 
-- 纪念碑 = `gameobject_template 185944`（type 2 QUESTGIVER，`data0 = 1690`、`data3 = 8704`、`data9 = 1`），`ScriptName` 为空。
-- 召唤 22275 的应该是法术 **41124「Apexis Summoning」**（`spell_template` 41124 的召唤目标就是 22275）。
-- 已在源码里查过：`GO_APEXIS_MONUMENT` 只在 `blades_edge_mountains.cpp:482` 定义了常量，**没有任何脚本用它**；9 张 `dbscripts_*` 表里也没有 185944 / 41124 / 22275 的行。
-- 待查：到底是谁、在什么条件下放 41124（`gameobject_template` 的哪个 data 字段 / 条件表 / 脚本），以及官服"必须先完成才召唤"的判定在哪一层。
+**完整触发链（这次全查通了）**：
+1. 纪念碑 = GO **185944**（type 2 QUESTGIVER，`data3 = gossipID 8704`，7 个刷点，respawn 180s）；遗物 = GO **185890**（`data3 = 8703`）。
+2. 闲聊选项：
+   - `gossip_menu_option(8704,0)` = 「Insert **35** Apexis Shards, and begin!」，`action_script_id = 870401`，`condition_id = 467`
+     → `conditions 467` = `type 2 CONDITION_ITEM, 32569 × 35`（背包里有 35 个埃匹希斯碎片）
+   - `gossip_menu_option(8703,0)` = 「Insert **1** Apexis Shard, and begin!」，`action_script_id = 870301`，`condition_id = 466`（32569 × 1）
+3. `dbscripts_on_gossip`：`870401` → command 15 施放 **41139**（Simon Game, begin game, group）；`870301` → 施放 **41137**（solo）。
+4. 法术链：`41139 → 41146`（"…(Get Reagents)"，**Reagent1 = 32569 × 35**）`→ 39993`（START timer）→ 触发 AI 事件启动游戏；
+   `41137 → 41145`（Reagent1 = 32569 × 1）同理。
+5. 游戏由兔子 **22923**（小）/ **23378**（大）的 `npc_simon_game_bunnyAI` 跑（`blades_edge_mountains.cpp`）。
+6. 卫士来源：**41952**「Simon Game, Group Reward pre-spell, Apexis Summoning 1」`Effect = 140 → 41124`，
+   `41124` = `Effect 28（SUMMON）EffectMiscValue1 = 22275` ⇒ 召唤埃匹希斯卫士。
+   41952 只在 `npc_simon_game_bunnyAI` 里被施放两次，且**只对大型事件（纪念碑）**：
+   - `blades_edge_mountains.cpp:618` `DoCompleteLevel()`：第 6 关（`SIMON_BIG_LEVEL_SUMMON`）**通关时** ⇒ 奖励流程（给 Apexis Vibrations + 召卫士）；
+   - `blades_edge_mountains.cpp:687` `DoCleanupGame()`：**失败清理时**（玩家连点错/超时 5 tick）⇒ 也召卫士。
+7. 卫士掉落物 = **32697 Apexis Guardian's Head**，任务 **11059「纪念碑的守护者」`ReqItemId1 = 32697`**。
+
+**已修（明确是 bug，与泰罗克祭品同一类坑）**：**碎片从来没被扣过**。
+`41145 / 41146` 的试剂挂在"被触发"的法术上，而 `Spell::IgnoreItemRequirements()`（`m_ignoreCosts = m_IsTriggeredSpell && …`）
+让 `TakeReagents()` 直接返回 ⇒ 闲聊里写"插入碎片"，实际一个都不扣，**遗物与纪念碑都能无限重开**（= 站长说的"乱召唤"）。
+- 修法（`blades_edge_mountains.cpp`，代码层）：在 `npc_simon_game_bunnyAI::ReceiveAIEvent` 的
+  `PHASE_INACTIVE + AI_EVENT_CUSTOM_A`（游戏开始，`pInvoker` 就是点碑的玩家）处，先检查再 `DestroyItemCount(32569, 1 或 35, true)`；
+  碎片不够就不开局。未改 `spell_template` / 条件表。
+- 本地：编译 ✓、部署 ✓（md5 `B46135E97A0413F1EC4D2A8F4D86E102`，`World initialized`）、提交 `c314d8727`；
+  云端源码已同步（md5 `6b3d9a1c3ec4143867f2f87e9a84e566`），随 10-01 nightly 编译部署。
+- 待游戏内验证：插碎片开局后背包 `32569` 分别 -1 / -35；不够时不开局。
+
+**已修 ②（站长 2026-09-30 定案："失败也召唤卫士是错的"）**：`DoCleanupGame()` 里那次 `41952` 已**删除**
+- 保留：`SPELL_VISUAL_GAME_FAILED`（视觉失败）+ 四色按钮锁 + `SPELL_SWITCHED_OFF` + 音效 + `Reset()`；
+  **没有**另加惩罚法术（未采用 41241 替代，避免自行发明机制）。
+- 卫士现在**只在大型游戏第 6 关通关时**出现（`DoCompleteLevel()`，`SIMON_BIG_LEVEL_SUMMON`）。
+- 上游对照：`D:\Game\cmangos\mangos-tbc` 同处是 `if (m_bIsLargeEvent) player->CastSpell(..., SPELL_SIMON_GROUP_REWARD, ...)` ⇒ 这是我们有意偏离上游的一处（已在本注释里写明理由）。
+- 本地：编译 ✓、部署 ✓（md5 `4485D625D35C29EBF97B9B4853A7FF8F`，`World initialized`）、提交 `050836753`；
+  云端源码已同步（md5 `b714e7f2b31bfcc8ebfa5541a1685579`），随 10-01 nightly 编译部署。
+- 待游戏内验证：故意失败（点错/超时）**不再出现**埃匹希斯卫士；正常通到第 6 关仍会出现。
 
 ### 6. 欧比迪斯等黑龙"吐火球没有施法动作"
 

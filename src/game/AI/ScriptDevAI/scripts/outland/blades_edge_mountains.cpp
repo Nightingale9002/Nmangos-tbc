@@ -478,6 +478,10 @@ enum
     NPC_SIMON_GAME_BUNNY            = 22923,
     NPC_SIMON_GAME_BUNNY_LARGE      = 23378,
 
+    ITEM_APEXIS_SHARD               = 32569,            // reagent of 41145 (solo) / 41146 (group)
+    SHARD_COST_SMALL_GAME           = 1,                // "Insert an Apexis Shard, and begin!"
+    SHARD_COST_LARGE_GAME           = 35,               // "Insert 35 Apexis Shards, and begin!"
+
     GO_APEXIS_RELIC                 = 185890,
     GO_APEXIS_MONUMENT              = 185944,
 
@@ -682,10 +686,11 @@ struct npc_simon_game_bunnyAI : public ScriptedAI
     // Cleanup event - called when event fails
     void DoCleanupGame()
     {
-        if (m_bIsLargeEvent)
-            if (Player* player = m_creature->GetMap()->GetPlayer(m_masterPlayerGuid))
-                player->CastSpell(player, SPELL_SIMON_GROUP_REWARD, TRIGGERED_OLD_TRIGGERED);
-
+        // NOTE: the failure path must NOT summon the Apexis Guardian. 41952 is the "Group Reward
+        // pre-spell" of the large game (it triggers 41124 -> 22275, whose head is required by quest
+        // 11059); summoning it here let players farm the head by deliberately failing the game
+        // instead of finishing it. The guardian now only appears on a completed large game
+        // (DoCompleteLevel, level SIMON_BIG_LEVEL_SUMMON).
         // lock the buttons
         DoCastSpellIfCan(m_creature, SPELL_GAME_END_RED, CAST_TRIGGERED);
         DoCastSpellIfCan(m_creature, SPELL_GAME_END_BLUE, CAST_TRIGGERED);
@@ -705,8 +710,20 @@ struct npc_simon_game_bunnyAI : public ScriptedAI
             case PHASE_INACTIVE:
                 if (eventType == AI_EVENT_CUSTOM_A && !m_bIsEventStarted)
                 {
+                    Player* player = pInvoker->GetBeneficiaryPlayer();
+                    uint32 const shardCost = m_bIsLargeEvent ? SHARD_COST_LARGE_GAME : SHARD_COST_SMALL_GAME;
+
+                    // 41145 / 41146 ("... (Get Reagents)") carry the Apexis Shard reagent, but they are
+                    // only ever reached through the triggered 41137 / 41139, and triggered spells skip
+                    // reagent consumption entirely (Spell::IgnoreItemRequirements -> TakeReagents
+                    // early-out). Take the shards here instead: one insertion = one game.
+                    if (!player || !player->HasItemCount(ITEM_APEXIS_SHARD, shardCost))
+                        return;
+
+                    player->DestroyItemCount(ITEM_APEXIS_SHARD, shardCost, true);
+
                     m_uiGamePhase = PHASE_LEVEL_PREPARE;
-                    m_masterPlayerGuid = pInvoker->GetObjectGuid();
+                    m_masterPlayerGuid = player->GetObjectGuid();
                     m_uiLevelCount = 0;
                     DoPrepareLevel();
                     m_bIsEventStarted = true;
