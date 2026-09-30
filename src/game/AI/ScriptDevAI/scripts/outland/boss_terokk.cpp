@@ -42,6 +42,8 @@ enum
     NPC_ACE                 = 23377,
     NPC_INVISIBLE_STALKER   = 15214,
 
+    ITEM_TIME_LOST_OFFERING = 32720,    // quest 11073 reagent, consumed by the summoning ritual
+
     // Intro
     SPELL_RED_BEAM      = 24240,
     SPELL_SHADOWFORM_TEROKK = 41408,
@@ -294,8 +296,20 @@ struct boss_terokkAI : public CombatAI
 bool ProcessEventId_event_summon_terokk(uint32 /*eventId*/, Object* source, Object* /*pTarget*/, bool /*isStart*/)
 {
     Player* player = (Player*)source;
+
+    // The Time-Lost Offering is the reagent of 41004 Summon Terokk, but the ritual reaches that
+    // spell through the triggered 41003 Terokk Trigger, and triggered spells skip reagent
+    // consumption (Spell::IgnoreItemRequirements). Consume the offering here instead so that
+    // one offering only ever calls Terokk forth once.
+    if (!player->HasItemCount(ITEM_TIME_LOST_OFFERING, 1))
+        return true;
+
     if (player->GetMap()->SpawnedCountForEntry(NPC_TEROKK) == 0)
+    {
         player->SummonCreature(NPC_TEROKK, -3788.856f, 3507.526f, 286.8846f, 3.159046f, TEMPSPAWN_TIMED_OOC_OR_DEAD_DESPAWN, 600000, true, false, 0, 0, 0, true);
+        player->DestroyItemCount(ITEM_TIME_LOST_OFFERING, 1, true);
+    }
+
     return true;
 }
 

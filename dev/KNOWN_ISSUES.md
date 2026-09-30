@@ -6056,3 +6056,66 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
   ⇒ **2026-10-01 凌晨 nightly 自动编译部署**；`anticheat.conf` 的 `BadFallReset.Penalty` 由 04:50 的部署脚本改成 `1`。
 - 待验证：玩家用 31678 控制 Forgelord 后不再掉线；云端日志里改为出现 `[ANTICHEAT] RunSpeedChange ... logged only, no kick`。
 
+---
+
+## 2026-09-30 任务 11073「泰罗克的毁灭」：召唤祭品（失落的祭品 32720）用掉后不扣除（已修，待游戏内验证）
+
+### 一、现象与定位
+
+- 玩家报告：任务「失落的祭品」的召唤祭品用掉后**不消失**（物品仍在背包），可反复召唤泰罗克。
+- 「失落的祭品」在 zhCN 数据里是**物品 32720 Time-Lost Offering**，只出现在任务 **11073 Terokk's Downfall** 的目标文本中
+  （`locales_quest 11073 Objectives_loc4`：把哈吉克准备好的失落的祭品带到斯克提斯中央的徽记堆，召唤出泰罗克并击败它）。
+- 完整调用链（DB + 代码双向核对，全部实测存在）：
+  1. 点 **古代颅骨堆** GO 185928（刷新点 guid 14141 @ (-3789.4, 3507.6, 287)，map 530）
+  2. `gameobject_template 185928`：type 2（QUESTGIVER），`data3 = gossipID = 8687`
+  3. `gossip_menu_option(menu_id=8687, id=0)`：`<Call forth Terokk.>`，`action_script_id = 8687`，`condition_id = 919`
+     → `conditions 919` 存在且正确：`type = 2`（CONDITION_ITEM）`value1 = 32720, value2 = 1`（"背包里有 1 个失落的祭品"）
+     ⇒ 选项本来就有祭品门槛，没带祭品时选项不显示（本地/云端两库一致）。
+  4. `dbscripts_on_gossip id=8687`：command 15（CAST_SPELL），`datalong = 41003 Terokk Trigger`
+  5. `spell_template 41003`：`Effect1 = 140`（TRIGGER_SPELL）→ `EffectTriggerSpell1 = 41004 Summon Terokk`
+  6. `spell_template 41004`：`Effect1 = 61`（SEND_EVENT）`EffectMiscValue1 = 15014`；
+     **`Reagent1 = 32720, ReagentCount1 = 1`** ⇒ 数据设计本来就是"召唤即消耗祭品"
+  7. `scripted_event_id 15014 = event_summon_terokk` → `boss_terokk.cpp:ProcessEventId_event_summon_terokk` 召唤泰罗克 21838
+     （`TEMPSPAWN_TIMED_OOC_OR_DEAD_DESPAWN, 600000`，且有 `SpawnedCountForEntry(NPC_TEROKK) == 0` 防重复）
+
+- **试剂为什么从来不扣**：41004 是被 41003 **触发**出来的：
+  - `Spell.cpp:466`：`m_ignoreCosts = (m_IsTriggeredSpell && (triggeredFlags & TRIGGERED_FORCE_COSTS) == 0) || ...`
+  - `Spell.cpp:6824 IgnoreItemRequirements()`：`m_ignoreCosts` 为真 ⇒ 直接返回 true
+  - `Spell.cpp:4789 TakeReagents()`：`if (IgnoreItemRequirements()) return;` ⇒ **触发法术的试剂永远不扣**
+  - 而这条链上玩家"实际施放"的 41003 自己没有试剂 ⇒ 祭品永远留在背包。
+- DB 侧也无法修：脚本引擎**没有"移除物品"指令**（`ScriptMgr.h` 命令表只有 17 `CREATE_ITEM`，没有 REMOVE_ITEM），
+  `gossip_menu_option.box_money` 是**钱**不是物品（`GossipDef.cpp` / `Player.cpp:12599`）。
+- 祭品来源：任务 11885（一次性）与**可重复**的 11074「后裔的徽记」都给 32720 ⇒ 消耗掉是安全的，玩家可以再拿。
+
+### 二、修复
+
+- 文件：`src/game/AI/ScriptDevAI/scripts/outland/boss_terokk.cpp`
+- `ProcessEventId_event_summon_terokk`：召唤前要求身上有 32720（`HasItemCount`），**召唤成功后 `DestroyItemCount(32720, 1, true)`**：
+  - 已经有泰罗克在场（`SpawnedCountForEntry != 0`）时不扣物品（此时没有召唤，不该消耗）；
+  - 银行里的不算（`HasItemCount` 默认不含银行）。
+- **未改** `spell_template` / `item_template` / 任何 DBC，也未改脚本表（保持数据保真）。
+
+### 三、验证
+
+- 本地编译：`build1\src\game\game.dir\Debug\boss_terokk.obj` 20:41 重编，`build1\bin\x64_Debug\mangosd.exe` 20:42 链接 ✓
+- 本地部署：`D:\Game\cmangos\x64_Debug\mangosd.exe` md5 `871F586DC891B42D228EBF4A8CB68C88`，20:42:48 启动，`World initialized` ✓（无 SD2 报错）
+- **待做（需客户端点击，本地 SOAP/RA 都关着，无法自动化）**：
+  1. `.additem 32720 1`
+  2. `.go xyz -3789.4 3507.6 287 530`
+  3. 右键**古代颅骨堆** → 选「Call forth Terokk.」
+  4. 预期：泰罗克出现，背包里「失落的祭品」**-1**；不带祭品时点了**不召唤也不扣物品**。
+
+### 四、部署与遗留
+
+- 本地提交：`a6badb191`、`a1394f803`（文档）
+- 云端：`boss_terokk.cpp` 已同步到 `/root/Nmangos-tbc`（md5 `1e523e4db5c60fdfdea28a23ebfe17e3`，与本地一致）
+  ⇒ 10-01 04:06 的 nightly 会自动编译部署；之后按上面步骤在云端复测。
+- **无需新增 dev SQL**：曾一度以为 `condition_id = 919` 悬空，实为查询报错（`conditions` 表**没有** `condition_id` 列，
+  写成 `WHERE condition_entry=919 OR condition_id=919` 整条语句报 1054，被静默吞掉）。实际 919 存在且语义正确
+  （`type=2 CONDITION_ITEM, value1=32720, value2=1`），本地与云端一致 ⇒ 祭品门槛本来就有。
+- 另一套可选方案（未采用）：把 `dbscripts_on_gossip 8687` 直接改成施放 41004 —— 41004 的 `spell_script_target` 绑定 GO 185928，
+  且脚本施放同样是 triggered，试剂依旧不会扣。
+- 排查记录（教训）：本机查库时**不要**用 `2>$null` 吞掉 mysql 的 stderr —— 列名写错（`entry`/`SpellName1`/`condition_id`）
+  会让整条语句失败而输出为空，看起来像"数据不存在"，本次因此在 `spell_template`（真实主键是 `Id`、名称列是 `SpellName`）
+  和 `conditions` 上各误判了一次。
+
