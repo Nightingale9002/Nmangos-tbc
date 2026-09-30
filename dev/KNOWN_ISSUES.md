@@ -6376,3 +6376,50 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 - 本地：已应用 ✓（`5550007` 两行均为 5550013 ✓、两条 spawn_group_spawn 已删 ✓、重启无报错 ✓）；提交 `dev/146` + 回滚文件。
 - 云端：`dev/146` 与回滚已上传；`DRYRUN=1` 确认 **142 / 143 / 145 / 146** 会在 04:06 一并应用。
 
+---
+
+## [数据/机制] 2026-09-30 蒸汽地窟「7 个宝箱刷点一个都不刷」＝**实例图里的池化刷点谁都不生成**（已修）
+
+### 一、站长报告
+> 蒸汽地窟应该有 7 个宝箱刷点，但是云端一个都没刷。（另：整个副本都没掉「瓦丝琪的命令」）
+
+### 二、先纠正一个地图编号（我中途搞错过）
+- **蒸汽地窟 = map 545**（Coilfang Reservoir: The Steamvault）；**554 是能源舰（The Mechanar）**。
+- 24367「Orders from Lady Vashj／瓦丝琪的命令」= 任务 9764 的任务物品，**2% 由蒸汽地窟的 Coilfang 系小怪掉落**
+  （17721/17722/17800–17805，共 83 个刷点、无条件、无缺失条件引用，与 `tbcdb_ref` 完全一致）
+  ⇒ 一趟全清约 1.7 个期望值、**约 19% 概率一个不掉**，属正常脸黑；与宝箱是两件事。
+
+### 三、数据是真全的（这一层别再查）
+- 我们库 map 545 的 7 个宝箱点在 `gameobject` 里**都存在**，但它们是 **`id = 0` 的"随机 entry 刷点"**：
+  guid `5450039–5450045`，候选表 `gameobject_spawn_entry` 里每个 guid 都有 **184940 Bound / 184941 Solid** 两个候选 ✓。
+- `pool_gameobject`：`5450039–5450042 → 池 48440`（"Steamvault - Master Chest Pool **First Boss**"，4 个候选点）、
+  `5450043–5450045 → 池 48441`（"…**Second Boss**"，3 个候选点）；`pool_template` 两个池都在、`max_limit = 1`（本地与云端一致）。
+  ⇒ **设计上每个池只出 1 个宝箱**（即一个实例最多 2 个，位置在候选点里随机）——"7 个"是**候选点**数，不是同时出现 7 个。
+- `tbcdb_ref` 的 14 行只是把这些候选**展开成固定 id 的两行**（同一批坐标），不是额外内容。
+
+### 四、根因：三段式漏洞（**我们自己的补丁引入的**）
+1. 我们的 `SpawnManager::Initialize` 补丁（见本文件「dynguid 池生物双刷修复」章）写着"**池/事件的刷点由池与事件系统负责，不在这里生成**"
+   ⇒ 池化刷点**只能**由池生成；
+2. 但池的生成代码 `PoolGroup<T>::Spawn1Object`（`Pools/PoolManager.cpp`）对"格还没加载"的情况原本只有一句
+   `else if (!instantly) { 写重生时间 }`，注释直说 `avoid work for instances until implemented support`
+   ⇒ **格没加载时什么都不生成**；
+3. 而实例初始化走的是 `InitSpawnPool → SpawnPool(state, pool, **instantly = true**)` ⇒ 连"写重生时间"都跳过
+   ⇒ **新实例里池化刷点没有任何人生成**（池只管记账 `SpawnedPoolData`）。
+- 旁证：云端日志里 `DB-SCRIPTS: … buddy 5550003 by pool id 90 and no creature found in map 555`（暗影迷宫的池化怪同样找不到）。
+
+### 五、修复（`530c35b06`）
+`PoolManager.cpp` 两个 `Spawn1Object`（Creature / GameObject）在"格未加载"分支末尾补一句交接：
+```cpp
+if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
+    dataMap->GetSpawnManager().Respawn{GameObject,Creature}(obj->guid, instantly ? 0 : data->GetRandomRespawnTime());
+```
+⇒ 槽位交给 SpawnManager，随格加载生成（`RespawnGameObject(guid, 0)` → `ConstructForMap`；这正是原 `!instantly` 分支对 dynguid 对象已有的用法）。
+不会双刷：SpawnManager 用的是"dynguid 列表"（含池化条目），而网格加载器会跳过这些条目。
+
+### 六、状态与验证
+- 本地：编译 ✓、部署 ✓（`mangosd.exe` md5 `B57B3C587929BB1D2458978959D1C35B`，`World initialized`）；提交 `530c35b06`。
+- 云端：`PoolManager.cpp` 已同步（md5 `2ab9221f3a41d5d0f66906c07476e52a`），随 10-01 nightly 编译。
+- **待游戏内验证**：新开蒸汽地窟实例 → 第一/第二 BOSS 池各应出现 **1 个宝箱**（位置随机落在 7 个候选点之一，
+  Bound/Solid 由候选随机决定）；`gameobject_respawn` 应能看到所选 guid 的行。若某个实例一个都不出，把
+  `.gps` 与所在实例号给我，我按 7 个候选点坐标逐个对。
+
