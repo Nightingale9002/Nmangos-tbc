@@ -352,21 +352,60 @@ namespace VMAP
         return result;
     }
 
+    // Floor candidate test for HEIGHT queries only (frontFacesOnly == true): a surface can
+    // only be reported as "ground" when it is roughly HORIZONTAL. Thin collision planes (M2)
+    // may have their normal pointing either way, so this test must NOT use the signed dot
+    // product with the ray direction - a plane whose normal faces away from the ray is still
+    // a perfectly valid floor. Real counter-example: the Wetlands bridge deck is the M2 thin
+    // plane Excavationbarrier04_Pvpcollision.m2, world Z 23.80974 with world normal
+    // (-0.0212, -0.0279, -0.9994) - that normal points DOWN, so n.dot(rayDir) = +0.9994 and
+    // every signed test throws the deck away (HEAD used "> -0.0f", the first version of this
+    // fix used "> -0.5f", both fail). The mmap baker eats the raw vmap triangles and never
+    // applies this filter, which is why the navigation mesh has always contained the deck
+    // (polyH = 23.9647) while the server side height query could not see it.
+    // So only the horizontal-ness of the surface is tested, independent of direction:
+    //     |n.z| >= FRONT_FACE_MAX_COS_ABS (0.5) -> slope <= 60 deg -> floor candidate
+    //     |n.z| <  FRONT_FACE_MAX_COS_ABS       -> near-vertical     -> wall -> skipped
+    // Examples (the same rule is used for the downward and for the upward height ray):
+    //     up facing floor    n=(0,0,1)            -> |n.z| = 1.0    -> kept
+    //     thin M2 plane      n=(-.02,-.03,-.9994) -> |n.z| = .9994   -> kept
+    //     horizontal ceiling n=(0,0,-1)           -> |n.z| = 1.0    -> kept (it is the topmost
+    //                              surface of that column - e.g. a roof top - and that is what
+    //                              a column height query is asking for)
+    //     60 deg slope       n=(.87,0,.5)         -> |n.z| = 0.5    -> kept (boundary)
+    //     vertical wall      n=(1,0,0)            -> |n.z| = 0.0    -> skipped
+    // A skipped triangle does not stop the ray (the callback returns false without shrinking
+    // the hit distance), so the search keeps going downwards and still finds the real floor
+    // below a wall. frontFacesOnly stays false for every other use (line of sight, object hit
+    // tests), so those are completely unaffected.
+    float const FRONT_FACE_MAX_ANGLE_DEG = 60.0f;
+    float const FRONT_FACE_MAX_COS_ABS = 0.5f;          // cos(FRONT_FACE_MAX_ANGLE_DEG)
+
     struct GModelRayCallback
     {
         GModelRayCallback(const std::vector<MeshTriangle>& tris, const std::vector<Vector3>& vert, bool frontFacesOnly = false):
             vertices(vert.begin()), triangles(tris.begin()), hit(false), frontFacesOnly(frontFacesOnly) {}
         bool operator()(const G3D::Ray& ray, uint32 entry, float& distance, bool /*pStopAtFirstHit*/, bool /*ignoreM2Model*/)
         {
-            // Height queries only accept hits on surfaces steep enough to stand on
-            // (within 60 degrees of horizontal), so walls and ceiling undersides /
-            // overhangs are not treated as floor.
+            // Height queries only accept floor candidates, see FRONT_FACE_MAX_COS_ABS /
+            // FRONT_FACE_MAX_ANGLE_DEG above: faces that are near-perpendicular to the ray
+            // (walls) are skipped, faces within 60 degrees of the ray axis are accepted no
+            // matter which way their normal points, because thin collision planes (e.g. the
+            // Wetlands bridge deck, an M2 plane whose normal points DOWN) are still floors.
+            //
+            // IMPORTANT: the test must use the UNSIGNED dot product with the ray direction,
+            // NOT n.z. Both n and ray are in MODEL space here (ModelInstance already
+            // transformed the ray), and a rotated instance would turn a world-horizontal
+            // plane into a model-space normal with an arbitrary z component - the Wetlands
+            // bridge instance is rotated (about 92/52/2.5 degrees), which is exactly why a
+            // |n.z| test kept rejecting its deck while the same plane is horizontal in world
+            // space. The dot product of two vectors in the SAME space is rotation invariant,
+            // so |n . rayDir| gives the true angle between the face and the ray axis.
             if (frontFacesOnly)
             {
                 const MeshTriangle& tri = triangles[entry];
                 Vector3 n = (vertices[tri.idx1] - vertices[tri.idx0]).cross(vertices[tri.idx2] - vertices[tri.idx0]).direction();
-                // front face within 60 degrees of vertical: dot(n, rayDir) <= -cos(60)
-                if (n.dot(ray.direction()) > -0.0f)
+                if (fabs(n.dot(ray.direction())) < FRONT_FACE_MAX_COS_ABS)
                     return false;
             }
             bool result = IntersectTriangle(triangles[entry], vertices, ray, distance);

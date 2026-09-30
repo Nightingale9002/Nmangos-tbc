@@ -853,6 +853,10 @@ float TerrainInfo::GetHeightStatic(float x, float y, float z, bool useVmaps/*=tr
             // "infinity" search down to a lower terrain layer (e.g. crypt floor under a surface hole).
             // Only search as far as the .map surface (mapHeight) + small margin. If caller is below
             // the .map surface (inside cave), keep the infinity search to reach the cave floor.
+            // Reviewed together with [FIX-2 v2] below: this cap only limits how far *below*
+            // mapHeight the fallback search may look (mapHeight - 2.0). A bridge deck, platform or
+            // WMO roof always lies above mapHeight, so the cap can never seal off an upper layer;
+            // it only stops the search from dropping through the .map surface into a lower one.
             if (vmapHeight <= INVALID_HEIGHT)
             {
                 if (mapHeight > INVALID_HEIGHT && z2 > mapHeight)
@@ -871,18 +875,41 @@ float TerrainInfo::GetHeightStatic(float x, float y, float z, bool useVmaps/*=tr
         }
     }
 
-    // [FIX-2] vmap result must be close to caller z or to .map surface, otherwise it is a
-    // wrong (lower) terrain layer picked by the search above. Use .map surface then.
-    // Thresholds:
-    //  - closeToZ  1.0: creatures never jump, so a unit standing on its own floor is within
-    //    ~0.1 yd of it (observed 0.00-0.06 yd in logs). 1.0 keeps cave dwellers on the cave
-    //    floor while shrinking the "falling unit passes a lower layer" attraction window to
-    //    +/-1 yd. Deeper layers are still reachable: the check compares vmapHeight to the
-    //    unit's own z, so cave depth is not limited.
-    //  - closeToMap 3.0: same-layer vmap/.map differ by <1 yd (same ADT source); different
-    //    layers (surface vs cave floor) differ by >20 yd, so 3.0 never confuses them.
-    bool const vmapCloseToZ   = std::fabs(vmapHeight - z) <= 1.0f;
-    bool const vmapCloseToMap = std::fabs(vmapHeight - mapHeight) <= 3.0f;
+    // [FIX-2 v2] Layer selection: only reject a *lower* layer that the caller is not
+    // standing on. A surface above the .map surface is always a legitimate upper floor.
+    //
+    //  - above the .map surface (vmapHeight >= mapHeight): the .map heightfield stores one
+    //    surface per column and cannot represent anything built on top of it, so a vmap hit
+    //    above it is real 3D geometry - bridge deck, platform, WMO roof/floor. Dropping it
+    //    just because it is "far" was the bug of FIX-2 v1. Reproducer: Wetlands bridge,
+    //    map 0 at -3438.22/-1789.18, deck 23.96 over terrain 16.33. v1 rejected the deck
+    //    (|23.96 - z| > 1.0 for the GroundZ query z = MAX_HEIGHT, and |23.96 - 16.33| =
+    //    7.63 > 3.0), so GetHeight(x, y, MAX_HEIGHT) answered 16.33 (terrain) and a unit
+    //    standing on the deck (z = 23.81) got the terrain as its floor as well. Prism
+    //    160002 has the same shape: structure top 374.85 over terrain 365.63.
+    //  - the caller's own floor (|vmapHeight - z| <= SNAP_TOLERANCE): a cave / crypt dweller
+    //    stands on a layer far below the .map surface and this is how that floor is kept
+    //    (a settled unit sits 0.00-0.06 yd above its floor, hence 1.0). Layer *depth* is not
+    //    limited by this test, only the distance between the caller and its own floor.
+    //  - same layer as the .map surface (|vmapHeight - mapHeight| <= SAME_LAYER_TOLERANCE):
+    //    here vmap and .map come from the same ADT and differ by <1 yd, while real different
+    //    layers (surface vs crypt floor) differ by >20 yd, so 3.0 never confuses them.
+    // Everything else is a lower layer far below the caller. Rejecting it is what keeps a
+    // surface unit from being dragged onto a crypt/cave floor that the ray reached through
+    // an opening (the reason FIX-2 was added), and it keeps the GroundZ query (z =
+    // MAX_HEIGHT) from reporting an underground layer instead of the surface.
+    //
+    // Cost / known trade-off: an up-facing M2 surface above the terrain (tree canopy, tent,
+    // part of a bridge) is accepted again, exactly as upstream did; v1 answered with the
+    // terrain below it. If that ever matters it must be solved where the .map and vmap
+    // layers are compared, not by dropping every far layer again.
+    float const SNAP_TOLERANCE = 1.0f;                  // caller z vs the floor it stands on
+    float const SAME_LAYER_TOLERANCE = 3.0f;            // vmap vs .map on one and the same layer
+
+    bool const vmapAboveMapSurface = vmapHeight >= mapHeight;                           // upper structure
+    bool const vmapCloseToZ        = std::fabs(vmapHeight - z) <= SNAP_TOLERANCE;       // own floor
+    bool const vmapCloseToMap      = std::fabs(vmapHeight - mapHeight) <= SAME_LAYER_TOLERANCE;
+    bool const vmapLayerOk         = vmapAboveMapSurface || vmapCloseToZ || vmapCloseToMap;
 
     // mapHeight set for any above raw ground Z or <= INVALID_HEIGHT
     // vmapheight set for any under Z value or <= INVALID_HEIGHT
@@ -892,7 +919,7 @@ float TerrainInfo::GetHeightStatic(float x, float y, float z, bool useVmaps/*=tr
         if (mapHeight > INVALID_HEIGHT)
         {
             // we have mapheight and vmapheight and must select more appropriate
-            if (vmapCloseToZ || vmapCloseToMap)
+            if (vmapLayerOk)
             {
                 // we are already under the surface or vmap height above map heigt
                 if (z < mapHeight || vmapHeight > mapHeight)
@@ -901,7 +928,7 @@ float TerrainInfo::GetHeightStatic(float x, float y, float z, bool useVmaps/*=tr
                     resultHeight = mapHeight;
             }
             else
-                resultHeight = mapHeight;                  // vmap found wrong (far) layer -> use .map surface
+                resultHeight = mapHeight;                  // vmap found a far lower layer -> use .map surface
         }
         else
             resultHeight = vmapHeight;                     // we have only vmapHeight (if have)

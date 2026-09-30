@@ -19,6 +19,7 @@
 #include "MotionGenerators/TargetedMovementGenerator.h"
 #include "MotionGenerators/PathFinder.h"
 #include "MotionGenerators/PfDebug.h"
+#include "MotionGenerators/PfProbe.h"
 #include "Entities/Unit.h"
 #include "Entities/Creature.h"
 #include "Entities/Player.h"
@@ -732,6 +733,7 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
             if (!owner.GetMap()->IsInLineOfSight(s0.x, s0.y, s0.z + h, s1.x, s1.y, s1.z + h, true))
             {
                 PFDBG_MSG(&owner, "ownerInWater 直线 LOS 被挡 (%.1f,%.1f,%.1f)->(%.1f,%.1f,%.1f) -> NOPATH", s0.x, s0.y, s0.z, s1.x, s1.y, s1.z);
+                PfProbe::PfProbeAt(&owner, s1.x, s1.y, s1.z, "chase-water-los-dest");
                 this->i_path->setPathType(PATHFIND_NOPATH);
             }
         }
@@ -788,7 +790,12 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
         if (ownerInWater)
             RefineWaterPath(owner, this->i_path->getPath());
         if (this->i_path->getPathType() & PATHFIND_NOPATH)
+        {
+            // [PFDBG] chase gave up here (the unit will evade): is its own footing a
+            // navmesh polygon the current filter accepts?
+            PfProbe::PfProbeAt(&owner, owner.GetPositionX(), owner.GetPositionY(), owner.GetPositionZ(), "chase-nopath-owner");
             return false;
+        }
     }
 
     auto& path = this->i_path->getPath();

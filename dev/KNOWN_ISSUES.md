@@ -5634,3 +5634,104 @@ if (data && existingData && (data->mask & existingData->mask) != 0)            /
 
 - 已删除 `[FCANDBG]`（EventAI）与 `[FLAKAI]`/`[FLAKDBG]` 的每秒刷屏；保留 `[FLAKAI] failed to fire / failed to summon`（**仅出错时**触发）与 `[SGDBG]`（食人魔之魂未结案问题）。
 - 部署：`f25a44892` 已于 20:45 上云；`8798ee5f2` 源码已 scp + md5 校验，等 **04:30 nightly** 自动编译重启。
+
+---
+
+## [寻路/地形] 09-29/30 「卡闪避」根治调查：孤岛根因 + 两处高度查询修复 + 数据对齐
+
+> 关联：`ddaf5de87 回滚mmap提取规则`；新增诊断 `src/game/MotionGenerators/PfProbe.h`；离线工具在 `_agent_tmp/`。
+
+### 一、根因（实测钉死，不是"面的属性给错了"）
+
+- 现场：地狱火 登陆场:歼灭 map530 `(595.2, 2789.33, 224.27)`，怪追不上人、永久 evade。日志 `findPath dtResult=0x40000040 polyLength=1 type=8(PATHFIND_NOPATH)`，而怪脚下 poly **完全正常**（`area=GROUND`、`dh=dv=0`、`walkable=YES`）。
+- 离线可达性分析（`mmtile_reach_probe.py`，结论与运行日志**逐位一致**）：怪站在 **只有 3 个 poly 的孤岛** `[#879,#889,#890]` 上，**对外 0 条 portal**（把 `NAV_GROUND_STEEP` 也算进过滤器仍不通）；到目标（995,608 poly 的主大陆）缺口仅 **1.3324 码 = 5.00 格**，两侧高差 **+0.01 码**。
+- **任何生成参数都修不好**（12 个变体 A/B 实测）：`walkableRadius=0/1`、`minRegionArea=1/10`、`walkableClimb=8`、`walkableHeight=2~8`、`walkableSlopeAngle=20~89` 全部无效。
+- 真因：高度场里本来就有 **1 格宽（0.2667 码）不可走缝**（几何上是一条窄沟：低 0.4~1.9 码的平面 + 79° 近垂直面，`rcClearUnwalkableTriangles(60°)` 与 `rcFilterLedgeSpans` 合法判它不可走）；`walkableRadius=2` 把它放大成 5 格（`1+2×2` ✓ 与实测吻合）。
+- 普遍性（map 530 全 496 tile）：**74,285 个连通分量**、最大分量仅 37.17%、**42,877 个 1–5 poly 小孤岛**（96.6% 无任何出口；含可走面 32,488），其中 **27,240 个真实缺口 <2 码**（中位 1.338 码）。跨 tile portal 合并**一直在工作**（跨 ≥2 tile 的分量 4,640 个、覆盖 71.8% poly），碎裂主体在瓦片内部。
+- 采样：棱柱 `160002`（10 poly 孤岛）、`160003`（7 poly）、地狱火（3 poly）**都在孤岛上**；`160004`（23,507 poly）与湿地桥（主大陆）不在。
+
+### 二、数据一致性（本次最大工程教训）
+
+- 本地 `vmaps`（2026-08-15 提取）与 `mmaps`（2026-08-30 生成）**不是同一批**；云端 `vmaps` 是 **2024-10-15** 的外来包、`maps` 2025-06-26、而 `mmaps` 是 2026-08-30 从本地同步覆盖上去的 ⇒ **线上 vmap 与 mmap 不配套**。
+- 来源已定位：`D:\Game\70\2.4.3\run.7z`（`vmaps` 8607 / `maps` 3586 / `mmaps` 2839，抽样与云端**逐字节相同**）。本地已**整套换成该套**（备份 `*_bak_20260929`），现与线上一致。
+- `MMAP_VERSION` 恒为 8，只比对 magic/版本 ⇒ 规则或参数变了**不会被判过期**，热替换会**静默混用**新旧数据（对应 08-25 那次"mmap 热替换崩溃循环"）。建议照抄 AzerothCore 的做法：在 mmtile 头内嵌 recast 参数指纹。
+
+### 三、两处高度查询修复（都是我们自己引入的 bug）
+
+1. **`src/game/Maps/GridMap.cpp:878-912`（[FIX-2 v2]）**：原规则 `|vmap−z|≤1 且 |vmap−map|≤3 否则丢弃` 会把**桥面/平台**这类合法上层一起丢掉（湿地桥 23.96 被判成地表 16.33）。改为**方向性判断**：命中面**高于 `.map` 地表即接受**，仍拒绝"远低于调用者的下层"（保住墓穴/洞窟保护）。
+   - 实测：棱柱 160002 `GroundZ` 365.63 → **375.15**。
+2. **`src/game/vmap/WorldModel.cpp:395-409`（`frontFacesOnly`）**：原判据 `n·rayDir > -0.0f`，注释却写"60° 朝上面"，**实际只丢 `n.z<0`**（竖直墙被放行）；中间版改成 `fabs(n.z) < 0.5` 仍错 —— **法线与射线都在模型空间，实例有旋转时 `n.z` 无意义**（湿地桥 M2 实例 rot≈92/52/2.5°）。最终改为**旋转无关**的 `fabs(n·rayDir) >= 0.5`（只拒绝近垂直的墙，水平面不论法线朝上朝下都算地板候选）。
+   - 实测：湿地桥 `vmapH10` 由 `NONE` → **23.7740**；`GroundZ/FloorZ` 16.39 → **23.76 / 23.77**；站在桥下仍取地面 16.367（**没有被吸到桥面**）。
+3. 遗留未改：`GameObjectModel::intersectRay`（**动态 GO** 高度路径）没传该标志，仍接受墙面、也不受 FIX-2 约束。`frontFacesOnly` 默认仍为 `false`，LOS / `getObjectHitPos` / `IsInsideObject` 行为不变。
+
+### 四、诊断工具（保留在代码里，纯诊断、非行为改动）
+
+- `src/game/MotionGenerators/PfProbe.h`（新增）：输出 `[PFDBG] VPROBE` 行，**aura 10909 门控**（`.gps` 手动调用不门控）。字段：`terrainH / vmapTop / vmapUnder / navmesh / area / polyH / dh / dv / walkable / inc / exc` + `vmapCalc / grid / vmapMap / vmapFile / vmapTile / vmapH10 / vmapHL / vmapHU / vmapHgps / vmapNoFront`。接线点：`PathFinder.cpp`（NO-tile / INVALID_POLY / findPath FAILED）、`TargetedMovementGenerator.cpp`（水中 LOS / `PATHFIND_NOPATH`）、`MoveSplineInit.cpp`、以及 `.gps`。
+- 离线：`_agent_tmp\mmtile_probe.py`（单点查询）、`mmtile_reach_probe.py`（可达性/缺口）、`mmtile_islands_probe.py` + `islands_verify.py`（全图孤岛普查）、`wmo_probe.py`（源 WMO 面级 + MOPY）、`air_analysis.py`（ADT 地形）。**注意 `.map` 格式：现用/云端那套是 int16（湿地桥地表 16.33505），8/15 那套是 float（16.58982）——离线工具读数不同就是这个原因。**
+
+### 五、待办
+
+- **生成器填缝**：在 `rcErodeWalkableArea` **之前**加 `rcMedianFilterWalkableArea`（新配置项 `preErosionMedianPasses`，默认 1；另有 `seamBridgeMaxRise`）。A/B 验证中；若有效必须**整图全量重生成**（参数全局、poly 索引会变，不能单瓦片补）。风险：可能把"1 格厚薄墙"也填通，需量化。
+- **文档漂移**：本节之前的 `:1661-1678`（triSource / 分源坡度 / M2 高低判定 / 孤立 poly 清理）、`:1670`（"移除中值滤波"）、`:1647`/`:1684`（60° 阈值）**在当前源码中都不存在或与实现不符**（`ddaf5de87` 之后源码=上游），以本节为准。
+- **云端数据配套**：建议整套换成 `run.7z` 那套并**用它重生成 mmaps**（停服同步，不热替换）。
+
+---
+
+## [寻路] 09-30 定案：offmesh 自动补连 + per-tile 参数微调（含工具、踩坑、上线记录）
+
+> 承接上一节。上一节的结论是"孤岛普遍、参数无解、尚未定案"，本节是**最终落地方案**，两条都已游戏内实测 + 已上线。
+
+### 一、最终方案（两条，按病灶类型分）
+
+| 病灶 | 现象 | 解法 | 实测 |
+|---|---|---|---|
+| **A. 缝隙孤岛** | 怪站在 3~10 poly 的小孤岛上，对外 0 条 portal，永久 evade（`findPath` = `PATHFIND_NOPATH`） | **自动生成 offmesh 补连**：解析 navmesh → 连通分量 → 对"最近的非本分量 poly"逐顶点求最近点对，若 `dh ≤ 2.0 码` 且 `\|dv\| ≤ 1.5 码` 则加一条双向 offmesh | 地狱火：`type=8` → **`type=1`**，路径 10 点直达玩家 ✅ |
+| **B. 窄通道/窄楼梯断连** | 多层建筑里某段楼梯不通（赞加沼泽三层棚屋：一层↔二层断、三层↔二层通） | **per-tile 覆盖 `walkableRadius: 1`**（`walkableRadius=2` 两侧各蚀 0.53 码，把窄楼梯蚀断） | 一层/二层变成同一 3619-poly 分量 ✅，站长确认通了 |
+
+- 阈值扫描（离线，单瓦片 1.2 秒/次）：`dh≤1.5/dv≤1`、`≤2/1.5`、`≤3/2`、`≤6/3` 四组**都能接通**地狱火，故取**最严**的 `dh≤2.0 / \|dv\|≤1.5`（链接越少越不容易造出"本不该通"的路）。map 530 全图共 **34,609 条**。
+- 未采用：`preErosionMedianPasses`（侵蚀前中值滤波）——实测三种设置下孤岛**依然存在**（3 poly / 0 portal），无效，保留为默认关闭的实验开关。
+- B 类也可用 offmesh 兜，但 per-tile 参数更"治本"（恢复真实楼梯可走），且改动面只有一格。
+
+### 二、工具（都在 `_agent_tmp\`，可直接复用）
+
+| 工具 | 用途 |
+|---|---|
+| `gen_offmesh.py` | 读 `.mmtile` → 连通分量 → 生成 offmesh 文件；参数：`<mmaps> <map> <tiles> <out> <max_dh> <max_dv> <max_comp>` |
+| `check_reach_offmesh.py` | **离线判定"两点是否连通"**，会走 link 数组（**认识 off-mesh 连接**）；`<mmaps> <tile> sx sy sz tx ty tz` |
+| `mmtile_reach_probe.py` / `mmtile_islands_probe.py` | 单点/全图连通性普查（子代理产出，定位逻辑与运行期一致） |
+| `patch_real_cfg.py` / `mkcfg.py` | 读写生成器配置 |
+
+**关键：离线判定必须"认识 off-mesh"**。off-mesh 连接**不在 `neis` 里**——生成器把 off-mesh poly 追加在 `offMeshBase` 之后，用 **link 数组**连到两端。只沿 `neis` 洪水填充的工具会一直报"3 poly 孤岛"，即使实际已经通了（我们踩过这个坑）。选 poly 也要用 **Detour 的"点到三角形三维最近距离"**（extents 5），用"点包含"或"质心最近"会挑错面（同样踩过）。
+
+**快速 A/B 流程（单瓦片约 1.2 秒）**：建一个 workdir，`maps`/`vmaps` 用 **junction 直连真实目录**（不复制 3.5 GB），`mmaps` 是自己的输出目录，然后
+`MoveMapGen.exe <map> --tile X,Y --workdir <dir> --configInputPath <cfg> --offMeshInput <file> --silent`。
+**真实数据目录全程不被写**。
+
+### 三、生成器/配置踩坑（都实际踩过）
+
+1. **`TerrainBuilder.cpp` offmesh 行匹配的逗号运算符 bug**：原写法 `if (mapID == mid, tileX == tx, tileY == ty)` 只比较 `tileY` ⇒ 多条目文件会串瓦片。**已修为 `&&`**。
+2. **配置键规则**：`MapBuilder.cpp:1486` 是 `std::to_string(tileX) + std::to_string(tileY)`（**拼接、无补零**）⇒ tileX=22/tileY=34 → 键 `"2234"`。
+3. **`--tile X,Y` 用 ADT 格号**，而 **mmtile 文件名是 (tileY,tileX)**（`5303026` → `--tile 26,30`）。搞反了会去生成另一个格子（我们浪费过时间）。
+4. **`maxSimplificationError: 1.0` 会让整格消失**：`MapBuilder.cpp:1084` 的 `rcBuildContours` 失败 ⇒ 该格**不写出**。卡拉赞 `5325235.mmtile`（6.2 MB）就是这样丢的；删掉该覆盖后正常生成。
+5. **全量重生成会跳过"无 polygon"的格**（如 `0004242`，空配置也建不出来）——需从旧套补回，否则文件数少 2。
+6. `MMAP_VERSION` 恒为 8，只比对 magic/版本 ⇒ **不可把新旧数据混用**（历史上热替换崩过）；要换就整目录换。
+7. offmesh 的 tile 键必须与生成器一致（即上面第 3 条的 ADT 格号顺序），写成文件名顺序会**静默丢链接**。
+
+### 四、上线记录（2026-09-30，云端实测）
+
+1. 本地全量重生成：2836 文件 / 2.12 GB（含 18 个 `go*.mmtile` transports），补回卡拉赞 + `0004242` ⇒ **2838 文件**（与旧套一致）。
+2. 打包 `mmaps_new_20260930.tar`（2.12 GB）→ scp 到云端 → **两侧 md5 `744e0784…` 一致**。
+3. 云端解压到暂存 `/opt/mangos/data/mmaps_new`（2838 文件，现役不动）。
+4. **换名上线**（云端 mangosd 无 systemd 单元，是裸进程 + `/etc/cron.d/mangos_watchdog` 每分钟守护）：
+   ① 暂停 watchdog（改名 `.disabled`）→ ② `pkill -x mangosd` → ③ `mv mmaps mmaps_bak_20260930 && mv mmaps_new mmaps` → ④ 恢复 watchdog（它会在 1 分钟内自动拉起）。
+5. 结果：mangosd pid **20768**、8086 监听 ✅、realmd 3724 ✅、`World initialized` ✅、**启动日志无 mmap/vmap 告警**。
+6. **回滚**（秒级）：`cd /opt/mangos/data && mv mmaps mmaps_broken && mv mmaps_bak_20260930 mmaps`，然后 `pkill -x mangosd` 让 watchdog 拉起。
+7. 磁盘：顺手删了 2 个 core dump（2 GB）与 `mmaps_bak_oldrun`（2.1 GB）。
+
+### 五、仍待观察 / 待办
+
+- **副作用监控**：34,609 条补连意味着 3.4 万处"差 1~2 码的缝"被接通，绝大多数是"同高地面上的缝"（dh 中位 1.555、`\|dv\|` 中位 0.533），但**不排除少量是真实沟坎**。留意"怪跨过本该挡人的沟"。
+- **B 类的面**：`walkableRadius=1` 会让该格生物贴墙更近（0.27 码 vs 0.53），目前只用在赞加沼泽棚屋那一格；其它窄楼梯/窄通道若同样症状，用同样办法逐格加。
+- **军团高射炮**（40075/40109/41603）：① 命中动画与 debuff 之间存在延迟；② 开火时炮**不转向目标**。
+- **捉以太鳐任务**：无需先把以太鳐打虚弱即可用绳捆。
+- **炮弹 dummy（23155）有名字**，未对普通玩家隐藏。

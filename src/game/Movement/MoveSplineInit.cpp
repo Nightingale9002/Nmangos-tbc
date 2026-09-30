@@ -23,6 +23,7 @@
 #include "Entities/Creature.h"
 #include "Log/Log.h"
 #include "MotionGenerators/PfDebug.h"
+#include "MotionGenerators/PfProbe.h"
 #include "Maps/TransportSystem.h"
 #include "Entities/Transports.h"
 
@@ -237,7 +238,14 @@ namespace Movement
         }
 
         if (!args.Validate(&unit))
+        {
+            // [PFDBG] spline not launched at all (aura 10909 gated): probe the
+            // destination that was rejected.
+            PFDBG_MSG(&unit, "MoveSplineInit LAUNCH-FAIL: args.Validate failed, spline dropped, pathPoints=%zu", args.path.size());
+            if (IsPfDbg(&unit) && !args.path.empty())
+                PfProbe::PfProbeAt(&unit, args.path.back().x, args.path.back().y, args.path.back().z, "spline-launch-fail-dest");
             return 0;
+        }
 
         if (moveFlags & MOVEFLAG_ROOT && !pathEmpty)
         {

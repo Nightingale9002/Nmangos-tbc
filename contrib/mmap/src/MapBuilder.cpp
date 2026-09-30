@@ -26,6 +26,7 @@
 #include "DetourCommon.h"
 
 #include <climits>
+#include <cstdlib>
 #include <fstream>
 #include <future>
 
@@ -307,9 +308,12 @@ namespace MMAP
         int tTriCount = meshData.solidTris.size() / 3;
 
         // get bounds of current tile
+        // keep the raw json around, rcConfig cannot carry generator only options
+        json goConfig = getDefaultConfig();
+
         rcConfig config;
         memset(&config, 0, sizeof(rcConfig));
-        config = getDefaultConfig();
+        config = goConfig;
         config.detailSampleDist = config.cs * 6.0f;
         config.minRegionArea = config.minRegionArea / 2;
 
@@ -318,7 +322,8 @@ namespace MMAP
         rcCalcGridSize(config.bmin, config.bmax, config.cs, &config.width, &config.height);
 
         Tile tile;
-        buildCommonTile(modelName.data(), tile, config, tVerts, tVertCount, tTris, tTriCount, nullptr, 0, nullptr, 0, 0);
+        buildCommonTile(modelName.data(), tile, config, tVerts, tVertCount, tTris, tTriCount, nullptr, 0, nullptr, 0, 0,
+                        goConfig.value("preErosionMedianPasses", 1), goConfig.value("seamBridgeMaxRise", 0), nullptr);
 
         IntermediateValues iv;
         iv.polyMesh = tile.pmesh;
@@ -779,7 +784,17 @@ namespace MMAP
 
         rcConfig config;
         memset(&config, 0, sizeof(rcConfig));
-        config = getTileConfig(mapID, tileX, tileY);
+
+        // keep the raw json around, rcConfig cannot carry generator only options
+        json tileConfig = getTileConfig(mapID, tileX, tileY);
+        config = tileConfig;
+
+        // how many median filter passes are run before the walkable area is eroded
+        const int preErosionMedianPasses = tileConfig.value("preErosionMedianPasses", 1);
+
+        // how far one cell geometry may rise above the walkable surface and still
+        // be treated as a seam that has to be closed (see closeThinSeams)
+        const int seamBridgeMaxRise = tileConfig.value("seamBridgeMaxRise", 0);
 
         rcVcopy(config.bmin, bmin);
         rcVcopy(config.bmax, bmax);
@@ -797,6 +812,7 @@ namespace MMAP
         tileCfg.height = config.tileSize + config.borderSize * 2;
 
         // build all tiles
+        SeamFixStats seamStats;
         for (int y = 0; y < TILES_PER_MAP; ++y)
         {
             for (int x = 0; x < TILES_PER_MAP; ++x)
@@ -814,9 +830,15 @@ namespace MMAP
                 tileCfg.bmax[0] += tileCfg.borderSize * tileCfg.cs;
                 tileCfg.bmax[2] += tileCfg.borderSize * tileCfg.cs;
 
-                buildCommonTile(tileString, tile, tileCfg, tVerts, tVertCount, tTris, tTriCount, lVerts, lVertCount, lTris, lTriCount, lTriFlags);
+                buildCommonTile(tileString, tile, tileCfg, tVerts, tVertCount, tTris, tTriCount, lVerts, lVertCount, lTris, lTriCount, lTriFlags,
+                                preErosionMedianPasses, seamBridgeMaxRise, &seamStats);
             }
         }
+
+        if (std::getenv("MMAP_SEAM_STATS") && (seamStats.closed || seamStats.wall || seamStats.steep || seamStats.noFlank))
+            printf("%s seam fix: closed=%d (rise<=1:%d 2-4:%d 5-8:%d >8:%d) wall=%d steep=%d noFlank=%d   \n",
+                   tileString, seamStats.closed, seamStats.riseLe1, seamStats.riseLe4,
+                   seamStats.riseLe8, seamStats.riseMore, seamStats.wall, seamStats.steep, seamStats.noFlank);
 
         // merge per tile poly and detail meshes
         rcPolyMesh** pmmerge = new rcPolyMesh*[TILES_PER_MAP * TILES_PER_MAP];
@@ -1019,8 +1041,183 @@ namespace MMAP
         }
     }
 
+    // Cells that a player can actually walk on. NAV_AREA_GROUND_STEEP spans are
+    // obstacles for players (see rcModAlmostUnwalkableTriangles).
+    static bool isPlayerWalkableArea(unsigned char area)
+    {
+        return area != RC_NULL_AREA && area != NAV_AREA_GROUND_STEEP;
+    }
+
+    /**
+     * Closes one cell wide unwalkable seams in the heightfield.
+     *
+     * A crack between two terrain surfaces (or a shallow crevice) shows up as a
+     * single cell column without any walkable span. rcBuildCompactHeightfield
+     * drops such a column, so the seam becomes a hole in the compact
+     * heightfield and rcErodeWalkableArea widens it from 1 cell to
+     * 1 + 2 * walkableRadius cells, which can cut the navigation mesh into
+     * disconnected islands that no creature can path out of.
+     *
+     * A column is only bridged when it is safe to step across:
+     *   - it has no walkable span of its own (the walkable surface is missing,
+     *     not merely disconnected),
+     *   - two opposite neighbours are walkable and their surfaces differ by no
+     *     more than walkableClimb,
+     *   - nothing inside the column rises more than walkableClimb above those
+     *     neighbour surfaces (a thin wall / pillar stays a wall), and
+     *   - the column holds no NAV_AREA_GROUND_STEEP span (these are deliberate
+     *     player obstacles, walls are often thinner than the agent radius).
+     */
+    static void closeThinSeams(rcContext* context, rcHeightfield& solid, const rcConfig& cfg, int maxRise, SeamFixStats& stats)
+    {
+        for (int z = 1; z + 1 < solid.height; ++z)
+        {
+            for (int x = 1; x + 1 < solid.width; ++x)
+            {
+                const int columnIndex = x + z * solid.width;
+
+                bool hasWalkable = false;
+                bool hasSteep = false;
+                for (rcSpan* s = solid.spans[columnIndex]; s; s = s->next)
+                {
+                    if (isPlayerWalkableArea(s->area))
+                        hasWalkable = true;
+                    if (s->area == NAV_AREA_GROUND_STEEP)
+                        hasSteep = true;
+                }
+
+                // existing walkable surface: nothing to do
+                if (hasWalkable)
+                {
+                    stats.walkable++;
+                    continue;
+                }
+
+                // top most walkable surface of every neighbour column
+                int nbrTop[4];
+                unsigned char nbrArea[4];
+                int walkableNeighbours = 0;
+                for (int dir = 0; dir < 4; ++dir)
+                {
+                    nbrTop[dir] = -1;
+                    nbrArea[dir] = RC_NULL_AREA;
+
+                    const int nx = x + rcGetDirOffsetX(dir);
+                    const int nz = z + rcGetDirOffsetY(dir);
+                    for (rcSpan* s = solid.spans[nx + nz * solid.width]; s; s = s->next)
+                    {
+                        if (isPlayerWalkableArea(s->area) && int(s->smax) > nbrTop[dir])
+                        {
+                            nbrTop[dir] = int(s->smax);
+                            nbrArea[dir] = s->area;
+                        }
+                    }
+
+                    if (nbrTop[dir] >= 0)
+                        walkableNeighbours++;
+                }
+
+                // only cells that touch walkable ground are interesting
+                if (!walkableNeighbours)
+                    continue;
+
+                if (hasSteep)
+                {
+                    stats.steep++;
+                    continue;
+                }
+
+                // top of everything this column contains
+                int highest = 0;
+                for (rcSpan* s = solid.spans[columnIndex]; s; s = s->next)
+                    highest = rcMax(highest, int(s->smax));
+
+                // an opposite pair of walkable neighbours that can be crossed
+                int bridge = -1;
+                unsigned char bridgeArea = RC_NULL_AREA;
+                for (int dir = 0; dir < 2 && bridge < 0; ++dir)
+                {
+                    const int opposite = (dir + 2) & 3;
+                    if (nbrTop[dir] < 0 || nbrTop[opposite] < 0)
+                        continue;
+                    if (rcAbs(nbrTop[dir] - nbrTop[opposite]) > cfg.walkableClimb)
+                        continue;
+
+                    const int top = rcMax(nbrTop[dir], nbrTop[opposite]);
+
+                    // Geometry that rises more than this above the walkable
+                    // surface on both sides is a real obstacle and stays
+                    // unwalkable. maxRise widens the tolerance (see the
+                    // "seamBridgeMaxRise" generator option).
+                    if (highest > top + cfg.walkableClimb + maxRise)
+                    {
+                        stats.wall++;
+                        continue;
+                    }
+
+                    bridge = top;
+                    bridgeArea = rcMax(nbrArea[dir], nbrArea[opposite]);
+                }
+
+                if (bridge < 0)
+                {
+                    stats.noFlank++;
+                    continue;
+                }
+
+                // Truncate the column at the bridge level, so the walkable span
+                // that survives has exactly the height of both neighbours: a
+                // taller span would keep them more than walkableClimb apart and
+                // a remaining low clearance would keep them disconnected.
+                // Spans live in the heightfield pool, unlinking frees nothing.
+                bool marked = false;
+                rcSpan* prevSpan = NULL;
+                rcSpan* curSpan = solid.spans[columnIndex];
+                while (curSpan)
+                {
+                    rcSpan* nextSpan = curSpan->next;
+                    if (int(curSpan->smin) > bridge)
+                    {
+                        if (prevSpan)
+                            prevSpan->next = nextSpan;
+                        else
+                            solid.spans[columnIndex] = nextSpan;
+                        curSpan = nextSpan;
+                        continue;
+                    }
+                    if (int(curSpan->smax) >= bridge)
+                    {
+                        curSpan->smax = (unsigned short)bridge;
+                        curSpan->area = bridgeArea;
+                        marked = true;
+                    }
+                    prevSpan = curSpan;
+                    curSpan = nextSpan;
+                }
+
+                if (!marked)
+                {
+                    if (!rcAddSpan(context, solid, x, z, (unsigned short)bridge, (unsigned short)bridge,
+                                   bridgeArea, cfg.walkableClimb))
+                        continue;
+                }
+
+                stats.closed++;
+                const int rise = rcMax(0, highest - bridge);
+                if (rise <= 1)
+                    stats.riseLe1++;
+                else if (rise <= 4)
+                    stats.riseLe4++;
+                else if (rise <= 8)
+                    stats.riseLe8++;
+                else
+                    stats.riseMore++;
+            }
+        }
+    }
+
     bool MapBuilder::buildCommonTile(const char* tileString, Tile& tile, rcConfig& tileCfg, float* tVerts, int tVertCount, int* tTris, int tTriCount, float* lVerts, int lVertCount,
-                                     int* lTris, int lTriCount, uint8* lTriFlags)
+                                     int* lTris, int lTriCount, uint8* lTriFlags, int preErosionMedianPasses, int seamBridgeMaxRise, SeamFixStats* seamStats)
     {
         // Build heightfield for walkable area
         tile.solid = rcAllocHeightfield();
@@ -1047,12 +1244,42 @@ namespace MMAP
         if (lVerts)
             rcRasterizeTriangles(m_rcContext, lVerts, lVertCount, lTris, lTriFlags, lTriCount, *tile.solid, tileCfg.walkableClimb);
 
+        // close one cell wide unwalkable seams before they get widened by the erosion below
+        SeamFixStats localSeamStats;
+        closeThinSeams(m_rcContext, *tile.solid, tileCfg, seamBridgeMaxRise, localSeamStats);
+        if (seamStats)
+        {
+            seamStats->closed += localSeamStats.closed;
+            seamStats->wall += localSeamStats.wall;
+            seamStats->steep += localSeamStats.steep;
+            seamStats->noFlank += localSeamStats.noFlank;
+            seamStats->walkable += localSeamStats.walkable;
+            seamStats->riseLe1 += localSeamStats.riseLe1;
+            seamStats->riseLe4 += localSeamStats.riseLe4;
+            seamStats->riseLe8 += localSeamStats.riseLe8;
+            seamStats->riseMore += localSeamStats.riseMore;
+        }
+
         // compact heightfield spans
         tile.chf = rcAllocCompactHeightfield();
         if (!tile.chf || !rcBuildCompactHeightfield(m_rcContext, tileCfg.walkableHeight, tileCfg.walkableClimb, *tile.solid, *tile.chf))
         {
             printf("%s Failed compacting heightfield!                     \n", tileString);
             return false;
+        }
+
+        // Optional median filter passes before the erosion. The median filter
+        // removes area ids that have no majority in their 3x3 neighbourhood, so
+        // running it first smooths the walkable area before rcErodeWalkableArea
+        // can widen a narrow seam. Configurable with the generator option
+        // "preErosionMedianPasses" in config.json (default 1, missing key means 1).
+        for (int pass = 0; pass < preErosionMedianPasses; ++pass)
+        {
+            if (!rcMedianFilterWalkableArea(m_rcContext, *tile.chf))
+            {
+                printf("%s Failed filtering area before erosion!              \n", tileString);
+                return false;
+            }
         }
 
         // build polymesh intermediates
@@ -1239,6 +1466,7 @@ namespace MMAP
             {"walkableRadius", 2},
             {"walkableSlopeAngle", 60.0f},
             {"liquidFlagMergeThreshold", 0.0f},
+            {"preErosionMedianPasses", 1},
         };
     }
 

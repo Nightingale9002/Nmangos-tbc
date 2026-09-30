@@ -40,6 +40,7 @@
 #include "Anticheat/Anticheat.hpp"
 #include "Spells/SpellMgr.h"
 #include "Entities/Transports.h"
+#include "MotionGenerators/PfProbe.h"
 #ifdef _DEBUG_VMAPS
 #include "VMapFactory.h"
 #endif
@@ -290,6 +291,11 @@ bool ChatHandler::HandleGPSCommand(char* args)
 
         if (!obj)
         {
+            // [PFDBG] No target selected: still emit one VPROBE line for the GM's own
+            // position, so any spot can be inspected without selecting a target first.
+            if (Player* self = m_session->GetPlayer())
+                PfProbe::PfProbeManual(self, self->GetPositionX(), self->GetPositionY(), self->GetPositionZ(), "gps-self");
+
             SendSysMessage(LANG_SELECT_CHAR_OR_CREATURE);
             SetSentErrorMessage(true);
             return false;
@@ -325,6 +331,11 @@ bool ChatHandler::HandleGPSCommand(char* args)
 
     uint32 have_map = GridMap::ExistMap(obj->GetMapId(), gx, gy) ? 1 : 0;
     uint32 have_vmap = GridMap::ExistVMap(obj->GetMapId(), gx, gy) ? 1 : 0;
+
+    // [PFDBG] one VPROBE line into the server log for the inspected object:
+    // terrain / vmap heights plus the navmesh polygon and whether the current
+    // pathfinding filter accepts it. Manually invoked, so it is NOT aura gated.
+    PfProbe::PfProbeManual(obj, obj->GetPositionX(), obj->GetPositionY(), obj->GetPositionZ(), "gps");
 
     TerrainInfo const* terrain = obj->GetTerrain();
 

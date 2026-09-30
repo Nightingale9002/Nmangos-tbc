@@ -56,6 +56,25 @@ namespace MMAP
 
     class TaskQueue;
 
+    // counters of the one cell seam fix done in MapBuilder::buildCommonTile
+    struct SeamFixStats
+    {
+        SeamFixStats() : closed(0), wall(0), steep(0), noFlank(0), walkable(0),
+                         riseLe1(0), riseLe4(0), riseLe8(0), riseMore(0) {}
+
+        int closed;     // one cell seams that got a walkable span
+        int wall;       // kept unwalkable: geometry rises above the neighbours
+        int steep;      // kept unwalkable: column holds a STEEP (mob only) span
+        int noFlank;    // kept unwalkable: no opposite pair of walkable neighbours
+        int walkable;   // kept: the column already has a walkable span
+
+        // how far above the walkable surface the closed geometry reached (in cells)
+        int riseLe1;
+        int riseLe4;
+        int riseLe8;
+        int riseMore;
+    };
+
     typedef std::map<uint32, std::set<uint32>> TileList;
     typedef std::set<uint32> MapSet;
     typedef std::unique_ptr<TaskQueue> TaskQueueUPtr;
@@ -118,7 +137,7 @@ namespace MMAP
 
             void buildTile(uint32 mapID, uint32 tileX, uint32 tileY, dtNavMesh* navMesh, uint32 curTile, uint32 tileCount);
             bool buildCommonTile(const char* tileString, Tile& tile, rcConfig& tileCfg, float* tVerts, int tVertCount, int* tTris, int tTriCount, float* lVerts, int lVertCount,
-                                 int* lTris, int lTriCount, uint8* lTriFlags);
+                                 int* lTris, int lTriCount, uint8* lTriFlags, int preErosionMedianPasses, int seamBridgeMaxRise, SeamFixStats* seamStats);
 
             // move map building
             void buildMoveMapTile(uint32 mapID, uint32 tileX, uint32 tileY, MeshData& meshData, float bmin[3], float bmax[3], dtNavMesh* navMesh);

@@ -21,6 +21,7 @@
 #include "Entities/Creature.h"
 #include "MotionGenerators/PathFinder.h"
 #include "MotionGenerators/PfDebug.h"
+#include "MotionGenerators/PfProbe.h"
 #include "Log/Log.h"
 #include "World/World.h"
 #include "Entities/Transports.h"
@@ -189,6 +190,7 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
                   m_navMesh ? 1 : 0, m_navMeshQuery ? 1 : 0,
                   m_sourceUnit ? (m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING) ? 1 : 0) : 0,
                   HaveTile(start) ? 1 : 0, HaveTile(dest) ? 1 : 0);
+        PfProbe::PfProbeAt(m_sourceUnit, dest.x, dest.y, dest.z, "pf-no-tile-dest");
         BuildShortcut();
         m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
         return true;
@@ -490,6 +492,11 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
         DEBUG_FILTER_LOG(LOG_FILTER_PATHFINDING, "++ BuildPolyPath :: (startPoly == 0 || endPoly == 0)\n");
         PFDBG_MSG(m_sourceUnit, "BuildPolyPath INVALID_POLY start=%d end=%d -> BuildShortcut 分支",
                   startPoly == INVALID_POLYREF ? 1 : 0, endPoly == INVALID_POLYREF ? 1 : 0);
+        // [PFDBG] which side has no polygon, and why: probe the offending point only
+        if (startPoly == INVALID_POLYREF)
+            PfProbe::PfProbeAt(m_sourceUnit, startPos.x, startPos.y, startPos.z, "pf-invalid-poly-start");
+        else
+            PfProbe::PfProbeAt(m_sourceUnit, endPos.x, endPos.y, endPos.z, "pf-invalid-poly-end");
         BuildShortcut();
 
 #ifdef ENABLE_PLAYERBOTS
@@ -973,6 +980,7 @@ void PathFinder::BuildPolyPath(const Vector3& startPos, const Vector3& endPos)
         {
             // only happens if we passed bad data to findPath(), or navmesh is messed up
             PFDBG_MSG(m_sourceUnit, "findPath FAILED: polyLength=%u dtResult=0x%08X -> BuildShortcut NOPATH", m_polyLength, (uint32)dtResult);
+            PfProbe::PfProbeAt(m_sourceUnit, endPos.x, endPos.y, endPos.z, "pf-findpath-fail-end");
 #ifdef ENABLE_PLAYERBOTS
             if (m_sourceUnit)
 #endif
