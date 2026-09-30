@@ -6245,3 +6245,43 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
   云端全日志 `grep SGDBG` = **0 条**（探针从未触发），旧 Server.log 已被重启覆盖 ⇒ 无法回溯。
 - 结论：这次修的是"dynguid 槽位被反复重建"这条链；若当年食人魔之魂的消失也是同一机制，本次修复应一并改善或暴露真凶。
 
+---
+
+## [机制] 2026-09-30 暗影迷宫「秘教召唤师会一直召唤」＝召唤法术挂在法术列表里每 12~27 秒重复（已按站长口径改为每场战斗一次）
+
+### 一、现象与站长口径
+
+站长：**「秘教召唤师会一直召唤，但正常应该这样」**，并给出参考 SmartAI 截图：
+> On Aggro → 50% Cast 召唤秘教侍僧（33507）、50% Cast 召唤秘教死誓者（33506），均带 **Interrupt current cast**。
+
+（截图来自 3.3.5 系核心的 SmartAI 数据，不是我们库的表结构。）
+
+### 二、根因（数据层机制，逐条可查）
+
+1. 召唤法术本体：`spell_template 33507 Summon Cabal Acolyte` / `33506 Summon Cabal Deathsworn`，
+   `Effect 28（SUMMON）EffectMiscValue = 19208 / 19209`＝**被召唤的秘教侍僧 / 被召唤的秘教死誓者**（独立 entry，非 18633/18635）。
+2. 挂载位置：`creature_spell_list` **1863401（普通）/ 2064801（英雄）**，两行召唤在 **Position 1 / 2**，火球在 Position 3。
+3. `UnitAI::UpdateSpellLists()` 每 **1.2 秒**轮询；三行 `Probability` 全为 **0** ⇒ 走"**按位置优先级**"分支
+   （`UnitAI.cpp:1219` 注释与 `1269` 的 `sum != 0` 判断）⇒ **位置 1/2 的召唤永远压过火球**。
+4. 冷却由 `Creature::GetSpellCooldown()` = `urand(RepeatMin, RepeatMax)` 决定（`Creature.cpp:1699`），
+   而这两行的 `RepeatMin/Max = 12000~26000 / 13000~27000`（首次 3~17 s / 4~18 s）
+   ⇒ **冷却一到就再召一次，整场战斗不停召唤，且几乎不放火球**。
+5. **不是我们改坏的**：本地 `tbcmangos` 与 `tbcdb_ref`、`tbcmangos_orig`、`wotlkmangos` 四个库这三行**逐字段完全一致**。
+   即"重复召唤"是 cmangos 系（含 WotLK）的标准数据，而站长要求的"每场战斗一次"是 3.3.5 AC/TC 系 SmartAI 的设计 —— 本次按站长口径改。
+
+### 三、修复（`dev/145_暗影迷宫秘教召唤师_改为每场战斗一次召唤.sql`，`5bc6fe7a1`）
+
+1. 从法术列表移除两条召唤：`DELETE FROM creature_spell_list WHERE Id IN (1863401,2064801) AND SpellId IN (33506,33507);`
+   ⇒ 列表只剩火球（普通 14034 / 英雄 15228，原样保留），普通/英雄差异不受影响。
+2. 新增两条 EventAI（`creature_ai_scripts` 1863410/1863411）：`event_type = 4（On Aggro）`、`event_chance = 50`、
+   `action1_type = 11（CAST）`，`param1 = 33507 / 33506`，`param2 = 0（TARGET_T_SELF）`，`param3 = 1（CAST_INTERRUPT_PREVIOUS）`
+   ⇒ 与截图一致：每场战斗各自 50% 几率召唤一次（两条独立判定，可能都出、也可能都不出）。
+- 回滚：`dev/rollback/145_回滚_秘教召唤师召唤.sql`（按参考库原值恢复四行 + 删除两条 EventAI）。
+
+### 四、验证与部署
+
+- 本地：已应用（列表只剩火球 ✓、两条 EventAI 已写入 ✓），重启后 `World initialized`，EventAI 脚本加载无报错 ✓。
+- 云端：`dev/145` 与回滚文件已 scp 到 `/root/Nmangos-tbc/dev/`；`DRYRUN=1 bash /root/apply_dev_sql.sh` 确认
+  **142 / 143 / 145 会在 04:06 一并应用**，随后 nightly 编译重启即生效。
+- 待游戏内验证：暗影迷宫拉秘教召唤师 —— 战斗开始后**最多各召唤一次**，之后正常放火球；不再整场刷召唤物。
+
