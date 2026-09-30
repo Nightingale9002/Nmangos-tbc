@@ -5946,11 +5946,20 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
    别靠它判断版本，用 `SELECT VERSION()`。
 4. 云端 MySQL root 没有免密登录：口令要从 `mangosd.conf` 的 `LoginDatabaseInfo` 里取。
 
-### 五、遗留建议（未做）
+### 五、善后：复制监控（2026-09-30 已加）
 
-- **加监控**：现在没有任何东西在看 `Slave_SQL_Running` / `Seconds_Behind_Master`（`mem_monitor.sh` 只看内存）。
-  建议加一条 cron（每 5~15 分钟）发现从库停了就写 watchdog 日志/告警，别再一次停 3 天没人知道。
-- **不要在从库上手工导入数据**（就是这次事故的起因）；需要导入时先 `STOP SLAVE` 再导，导完对齐位点。
+- **脚本**：`D:\Game\cmangos\replica_monitor.ps1`（同版入库 `dev/tools/replica_monitor.ps1`，
+  口令放在 `D:\Game\cmangos\.replica_cred`，**不写进脚本/仓库**）。
+- **计划任务**：`WoW_ReplicaMonitor`，**每 5 分钟**跑一次（`schtasks /create ... /sc minute /mo 5`）。
+- **检查项**：SSH 隧道端口 `16306` 是否在听；从库（`3307`）的 `Slave_IO_Running` / `Slave_SQL_Running` /
+  `Seconds_Behind_Master` / `Last_Errno` / `Relay_Log_Space`。
+- **判定**：`OK`（两个线程 Yes 且延迟 ≤ 300 秒）/ `LAGGING`（延迟超阈值）/ `BROKEN`（线程停了或有错误）/
+  `UNKNOWN`（延迟为 NULL）/ `DOWN`（3307 连不上）。
+- **输出**：每次写 `D:\Game\cmangos\replica_monitor.status`；**只在状态变化时**写
+  `D:\Game\cmangos\replica_monitor.log`，同时（非 OK 时）best-effort 通过 ssh 往云端
+  `/opt/mangos/logs/watchdog.log` 追一行 —— 这样在平时看日志的地方就能看到（实测 ssh 告警通路可用）。
+- 顺带提醒：隧道本身已有 `WoW_ReplTunnel_Logon` / `WoW_ReplTunnel_Keep`（每 5 分钟）自动保活。
+- **仍要注意**：不要在从库上手工导入数据（这次事故的起因）；需要导入时先 `STOP SLAVE`，导完对齐位点。
 
 ---
 
