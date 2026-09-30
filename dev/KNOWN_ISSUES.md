@@ -6160,3 +6160,88 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
   会让整条语句失败而输出为空，看起来像"数据不存在"，本次因此在 `spell_template`（真实主键是 `Id`、名称列是 `SpellName`）
   和 `conditions` 上各误判了一次。
 
+---
+
+## [机制] 2026-09-30 暗影迷宫「几个怪一直在闪」＝副本刷怪组每 tick 重建整包（**上游 bug + 我们补丁放大**，已修）
+
+### 一、现象
+
+站长现场（暗影迷宫 map 555，instance 8，入口一带）：**几个怪一直在闪**；`.lookup creature` 回 `Creature not found!`；
+随后补充关键线索：**击杀 guid `9010158` 后，同组的其他生物也会消失，然后像之前一样闪**。
+
+云端 `Server.log` 在站长打 `.gps` 的同一分钟（21:12–21:14）里：
+
+```
+21:13:26-49 ERROR:WORLD: Creature (Entry: 18633 Counter: 9012065…9012292) isn't unit   ← 每秒好几条
+21:12:04     ERROR:WORLD: Creature (Entry: 18635 Counter: 9011126) isn't unit
+21:12:37/21:13:05/21:13:32  DB-SCRIPTS: dbscripts_on_relay 5550007, command 51 formation create(1) failed. Target group(5550013) have already a formation!
+21:12:57/21:13:25/21:13:52  DB-SCRIPTS: dbscripts_on_relay 5550007, command 51 formation remove(2) failed. Target group(5550015) have already a formation!
+21:13:10/…                 DB-SCRIPTS: dbscripts_on_relay 5550007, command 20 call for creature in formation, skipping.
+```
+
+- `isn't unit`（`Combat/CreatureAttackHandler`→`CombatHandler.cpp:35/43`）= **客户端把攻击指令发给服务端已经不存在的单位**
+  ⇒ 那些怪确实在被反复销毁/重建（每次都是新的运行时 guid）。
+- `18633/18635` = **卡巴尔侍僧 / 卡巴尔死誓者**，即入口那几包小怪；它们的 DB guid 段是 `5550xxx`，
+  而日志里是 `901xxxx` ⇒ **dynguid（运行时 guid）**，所以 `.lookup creature` 查不到（查询命令只查
+  `creature` / `creature_spawn_entry` / `spawn_group_entry`，`Chat/Level3.cpp:2481`）。
+
+### 二、根因（全链路，逐条都有代码出处）
+
+1. `Creature::SetDeathState(JUST_DIED)`（`Creature.cpp:2059`）：
+   ```cpp
+   if (IsUsingNewSpawningSystem())
+   {
+       m_respawnTime = std::numeric_limits<time_t>::max();
+       if (m_respawnDelay && s == JUST_DIED && !GetCreatureGroup())   // ← 组员被跳过
+           GetMap()->GetSpawnManager().AddCreature(GetDbGuid());
+   }
+   ```
+   ⇒ **组员死亡不排重生，也不写重生时间**（`SaveRespawnTime()` 只在 `CONFIG_SAVE_RESPAWN_TIME_IMMEDIATELY` / 世界 boss 时调用）。
+2. 同函数稍后 `ClearCreatureGroup()`（`Creature.cpp:2074`）⇒ `CreatureGroup::RemoveObject` → `m_objects.erase(dbGuid)`：
+   **组在"尸体还在世界里"的时候就把槽位当成空闲**。
+3. `SpawnGroup::RemoveObject`（`SpawnGroup.cpp:74-90`）的冷却判断是 `if (!m_map.IsDungeon() && m_objects.empty())`
+   ⇒ **副本内没有任何冷却**。
+4. `SpawnManager::Update()` 每次都 `group->Update()`（`SpawnManager.cpp:290-291`）→ `SpawnGroup::Update()` = `Spawn(false,false)`
+   （`SpawnGroup.cpp:111`）⇒ **每个地图 tick 都尝试补齐**。
+5. 槽位重生时间是空的 ⇒ `SpawnGroup.cpp:294` 的守卫 `GetObjectRespawnTime(...) > now` 拦不住 ⇒ 立刻
+   `WorldObject::SpawnCreature(dbGuid, …)`。
+6. `Object.cpp:2289`（**这 5 行是我们 2026-09-01 加的**，见本文件 1480 行那章的第 4 条）：
+   ```cpp
+   // Avoid duplicates when re-spawning a dynguid spawn slot whose old object is
+   // still in the world (e.g. dead object awaiting SpawnManager respawn).
+   if (Creature* old = map->GetCreature(dbGuid))
+       old->AddObjectToRemoveList();
+   ```
+   ⇒ **把"重复生成"变成"删旧建新"**：旧对象瞬间消失、新对象带新 guid 出现。
+
+**净效果**：杀一个组员 → 下一 tick 起该包被反复删-建（每 tick 一组新 guid）⇒「同组集体消失 + 一直闪」。
+**归因**：1–5 是**上游 cmangos 新刷怪系统（dynguid + spawn group）的 bug**（`SpawnGroup.cpp` 与上游 `D:\Game\cmangos\mangos-tbc` **逐字节相同**；
+`Creature::SetDeathState` 的 `!GetCreatureGroup()` 上游同款，见上游 `Creature.cpp:1951`）；第 6 条是**我们的补丁**，
+只是把不可见的重复变成了可见的闪烁。影响面：全库 3190 个 spawn_group，凡使用刷怪组的副本（破碎大厅、血熔炉、法力陵墓、
+暗影迷宫、卡拉赞…）都有同一隐患，触发条件是"打死组员 + 组内有随机/多槽位成员"。
+
+### 三、修复（`89ef5b3a4`，两处）
+
+1. `Creature::SetDeathState`：组员死亡时也把槽位重生时间写进持久化状态
+   （`GetMap()->GetPersistentState()->SaveCreatureRespawnTime(GetDbGuid(), time(nullptr) + m_respawnDelay)`），
+   使 `SpawnGroup::Spawn` 的守卫（`SpawnGroup.cpp:294`）重新生效 ⇒ 组员按 `spawntimesecs`（副本杂兵 7200 秒）重生。
+2. `SpawnGroup::Spawn`：**该 dbGuid 世界里还有对象就直接剔除该候选**，任何情况下都不再出现"删旧建新"。
+
+### 四、验证与部署
+
+- 本地：编译 ✓（`mangosd.exe` md5 `5E1AC89609C4AA126E04B938A8872C6D`）、起服 ✓（`World initialized`，spawn_group 3190 条正常加载）。
+- 云端：`Creature.cpp`（md5 `67c8bbd76c61b0b9fd16835365ddfc33`）与 `SpawnGroup.cpp`（md5 `614814ad1110c7fba8e7f67649f04f0e`）
+  已同步 `/root/Nmangos-tbc`，随 10-01 04:06 nightly 编译部署。
+- **待游戏内验证**：进暗影迷宫打入口那几包（卡巴尔侍僧/死誓者）——
+  ① 击杀后**同组不再集体消失/闪烁**；② 被杀的怪按 7200 秒重生（`tbccharacters.creature_respawn` 里应能看到该 dbGuid 的未来时间）；
+  ③ 云端日志里不再出现成片的 `Creature (Entry: 18633/18635 Counter: 901xxxx) isn't unit`。
+- 顺带发现（未处理）：`LoadSpawnGroups` 在启动时报 `Invalid spawn_group_spawn guid 156139 / 156135. Skipping.` —— 两条 DB 引用无效，可另开 dev SQL 清理。
+
+### 五、与「食人魔之魂」旧案的关系
+
+- 2026-09-01 那次（`513c23825`，本文件 1480 行）修的是 **dynguid 链接组复活不全**，其中第 4 条改动就是上面第 6 步的"删旧建新"；
+  另外在 `Creature::ForcedDespawn()` 留了 `[SGDBG]` 诊断（entry 22912 `Sundered Spirit`）抓"谁在收走食人魔之魂"，该案**至今未结**。
+- 现状核查：22912 的 `creature_template.ExtraFlags = 0`（**不是 dynguid**）、**库里没有刷点、没有 EventAI/法术召唤它、源码也无引用**；
+  云端全日志 `grep SGDBG` = **0 条**（探针从未触发），旧 Server.log 已被重启覆盖 ⇒ 无法回溯。
+- 结论：这次修的是"dynguid 槽位被反复重建"这条链；若当年食人魔之魂的消失也是同一机制，本次修复应一并改善或暴露真凶。
+

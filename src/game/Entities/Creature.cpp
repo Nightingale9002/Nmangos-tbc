@@ -2059,8 +2059,18 @@ void Creature::SetDeathState(DeathState s)
         if (IsUsingNewSpawningSystem())
         {
             m_respawnTime = std::numeric_limits<time_t>::max();
-            if (m_respawnDelay && s == JUST_DIED && !GetCreatureGroup())
-                GetMap()->GetSpawnManager().AddCreature(GetDbGuid());
+            if (m_respawnDelay && s == JUST_DIED)
+            {
+                if (GetCreatureGroup())
+                    // Group members are re-materialized by the spawn group logic instead of the
+                    // SpawnManager, but the slot must still observe the respawn delay: SpawnGroup::Spawn
+                    // runs on every map update (SpawnManager::Update) and would otherwise rebuild the
+                    // whole pack right after one member dies - the killed slot plus its group visibly
+                    // blinking in and out with a new guid each tick.
+                    GetMap()->GetPersistentState()->SaveCreatureRespawnTime(GetDbGuid(), time(nullptr) + m_respawnDelay);
+                else
+                    GetMap()->GetSpawnManager().AddCreature(GetDbGuid());
+            }
         }
     }
 

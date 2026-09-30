@@ -291,6 +291,16 @@ void SpawnGroup::Spawn(bool forced, bool ignoreRespawntime)
     time_t now = time(nullptr);
     for (auto itr = eligibleGuids.begin(); itr != eligibleGuids.end();)
     {
+        // A slot whose object is still in the world (dead body awaiting removal, or a member the
+        // group still owns) must never be materialized again: WorldObject::SpawnCreature would
+        // remove the old object and the whole pack would visibly blink and get a new guid each
+        // update, because Spawn() is driven from SpawnManager::Update every map update.
+        if (m_map.GetCreature((*itr)->DbGuid))
+        {
+            itr = eligibleGuids.erase(itr);
+            continue;
+        }
+
         if (m_map.GetPersistentState()->GetObjectRespawnTime(GetObjectTypeId(), (*itr)->DbGuid) > now)
         {
             if (!ignoreRespawntime)
