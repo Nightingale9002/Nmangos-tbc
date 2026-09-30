@@ -2539,7 +2539,7 @@ bot 会彻底不上架这两种材料）。本地 A/B 验证过：去钉价后�
 ### 6. 紫装价值 25%→50%、虚空水晶按新价重定（`dev/096`）+ 幽灵商人 bug —— 2026-09-19
 
 - **起因**：站长查「自然愤怒法杖（31334）」挂 **66 金**、比同批紫装高一大截（且已售出），顺藤追出两件事。
-- **① 幽灵商人 bug（真 bug，尚未修）**：AHBot 判定「商店货」用的是
+- **① 幽灵商人 bug（✅ 已修：`154fc6856`，与本文同日落地）**：AHBot 判定「商店货」用的是
   `FillUintVectorFromQuery("SELECT item FROM npc_vendor")`（代码 126 行）—— **只扫 `npc_vendor`，
   不校验这个商人有没有刷点**；而 `GetItemValue()`（1862 行）对商店货直接 `return 100`，
   于是这些物品的静态价被算成 **BuyPrice 的 100%**。
@@ -2549,8 +2549,12 @@ bot 会彻底不上架这两种材料）。本地 A/B 验证过：去钉价后�
     同批紫装不在商店里，只按 class 价值 25% 算 → 只有 6~16 金。
   - **波及面**：788 个商人 NPC 里 **27 个没有刷点** → 影响 **1,179 件物品**，其中
     **704 件紫装**被按商店价定价（比正常 class 价高 2.5~4 倍）。
-  - 修法（待站长定）：`SELECT item FROM npc_vendor` 加「商人必须有刷点」的过滤，
-    或清掉那 27 个幽灵商人的 `npc_vendor` 记录。
+  - **已修**（`154fc6856`「修复套利」）：`AuctionHouseBot.cpp:133` 的查询改成
+    `FillUintVectorFromQuery("SELECT item FROM npc_vendor WHERE entry IN (SELECT id FROM creature)", ...)`
+    —— 只认"世界上真有刷点"的商人，幽灵商人的货自动掉回 class 价值（提交里记的实测：31334 从 67.17 金回到 16.79 金）。
+    数据侧**未删**那 27 个幽灵商人的 `npc_vendor` 行（2026-10-01 云端复核仍是 27 商 / 1,179 件 / 779 紫装），
+    因为过滤已在代码里完成，删数据没有额外收益。
+    ⚠️ 早期版本的本节写的是"真 bug，尚未修 + 修法待站长定"——**那是过时残留**，实际当天就修了。
 - **② 紫装价值 25% → 50%**（站长定值）：`/opt/mangos/etc/ahbot.conf`
   `AuctionHouseBot.Value.Epic = 0,0,50,0,50,…`（**武器 class2 与 护甲 class4 都是 50**）。
   备份 `/root/ahbot.conf.bak_20260919_epicarmor`（先改的护甲）、`…_epic50`（最终）；
@@ -4781,6 +4785,20 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
   ⇒ 只要出现这一行，就当场证明这次"直线"是**客户端驱动 + 服务端接受**，而不是服务端发错样条。
 - **建议修法（两行，待站长定）**：在 `ProcessMovementInfo` 开头补状态守卫
   `if (plMover && plMover->IsTaxiFlying()) return false;`（保留原有 `IsBeingTeleported()` / `!movespline->Finalized()` 判断；只影响玩家自身 mover）。已核：飞行中被这条链路覆盖的其它逻辑只有 `MSG_MOVE_FALL_LAND` 的坠落伤害，而它本来就带 `!IsTaxiFlying()` ⇒ 应该安全。
+- **2026-10-01 复核：这条守卫仍未实现**（`MovementHandler.cpp:844-902` 全函数只有 `[TAXI-DIAG]` 取证日志，
+  末尾 `HandleMoverRelocation(movementInfo)` **无条件执行**）。同时核了上游 `mangos-tbc`（HEAD `6904884e4`）：
+  **上游也没有**这条守卫（只有同一处 `MSG_MOVE_FALL_LAND` 的 `!IsTaxiFlying()`）⇒ 这不是"我们漏了上游补丁"，
+  而是上游本来就没做。
+- **飞行侧已经做掉的加固（别和上面这条混起来）**：
+  1. **反作弊在飞行中放行**：速度检查 `Anticheat/module/Movement/movement.cpp:522` 与传送检查 `:994`
+     都带 `!IsTaxiFlying()` ⇒ 飞行不会被误判（配合 `73f3a1282` 的"只记录不踢"口径）；
+  2. 坠落伤害忽略：`MovementHandler.cpp:856` `MSG_MOVE_FALL_LAND && !IsTaxiFlying()`；
+  3. **服务端航线修复 `88ee04167`**（站长报的"飞行穿模/直飞"那一半）：用本地航线图从链首到链尾重算合法路线、
+     `AddRoutes` 未全建成时**拒绝**（不再下发部分航段），并加 `[TAXI-DIAG]` 旋转链探针。
+  4. `[TAXI-DIAG]` 取证日志（`.debug taxi` 开关）—— 用来证明"直飞"是客户端驱动而非服务端发错样条。
+- **若要补这条守卫**：不建议直接 `return false`（会连带丢掉飞行期间所有移动包的副作用，例如
+  `UpdateFallInformation`、落地下机判定、载具/跟随时序）；更稳的写法是在 `HandleMoverRelocation` 前
+  只跳过**坐标写入**（taxi 玩家保留其余处理）。**待站长定**。
 - 生效：随今晚增量编译（本批 4 个 TU：`Taxi.cpp`、`TaxiHandler.cpp`、`Player.cpp`、`MovementHandler.cpp`）。
 
 
@@ -4993,6 +5011,12 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
 
 #### 下一步要做的机制（站长指示的剩余部分，按此设计）
 
+> **状态（2026-10-01 复核）：以下 4 项全部已落地，本节只是设计留档。**
+> ① 成对/共同定价 = `SettleVirtualPrices()`（`AuctionHouseBot.cpp:760`）+ `ahbot_price_pair`/`ahbot_price_recipe`
+> （线上 `enabled=1`，含 `16202→16203 ratio 3`、`22448→22449 ratio 3` 等附魔材料对）；
+> ②③ = `dev/124` + `dev/132` + conf 键 `MoveBpPerStack`/`MaxHourlyMoveBp`/`MaxDailyMovePct`；
+> ④ 删废弃列 = 线上 `ahbot_market_state` 已无 `capacity` / `qty`。
+
 1. **成对/共同定价**：把成对材料登记成"价格组"（基准件 + 派生件 + 比例 3:1），每周期只重算一次基准价，派生件由比例推得；**已挂单的定价不改**。
 2. **挂单量统一**：所有 cat1 一次固定 **10 组**、每周期补满 —— 	arget = 10 × maxStack、capacity = 3 × target（	arget/capacity 是**单位数**，挂单按 ceil(units/maxStack) 拆组）。
 3. **价格发现参数化**：每买/卖 1 组 ±0.1%、小时上限 1%、天上限 10%，写进 ahbot.conf。
@@ -5021,6 +5045,10 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
 - 当前数据状态（无需改动）：6 组精华 = 精确 3.00；棱光碎片 小块 9112 / 大块 27337（约 3:1，差 1 铜为取整）。
 
 #### AH 改造剩余待办
+
+> **状态（2026-10-01 复核）：3 项全部已落地**（见上一节的状态栏与 `dev/124` / `dev/132` 两章）。
+> 本节仅作设计留档；AH 侧目前唯一"未收敛"的是 legacy loot 路径（category 0）的单件挂单量
+> —— **站长 2026-10-01 明确：那是对的，不收敛**（只有操作员书目内的 cat1/cat2 按 10 组封顶）。
 
 1. **成对/共同定价机制**（含"比例可配置"）：每周期只重算一次基准价，派生件按比例推得；**已挂单价格不动**；
 2. **价格发现参数化**：每买/卖 1 组 ±0.1%、小时上限 1%、天上限 10%（写进 ahbot.conf；现有机制 LadderStep 兼作发现步长 + MaxDailyMovePct，缺小时窗口）；
