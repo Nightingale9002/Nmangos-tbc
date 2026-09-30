@@ -293,11 +293,15 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
             case 3: DoBroadcastText(SAY_TH_RANDOM_AGGRO4, m_creature); break;
         }
 
-        if (m_creature->IsMounted())
-        {
+        // Fork fix (upstream bug): the mounted state is tracked by the escort phase (set with the
+        // script mount at waypoint 40, cleared at the barn), NOT by Creature::IsMounted().  A
+        // script mount only sets UNIT_FIELD_MOUNTDISPLAYID, while IsMounted() tests UNIT_FLAG_MOUNT,
+        // which is only ever set for aura mounts (Unit.h: "not used with creature non-aura mounts").
+        // Upstream therefore never set m_bHadMount here - and UnitAI already dismounted Thrall in
+        // HandleMovementOnAttackStart (m_dismountOnAggro) before this handler runs - so Reset()
+        // skipped its Mount(MODEL_SKARLOC_MOUNT) and Thrall stayed on foot after every fight.
+        if (m_bHadMount)
             m_creature->Unmount();
-            m_bHadMount = true;
-        }
     }
 
     void KilledUnit(Unit* /*pVictim*/) override
@@ -796,6 +800,7 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
                 DoBroadcastText(SAY_TH_MOUNTS_UP, m_creature);
                 m_creature->SetFacingTo(5.33f);
                 m_creature->Mount(MODEL_SKARLOC_MOUNT);
+                m_bHadMount = true;             // ride until the barn (waypoint 68) - see Aggro()
                 break;
             // *** Escort event - Part II - reached barn ***
             case 68:

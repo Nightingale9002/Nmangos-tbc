@@ -6441,3 +6441,100 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
 - 状态：本地已应用 ✓（pt4 z = 0.005）；`dev/147` 与回滚已上云，`DRYRUN` 确认 **142/143/145/146/147** 会在 04:06 一并应用。
 - 待游戏内验证：该怪第 4 个路径点不再爬升，整条路径贴地。
 
+---
+
+## [上游bug] 2026-09-30 副本对话/喊话成批失声：`DialogueHelper` 把 broadcast_text 步骤全吞了（阿克特拉兹 20904 / 20977 …）
+
+- 现象（站长）：阿克特拉兹（map 552）里 **20904 典狱官梅利查（Warden Mellichar）** 与
+  **20977 米尔豪斯·法力风暴（Millhouse Manastorm）** 一句台词都没有，且「整个副本都缺少喊话」。
+- 根因：**上游 cmangos 自己的补丁** —— commit `3fa107236`
+  「Dialogue: Separate broadcast_text entries out in Dialogue Helper steps」（insunaa，2026-05-14）改了两处：
+  1. `sc_instance.h`：给 `DialogueEntry` / `DialogueEntryTwoSide` 加了
+     `DialogueStepType type {DIALOGUE_STEP_ACTION};`（**默认＝动作步**）；
+  2. `sc_instance.cpp`：`DoNextDialogueStep()` 里播报**正数**文本（＝broadcast_text 风格）的分支被加上条件
+     `else if (uiSpeakerEntry && iTextEntry > 0 && m_currentEntry->type == DIALOGUE_STEP_TEXT)`。
+  但**全树上没有任何一个对话数组写过这个字段**（`grep DIALOGUE_STEP_TEXT` 只有 `sc_instance.h/.cpp` 两处命中），
+  于是所有 `{文本id, 说话者, 延时}` 三步写法都保持默认 `ACTION` ⇒ 条件恒不成立 ⇒ **正数文本连同语音一句都不播**。
+- 影响面：全树 33 处 `DialogueHelper(...)`（`static const DialogueEntry aXXX[]`）。
+  脚本层扫描出 **71 条「有说话者 + 正数文本」的步骤**会被吞；负数 id（老式 `script_texts`）走上面
+  `iTextEntry < 0` 分支，**不受影响** —— 所以老副本听起来正常，只有 TBC 新内容（broadcast_text 风格）失声。
+  阿克特拉兹恰好整条主线全是正数文本（梅利查 7 连喊 + 米尔豪斯开场白 + 索科特拉兹/达莉亚 7 段对白 + 斯凯瑞斯开场），
+  所以「一句都不说」。反例：达莉亚 `Aggro()` 里**直接调用**的 `DoBroadcastText` 是好的 —— 说明坏掉的只是经
+  `DialogueHelper` 驱动的那些行。
+- 附带缺陷（定时炸弹）：该条件在**双人对话**（`DialogueEntryTwoSide`）路径上解引用的是 `m_currentEntry`，
+  而那条路径下 `m_currentEntry` 恒为 `nullptr`；目前没有脚本使用双人数组，所以尚未暴露。
+- 修复（本 fork 补丁，最小改动、**不动任何脚本/数据**）：
+  - `sc_instance.h`：两个结构的默认值改为 `DIALOGUE_STEP_TEXT`（数组仍可显式写 `DIALOGUE_STEP_ACTION` 主动退出）；
+  - `sc_instance.cpp`：条件改读**当前实际使用的那条数组**的 `type`
+    （`m_dialogueArray ? m_currentEntry->type : m_currentEntryTwoSide->type`，同时消除空指针解引用）。
+  语义回到上游加该字段**之前**的行为：三步写法＝文本步。
+- 核对证据：新增脚本扫描工具 `dev/tools/dialogue_text_scan.py`（解析所有对话数组 → 解析同文件/头文件常量 →
+  列出「有说话者且文本 id 为正」的步骤），得到的 **71 个 id 全部能在 `broadcast_text` 里找到**（含 zhCN 译文），
+  因此修复后不会刷 `DoScriptText ... could not find text entry`。
+- 状态：本地已编译部署；云端源码待 nightly 编译（源文件 `src/game/AI/ScriptDevAI/include/sc_instance.{h,cpp}`）。
+- 注：本补丁**只恢复「说」这一动作**，不改对话时序（`JustDidDialogueStep` 一直在跑，被吞掉的仅是播报）。
+
+---
+
+## [本地化] 2026-09-30 NPC 20129「时光管理者」对话是英文 —— 中文只填在女版列、男版列是空的（`dev/148`）
+
+- 现象（站长）：与 **NPC 20129 Custodian of Time（时光管理者）** 对话/听它讲话，整段时光之穴介绍都是英文。
+- 这条 NPC 的台词不是 gossip，而是 EventAI + relay 链：
+  `creature_ai_scripts 2012901-2012908`（On Timer / On AI Event）→
+  `dbscripts_on_relay 19900-19906`（`command = 0` = SAY，文本 id 放在 **`dataint`**）→
+  broadcast_text **17656-17669**（共 14 句：见面、时光之穴、时间流分类、敦霍尔德/黑暗之门/海加尔山……）。
+- 根因：这 14 条的中文**只存在于 `broadcast_text_locale.Text1_lang`（女版列）**，
+  `Text_lang`（男版列）是空的；而 `DoDisplayText()`（`ObjectMgr.cpp:10673-10686`）的取值顺序是
+  「英文男版 `Text` 非空 ⇒ 一律选男版」⇒ zhCN 玩家取到男版列 → 空 → 回退英文原文。
+  两侧英文（`Text` / `Text1`）内容完全相同，所以女版列的中文本来就是这句话的译文，只是**放错了列**。
+- 影响面：**全库 10810 条** zhCN 记录都是这个形状（中文只在女版列 / 男版列空 / 英文男版非空），
+  即不只 20129 一条 —— 凡是用「男版路径」说出的 NPC 台词，zhCN 玩家都会听到英文。
+- **与 `dev/141` 的关系（重要，别以为是重复劳动）**：`dev/141` 修的是**英文**男版列 `broadcast_text.Text`
+  （10671 条，全文件 **0 条**语句碰过 `broadcast_text_locale`）。而它恰好是这次中文变英文的**直接原因**：
+  在 141 之前，这些行的英文男版是空的 ⇒ `DoDisplayText()` 走到「女版」那条分支 ⇒ 取到**有中文的女版列**；
+  141 把英文男版补齐后，第三条判断「英文男版非空 ⇒ 一律用男版」成立 ⇒ 取值切到**没有中文的男版列** ⇒ 变英文。
+  两个名单几乎完全重合：141 修 10671 条、148 补 10810 条，**交集 10668 条（98.7%）**。
+  反方向（男版中文有、女版空，44455 条）**不影响**显示，因为男版非空时永远走男版。
+- 20129 那 14 句的分布：**4 句**（17656 / 17667 / 17668 / 17669）属于「141 造成的回退」，
+  另外 **10 句**英文男版本来就有、从一开始就走男版路径，**从来没有被翻译过**（中文只在女版列）。
+- 修复 `dev/148`：把 `Text_lang` 静态补成对应 `Text1_lang` 原文（**10810 条写死字面量**，
+  无 JOIN / 子查询 / 计算），回滚 `dev/rollback/148_回滚_broadcast_text_locale_zhCN男版空白补全.sql`
+  （写死 Id 列表，清回空串）。
+- 核对：本地应用耗时 7.2s；补完后「男版空 + 女版有」= **0 条**；17656-17669 已显示中文（逐句与英文对照无误）。
+  云端同样缺口 10810 条（`cot_filled = 0`），`DRYRUN` 确认 **148** 会随 04:06 与 142/143/145/146/147 一起应用。
+- 生效：world 库文本在启动时载入 ⇒ 需重启；本地已重启并确认
+  `Loaded 72943 texts from broadcast_text_locale`。
+- 备注：`broadcast_text_locale` 是 utf8mb3 表，本次是**同表列到列**复制，字符集无风险；
+  云端 applier 的 mysql 客户端默认 `character_set_client = utf8mb4`，UTF-8 文件导入不会被二次编码。
+
+---
+
+## [上游bug] 2026-10-01 旧希尔斯布莱德「萨尔进战斗下马后不再上马」——`IsMounted()` 对脚本坐骑恒为 false（`72c783d04`）
+
+- 现象（站长）：旧希尔斯布莱德（map 560）护送事件里，**NPC 17876 萨尔（Thrall，`npc_thrall_old_hillsbrad`）**
+  一进战斗就下马，**打完架再也不上马**，后面那段路一直步行。
+- 设计链路：
+  - 上马点＝护送路径点 **40**（`Mount(MODEL_SKARLOC_MOUNT)`，"骑到谷仓"段 waypoint 41–67）；
+    下马点＝路径点 **68**（到达谷仓：`Unmount(); m_bHadMount = false;`）。
+  - 进战斗 `Aggro()` 里下马；闪避结束时 `CreatureAI::EnterEvadeMode()` 会调 `Reset()`，
+    而 `Reset()` 的第一句就是 `if (m_bHadMount) m_creature->Mount(MODEL_SKARLOC_MOUNT);` ⇒ 本该自动重新上马。
+- 根因（**上游 bug**，本 fork 同源）：`Aggro()` 写的是
+  `if (m_creature->IsMounted()) { m_creature->Unmount(); m_bHadMount = true; }`，
+  而 `Unit::IsMounted()`（`Unit.h:1487`）判的是 **`UNIT_FLAG_MOUNT`** —— 注释自己都写着
+  *"not used with creature non-aura mounts"*；这个 flag **只有光环坐骑**（`Mount(displayid, aura)`）才置位。
+  脚本用的是 `Creature::Mount(displayid)`（`Unit.cpp:8294-8314`，无 aura）⇒ 只写 `UNIT_FIELD_MOUNTDISPLAYID`
+  ⇒ `IsMounted()` 恒为 **false** ⇒ `m_bHadMount` 永远不会变 true ⇒ `Reset()` 的再上马被跳过。
+  补一刀：`m_dismountOnAggro`（`CreatureAI.cpp:33`：无 `ALLOW_MOUNTED_COMBAT` 标志即为 true）让
+  `UnitAI::HandleMovementOnAttackStart()`（`UnitAI.cpp:353`）在进入战斗时已经先把他拽下马了，
+  所以 `Aggro()` 里那次 `Unmount()` 本来就是多余的 —— 「下马」看得见、「上马」没人做，正是站长看到的现象。
+  （顺带排除：Thrall 的 `creature_addon.mount` 是 NULL ⇒ `HomeMovementGenerator::Finalize → LoadCreatureAddon(true)`
+  既不上马也不下马，不是本因。）
+- 修复（**只改脚本 2 处，不动核心**）：
+  1. 路径点 40 上马后补 `m_bHadMount = true;`（骑乘状态由**护送阶段**决定，不再靠 `IsMounted()` 猜）；
+  2. `Aggro()` 改成 `if (m_bHadMount) m_creature->Unmount();`。
+- 全树同型排查：脚本里另一处 `IsMounted()`（`isle_of_queldanas.cpp:391` 血骑士 Joust）用的是**光环坐骑**，
+  语义正确；核心里的 `IsMounted()` 调用点都是玩家/出租车路径，同样不受影响 ⇒ 无需扩大改动。
+- 状态：本地已编译部署（`mangosd.exe` md5 `A7E3C6B18B76DF7B0B3165B2AE22E62A`，`World initialized` 00:01）；
+  云端源码已同步（md5 一致）待 nightly 编译。
+- 待游戏内验证：骑马段被小怪打断后，萨尔打完架自动重新上马，直到抵达谷仓才永久下马。
+

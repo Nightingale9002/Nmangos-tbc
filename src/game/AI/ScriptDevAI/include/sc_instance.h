@@ -98,7 +98,12 @@ struct DialogueEntry
     int32 textEntry;                                       ///< To be said text entry
     uint32 sayerEntry;                                    ///< Entry of the mob who should say
     uint32 timer;                                         ///< Time delay until next text of array is said (0 stops)
-    DialogueStepType type {DIALOGUE_STEP_ACTION};
+    // Fork patch: upstream defaults this to DIALOGUE_STEP_ACTION, but every dialogue array in the
+    // tree is written with only the three fields above and therefore never marks its text steps,
+    // which made DialogueHelper silently drop every broadcast_text step (see sc_instance.cpp,
+    // DoNextDialogueStep). Default to a text step - arrays may still opt out explicitly with
+    // DIALOGUE_STEP_ACTION.
+    DialogueStepType type {DIALOGUE_STEP_TEXT};
 };
 
 /// A static const array of this structure must be handled to DialogueHelper
@@ -109,7 +114,7 @@ struct DialogueEntryTwoSide
     int32 textEntryAlt;                                    ///< To be said text entry (second side)
     uint32 sayerEntryAlt;                                 ///< Entry of the mob who should say (second side)
     uint32 timer;                                         ///< Time delay until next text of array is said (0 stops)
-    DialogueStepType type {DIALOGUE_STEP_ACTION};
+    DialogueStepType type {DIALOGUE_STEP_TEXT};           ///< See the note in DialogueEntry above
 };
 
 /// Helper class handling a dialogue given as static const array of DialogueEntry or DialogueEntryTwoSide
