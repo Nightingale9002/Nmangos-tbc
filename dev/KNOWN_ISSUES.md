@@ -6647,10 +6647,42 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
   - **实例地图（552 等）不行**：实例对象只在有玩家进入时才创建，没玩家就没有那个 `Map` 实例 ⇒ `LoadAllGridsOnMaps="552"` 不生效。
     要验证**副本内**的刷怪组（例如禁魔监狱那个艾瑞达点），必须**真的有人进副本**（本地客户端进一次，或云端实测），
     并保持 `SpawnGroup.DebugLog = 1`，日志里就能看到每个成员解析出的 entry 与是否真的生成。
+  - ⚠️ **试过"在服务端启动时造一个无玩家实例"的路子，失败了**：加一个 `MapManager::CreateDebugDungeonMap()`
+    （启动时 `new DungeonMap` + `Initialize`）后，实例图在 `ObjectMgr::LoadActiveEntities()` 的强制逐格加载里**崩溃**
+    （Debug 断言 `vector subscript out of range`，面包屑定位到 `creature guid 5520093` 那条；该实例在游戏里由玩家进入时是正常的，
+    说明"无玩家 + 启动期强制加载"这条路径本身不成立）。**代码已全部回退**（未提交），改用下面的离线模拟器。
 - 顺带发现（**待站长定，未动手**）：
   1. **66 个 gameobject 刷点（map 0）看起来是仲夏火焰节的火盆** —— 对照 AzerothCore 同 guid 的 entry 是
      **181355「Standing, Exterior, Medium - MFF」**；我们库与 tbc-db 里它们都是 `id = 0` 且**没有任何候选**
      ⇒ 这些火盆**从来不生成**（节日祭坛/任务点会缺）；
   2. **6 个 creature 刷点**（map 530 ×4：组 28015/28016；map 0 ×2：组 19980）所在组没有任何随机候选。
   两类都要"给具体 entry"或"补候选"的**数据决策**，不建议照 AC 直接抄（需逐点核对坐标与用途）。
+
+---
+
+## [工具] 2026-10-01 离线刷怪模拟器 `dev/tools/spawn_sim.py`：不加载地图也能算出"这一组会刷出什么"
+
+- 起因：站长选了"不在服务端建实例、用脚本复现刷怪规则"这条路（服务端"无玩家实例"方案在网格加载时崩，见上一节）。
+- 做法：把 `SpawnGroup::Spawn` 的规则**逐条搬到 Python**（与 `SpawnGroup.cpp` / `ObjectMgr.cpp` 对齐）：
+  entry 来源优先级 `RandomEntry`（有 `creature_spawn_entry`）> `OwnEntry`（`creature.id <> 0`）>
+  组的 `spawn_group_entry`；`MaxCount == 0` 的载入期推导；`EquallyChanced` / `ExplicitlyChanced` 与
+  `MinCount`/`MaxCount` 配额；成员侧的 `spawnMask`/难度过滤、`Chance` 每 guid 只掷一次、squad 随机选择；
+  副本内 entry 首次生成后记忆。**多次采样给概率**（默认 100 次），输出每个 (组, 成员, entry) 的出现率。
+- 用法：
+  ```
+  python dev/tools/spawn_sim.py --list-instances      # 列出所有副本地图与其刷怪组/成员数
+  python dev/tools/spawn_sim.py 552 --runs 200        # 模拟禁魔监狱（200 次采样）
+  python dev/tools/spawn_sim.py 552 --tsv out.tsv     # 导出明细
+  ```
+- **它给出的第一个结论（回答"禁魔监狱缺艾瑞达"）**：组 **5520022「Eredar Soul-Eater/Eredar Deathbringer」**
+  （MaxCount 1、成员 1 = guid 5520064、候选 20879/20880）⇒ 该点**本来就会随机刷出一只**：
+  `20880 艾瑞达死亡使者 54.0% / 20879 艾瑞达食魂者 46.0%` ⇒ **副本并不缺这只怪**（与 dev/150 撤销的判断一致）。
+  同类抽样：尸体组 ~50/50（守卫者/看守者）、组 5520012 死亡守望者/熵能之眼 ~50/50、
+  组 5520024 无束毁灭者/恶毒魅魔 ~52/48、组 5520023 潜行女巫 2 选 1。
+- 注意（模拟器的边界）：
+  1. **worldstate 条件组被当作"条件不满足"**（禁魔监狱有 2 个组如此；它们在游戏里可能由 BOSS/事件状态触发），
+     ⇒ 这类组模拟结果偏保守；
+  2. 世界里"已有对象 / 重生冷却"被假定为"副本刚开"；`creature_spawn_entry` 有候选的成员标为
+     `random(own table)`（真随机，未展开成具体 entry）；
+  3. 它只读库、不写库、不碰服务端 ⇒ 可以随便跑。
 
