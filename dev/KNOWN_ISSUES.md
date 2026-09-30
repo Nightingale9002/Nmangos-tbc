@@ -5952,3 +5952,26 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
   建议加一条 cron（每 5~15 分钟）发现从库停了就写 watchdog 日志/告警，别再一次停 3 天没人知道。
 - **不要在从库上手工导入数据**（就是这次事故的起因）；需要导入时先 `STOP SLAVE` 再导，导完对齐位点。
 
+---
+
+## [数据] 2026-09-30 DBC 全部更换为客户端原版（弃用 5 处自定义补丁）
+
+**站长口径**：「直接替换，不用原来的了」。
+
+背景：用客户端重新提取全部 dbc 后逐文件 md5 比对，发现**本地与云端各自改过不同的 DBC 记录**（其余 180 个文件与
+客户端原版一致），共 5 处：
+- 云端 3 处：`ItemExtendedCost.dbc` 2049（正义徽章 75 → **750**，只有商人 18525 用，卖 T6 部件）、
+  `CreatureDisplayInfo.dbc` 22596（`Creature\Shivan\Shivan.mdx` scale 0.9 → **0.1**，用于 24560 Priestess Delrissa）、
+  `CreatureModelData.dbc` 2361（同模型 `CollisionHeight` 2.031 → **0**）。
+- 本地 2 处：`SkillLineAbility.dbc` 14779/14785（31801 复仇圣印 / 31892 鲜血圣印 的 raceMask 1029/512 → **0**，
+  即两个圣印对所有种族开放）、`Spell.dbc`（多一条 53720 "Word of Recall (OLD)" + 28,047 条记录字符串偏移整体差
+  5 字节 —— 看着是另一份来源/locale 的提取件，不是有意补丁；服务端**不读** `Spell.dbc`，法术数据走库表 `spell_template`）。
+
+处理：
+- **本地已换完**（`_regen\dbc` 的 185 个文件），旧的一套留在 `x64_Debug\dbc_prev_20260930`（186 个，含 `Spell.csv`），
+  服务器重启后 locale=zhCN、`World initialized`、无 DBC 报错 ✓。
+- **云端并入 2026-10-01 凌晨窗口的部署脚本**（`/root/dbc_fresh_20260930.tar.gz`，185 个文件 5.75 MB；脚本换完数文件数，
+  <180 自动回滚；旧的一套留 `/opt/mangos/data/dbc_prev_<时间戳>`）。
+- 详细清单与"弃用后的可见变化"见 `dev/dbc_自定义补丁清单.md`（T6 徽章价回到 75、Delrissa 恢复原版体型/碰撞、
+  两个圣印恢复按阵营限制、`Spell.dbc` 无影响）。
+
