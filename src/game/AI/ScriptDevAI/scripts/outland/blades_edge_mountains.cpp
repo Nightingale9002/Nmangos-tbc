@@ -3491,6 +3491,11 @@ struct npc_legion_flak_cannonAI : public Scripted_NoMovementAI
         // sits inside the 6 yard impact radius or has moved out of it.
         if (Creature* dummy = m_creature->SummonCreature(NPC_FLAK_CANNON_TARGET, m_aimX, m_aimY, m_aimZ, 0.0f, TEMPSPAWN_TIMED_DESPAWN, 15000))
         {
+            // The summon is only an anchor for the projectile spell - the flying shell itself is the client
+            // side missile of 40109. Template 23155 is "Invisible Stalker (Scale x3)" and players could
+            // still read that name / get a nameplate, so make it unselectable and non attackable.
+            dummy->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_UNINTERACTIBLE);
+
             // NOTE: SPELL_CAST_OK is 0xFF (non-zero!) in this core - never test the result for truthiness,
             // it produced a misleading "failed to fire" log on every shot.
             if (m_creature->CastSpell(dummy, SPELL_FEL_FLAK_BOLT, TRIGGERED_OLD_TRIGGERED) != SPELL_CAST_OK)

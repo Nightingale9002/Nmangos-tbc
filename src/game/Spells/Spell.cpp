@@ -8518,10 +8518,19 @@ SpellCastResult Spell::OnCheckCast(bool strict)
             break;
         }
         case 40856: // Wrangling rope - should only be usable on aether rays
-            if (ObjectGuid target = m_targets.getUnitTargetGuid())
-                if (target.GetEntry() != 22181)
-                    return SPELL_FAILED_BAD_TARGETS;
+        {
+            Unit* target = m_targets.getUnitTarget();
+            if (!target || target->GetEntry() != 22181)
+                return SPELL_FAILED_BAD_TARGETS;
+
+            // ... and only once the ray has been weakened. The creature's EventAI emotes at 40% health
+            // (creature_ai_scripts id 22181: "Aether Ray - Emote at 40% HP", event 2 param1 40), i.e. that
+            // is the point at which live servers let you rope it. Without this gate the rope worked on a
+            // completely healthy ray (站长 2026-09-30).
+            if (target->GetHealthPercent() > 40.0f)
+                return SPELL_FAILED_BAD_TARGETS;
             break;
+        }
         case 43732: // Remove Amani Curse - should only be usable on Forest Frog
             if (ObjectGuid target = m_targets.getUnitTargetGuid())
                 if (target.GetEntry() != 24396)
