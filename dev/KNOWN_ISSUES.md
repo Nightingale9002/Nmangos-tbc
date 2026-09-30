@@ -6566,3 +6566,27 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
   云端源码已同步（md5 一致）待 nightly 编译。
 - 待游戏内验证：骑马段被小怪打断后，萨尔打完架自动重新上马，直到抵达谷仓才永久下马。
 
+---
+
+## [数据] 2026-10-01 时光之穴「索莉多米（19935）缺巡逻路径」——TBC 系四个库都没有这条路径（`dev/149`）
+
+- 现象（站长）：NPC **19935 索莉多米（Soridormi，时光之穴入口）站着不动**，缺少巡逻路径。
+- 核对：`creature` 里她只有 1 个刷点 **guid 23453**（map 1，-8445.76 / -4215.38 / -211.94），
+  `MovementType = 0`（IDLE）且 `creature_movement` **0 行**；**本地 / `tbcmangos_orig` / `tbcdb_ref` / `wotlkmangos`
+  四个库完全一致** ⇒ 不是被我们改坏的，是 TBC 系数据从来就没有她的路径。
+- 对照来源：**AzerothCore（3.3.5）`waypoint_data` id = 234530**（`creature_addon.path_id = 234530`）
+  = **35 点闭合巡逻线**，绕时光之穴入口一圈（x -8595..-8365 / y -4432..-4213 / z -216..-205）；
+  她的刷点正好落在这条线上。同库的 19936 Arazmodu 也是 MovementType=2，属同一批 NPC。
+- 验证（能做的都做了）：
+  - 时光之穴入口在**地下 / WMO 内部**：ADT 地表高度只有 +9~+18，与路径 z（-205~-216）差 ~220 码；
+    导航面探针 35 点**全部 `NO POLY`** ⇒ **几何探针在这块地根本无效**，不能用它判对错；
+  - 改用**同区域现成路径对照**：`23459 时光管理者` 的 58 点路径（库里已有、游戏内正常巡逻）z 在 **-207~-208**，
+    与本路径同一高度带、坐标相邻 ⇒ 高度自洽（最终仍以站长实际观感为准）。
+- 修复（`dev/149`）：35 点写入 `creature_movement`（`Id` = 23453 刷点 guid、`Orientation` = 100 不改朝向、
+  `WaitTime` = 0），并把 `creature.MovementType` 置 **2（WAYPOINT_MOTION_TYPE）**；
+  回滚件 = 删行 + `MovementType` 退回 0。**幂等**：`INSERT ... ON DUPLICATE KEY UPDATE`，本地连跑两次都是 35 行。
+- 状态：本地已应用（核对 35 行 / `MovementType=2`）并重启；云端已同步（md5 一致），随 04:06 与 **142–148** 一起应用。
+- 备注（顺带查到的）：ScriptName `npc_quest_attunement` 被 3 个 NPC 共用 —— 18528 希里 / 19935 索莉多米 /
+  22421 异端斯卡西斯，而它的 AI（`npc_xiri`）写的是**希里在影月谷的 Ashtongue RP 事件**，对索莉多米基本是空转；
+  与"缺路径"无关，但值得记一笔（将来要给索莉多米加对话时别指望这个脚本）。
+
