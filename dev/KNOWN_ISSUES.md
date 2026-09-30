@@ -6423,3 +6423,21 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
   Bound/Solid 由候选随机决定）；`gameobject_respawn` 应能看到所选 guid 的行。若某个实例一个都不出，把
   `.gps` 与所在实例号给我，我按 7 个候选点坐标逐个对。
 
+---
+
+## [数据] 2026-09-30 能源舰「guid 5540055 会走上天上」＝路径点 z 悬空 9.65 码（`dev/147`）
+
+- 现象（站长）：guid **5540055**（map 554 = 能源舰 The Mechanar，`Mechanar Tinkerer` entry 19716，`MovementType=4` 路径）
+  **会走上天上**。
+- 数据：该怪 5 点路径 `creature_movement`，pt1/2/3/5 的 z ≈ 0~0.006，**pt4 (211.347, -101.717) 的 z = 9.806**。
+- 核高度（新工具 `_agent_tmp/wp_scan.py`：读 `mmaps` 导航面逐点比对）：
+  **pt4 处导航面只有 0.154 一个面**（没有 9.8 的平台）⇒ 该点悬空 **+9.65 码** ✓ 与现象吻合。
+  全图扫描（554 共 71 个路径点）**只有 2 处异常**：本处，以及 5540059（Tempest-Forge Destroyer）pt2
+  ——后者与上游 tbc-db 参考库路径基本一致（都是 z≈0），属导航面覆盖问题，**本次未动**。
+- 归因：本行与 `tbcmangos_orig` / `wotlkmangos` **逐值一致**（上游 cmangos 数据本身就错），
+  而上游 tbc-db (`tbcdb_ref`) 里这个 guid 是**另一条 10 点、z 全 ≈0** 的路径 ⇒ 上游数据错误。
+- 修复（`dev/147`）：`UPDATE creature_movement SET PositionZ = 0.005 WHERE Id=5540055 AND Point=4`（带旧值守卫 + 回滚文件）。
+  保留了原路线；若站长更希望直接用参考库那条 10 点路线，可另开 SQL（参考库 pt1 挂移动脚本 `1971601`，注意我们库里没有该脚本 id）。
+- 状态：本地已应用 ✓（pt4 z = 0.005）；`dev/147` 与回滚已上云，`DRYRUN` 确认 **142/143/145/146/147** 会在 04:06 一并应用。
+- 待游戏内验证：该怪第 4 个路径点不再爬升，整条路径贴地。
+
