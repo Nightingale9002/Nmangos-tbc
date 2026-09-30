@@ -5885,3 +5885,70 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 - NPC 22275 埃匹希斯纪念碑的召唤条件（见本章第 5 条）。
 - 欧比迪斯等黑龙的施法/站立动画与"吐火球无动作"（见本章第 6 条，站长决定**先不做**）。
 
+---
+
+## [运维] 2026-09-30 本地 MySQL 从库复制中断 3 天（1062 主键冲突）→ 按「全量重建」修复
+
+### 一、架构（先弄清楚谁是谁）
+
+- **云端 = 主库**：MySQL **8.0.46**、`server_id=1`、`log_bin=ON`、自身**没有** slave 配置、有 `repl@%` 账号。
+  口令在 `/opt/mangos/bin/mangosd.conf` 的 `LoginDatabaseInfo` 里（`root / <该口令>`）。
+- **本地 = 从库**：MySQL **8.0.46 @ 3307**、`read_only=ON`、`replica_parallel_workers=4`、`slave_exec_mode=STRICT`、
+  `slave_skip_errors=OFF`；经 **SSH 隧道** 本地 `16306` → 云端 `3306`（`start_tunnel.bat` + 计划任务
+  `WoW_ReplTunnel_Logon` / `WoW_ReplTunnel_Keep`）。
+- 本地另有一个 **9.3 实例 @ 3306**（开发/比对用，`root/qwerty`）——**它没有复制关系**，不受本事故影响。
+- 消费者：QQ 机器人走隧道**直连主库**（16306），读的不是从库。
+
+### 二、故障现象（诊断）
+
+| 项 | 值 |
+|---|---|
+| `Slave_IO_Running` | Yes（还在抓 binlog） |
+| `Slave_SQL_Running` | **No**（停了） |
+| `Last_Errno` / 错误 | **1062** `Duplicate entry '28154' for key 'logs_anticheat.PRIMARY'`，位置 `binlog.000039` pos 71510651 |
+| 停住时间 | **2026-09-27 17:55:37**（约 3 天） |
+| 积压 | 未应用 relay log **457 MB**；`Seconds_Behind_Master = NULL` |
+
+**根因**：从库的**日志表/游戏表被以前的手工导入"提前写入"到了复制位点之后** ⇒ 主库后来的插入事件到达时撞主键。
+第一个冲突（`tbclogs.logs_anticheat` id 28154）两边**内容完全相同**，从库那张表比主库少 3,261 行、`creature_respawn`
+少 74 行，都是"导入 + 复制双重写入"的典型特征。冲突会横跨多张表（`logs_anticheat`、`account_logons`、
+`creature_respawn` 等），其中 `creature_respawn` 是**复合主键**（`guid-instance`）。
+
+### 三、处理过程
+
+1. **方案 A（逐行精确删）**：按报错里的主键值 `DELETE` 那一行 + `START SLAVE`，自动循环。
+   实测修掉 4 行（`logs_anticheat` 28154/28155、`account_logons` 5993/5994）后撞到**游戏表复合主键**，
+   每条冲突都要 STOP/START 一轮（5~8 秒），后面可能成百上千条 ⇒ 放弃。
+2. **方案 C（全量重建，站长选定）**：
+   ```bash
+   # 云端（主库）
+   mysqldump -uroot -p<pass> --single-transaction --master-data=2 --set-gtid-purged=OFF \
+     --routines --triggers --events --databases tbcmangos tbcrealmd tbccharacters tbclogs \
+     | gzip > /root/replica_rebuild.sql.gz          # 61 MB / 24 秒，头部给出位点：
+                                                    # CHANGE MASTER TO MASTER_LOG_FILE='binlog.000042', MASTER_LOG_POS=80569957;
+   # 本地（从库 3307）
+   STOP SLAVE; DROP DATABASE tbcmangos/tbcrealmd/tbccharacters/tbclogs;
+   mysql --binary-mode --default-character-set=utf8mb4 -h127.0.0.1 -P3307 -uroot -p<pass> < replica_rebuild.sql
+   RESET SLAVE;                                     # 清 MTA 错误态 + 清掉 457 MB relay 积压，但保留连接参数
+   CHANGE MASTER TO MASTER_LOG_FILE='binlog.000042', MASTER_LOG_POS=80569957;
+   START SLAVE;
+   ```
+3. **验证**：`Slave_IO_Running/SQL_Running = Yes`、`Last_Errno=0`、`Seconds_Behind_Master=0`、
+   `Exec == Read`（连续两次检查都在推进）；逐表行数与主库**完全一致**（`creature` 109,389、`gameobject` 72,385、
+   `creature_template` 18,800、`characters` 121、`logs_anticheat` 30,881）。
+
+### 四、坑（下次直接用 `dev/tools/replica_repair_tool.ps1`）
+
+1. **Windows 下导入必须加 `mysql --binary-mode`**，否则报 `ERROR at line 3885: Unknown command '\''` 半途失败。
+2. **`CHANGE MASTER TO` 在 MTA 报错态下会被拒绝**（`ERROR 1802 ... Consider using RESET REPLICA`）⇒ 先 `RESET SLAVE`；
+   但 **`RESET SLAVE ALL` 会连连接参数一起清掉**（得重新给 host/port/user/password），别用。
+3. 云端的 `mysql`/`mysqldump` 支持 `--version` 之外的老式用法：`mysqldump --version` 会报 unknown option，
+   别靠它判断版本，用 `SELECT VERSION()`。
+4. 云端 MySQL root 没有免密登录：口令要从 `mangosd.conf` 的 `LoginDatabaseInfo` 里取。
+
+### 五、遗留建议（未做）
+
+- **加监控**：现在没有任何东西在看 `Slave_SQL_Running` / `Seconds_Behind_Master`（`mem_monitor.sh` 只看内存）。
+  建议加一条 cron（每 5~15 分钟）发现从库停了就写 watchdog 日志/告警，别再一次停 3 天没人知道。
+- **不要在从库上手工导入数据**（就是这次事故的起因）；需要导入时先 `STOP SLAVE` 再导，导完对齐位点。
+
