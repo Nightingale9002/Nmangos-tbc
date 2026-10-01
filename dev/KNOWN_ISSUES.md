@@ -7204,73 +7204,89 @@ DB-SCRIPTS 找不到 buddy 等）判得准。
 
 ---
 
-## [上游bug] 2026-10-01 宠物技能「尖啸」(Screech) 伤害恒为 0 ＝ `PetAI` 把 AoE 法术的目标传成 `nullptr`（站长报"不能自动释放"）
+## [上游bug] 2026-10-01 宠物技能「尖啸」(Screech) **开着自动释放也不自动释放 ＝ AoE 分支传空目标被 `SPELL_FAILED_BAD_TARGETS` 拒掉**（已修，站长实测通过）
 
-### 一、站长报告
-"宠物技能尖啸，不能自动释放，需要检查。"
+> ⚠️ **2026-10-01 晚 更正（重要）**：本章最初把问题判成"**尖啸伤害恒为 0**（`PetAI` 把 AoE 法术的
+> 目标传成 `nullptr`）"，并据此改了 `PetAI.cpp`（提交 `a75a0fc93`）。**站长游戏内实测：尖啸是有伤害的**
+> ⇒ 那个诊断**是错的**，该提交**已整体撤销**（`git revert a75a0fc93`，`PetAI.cpp` 回到上游原样）。
+> **现在要查的是真正的问题：把尖啸设为自动施放（宠物法术书里点亮），它仍然不会自动放。**
+> 下面保留原调查中**仍然有效**的材料（法术链、GCD/优先级机制、验证手法），把已证伪的结论标出来。
 
-### 二、法术与等级链（`tbcmangos.spell_template`）
+### 一、站长报告（原始 + 更正后）
+- 原始："宠物技能尖啸，不能自动释放，需要检查。"
+- 更正（2026-10-01 晚）："**尖啸目前是有伤害的**，之前的 commit 有问题；**并且尖啸开启自动释放也不会
+  自动释放**，这才是问题。"
+  ⇒ 症状 = **自动施放不触发**（不是伤害、不是命中、不是数据）。
+
+### 二、法术与等级链（仍然有效，供后续排查用）
 宠物用共 5 级：**24423**(R1,lvl8)、**24577**(R2,lvl24)、**24578**(R3,lvl48)、**24579**(R4,lvl56)、**27051**(R5,lvl64)；
 教宠法术（`LEARN_SPELL`）24424 / 24580 / 24581 / 24582 / 27349。五级结构完全一致：
-`Effect1=2(SCHOOL_DAMAGE)` + **`EffectImplicitTargetA1=6 (TARGET_UNIT_ENEMY)`**、
+`Effect1=2(SCHOOL_DAMAGE)` + `EffectImplicitTargetA1=6 (TARGET_UNIT_ENEMY)`、
 `Effect2=6(APPLY_AURA aura99=MOD_ATTACK_POWER)` + `TargetA2=22 / TargetB2=15`（8 码敌方 AoE 减攻强）、
-`Attributes=0x04050010`、`AttributesEx=0`、`RecoveryTime=CategoryRecoveryTime=0`、`RangeIndex=2`（与撕咬/爪击相同）。
+`Attributes=0x04050010`、`AttributesEx=0`、**`RecoveryTime=CategoryRecoveryTime=0`**、`RangeIndex=2`（与撕咬/爪击相同）。
 （`31273 Screech` 是 NPC 专用版，走 `creature_template_spells` 17195/21042/23132，与宠物无关。）
 
-### 三、根因（**上游逻辑问题**，不是数据、也不是我们改坏的）
-- `PetAI::PickSpellWithTarget()` 用 `IsAreaOfEffectSpell(spellInfo)` 判断——尖啸因为
-  `EffectImplicitTargetB2 = 15`（8 码敌方 AoE）**整条法术被判成 AoE**；
-- AoE 分支随后以"宠物 AoE 法术不需要目标"为由**把目标实参传成 `nullptr`**（原 `PetAI.cpp:373`）；
-- 而尖啸的**第 1 个效果是单体敌方直接伤害**（`TARGET_UNIT_ENEMY`），`Spell::SetTargetMap` 在
-  `Spell.cpp:2380-2384` 拿不到单位目标就 **静默 `break`** ⇒ **伤害效果被整个丢弃**。
-- 净效果：尖啸**放得出**（扣 focus、有动作/音效、8 码内挂上减攻强 debuff），但**伤害恒为 0**
-  —— 玩家的观感就是"这个技能没生效/不放"。
-- **不是我们改坏的**：`PetAI.cpp` 与同机上游 `mangos-tbc` 的差异只有 6 行 charm 守卫，
-  与 `mangos-classic` 只差 water elemental + charm 守卫 ⇒ **AoE 分支逐字是 cmangos 上游逻辑**；
-  尖啸数据与 `tbcmangos_orig` **0 差异**。
-- **关键对照**：雷霆践踏 26090 是**纯 AoE**（效果自己枚举单位，传 `nullptr` 没事）；
-  撕咬 17253 / 爪击 16827 是 `A1=6` 但**不是 AoE**（走 else 分支传 `victim`，所以正常）；
-  **只有尖啸同时满足"被判 AoE" + "含单体 `TARGET_UNIT_ENEMY` 效果"**。
+### 三、❗已证伪的旧结论（留档，避免重走）
+- 旧说法："尖啸被判成 AoE ⇒ `PetAI` 的 AoE 分支把目标传 `nullptr` ⇒ 单体伤害效果被 `Spell::SetTargetMap`
+  静默丢弃 ⇒ 伤害恒 0"。
+- **证伪**：站长游戏内实测**尖啸有伤害** ⇒ 这条路要么不是实际执行路径（宠物施法时目标来自别处），
+  要么 `nullptr` 并不导致该效果丢失。**结论作废**，`PetAI.cpp` 的相关改动已撤销。
+- 教训：`nullptr` 目标 → `SetTargetMap` 静默 `break` 这一推断**只是读代码得到的**，没有被日志或实测证实，
+  当时就应标为"待验证假设"而不是"根因"。
 
-### 四、修法（已实现，最小改动）
-只改 `src/game/AI/BaseAI/PetAI.cpp`（+31 −1）：
-1. 新增文件内静态函数 `PetSpellNeedsExplicitEnemyTarget()`：扫描 `Effect[0..2]` 的
-   `EffectImplicitTargetA/B`，命中 `TARGET_UNIT_ENEMY` / `TARGET_UNIT_ENEMY_NEAR_CASTER` 即返回 true；
-2. AoE 分支里 **仅当"敌方技能且含上述单体效果"时把 `victim` 传下去**，否则仍传 `nullptr`。
-**影响面（数据实证，全库 29,351 条法术）**：同时满足"是 AoE + 含 `TARGET_UNIT_ENEMY` + 能由 `LEARN_SPELL` 教给宠物"
-的**只有尖啸这 5 级**；雷霆践踏 4 级 / 狂怒之嚎的目标实参与修复前**逐字节一致**；撕咬/爪击根本不进这个分支。
-距离安全：尖啸 `RangeIndex=2` 与撕咬/爪击相同，而那两个本来就带 `victim` 过 `CheckRange`；
-且该分支已强制 `CanReachWithMeleeAttack(victim)`。
+### 四、真正要查的方向：自动施放为什么不触发
+代码路径（`src/game/AI/BaseAI/PetAI.cpp`，供下一步逐点排查）：
+1. `m_autospells` 的填充：`Pet::ToggleAutocast` 按 `pet_spell.active == 193`（`ACT_ENABLED`）写入；
+   而 `pet_spell` 行的读取顺序由**主键（法术 id）**决定 ⇒ 顺序不受玩家点亮顺序控制。
+2. `PetAI::PickSpellWithTarget()` 的候选筛选条件（是否 ready / 是否满足目标 / 距离 / 姿态）；
+   `PetAI::CheckPetCast()` 的返回码会决定"这个技能这 tick 是否被跳过"。
+3. **最可疑的机制（仍未实证）**：`PetAI::UpdateAI` 每 tick 收齐 ready 技能后**依次施放**，
+   而 `TRIGGERED_NORMAL_COMBAT_CAST` **不含** `TRIGGERED_IGNORE_GCD` ⇒ `Prepare()` 真的加
+   **1.5 秒 GCD**（`StartRecoveryCategory = 133`，**所有宠物技能共用**）⇒ 后续技能被 `CheckCast`
+   以 `NOT_READY` 挡掉 ⇒ **宠物每 1.5 秒只能放一个技能**。尖啸自身**无冷却**，只要有一个同样无冷却的
+   技能（如爪击 16827）在 `m_autospells` 里排在它前面，尖啸就会被长期"饿死"。
+4. ✅ **站长一步可测（关键区分实验）**：把该宠物**其它自动技能全部关掉、只留尖啸**，再拉怪近战——
+   - 若这样就会自动放 ⇒ 主因是第 3 条的 GCD/优先级（修法属**影响所有宠物**的全局改动：例如自动施放改用
+     `TRIGGERED_IGNORE_GCD`，或每 tick 只放一个并按优先级/轮转选），**动手前需站长定口径**；
+   - 若仍然不放 ⇒ 另有原因（下一步在 `PickSpellWithTarget` / `CheckPetCast` 上加日志逐点定位）。
+5. 另一条要一起看的：`pet_spell.active` 的三种值（**193 = ACT_ENABLED** 自动施放 / 129 = ACT_DISABLED）
+   与服务端 `ToggleAutocast` 的写入是否一致；站长的客户端点亮动作是否真的落库。
+   （历史操作记录：本地曾为测试把 17367 的 `active` 从 129 改成 193 又改回，**不是**当前问题的来源。）
 
-### 五、⚠️ 第二条**尚未实证**的叠加原因（可能是站长看到"完全不放"的真正主因）
-`PetAI::UpdateAI` 每 tick 把所有 ready 的自动技能收进 vector 后**依次施放**，而
-`TRIGGERED_NORMAL_COMBAT_CAST` **不含** `TRIGGERED_IGNORE_GCD` ⇒ `Prepare()` 真的加 1.5s GCD
-（键 `StartRecoveryCategory = 133`，**所有宠物技能共用**），后续技能被 `CheckCast` 以 `NOT_READY` 挡掉
-⇒ **宠物每 1.5 秒只能放一个技能，放的是 `m_autospells` 里第一个 ready 的**。
-尖啸自身无冷却，只要有一个同样无冷却的技能（如爪击 16827）排在它前面，尖啸就会长期被"饿死"。
-- **这与站长"其他技能正常、尖啸不放"的描述高度吻合**，但**本机无法实证**（本地角色库几乎是空的，
-  云端不许碰 ⇒ 看不到那只宠物的 `pet_spell.active` 与 `m_autospells` 顺序）。
-- **区分方法（站长一步就能测）**：把该宠物**其它自动技能全部关掉、只留尖啸**，再拉怪近战：
-  - 若这样就正常放了 ⇒ 主因是这条（GCD/优先级），本次的修复只解决"伤害为 0"；
-  - 若仍然不放 ⇒ 另有原因，继续查。
-- 若要针对这条动手，属**影响所有宠物**的全局改动（例如自动施放改用 `TRIGGERED_IGNORE_GCD`，
-  或每 tick 只放一个并按优先级/轮转选），**需站长先定口径**，本次未改。
+### 五、定案（日志实证 → 修法 → 站长实测通过）
+**日志实证**（`[PETCAST-DBG]` 临时日志，站长本机复现；宠物 `entry 7456 Winterspring Screecher`，
+`autoSize=1 list=[24579]` = 尖啸 R4）：
+```
+push spell=24579 as AoE with target=none                          ×15
+cast spell=24579 target=none result=11(SPELL_FAILED_BAD_TARGETS)  ×468
+skip spell=24579 reason=gate ...(不在战斗)                        ×14   ← 正常
+skip spell=24579 reason=aoe-needs-melee                           ×1
+```
+⇒ 尖啸**在自动列表里、被选中、也确实去施放了**，但每次都因"**没有单位目标**"被 Spell 侧直接拒绝。
+**不是**列表缺失、**不是** GCD/优先级、**不是**伤害问题 —— 与本章第三节的证伪一致。
 
-### 六、站长在游戏里怎么验证
-1. 角色库查 `pet_spell.active = 193`（= 自动施放已记录）；
-2. **只留尖啸一个自动技能**（关键，见第五节），拉怪近战；
-3. 修复前：宠物会叫、扣 focus，目标**不掉血**，只有 −26/−51/−76/−101/−211 攻强 debuff；
-4. 修复后：目标开始掉物理伤害（R1 约 6~9 … R5 约 32~61）+ 8 码 AoE 减攻强；尖啸无自身冷却，
-   应每 1.5s（GCD）放一次；
-5. 顺手回归：雷霆践踏（野猪）、狂怒之嚎（狼）、撕咬/爪击 频率不变。
+**根因**：尖啸 `EffectImplicitTargetA1=6 (TARGET_UNIT_ENEMY)`（单体敌方直接伤害）而 `B2=15`（8 码敌方 AoE）
+⇒ 整条法术被 `IsAreaOfEffectSpell()` 判成 AoE ⇒ `PetAI::PickSpellWithTarget()` 的 AoE 分支按
+"宠物 AoE 不需要目标"传 `nullptr`（`PetAI.cpp:373`）⇒ `Spell::SpellStart` 以
+`SPELL_FAILED_BAD_TARGETS` 拒绝整次施法（与 `PetAI::CheckPetCast` 的判据同源，`PetAI.cpp:503-518`）。
 
-### 七、状态
-- 本地：**已编译通过**（Debug，0 error）。
-- 云端：随 04:06 nightly 一起上（源码已同步校验一致）。回滚只需还原 `PetAI.cpp` 这一处。
-- 存疑（已记）：AC 用 `spell_dbc` 无 `spell_template`，未做逐字段对比；本机没导出 `SpellRange.dbc`，
-  `RangeIndex` 的具体码数用"与撕咬/爪击同为 2 且它们带 target 正常"作间接证据；
-  `spell_chain` 无宠物技能链（四个参考库皆如此）。
-- 交付物：`_agent_tmp\delegation\pet_screech\{REPORT.md, VERIFY.sql, 09_impact_analysis.py, 10_run_verify.py, …}`。
+**修法**（`src/game/AI/BaseAI/PetAI.cpp`，最小改动）：AoE 分支新增文件内静态判据
+`PetSpellNeedsExplicitUnitTarget()`（遍历 `EffectImplicitTargetA/B`，按 `SpellTargetInfoTable[...].type
+== TARGET_TYPE_UNIT / TARGET_TYPE_PLAYER` 判定），**只有含单体目标型效果的 AoE 才把宠物当前目标传下去**：
+```cpp
+nonblockingSpells.emplace_back(spellInfo,
+    PetSpellNeedsExplicitUnitTarget(spellInfo) ? victim : nullptr, false);
+```
+- ✅ **回归（站长实测）**：雷霆践踏（野猪）、火焰吐息照常自动释放 —— 纯区域型 AoE 判据为 false，
+  走原路径、行为逐字未变。这一条也是**不能一刀切给所有 AoE 补目标**的依据（站长先自查过这两个技能正常）。
+- ❗**已被证伪并撤销的旧结论（留档）**：本任务最初判成"尖啸**伤害恒为 0**"并据此提交 `a75a0fc93`；
+  站长实测"尖啸是有伤害的" ⇒ 诊断错误、提交已整体撤销。教训：**读代码得到的推断不能当根因**，
+  必须先有日志/实测证据（本题最终就靠一行 `result=11` 定案）。
+
+**状态**：本地已编译（0 error）+ 部署（17:29 `World initialized`），临时日志已删除；站长实测通过；
+云端随本轮源码同步 + 夜间窗口编译生效。
+交付物留档：`_agent_tmp\delegation\pet_screech\{REPORT.md, VERIFY.sql, …}`（其中"伤害为 0"的结论按本章作废）。
+
 
 ---
 
