@@ -842,7 +842,7 @@ namespace
                 newV = ApplyMinPriceStep(vPrice, newV, net, minMoveCopper);
 
                 if (newV != vPrice || vFlowBought || vFlowSold)
-                    sLog.outError("[AHBOT] VPSETTLE virtual=%u bought=%llu sold=%llu old=%u new=%u (bp/stack=%d dayCap=%d%%)",
+                    sLog.outString("[AHBOT] VPSETTLE virtual=%u bought=%llu sold=%llu old=%u new=%u (bp/stack=%d dayCap=%d%%)",
                                   vid, (unsigned long long)vFlowBought, (unsigned long long)vFlowSold, vPrice, newV,
                                   moveBpPerStack, maxDailyPct);
 
@@ -959,7 +959,7 @@ namespace
             uint32 const newPrice = (uint32)std::min<uint64>(sum, 4000000000ull);
             SetMemberPrice(house, product, newPrice);
             if (flowBought || flowSold || newPrice != curPrice)
-                sLog.outError("[AHBOT] VPRECIPE product=%u price=%u (old=%u) bought=%u sold=%u ingredients=%u",
+                sLog.outString("[AHBOT] VPRECIPE product=%u price=%u (old=%u) bought=%u sold=%u ingredients=%u",
                               product, newPrice, curPrice, flowBought, flowSold, uint32(g.second.size()));
             if (flowBought || flowSold)                         // one-way: observation only, then cleared
                 CharacterDatabase.PExecute("UPDATE ahbot_market_state SET flow_bought = 0, flow_sold = 0 WHERE auction_house = %u AND item = %u", house, product);
@@ -1316,7 +1316,7 @@ void AuctionHouseBot::UpdateMarketPrices()
                     newPrice = ApplyMinPriceStep(oldPrice, newPrice, minDir, minMoveCopper);
 
                     if (windowBoughtGold || windowSoldGold || state.flowBought || state.flowSold)
-                        sLog.outError("[AHBOT] SETTLE item=%u house=%u boughtGold=%u soldGold=%u upBp=%d downBp=%d buyers=%u old=%u new=%u result=%s",
+                        sLog.outString("[AHBOT] SETTLE item=%u house=%u boughtGold=%u soldGold=%u upBp=%d downBp=%d buyers=%u old=%u new=%u result=%s",
                                       itemId, uint32(houseIndex), windowBoughtGold, windowSoldGold,
                                       int32(upBp), int32(downBp), state.soldBuyerCount, oldPrice, newPrice, outcome);
                     state.flowBought = 0;
@@ -1584,7 +1584,7 @@ void AuctionHouseBot::LoadCatalogOverrides()
     }
     m_catalogUniverseVec.assign(m_catalogUniverse.begin(), m_catalogUniverse.end());
     std::sort(m_catalogUniverseVec.begin(), m_catalogUniverseVec.end());
-    sLog.outError("[AHBTIMER] catalog book(cat1+enabled)=%u overrides=%u took %ums",
+    sLog.outString("[AHBTIMER] catalog book(cat1+enabled)=%u overrides=%u took %ums",
                   (uint32)m_catalogUniverse.size(), (uint32)m_catalogOverrides.size(), WorldTimer::getMSTime() - tAll);
     sLog.outString("AHBot market-maker catalog: %u book items (%u operator overrides)", (uint32)m_catalogUniverse.size(), (uint32)m_catalogOverrides.size());
 }
@@ -1681,7 +1681,7 @@ void AuctionHouseBot::LoadInventory()
         Field* f = budget->Fetch();
         m_dayGoldStart = f[0].GetUInt32();
         m_dayGoldSpent = f[1].GetUInt64();
-        sLog.outError("[AHBOT] daily gold budget loaded: window_start=%u spent=%llu copper (%.0f gold), limit=%llu copper",
+        sLog.outString("[AHBOT] daily gold budget loaded: window_start=%u spent=%llu copper (%.0f gold), limit=%llu copper",
             m_dayGoldStart, (unsigned long long)m_dayGoldSpent, double(m_dayGoldSpent) / 10000.0,
             (unsigned long long)m_mmMaxGoldPerDay);
     }
@@ -1698,7 +1698,7 @@ void AuctionHouseBot::RollDailyBudgetWindow()
     m_dayGoldSpent = 0;
     m_dayBreakerTripped = false;
     PersistDailyBudget();
-    sLog.outError("[AHBOT] daily gold budget window ROLLED: new window starts %u, daily limit %llu copper (%.0f gold)",
+    sLog.outString("[AHBOT] daily gold budget window ROLLED: new window starts %u, daily limit %llu copper (%.0f gold)",
         now, (unsigned long long)m_mmMaxGoldPerDay, double(m_mmMaxGoldPerDay) / 10000.0);
 }
 
@@ -1949,7 +1949,11 @@ void AuctionHouseBot::QuoteCatalog(AuctionHouseObject* auctionHouse, uint32 hous
     }
     // [v4 2026-09-26] 每周期一条汇总日志（替代临时 [MMDBG] 诊断）：书目件数 / 需补满
     // 件数 / 已满 / 无 state / 本轮实际上架单位数。
-    sLog.outError("[MMQUOTE] house=%u book=%u quoted=%u full=%u noState=%u units=%u",
+    // [LOG-NOISE 2026-10-01] 每周期一条的书目汇总（正常业务记录，不是错误）：
+    // 原来挂在 outError 上，是云端 Server.log 里**最大**的噪音源（一个日志窗口 590 行，
+    // 占全部 ERROR/WARN 行的约 48%）。改用 outString —— 同样无条件写 Server.log，
+    // `grep MMQUOTE /opt/mangos/logs/Server.log | tail -3` 的验收方法完全不受影响。
+    sLog.outString("[MMQUOTE] house=%u book=%u quoted=%u full=%u noState=%u units=%u",
                   houseIdx, n, quoted, skippedFull, noState, listedUnits);
 }
 

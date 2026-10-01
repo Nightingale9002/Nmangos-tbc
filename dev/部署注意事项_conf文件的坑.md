@@ -33,7 +33,10 @@
 
 **部署后**
 4. **验证 AHBot 关键行**：`AHBot selling items: Enabled`、`market-maker catalog: N book items`、
-   `price pairs loaded: N`、`price recipes loaded: N`，以及**有没有新的 `ERROR:[AHBOT]` 行**。
+   `price pairs loaded: N`、`price recipes loaded: N`，以及**有没有新的 `ERROR:` 行**
+   （2026-10-01 起 `[AHBOT]` 的业务行已从 `outError` 降级为 `outString`，**按标签 grep 就好**：
+   `grep '\[AHBOT\]\|\[MMQUOTE\]\|\[AHTRADE\]' Server.log | tail`；仍然留在 ERROR 级的只有
+   `[AHBOT] BUY BREAKER TRIPPED` 这类真异常，见「[运维] 2026-10-01 日志噪音普查」一节）。
 5. **验证"看得见的业务"**：至少查一次拍卖行——**cat0（普通 loot）与 cat1（书目）都要有货**
    （`tbccharacters.ahbot_market_state` 按 `category` 分组 + `tbccharacters.auction` 交叉计数）。
    注意 AHBot 的表都在 **character 库（`tbccharacters`）**，不在 world 库（`tbcmangos`）。

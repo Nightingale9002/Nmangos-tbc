@@ -983,12 +983,15 @@ void AuctionEntry::SaveToDB() const
 void AuctionEntry::AuctionBidWinning(Player* newbidder)
 {
     // [2026-09-21] 经济追踪：每一笔成交（含玩家↔玩家、玩家↔AHBot、竞价获胜/买断）
-    // 在唯一结算点记一行到 tbccharacters.auction_history，并同时落一条 ERROR 级日志。
+    // 在唯一结算点记一行到 tbccharacters.auction_history，并同时落一条 Server.log 日志。
     // 落盘说明（站长要求）：
     //   ① DB 行刻意写在下面 BeginTransaction() **之外** ⇒ 自己独立提交，不会被后续事务回滚带走；
     //      InnoDB autocommit 立刻落盘（auction_history 见 deploy/dev SQL）。
-    //   ② 同时用 sLog.outError 写 Server.log（ERROR 级必然输出，见 handoff 第十三章），
-    //      即使 DB 写失败/表被删，成交记录仍有一份在磁盘上，可用于事后对账。
+    //   ② 同时写 Server.log。**2026-10-01 起改用 sLog.outString**（原来用 outError）：
+    //      outString 同样**无条件**写日志文件（Log::outString 里不检查 LogFileLevel，
+    //      见 src/shared/Log/Log.cpp），所以"即使 DB 写失败，成交记录仍有一份在磁盘上"这条保证不变；
+    //      而不再带 "ERROR:" 前缀 —— 成交是正常业务记录，挂在 ERROR 上会把真错误淹掉
+    //      （普查：云端一个日志窗口里 [AHTRADE]+[MMQUOTE] 占全部 ERROR/WARN 行约 49%）。
     {
         uint32 const unitPrice = bid / std::max<uint32>(1, itemCount);
         uint32 const houseIdx = sAuctionMgr.GetAuctionMapIndex(auctionHouseEntry);
@@ -998,7 +1001,12 @@ void AuctionEntry::AuctionBidWinning(Player* newbidder)
                                    "VALUES (%u, %u, %u, %u, %u, %u, %u, %u, %u, %u)",
                                    now, houseIdx, itemTemplate, itemCount, unitPrice, bid,
                                    owner, bidder, owner ? 0 : 1, bidder ? 0 : 1);
-        sLog.outError("[AHTRADE] time=%u house=%u item=%u count=%u unit=%u total=%u seller=%u buyer=%u sellerBot=%u buyerBot=%u",
+        // [LOG-NOISE 2026-10-01] 成交审计日志：内容一字不改，只是不再用 outError ——
+        // 它是"正常业务记录"不是错误，混在 ERROR 里会把真错误淹掉（普查：云端一个日志窗口里
+        // [MMQUOTE]+[AHTRADE] 占了全部 ERROR/WARN 行的 ~49%）。
+        // 仍然用 outString：它在 LogFileLevel=0 时也照样写 Server.log，
+        // 所以"审计必进日志"的保证不变，只是不再带 "ERROR:" 前缀。
+        sLog.outString("[AHTRADE] time=%u house=%u item=%u count=%u unit=%u total=%u seller=%u buyer=%u sellerBot=%u buyerBot=%u",
                       now, houseIdx, itemTemplate, itemCount, unitPrice, bid,
                       owner, bidder, owner ? 0 : 1, bidder ? 0 : 1);
     }

@@ -79,3 +79,23 @@ python gen_go_bake.py go_bake_556.txt 556
 # 验证：某世界点在新旧两套 mmaps 里有没有导航面
 python check_go_bake.py 556 -161.01 157.32 0.01 <旧mmaps目录> <新mmaps目录>
 ```
+
+## 日志噪音普查（2026-10-01 新增）
+
+`Server.log` 里 `grep ERROR` 要能用，前提是"我们自己的正常业务日志"别挂在 `outError` 上。
+这两个脚本是那次治理用的工具，**只读日志、不发请求到远端**：
+
+```powershell
+# ① 机械普查：ERROR/WARN/SCRIPT 行 → 归一化成模式（数字/GUID/坐标 → 占位符）→ 按次数排序
+scp root@HOST:/opt/mangos/logs/{Server.log,DBErrors.log,EventAIErrors.log,SD2Errors1.log} .\cloud_logs\
+python log_noise_census.py .\cloud_logs .\out      # 产出 out\patterns.tsv
+
+# ② 本机 ollama 小模型给模式初筛分类（可选；必须人工复核差异）
+python log_noise_label.py .\out\patterns.tsv qwen3:4b-instruct-2507-q8_0 .\out\llama_labels.tsv
+```
+
+实测结论（2026-10-01，云端一个日志窗口）：唯一模式 63 条 / 总行 1235，其中
+`[MMQUOTE]` 一条就 590 行（≈48%），`[AHTRADE]/[AHBOT]/[AHBTIMER]` 再叠 ≈49% —— 全是业务记录；
+本机 4B 模型对**我们自己定义的标签**会误判（把 `[MMQUOTE]` 当异常、`[AHTRADE]` 当数据错误），
+所以口径是"**小模型初筛 + 人工复核差异**"。详见 `KNOWN_ISSUES.md` 的「[运维] 2026-10-01 日志噪音普查」一节。
+

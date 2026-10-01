@@ -2281,8 +2281,10 @@ if (m_respawnTime > time(nullptr) && m_respawnTime - time(nullptr) < 366LL * 24 
     客户端立刻失败并重新登录，不再干等；
   - 新建世界会话、以及 `WorldSession::Update()` 发送 `AUTH_RESPONSE` 时各加一条 `[AUTH]` 日志
     （**站长要求长期保留到线上，方便下次定位**）。
-  - 注：`LogFileLevel = 0` 的语义是 `0 = Minimum`（Server.log 里能看到 `[AUTH]`/`ADDON:` 这类 basic 行），
-    为稳妥起见关键路径一律用 `outError` 或 `outBasic`。
+  - 注：`LogFileLevel` 的语义是 `0 = Minimum`（**`outError` 无级别门槛、必进 Server.log；`outBasic` 需要 ≥1 才进文件**，
+    见 `Log.cpp:441` / `:639`）。**2026-10-01 起本项目的口径改为**：凡是"必须留在 Server.log 里的记录"用
+    `sLog.outString`（无级别门槛，见 `Log.cpp:403`）——它不带 `ERROR:` 前缀，所以不会污染 `grep ERROR`；
+    真正的异常才用 `outError`（见「[运维] 2026-10-01 日志噪音普查」一节）。
 - **本地验证**（03:07 部署本地 → 只重启 mangosd、realmd 保持不动，精确复现"mangosd 下线导致掉线"）：
   ```
   03:08:46 [AUTH] new world session created: account='NYMPH' (id 6) from 127.0.0.1
@@ -3232,10 +3234,12 @@ if (proto->SellPrice > floor) floor = proto->SellPrice;   // 防"拍卖行买了
 **代码**（`AuctionHouseBot.cpp`，+17 行，仅结算块）：**加结算日志**，每次结算且有流水时写一行：
 
 ```
-[AHBOT] SETTLE item=%u house=%u bought=%u sold=%u total=%u gate=%u old=%u new=%u result=%s
+[AHBOT] SETTLE item=%u house=%u boughtGold=%u soldGold=%u upBp=%d downBp=%d buyers=%u old=%u new=%u result=%s
 ```
+（上面是 2026-10-01 复核后的**实际**格式串；早期版本写的是 `bought/sold/total/gate`，已随市场模型改版漂移。）
 `result` 取值：`up` / `down` / `balanced`（量够但不够单边） / `under-gate`（量不够）。
-用 `sLog.outError`（ERROR 级必然输出，与既有 `[AHBOT]` 日志一致）→ 进 `Server.log`。
+用 `sLog.outString`（**2026-10-01 起**；此前是 `outError`）→ 同样无条件进 `Server.log`，
+但不再带 `ERROR:` 前缀（理由见「[运维] 2026-10-01 日志噪音普查」一节）。
 
 ### 3. 效果量化
 
@@ -3358,7 +3362,8 @@ if (mmBuyState && m_mmBuyPerCycle)
    现持久化到 `ahbot_market_state.last_settle_time`（读入 + 结算时写回）。
 4. **拍卖行成交日志**（经济追踪）：在**唯一成交结算点** `AuctionEntry::AuctionBidWinning()` 写
    ① `tbccharacters.auction_history` 一行（`time/house/item_template/item_count/unit_price/total_price/seller_guid/buyer_guid/seller_is_bot/buyer_is_bot`）；
-   ② 一条 ERROR 级 `[AHTRADE] …` 日志（必进 `Server.log`，见第十三章）。
+   ② 一条 `[AHTRADE] …` 日志（**2026-10-01 起用 `sLog.outString`**：以前是 ERROR 级，
+   现在不带 `ERROR:` 前缀但仍**无条件**进 `Server.log`，见「[运维] 2026-10-01 日志噪音普查」一节）。
    ⚠️ **落盘**：DB 行刻意写在成交事务（`BeginTransaction`）**之外** ⇒ 自己独立提交、不被后续回滚带走；
    再加日志文件一份 ⇒ 两道保险（站长要求）。
 
@@ -6870,5 +6875,85 @@ $ python dev/tools/vmap_los_probe.py ray 556 34.11 302.45 26.92 5.36 316.72 31.3
 - B 类（需站长判断）：11559/11560 两个重合的"战场使者"，或补 `22013 Eye of the Storm Emissary`、或判定遗留行删除；
 - C 类（该废弃的）：**0 条**。
 - 复现脚本与全量明细：`_agent_tmp\delegation\spawn_sanity\{REPORT.md, findings.tsv, verify_agent.py, verify_refs.py, verify_membership.py, gen_dev151.py}`。
+
+---
+
+## [运维] 2026-10-01 日志噪音普查：**我们自己有一半的 ERROR 行其实是正常业务记录** —— 8 处从 `outError` 降级为 `outString`
+
+### 一、起因
+给 vmap 修复做验收准备时要靠 `grep ERROR Server.log` 找真问题，结果发现**没法看**。
+于是做了一次普查（工具见下），量化"ERROR 里到底有多少是我们自己造的噪音"。
+
+### 二、普查方法与结果（工具已入库：`dev/tools/log_noise_census.py` + `log_noise_label.py`）
+把云端 `Server.log` / `DBErrors.log` / `EventAIErrors.log` / `SD2Errors1.log` 的 ERROR/WARN/SCRIPT 行
+**归一化成模式**（数字/GUID/坐标/时间戳 → 占位符）：
+
+```
+唯一模式 63 条，总行数 1235
+   590  ERROR  ERROR:[MMQUOTE] house=<n> book=<N> quoted=<n> full=<N> noState=<n> units=<n>   ← 48%
+   188  SCRIPT DB-SCRIPTS: … `dbscripts_on_relay` … has buddy … by pool id … no creature found …
+    94  SCRIPT DB-SCRIPTS: … `dbscripts_on_creature_movement` … called without buddy …
+    24  ERROR  ERROR:Table '<S>' entry <N> group <n> has total chance > <N>% (<F>)
+    20  ERROR  ERROR:SPAWN-SANITY:   gameobject guid <N> (map <n>), not in any spawn group
+    13  ERROR  SQL ERROR: Duplicate entry '<S>' for key '<S>'
+    10  ERROR  ERROR:[AHTRADE] time=<N> house=<n> …
+```
+
+**我们自己造的噪音 = 605 行 ≈ 49%**，全部是**正常业务记录挂在 `sLog.outError` 上**：
+`[MMQUOTE]`（每周期书目汇总，590）、`[AHTRADE]`（每笔成交审计，10）、
+`[AHBOT] SETTLE / VPRECIPE / VPSETTLE / daily gold budget loaded|ROLLED`（8）、`[AHBTIMER]`（1）。
+
+### 三、本机小模型的用法与边界（`log_noise_label.py`）
+63 个模式交给**本机 ollama（`qwen3:4b-instruct-2507-q8_0`）**批量初筛（8 条一批，全部秒回、零远端消耗），
+再人工复核差异。实测它对**我们自定义的日志标签**会误判 3 条：`[MMQUOTE]`→"运行异常"、
+`[AHTRADE]`→"数据配置"、`[AHBTIMER]`→"运行异常"；对通用型模式（掉落几率>100%、重复键、未引用 lootid、
+DB-SCRIPTS 找不到 buddy 等）判得准。
+⇒ 口径确定为 **"小模型做机械初筛、人工复核差异"**，不直接采信模型标签。
+（脚本里中文 prompt 必须按 **UTF-8 字节**发送，否则 PowerShell 侧会先把中文变成 `???`。）
+
+### 四、修复：8 处降级（内容一字不改）
+| 文件 | 日志 | 级别 |
+|---|---|---|
+| `AuctionHouseBot.cpp` | `[MMQUOTE] house=.. book=..` | `outError` → **`outString`** |
+| `AuctionHouseBot.cpp` | `[AHBOT] SETTLE …` / `VPRECIPE …` / `VPSETTLE …` / `daily gold budget loaded` / `window ROLLED` / `[AHBTIMER] catalog book` | 同上（6 处） |
+| `AuctionHouseMgr.cpp` | `[AHTRADE] time=.. house=.. item=..`（成交审计） | `outError` → **`outString`** |
+
+**为什么用 `outString` 而不是 `outBasic`**：`Log::outString` 的函数体**不引用 `m_logFileLevel`**，
+写文件的判据只有 `if (logfile)`（`src/shared/Log/Log.cpp:403`）⇒ 在 `LogFileLevel = 0/1/2/3` **任何**取值下
+都照样写 `Server.log`；而 `outBasic` 需要 `m_logFileLevel >= 1`（`Log.cpp:639`）。
+所以"**审计必进日志**"这条保证（站长当初的要求）**完全不变**，变的只有：
+不再带 `ERROR:` 前缀、不再写 stderr。
+
+**保留为 `outError` 的**（真异常/真安全事件）：`[AHBOT] BUY BREAKER TRIPPED`（熔断触发）、
+`[TRANSPORTS] invalid position`、`[MOVETO-BELOWFLOOR]`、`[ANTICHEAT]`、`[AUTH] reconnect REFUSED / bad addon info`。
+
+### 五、副作用核查（全部通过，含 9 处过期文档已改）
+- **没有任何消费者依赖 `ERROR:` 前缀**：全仓 `ERROR:` 只有生产者（`Log.cpp:444` / `:510`），
+  没有任何代码/脚本读回 `Server.log` 做判断；云端 watchdog 是 `pgrep` 进程守护，`dev/tools/` 16 个脚本无一读日志。
+- **现存的验收方法全部按标签 grep，降级后照常命中**：
+  `grep MMQUOTE Server.log | tail -3`（`KNOWN_ISSUES` 5324 章）、`grep -ac '\[AHTRADE\]' Server.log`（HANDOFF）。
+  仓库里唯一会失效的写法（`grep 'ERROR:\[AHBOT\]'`）已改写为按标签 grep。
+- **成交审计的 DB 行不受影响**：`auction_history` 的 `INSERT` 与日志语句在同一个裸 `{ }` 里、无 `if`/无 `#ifdef`
+  （`AuctionHouseMgr.cpp:995-1012`），且在 `BeginTransaction()` **之外**独立提交 ⇒ 双保险仍在。
+- 顺手改掉 9 处**过期描述**（5 处在 `dev/`，3 处在工作区根部的 HANDOFF 文档，1 处是
+  `mangosd.conf.dist.in` 里把 `LogFileLevel` 的 `1` 写成 "Error" 的上游错注释；另修了 SETTLE 格式串漂移）。
+
+### 六、顺带结掉一条旧技术债：`[PFDBG]/[ZCORR-DEBUG]` 并不刷屏
+它们**全部**由 `PFDBG_MSG` / `IsPfDbg()` 守门 —— 只有**带光环 10909（Mind Vision）的单位**才输出
+（`src/game/MotionGenerators/PfDebug.h:18-24`），包括那些看起来"裸调用"的
+`PathFinder.cpp:159/218/223/228/482/975`、`TargetedMovementGenerator.cpp:829/831`（都在 `if (IsPfDbg(...))` 里）。
+云端日志普查里 **0 条** `[PFDBG]` ⇒ 不需要再动它们。
+
+### 七、降级之后 `Server.log` 里剩下什么（下一次清理的候选）
+降级后就剩真问题/真数据问题，最大的一类是
+`DB-SCRIPTS: … has buddy … by pool id … and no creature found in map`（同类合计 ≈324 行）——
+脚本期望的 buddy 生物不在池里/不在图里；其次是掉落表几率 >100%、无用 lootid、`SQL ERROR: Duplicate entry`、
+`game_event` 配置错误，以及我们自己的 `SPAWN-SANITY`（预期内，见上一节）。这些属"真数据问题"，不属噪音。
+
+### 八、状态
+- 本地：已编译（`build1` Debug，**0 error**）；**未部署**（与 vmap 修复一起等站长的凌晨窗口）。
+- 交接文档同步：`dev/部署注意事项_conf文件的坑.md` 的 AHBot 验证步骤已改为按标签 grep；
+  另在 `dev/README_文档导航.md` 索引里加了本节。
+
 
 

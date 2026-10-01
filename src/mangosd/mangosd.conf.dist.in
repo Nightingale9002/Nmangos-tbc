@@ -325,7 +325,9 @@ AccountData = 0
 #
 #    LogFileLevel
 #        Server file level of logging
-#        0 = Minimum; 1 = Error; 2 = Detail; 3 = Full/Debug
+#        0 = Minimum (errors only; outError/outErrorDb are written unconditionally,
+#            outString is always written too, outBasic needs level >= 1)
+#        1 = Basic; 2 = Detail; 3 = Full/Debug
 #        Default: 0
 #
 #    LogFilter_CreatureMoves
