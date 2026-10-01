@@ -6803,8 +6803,18 @@ $ python dev/tools/vmap_los_probe.py ray 556 34.11 302.45 26.92 5.36 316.72 31.3
 ### 六、状态 / 验收
 
 - 本地：已编译、已在控制台按上表 7 步验证（含故障复现与自愈）。
-- 云端：**尚未部署**（未动云上一行代码/二进制）。部署后自带 `tree=` 字段的新 `.los`，站长可在塞泰克大厅/任意副本里再打几次确认。
-  - 注意：云端现在跑的仍是**旧版 `.los`**（没有 `tree=` 字段；旧版的 `vmapTile` 列取的是差 1 的坐标），要看新字段必须等这次代码上云。
+- **云端部署（站长 2026-10-01 决定：走 04:06 nightly）**：
+  - 源码已同步并逐文件校验"内容一致"（CR 归一化 md5，21 个文件全部 `same`）；
+  - 云端**只读语法检查**（不重启、不链接、`nice 19` 顺序执行）：
+    `VMapManager2.cpp` ✔、`MapTree.cpp` ✔、`GridMap.cpp` ✔、`AuctionHouseBot.cpp` ✔、`AuctionHouseMgr.cpp` ✔；
+    `Chat.cpp` / `Level3.cpp` 一开始报 `'HandleVMapLosCommand' is not a member of 'ChatHandler'`，
+    **查明是 build 树里的陈旧 PCH**：`cmake_pch.hxx.gch` 是当天 02:45 生成的（Chat.h 是 11:51 改的），
+    PCH 里冻结的是旧 `ChatHandler` 定义。改用**剔除 PCH** 的签名检查后编译通过（rc=0），
+    且 `cmake_pch.hxx.gch.d` 里**确实记录着 `src/game/Chat/Chat.h`** ⇒ 真实 `make` 会按依赖自动重生成 PCH。
+    **教训**：在云端做"只读语法检查"时若命中 PCH，会看到这类假报错 —— 要么剔除 `-include cmake_pch.hxx`，要么先让 PCH 重生成。
+  - nightly 脚本的失败保护已核对：`make` 失败时它会用**旧二进制**把 mangosd 拉回来（不会整夜空服）。
+- 部署后自带 `tree=` 字段的新 `.los`，站长可在塞泰克大厅/任意副本里再打几次确认。
+  - 注意：云端跑的是**旧版 `.los`**（没有 `tree=` 字段；旧版的 `vmapTile` 列取的是差 1 的坐标），新字段要等这次代码上云。
 - 部署后要看的日志关键字：`Server.log` 里 `had NO vmap tree`（应当**趋近于 0**：补登记生效后树不会被误删；
   偶尔出现说明还有别的路径删树，属"已自愈但要继续查"的信号）。
 - 相关提交：本次提交（标题以 `vmap: 副本图（非分块图）vmap 树被提前删除…` 开头；`git log --oneline | grep vmap` 可查）—— 涉及
@@ -6867,18 +6877,29 @@ $ python dev/tools/vmap_los_probe.py ray 556 34.11 302.45 26.92 5.36 316.72 31.3
   （对本批结论无影响：这几个 guid 的两个组都没有候选）。
 - 4 个 map 530 的按"同组多数/同族"倾向可推 `18873`/`18872`，但**五个参考库都没有值可抄**，属推断。
 
-### 四、可直接采用的修复草案（**未落库**，等站长一句话）
-- `_agent_tmp\delegation\spawn_sanity\dev151_draft.sql`：66 行**全静态** `INSERT`（`(Id,Guid)` 逐行字面量，
-  先 `DELETE … WHERE Id BETWEEN 21 AND 33 AND Guid IN (…)` 保证幂等），并附带
-  `dev151_rollback_draft.sql`（`DELETE … WHERE Id BETWEEN 21 AND 33`，还原成现在的 0 行）。
-- 只补**成员关系**，**不动** `MaxCount`、**不动** `spawn_group_entry` 候选。
-  ⚠️ 需站长定：本库这 13 个组 `MaxCount=2`，而 classic/WotLK 都是 `1`（本库 TBC 口径 vs classic 口径）。
+### 四、可直接采用的修复草案（**站长 2026-10-01 已定：补成员行**）
+- **已生成正式文件 `dev/151_西瘟疫之地矿点_补刷怪组成员.sql`**（66 行**全静态** `INSERT`，前置一条按"同组同 guid"的
+  幂等 `DELETE`；只补成员关系，**不动** `MaxCount`、不动 `spawn_group_entry` 候选）与
+  `dev/rollback/151_回滚_西瘟疫之地矿点_补刷怪组成员.sql`（按组范围删除即可完全还原）。
+- **本地已应用并验证**：
+  - `SELECT Id, COUNT(*) … GROUP BY Id` → `5,5,5,6,6,5,5,5,6,6,4,4,4` = **66** ✔；
+  - `dev/tools/spawn_audit.py` 的"永远刷不出的刷点"从 **72 → 6**（只剩待实地确认的 6 个 creature）✔；
+  - 重启本地 mangosd 后启动自检变成：`6 of 1189 creature …` + **`>> Spawn sanity: all 6181 gameobject rows with id=0 can resolve an entry`** ✔（66 个矿点已能解析）。
+- **云端**：随 04:06 nightly 的 dev SQL 应用步骤落地（marker 150 → 151），并在同一次重启后生效
+  （`spawn_group_spawn` 是在 `LoadSpawnGroups()` 时读入的）。
+- ⚠️ 站长已决定：**`MaxCount` 保持本库 TBC 口径 = 2**（classic/WotLK 是 1，不动）。
 
 ### 五、结论与待决
-- A 类（建议补）：66 个矿点（补成员行）+ 4 个 map 530 生物（补组候选，推断值）；
-- B 类（需站长判断）：11559/11560 两个重合的"战场使者"，或补 `22013 Eye of the Storm Emissary`、或判定遗留行删除；
+- A 类（**已处理**）：66 个矿点 → `dev/151` 补成员行。
+- A 类（**待实地确认，未落库**）：4 个 map 530 生物刷点——
+  `5306137 (3417.31, 3753.94) 组 21138/28016`、`5306141 (3482.38, 3683.87) 组 21139/28015`、
+  `5306143 (3573.50, 3647.71) 组 21145/28016`、`5306148 (3516.86, 3525.74) 组 28015`
+  （推断 entry：同组多数 18873/18872，**五个参考库都没有值可抄**，站长要先在游戏里看一眼）。
+- B 类（需站长判断，未落库）：`11559`/`11560`（map 0，坐标完全重合 `(-8351.66, 627.26)`，组 19980
+  "Stormwind - Battleground Emissary x2 - Patrol"，带 `Flags=10 / WorldState=19998`）——
+  或补 `22013 Eye of the Storm Emissary`、或另补一对使者、或判为遗留行删除。
 - C 类（该废弃的）：**0 条**。
-- 复现脚本与全量明细：`_agent_tmp\delegation\spawn_sanity\{REPORT.md, findings.tsv, verify_agent.py, verify_refs.py, verify_membership.py, gen_dev151.py}`。
+- 复现脚本与全量明细：`_agent_tmp\delegation\spawn_sanity\{REPORT.md, findings.tsv, verify_agent.py, verify_refs.py, verify_membership.py, gen_dev151.py, gen_dev151_final.py}`。
 
 ---
 
@@ -6955,9 +6976,16 @@ DB-SCRIPTS 找不到 buddy 等）判得准。
 `game_event` 配置错误，以及我们自己的 `SPAWN-SANITY`（预期内，见上一节）。这些属"真数据问题"，不属噪音。
 
 ### 八、状态
-- 本地：已编译（`build1` Debug，**0 error**）；**未部署**（与 vmap 修复一起等站长的凌晨窗口）。
+- 本地：已编译（`build1` Debug，**0 error**），本地实例已在跑这份二进制。
+- **云端：站长 2026-10-01 决定走 04:06 nightly** —— 源码已同步并逐文件校验内容一致；
+  cloud 语法检查 3 个相关 TU（`GridMap.cpp`/`AuctionHouseBot.cpp`/`AuctionHouseMgr.cpp`）全部通过
+  （`Chat.cpp`/`Level3.cpp` 的那两条报错是 build 树陈旧 PCH 造成的假报错，详见 vmap 那一节的说明）。
 - 交接文档同步：`dev/部署注意事项_conf文件的坑.md` 的 AHBot 验证步骤已改为按标签 grep；
   另在 `dev/README_文档导航.md` 索引里加了本节。
+
+### 九、这次整治后的"ERROR 里剩什么"（下一次清理候选）
+`DB-SCRIPTS: … has buddy … by pool id … and no creature found in map`（≈324 行）是最大一类，
+另有掉落几率/无用 lootid/重复键/`game_event` 配置等真数据问题。它们属"真问题"，不算噪音。
 
 ---
 
