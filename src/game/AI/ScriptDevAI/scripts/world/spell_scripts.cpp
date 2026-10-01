@@ -137,7 +137,14 @@ struct DetectThroughInvisibilityMob : public AuraScript
         Cell::VisitWorldObjects(invisible, searcher, invisible->GetDetectionRange());
         for (Unit* nearby : nearbyTargets)
         {
-            if (invisible->CanAttackOnSight(nearby) && invisible->IsWithinLOSInMap(nearby, true))
+            // [STEALTH-FIX 2026-10-01] 本 AuraScript 每秒扫一次 DetectionRange 内的单位并直接
+            // AttackStart，原先**完全不看潜行/隐身可见性**：潜行玩家只要在视线内就被无条件拉进战斗
+            // （虚空风暴 18884 Warp Chaser 的相位隐身 addon 32942 → 每 30s 触发 32943，32943 挂的
+            // 就是本脚本，它会在 17 码外攻击潜行玩家，threats=0、无 victim，且距离超过攻击半径）。
+            // 这里补上与引擎一致的可见性判定：看不见（潜行距离 + 正面 + 视线）就不进战斗；
+            // 看得见（含同类隐身互见）时行为与原先完全一致。详见 dev/KNOWN_ISSUES.md。
+            if (invisible->CanAttackOnSight(nearby) && invisible->IsWithinLOSInMap(nearby, true)
+                    && nearby->IsVisibleForOrDetect(invisible, invisible, true))
             {
                 invisible->AI()->AttackStart(nearby);
                 return;

@@ -8889,6 +8889,29 @@ bool Unit::IsVisibleForOrDetect(Unit const* u, WorldObject const* viewPoint, boo
 
 void Unit::UpdateVisibilityAndView()
 {
+    UpdateVisibilityAndViewInternal(true);
+}
+
+// [INVIS-AGGRO 2026-10-01] Same as UpdateVisibilityAndView, but without ScheduleAINotify(0).
+//
+// Why this exists: UpdateVisibilityAndView() ends with ScheduleAINotify(0), and that event
+// (UnitVisitObjectsInRangeNotifyEvent, below in this file) does two things for a creature:
+//   1) creature.SetCanAggro(creature.IsAlive())   - lifts the post-respawn aggro gate
+//   2) CreatureVisitObjectsNotifier over every object in range, i.e. a complete "can I aggro
+//      anything?" sweep: UnitVisitObjectsNotifierWorker -> AI()->IsVisible() -> MoveInLineOfSight()
+//      -> DetectOrAttack() -> AttackStart().
+// MoveInLineOfSight() is reached *only* from such sweeps (GridNotifiersImpl.h), so a stationary
+// creature never re-checks a player standing still next to it - until something schedules a sweep.
+// Applying/removing stealth or invisibility is exactly such a trigger, which made a creature attack a
+// stealthed player at the very instant it entered invisibility, although the same player had been
+// ignored for minutes before. Use this variant whenever a visibility change must not change aggro.
+void Unit::UpdateVisibilityAndViewNoAINotify()
+{
+    UpdateVisibilityAndViewInternal(false);
+}
+
+void Unit::UpdateVisibilityAndViewInternal(bool forceAINotify)
+{
     static const AuraType auratypes[] = {SPELL_AURA_BIND_SIGHT, SPELL_AURA_FAR_SIGHT, SPELL_AURA_NONE};
     for (AuraType const* type = &auratypes[0]; *type != SPELL_AURA_NONE; ++type)
     {
@@ -8914,7 +8937,8 @@ void Unit::UpdateVisibilityAndView()
 
     GetViewPoint().Call_UpdateVisibilityForOwner();
     UpdateObjectVisibility();
-    ScheduleAINotify(0);
+    if (forceAINotify)
+        ScheduleAINotify(0);
     GetViewPoint().Event_ViewPointVisibilityChanged();
 }
 
@@ -8926,12 +8950,17 @@ SpellSchoolMask Unit::GetMainAttackSchoolMask()
         return GetMeleeDamageSchoolMask();
 }
 
-void Unit::SetVisibility(UnitVisibility x)
+void Unit::SetVisibility(UnitVisibility x, bool forceAINotify)
 {
     m_Visibility = x;
 
     if (IsInWorld())
-        UpdateVisibilityAndView();
+    {
+        if (forceAINotify)
+            UpdateVisibilityAndView();
+        else
+            UpdateVisibilityAndViewNoAINotify();   // [INVIS-AGGRO] no AI aggro sweep
+    }
 }
 
 void Unit::UpdateSpeed(UnitMoveType mtype, bool forced, float ratio)

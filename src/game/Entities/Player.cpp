@@ -18425,6 +18425,37 @@ void Player::HandleStealthedUnitsDetection()
             }
         }
     }
+
+    // [STEALTH-RANGE] Second pass: stealth units that are already at the client but no longer inside the
+    // stealth detection range have to be removed as well. The regular visibility path cannot do this:
+    // Unit::IsVisibleForOrDetect(..., detect = false) returns true for every stealth unit that is already
+    // at the client (deliberate, see "NOW ONLY STEALTH CASE" there), and the search above only covers
+    // MAX_PLAYER_STEALTH_DETECT_RANGE. Without this pass a stealth unit that had been detected once stayed
+    // at the client until it left the camera visibility distance (100y on continents, 533y in BG), so a
+    // stealthed NPC could be watched from far beyond its detection range.
+    std::vector<Unit*> outOfStealthRange;
+    for (ObjectGuid const guid : m_clientGUIDs)
+    {
+        if (!guid.IsUnit())
+            continue;
+
+        Unit* unit = static_cast<Unit*>(GetMap()->GetWorldObject(guid));
+        if (!unit || unit == this || unit->GetVisibility() != VISIBILITY_GROUP_STEALTH)
+            continue;
+
+        if (unit->IsVisibleForOrDetect(this, viewPoint, true))
+            continue;
+
+        outOfStealthRange.push_back(unit);
+    }
+
+    for (Unit* unit : outOfStealthRange)
+    {
+        unit->DestroyForPlayer(this);
+        if (unit->GetTypeId() == TYPEID_UNIT)
+            BeforeVisibilityDestroy(static_cast<Creature*>(unit));
+        RemoveAtClient(unit);
+    }
 }
 
 bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc /*= nullptr*/, uint32 spellid /*= 0*/)

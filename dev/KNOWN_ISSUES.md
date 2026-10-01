@@ -7202,6 +7202,316 @@ DB-SCRIPTS 找不到 buddy 等）判得准。
   （本提交的 diff 很小，见 `git show`），或等下一晚随新提交回滚。
 - 交付物：`_agent_tmp\delegation\swim_depth\{REPORT.md, liquid_probe.py, step2_evidence.py, evidence_output.txt, swim_logic_mirror.cpp, UPSTREAM.md, unit_cpp.diff}`。
 
+---
+
+## [上游bug] 2026-10-01 宠物技能「尖啸」(Screech) 伤害恒为 0 ＝ `PetAI` 把 AoE 法术的目标传成 `nullptr`（站长报"不能自动释放"）
+
+### 一、站长报告
+"宠物技能尖啸，不能自动释放，需要检查。"
+
+### 二、法术与等级链（`tbcmangos.spell_template`）
+宠物用共 5 级：**24423**(R1,lvl8)、**24577**(R2,lvl24)、**24578**(R3,lvl48)、**24579**(R4,lvl56)、**27051**(R5,lvl64)；
+教宠法术（`LEARN_SPELL`）24424 / 24580 / 24581 / 24582 / 27349。五级结构完全一致：
+`Effect1=2(SCHOOL_DAMAGE)` + **`EffectImplicitTargetA1=6 (TARGET_UNIT_ENEMY)`**、
+`Effect2=6(APPLY_AURA aura99=MOD_ATTACK_POWER)` + `TargetA2=22 / TargetB2=15`（8 码敌方 AoE 减攻强）、
+`Attributes=0x04050010`、`AttributesEx=0`、`RecoveryTime=CategoryRecoveryTime=0`、`RangeIndex=2`（与撕咬/爪击相同）。
+（`31273 Screech` 是 NPC 专用版，走 `creature_template_spells` 17195/21042/23132，与宠物无关。）
+
+### 三、根因（**上游逻辑问题**，不是数据、也不是我们改坏的）
+- `PetAI::PickSpellWithTarget()` 用 `IsAreaOfEffectSpell(spellInfo)` 判断——尖啸因为
+  `EffectImplicitTargetB2 = 15`（8 码敌方 AoE）**整条法术被判成 AoE**；
+- AoE 分支随后以"宠物 AoE 法术不需要目标"为由**把目标实参传成 `nullptr`**（原 `PetAI.cpp:373`）；
+- 而尖啸的**第 1 个效果是单体敌方直接伤害**（`TARGET_UNIT_ENEMY`），`Spell::SetTargetMap` 在
+  `Spell.cpp:2380-2384` 拿不到单位目标就 **静默 `break`** ⇒ **伤害效果被整个丢弃**。
+- 净效果：尖啸**放得出**（扣 focus、有动作/音效、8 码内挂上减攻强 debuff），但**伤害恒为 0**
+  —— 玩家的观感就是"这个技能没生效/不放"。
+- **不是我们改坏的**：`PetAI.cpp` 与同机上游 `mangos-tbc` 的差异只有 6 行 charm 守卫，
+  与 `mangos-classic` 只差 water elemental + charm 守卫 ⇒ **AoE 分支逐字是 cmangos 上游逻辑**；
+  尖啸数据与 `tbcmangos_orig` **0 差异**。
+- **关键对照**：雷霆践踏 26090 是**纯 AoE**（效果自己枚举单位，传 `nullptr` 没事）；
+  撕咬 17253 / 爪击 16827 是 `A1=6` 但**不是 AoE**（走 else 分支传 `victim`，所以正常）；
+  **只有尖啸同时满足"被判 AoE" + "含单体 `TARGET_UNIT_ENEMY` 效果"**。
+
+### 四、修法（已实现，最小改动）
+只改 `src/game/AI/BaseAI/PetAI.cpp`（+31 −1）：
+1. 新增文件内静态函数 `PetSpellNeedsExplicitEnemyTarget()`：扫描 `Effect[0..2]` 的
+   `EffectImplicitTargetA/B`，命中 `TARGET_UNIT_ENEMY` / `TARGET_UNIT_ENEMY_NEAR_CASTER` 即返回 true；
+2. AoE 分支里 **仅当"敌方技能且含上述单体效果"时把 `victim` 传下去**，否则仍传 `nullptr`。
+**影响面（数据实证，全库 29,351 条法术）**：同时满足"是 AoE + 含 `TARGET_UNIT_ENEMY` + 能由 `LEARN_SPELL` 教给宠物"
+的**只有尖啸这 5 级**；雷霆践踏 4 级 / 狂怒之嚎的目标实参与修复前**逐字节一致**；撕咬/爪击根本不进这个分支。
+距离安全：尖啸 `RangeIndex=2` 与撕咬/爪击相同，而那两个本来就带 `victim` 过 `CheckRange`；
+且该分支已强制 `CanReachWithMeleeAttack(victim)`。
+
+### 五、⚠️ 第二条**尚未实证**的叠加原因（可能是站长看到"完全不放"的真正主因）
+`PetAI::UpdateAI` 每 tick 把所有 ready 的自动技能收进 vector 后**依次施放**，而
+`TRIGGERED_NORMAL_COMBAT_CAST` **不含** `TRIGGERED_IGNORE_GCD` ⇒ `Prepare()` 真的加 1.5s GCD
+（键 `StartRecoveryCategory = 133`，**所有宠物技能共用**），后续技能被 `CheckCast` 以 `NOT_READY` 挡掉
+⇒ **宠物每 1.5 秒只能放一个技能，放的是 `m_autospells` 里第一个 ready 的**。
+尖啸自身无冷却，只要有一个同样无冷却的技能（如爪击 16827）排在它前面，尖啸就会长期被"饿死"。
+- **这与站长"其他技能正常、尖啸不放"的描述高度吻合**，但**本机无法实证**（本地角色库几乎是空的，
+  云端不许碰 ⇒ 看不到那只宠物的 `pet_spell.active` 与 `m_autospells` 顺序）。
+- **区分方法（站长一步就能测）**：把该宠物**其它自动技能全部关掉、只留尖啸**，再拉怪近战：
+  - 若这样就正常放了 ⇒ 主因是这条（GCD/优先级），本次的修复只解决"伤害为 0"；
+  - 若仍然不放 ⇒ 另有原因，继续查。
+- 若要针对这条动手，属**影响所有宠物**的全局改动（例如自动施放改用 `TRIGGERED_IGNORE_GCD`，
+  或每 tick 只放一个并按优先级/轮转选），**需站长先定口径**，本次未改。
+
+### 六、站长在游戏里怎么验证
+1. 角色库查 `pet_spell.active = 193`（= 自动施放已记录）；
+2. **只留尖啸一个自动技能**（关键，见第五节），拉怪近战；
+3. 修复前：宠物会叫、扣 focus，目标**不掉血**，只有 −26/−51/−76/−101/−211 攻强 debuff；
+4. 修复后：目标开始掉物理伤害（R1 约 6~9 … R5 约 32~61）+ 8 码 AoE 减攻强；尖啸无自身冷却，
+   应每 1.5s（GCD）放一次；
+5. 顺手回归：雷霆践踏（野猪）、狂怒之嚎（狼）、撕咬/爪击 频率不变。
+
+### 七、状态
+- 本地：**已编译通过**（Debug，0 error）。
+- 云端：随 04:06 nightly 一起上（源码已同步校验一致）。回滚只需还原 `PetAI.cpp` 这一处。
+- 存疑（已记）：AC 用 `spell_dbc` 无 `spell_template`，未做逐字段对比；本机没导出 `SpellRange.dbc`，
+  `RangeIndex` 的具体码数用"与撕咬/爪击同为 2 且它们带 target 正常"作间接证据；
+  `spell_chain` 无宠物技能链（四个参考库皆如此）。
+- 交付物：`_agent_tmp\delegation\pet_screech\{REPORT.md, VERIFY.sql, 09_impact_analysis.py, 10_run_verify.py, …}`。
+
+---
+
+## [机制] 2026-10-01 玩家"太远就能看到潜行 NPC"＝**唯一杠杆是那个 45 码上限**（cmangos 值；Trinity 用 30），外加 cmangos 独有的"粘住"缺陷
+
+### 一、站长报告
+"玩家侦测 NPC 的潜行状态有点太远了。"
+
+### 二、判定路径与公式（一句话）
+唯一入口 `Player::HandleStealthedUnitsDetection`（每 2000ms 一次，战场/竞技场 500ms）→
+`Unit::IsVisibleForOrDetect`（`Unit.cpp`，潜行分支）→ `VisibilityData::GetStealthVisibilityDistance`（`ObjectVisibility.cpp`）：
+
+```
+可见距离 = max( 近战触及, min( 0.3 × (30 + 5×(观察者等级-1) + 侦测强度 - 潜行强度),
+                              MAX_PLAYER_STEALTH_DETECT_RANGE ) )
+```
+- `MAX_PLAYER_STEALTH_DETECT_RANGE = 45.0f`（`Unit.h`），**只对"观察者是玩家"封顶**；它同时是
+  "上限 / 搜索半径 / 正面判定半径"三处共用的唯一旋钮；
+- 还需潜行单位在**正面** + 过 LoS；带 `SPELL_AURA_DETECT_STEALTH`（只有 34709）则直接可见。
+
+### 三、量化：全库 298 个潜行刷怪点里 **269 个（90%）恰好等于 45.0 码**
+潜行强度来自 `creature_template_addon.auras` 的平值法术（44 个模板 / 298 个刷怪点，绝大多数是
+`22766 Sneak`，数值 **0~5**），而公式的等级项是"观察者等级 ×5" ⇒ 35 级以上玩家的原始值已达 **90~112 码**，
+全被 45 码截断。典型样本（70 级玩家、无侦测加成）：
+`Rohh the Silent`(947, map0 guid 28480) / `Mad Magglish`(3655, map1 guid 14055) /
+`Jaguero Stalker`(2522, map0 guid 631) 三者**都是 45.0 码**；对照 `Nethervine Trickster`
+（法术每级 +5，S=346）只有 **8.7 码**。
+⇒ **数据层改不动这个现象**（把 S 按等级补齐也只能影响少数怪），唯一杠杆就是这个上限。
+
+### 四、不是我们改坏的
+三个函数（`HandleStealthedUnitsDetection` / `Unit::IsVisibleForOrDetect` / `GetStealthVisibilityDistance`）
+与 pristine 上游 cmangos **逐字相同**；`ObjectVisibility.cpp` 我们从未改动；我们唯一的潜行相关改动是
+`Unit::GetSpellRank` 的 `[RANK-FIX]`，它反而**让 29 个怪从 45 码收紧到 7~9 码**（回退它会更糟）。
+潜行法术数据与 `tbcmangos_orig` **0 差异**。
+
+### 五、修法（已实现）
+1. `Unit.h`：上限 **45.0f → 30.0f**（对齐 TrinityCore 的同一常量），并把公式与"想更紧就改这一个数"写进注释；
+2. `Player.cpp`：新增**第二遍清理**（遍历 `m_clientGUIDs`，把 `VISIBILITY_GROUP_STEALTH` 且
+   `IsVisibleForOrDetect(..., detect=true) == false` 的单位 `DestroyForPlayer + RemoveAtClient`）——
+   修掉 **cmangos 独有**的缺陷：潜行单位一旦发过一次就被 `Unit::IsVisibleForOrDetect` 的
+   "NOW ONLY STEALTH CASE" 分支粘在客户端，直到离开相机可见距离（大陆 100 码 / 战场 533 码），
+   所以"看见一次就能一路远远看着它"；Trinity 在移除路径会重算，没有这个问题。
+- 影响面：潜行 NPC 45 → 30 码；**同级 PVP 基本不变**（盗贼 S=300 → 22.5 码、S=315 → 18 码，都在 30 以下），
+  只有叠满侦测 buff 的极端值 31.5/37.5 → 30；副本里 7~9 码那批不变。
+- 若只想要上限收紧、保留"看见就一直跟着"的手感，**只回退 `Player.cpp` 那个 hunk** 即可（两个改动互相独立）。
+
+### 六、站长验证方法
+选中潜伏怪执行 `.dist`：**`T -> P Visible distance` 就是"玩家多远能看见这个潜行怪"**
+（修前 45.00 / 修后 30.00）。样本：Mad Magglish(3655, map1 guid 14055)、Rohh the Silent(947, map0 guid 28480)、
+Jaguero Stalker(2522, map0 guid 631)、Witchwing Ambusher(3279, map1 guid 20686)。
+实测两点：走近记录**弹出**距离、看见后跑远记录**消失**距离（修后应当一致 ≈30）。
+日志取证：`LogFilter_VisibilityChanges=1`（已开），`Player.cpp` 的 `detected in stealth ... Distance = %f`。
+
+### 七、存疑与顺带发现
+1. **"正确的上限值"本身是政策选择**：30 = TrinityCore，45 = cmangos，想更贴正式服手感可试 20/15
+   —— 站长给一个数即可，改一行；本次先上 **30**。
+2. 第一遍扫描每 2s（战场 500ms），修后仍可能"多留 ≤2s"；
+3. 客户端是否还有自己的潜行判定无法离线验证（但服务端才是发不发包的权威，`.dist` 可交叉验证）；
+4. **未修的小问题（记录）**：GO 陷阱的潜行值写在 `STEALTH_TRAP` 槽，而公式只减 `STEALTH_UNIT`
+   （`ObjectVisibility.cpp`）⇒ 陷阱的潜行被忽略；
+5. **高危数据陷阱（记录）**：`creature_addon` 一旦有行就会**整体覆盖**模板 addon —— 以后给潜行怪加
+   mount/emote 行会**静默丢掉潜行**。
+
+### 八、状态
+- 本地：Debug 已编译（0 error）。云端：随 04:06 nightly 一起上（源码已同步校验一致）。
+- 交付物：`_agent_tmp\delegation\stealth_range\{REPORT.md, q1_schema.py … q10_upstream_same.py, quant.txt}`。
+
+### 九、**2026-10-01 追加（站长在正式服实测后定案）：补上"潜行强度 = max(法术值, 5×等级)"**
+- 站长结论：**正式服里 NPC 潜行的"等级感"是对的**（同级难发现、等级差越大越容易发现），"按这个来"。
+- **为什么原公式没有等级感**（数据没错、公式缺项）：
+  - 玩家/宠物的潜行法术自带每级 +5（`EffectRealPointsPerLevel = 5`，盗贼 1784/1787 ⇒ 60 级 300、70 级 350），
+    所以它们的法术值**本来就等于 5×等级**；
+  - NPC 的潜行法术（`22766 Sneak` / `6408 Faded` / `5916`）`rpl = 0`、**恒定只有 1**
+    （原版 Spell.dbc 就是这样，`tbcmangos_orig` / `classicmangos_ref` 逐字段一致 ⇒ 数据不用动、也动不得）；
+  - 于是公式里潜行方**完全没有等级项**：70 级观察者原始值 = 30 + 345 − 1 = 374 ⇒ ×0.3 = 112 码 ⇒
+    全部被上限截断 ⇒ 全库 298 个潜行刷怪点里 299/269 个可见距离一模一样。
+- **改法**（`VisibilityData::GetStealthVisibilityDistance`，`ObjectVisibility.cpp`）：
+  ```cpp
+  int32 stealthStrength = GetStealthStrength(STEALTH_UNIT);
+  if (m_owner->isType(TYPEMASK_UNIT))
+      stealthStrength = std::max(stealthStrength, 5 * int32(static_cast<Unit const*>(m_owner)->GetLevel()));
+  detectionValue -= stealthStrength;
+  ```
+  取 `max()` 而不是相加 ⇒ 盗贼/潜行宠物（法术值已是 5×等级）**不会被重复叠加**，
+  而带额外加成的（如 Master of Deception +15）仍按更高值算；只对 Unit 生效（GO 陷阱走 `STEALTH_TRAP`，另有已知缺口）。
+- **预期效果**（观察者 = 70 级玩家，上限仍 30）：
+
+  | 潜行方等级 | 潜行强度 | 可见距离（改后） | 改前 |
+  |---|---|---|---|
+  | 70（同级） | 350 | **7.5 码** | 30（触顶） |
+  | 68（Warp Chaser） | 340 | **10.5 码** | 30（触顶） |
+  | 60 | 300 | **22.5 码** | 30（触顶） |
+  | 50 | 250 | 37.5 → 上限 30 | 30 |
+  | 40 | 200 | 52.5 → 上限 30 | 30 |
+- 另需注意：潜行判定还要求**目标在观察者正面**（`Unit::IsVisibleForOrDetect` 的 `isInFrontInMap`）——
+  这就是"从背后接近不会被发现"的机制；观察者是生物时不套用玩家上限，但被"正面 + 自身仇恨距离"限制住。
+- 状态：本地已实现并编译；随 nightly 上云后请站长按上表在游戏里抽查（同级潜行怪应明显更近才现身）。
+
+---
+
+## [机制] 2026-10-01 「怪物一进入隐身就发现旁边潜行的我」＝**隐身/潜行状态切换会额外排一次全场仇恨扫描**（`Unit.cpp:8917`）
+
+> ⚠️ **2026-10-01 16:49 更正（重要）**：本章结论**只是次要放大器**。同症状的真正主因随后定案在
+> **SD2 脚本 `spell_detect_through_invisibility_mob`**（相位隐身 32943 挂的 AuraScript 每秒扫一圈就
+> `AttackStart`，不看潜行/距离）—— 见文末章节 **「怪一进隐身就无视潜行抓我」= 相位隐身法术挂的 SD2 脚本**。
+> 本章的修改（`UpdateVisibilityAndViewNoAINotify`）**保留**，但别再把这条症状归到 `Unit.cpp:8917`。
+
+### 一、站长现象与定位过程
+> "我潜行在一个会隐身的怪物旁边，它**进入隐身的瞬间**就开始攻击我；而它**没隐身的时候看不到我**。"（怪 = `18884 Warp Chaser`，虚空风暴；同类 `18464 Warp Stalker` / `18465 Warp Hunter` / `23219 Blackwind Warp Chaser` / `22255`）
+
+排查中先后**排除了两个错误猜测**（都写在报告里，避免后人重走）：
+1. ❌ "取目标时用了 `detect = false` 跳过潜行判定" —— **不成立**：仇恨唯一入口 `UnitAI::IsVisible`（`UnitAI.cpp:680`）传的是 **`detect = true`**，潜行判定（正面 + 距离 + 视线）**每次都全查**；而 `detect=false` 的那几处对生物观察者反而**恒 return false**（`Unit.cpp:8851-8852` 的 "NOW ONLY STEALTH CASE"）。
+2. ❌ "`GetViewPoint().Call_UpdateVisibilityForOwner()` 把潜行玩家塞进了仇恨列表" —— **不成立**：`Camera` 是**玩家专属**的客户端接收器（`Camera.h:31-45`），生物身上没有相机 ⇒ 该行**直接返回**；即使有相机也只做"发/删模型"（`Player::UpdateVisibilityOf` 里 0 处 `SelectHostileTarget`/`AttackStart`/`AddThreat`）。
+
+### 二、真正的根点（一行）
+```
+Unit::UpdateVisibilityAndView()   (Unit.cpp:8890-8919)
+  8915  GetViewPoint().Call_UpdateVisibilityForOwner();   // 生物上是空操作
+  8916  UpdateObjectVisibility();                          // 只更新客户端模型（必须保留）
+  8917  ScheduleAINotify(0);                               // ★排一次全场仇恨扫描 —— 就是它
+```
+- **关键旁证**：基类 `WorldObject::UpdateVisibilityAndView()`（`Object.cpp:2566-2571`）**没有 8917 这一行** ⇒ 这是 `Unit` 覆写额外加的。
+- `ScheduleAINotify(0)` → `UnitVisitObjectsInRangeNotifyEvent::Execute`（`Unit.cpp:11705-11728`：`SetCanAggro(true)` + 全场访问）→ `GridNotifiersImpl.h` 的 worker → `UnitAI::IsVisible(detect=true)` → `MoveInLineOfSight` → `AttackStart`。
+
+### 三、为什么"只有隐身那一刻"才会发现你（三条量化证据）
+1. **感知入口只被"扫描"驱动**：`MoveInLineOfSight()` 全工程只有 7 个调用点，全部挂在 AINotify worker 上。排扫描只有 5 种时机：自己挪窝（节流 `AIRelocationNotifyDelay=1000ms`）、玩家挪窝、刷新/复活、**心跳（要求 `Detection > 45`）**、**可见性变化（8917）**。
+   `18884` 的 `Detection = 18` ⇒ **它连心跳扫描都没有** ⇒ 两边站桩时，前四种都不发生，**只剩"相位那一刻"**。
+2. **它的侦测能力和隐身完全无关**：`18884` 的 addon 只有 `32942`（无 aura17/19/228）⇒ 侦测强度 0 ⇒ 对 70 级、潜行强度 350 的玩家可见距离恒为 **3.00 码**（警觉态 4.74），**相位前/中/后一模一样**。
+3. **隐身时长 8 秒、周期 30 秒**（`32943` 的 `DurationIndex=31` = `SpellDuration.dbc` 的 **8000ms**；`32942` 是永久 aura23 每 30000ms 触发一次）⇒ 每轮相位都必然经历"进入(30s)"与"到期(38s)"**两次**可见性切换，**两个方向都会排扫描**。
+   ⇒ 结论：**"隐身"是触发器，不是"提高侦测"**；"边隐身边打"是因为隐身光环带 `AURA_INTERRUPT_FLAG_ATTACKING`，出手同拍就破隐。
+
+### 四、修法（已实现、已本地编译）
+- `src/game/Spells/SpellAuras.cpp`：`HandleInvisibility` 尾部改为 `target->UpdateVisibilityAndViewNoAINotify()`（**进/出两个方向都改**，因为 8s < 30s，只压"进入"会让症状推迟 8 秒复现）；`HandleModStealth` 的两处 `SetVisibility(..., false)`。
+- `src/game/Entities/Unit.{h,cpp}`：新增 `UpdateVisibilityAndViewNoAINotify()` + `UpdateVisibilityAndViewInternal(bool forceAINotify)`；`SetVisibility(UnitVisibility, bool forceAINotify = true)`（默认参数，40 处调用零改动）；**故意不动虚函数 `UpdateVisibilityAndView()` 的签名**（避免丢掉对 `WorldObject` 的 override）。
+- **两个"不能做"**（已排除的方案）：① 不能砍掉 `UpdateObjectVisibility()`（客户端模型发/删会坏）；② 不能把取目标判成 `detect=false`（那会让生物对潜行单位**恒不可见**，潜行变绝对隐身，还会废掉呼救/协助/选目标）。
+- 可选的一行（站长未定）：`Creature.cpp:3357` 去掉 `GetDetectionRange() > 45` ⇒ **所有怪每 ~5 秒扫一次**（更接近正式服"距离即检测"，但全局削弱潜行）。
+
+### 五、修后手感（重要，验收口径）
+- 站桩的普通怪（`Detection ≤ 45`、不游走、不改变可见性）**永远不会主动检查** ⇒ 你站在它**正面 1 码**潜行也安全 —— 比正式服"宽松"（严格按公式 3 码内本该被发现）。
+- **你一动 / 它一动 / 它刷新** ⇒ 检查立刻来（与正式服一致）。
+- **验收口径 = 时机**：修前攻击与相位**严格同步**（每 30 秒那一拍必咬）；修后不再同步。注意 `Warp Chaser` 会小幅游走（`spawndist=5.0`、`MovementType=1`），它**自己走进**你 3 码内仍会发现你（属正常）。
+- 测试：`.go creature id 18884`（虚空风暴），正面 3 码内潜行站定。
+
+### 六、状态
+- 本地 Debug 已编译（**0 error**）；**未同步云端**（等站长定"今晚随 nightly 还是下一晚"）。
+- 交付物：`_agent_tmp\delegation\invis_aggro\{REPORT.md(§九/§十 定点复核), git_diff.txt, q13~q16*.py, q16_viewpoint_trace.md, verify.sql}`。
+
+---
+
+## [运维] 2026-10-01 ⚠️ 教训：**不要在 mangosd 运行时在云端跑 gcc** —— 我的只读语法检查触发了内核 OOM，内核杀掉了 cc1plus
+
+- 事实：`dmesg` 里今天 **12:07:47 与 12:08:02** 各有一次
+  `Out of memory: Killed process … (cc1plus) total-vm:902676kB, anon-rss:615176kB`，
+  正是我在云端做"只读语法检查"（`cloud_syntax_check3.sh`，为绕开陈旧 PCH 而**剔除 PCH**重编那几个大 TU）的时刻。
+  当时 mangosd 常驻约 1.0GB、机器总内存 1.87GB ⇒ 我那个 `ulimit -v 2500000` 只限制了自己**没**保证系统不 OOM，
+  内核的全局 OOM 挑中了 cc1plus。
+- **结果**：mangosd 没有被杀（PID 3552 连续运行 9 小时未重启、玩家无感），但这是运气 ——
+  内核完全可以挑中 mangosd。此前我把那几条 `Killed signal terminated program cc1plus` 归因于自己的 ulimit，
+  **实际是内核 OOM kill**，这里更正。
+- **以后的做法**：云端只做**带 PCH** 的 `-fsyntax-only`（轻量、十几秒、不触发 OOM），
+  或者干脆不预检、交给 nightly（它会先停 mangosd 再编译，天然安全）；
+  **不要**为了绕 PCH 而在 mangosd 运行时重编大 TU。
+
+### 附：本次云端内存快照（2026-10-01 13:50–13:55）
+| 指标 | 数值 |
+|---|---|
+| 总内存 / 可用 | 1870 MB / **available 190–550 MB（波动大）** |
+| Swap | 4095 MB，**已用 267 MB**，且 `si` 持续 8~152 KB/s（**在轻微换页**） |
+| **mangosd RSS** | **约 1.00–1.07 GB**（PID 3552，已运行 9h01m，CPU 16.8%） |
+| realmd / mysqld | 4.5 MB / 19–128 MB（波动） |
+| 堆（MemStat，仅 3~5 人在线） | heap_inuse 640→693 MB、arena 713→**764 MB（一小时里台阶式上涨）** |
+| 对照 2026-09-01 基线 | 同时段 mangosd RSS **675 MB** ⇒ 一个月涨了约 +330~390 MB |
+- 判断：**稳定但已贴边**（可用内存只剩几百 MB 且已经在用 swap）。nightly 会先停 mangosd（腾出约 1GB）再编译，
+  所以编译窗口本身是安全的；但长期看这 2GB 机器对当前体量偏紧，建议继续盯 `mem_monitor.log` 的
+  `mangosd_d1h` 与 arena 台阶，若在低在线时仍持续上涨，再单独查泄漏点。
+
+---
+
+## [自研bug] 2026-10-01 定案：「怪一进隐身就无视潜行抓我」＝**相位隐身法术挂的 SD2 脚本每秒扫一圈就 `AttackStart`**（`spell_detect_through_invisibility_mob`）
+
+> 站长原话："所有怪每 ~5 秒扫一次，是对的，但是目前的问题是怪物进入隐身的时候会检查我并且无视潜行。"
+> 上一章（`Unit.cpp:8917` 隐身状态切换额外排一次全场仇恨扫描）只修掉了**次要放大器**；
+> 本条的真因在 **SD2 脚本**里，与 AI 取目标 / 仇恨 / 呼救 / 连线 / 冲锋**全部无关**。
+
+### 一、结论（一句话）
+
+Warp Chaser 这类怪的"相位隐身"（`creature_template_addon` 里 18884 的 **32942**，每 30 秒触发 **32943 Invisibility**）
+在 DB 里被绑定到脚本 `spell_detect_through_invisibility_mob`（`spell_scripts` 表：**16380 / 32811 / 32943**）。
+这个 `AuraScript`：
+
+1. `OnApply` 里 `aura->ForcePeriodicity(1 * IN_MILLISECONDS)` —— **每秒 tick 一次**；
+2. `OnPeriodicTickEnd` 里以 `GetDetectionRange()`（18884 = **18**）为半径搜一圈单位，
+   只要 `CanAttackOnSight` + 视线通，就 `invisible->AI()->AttackStart(nearby)` ——
+   **既不看潜行/隐身可见性，也不看攻击距离**。
+
+### 二、证据链（每一步都可复现）
+
+| 现象 | 说明 |
+|---|---|
+| 攻击发生在 `dist=17.33 / 18.55`，而 `attackRadius=15.00 / 16.00` | 用的不是攻击距离，而是 `GetDetectionRange()` = **18** |
+| `threats=0 / myVictim=none / myInCombat=0 / victimAttackers=0` | 不是仇恨/呼救/连线拉进来的，是"脚本直接设目标" |
+| 潜行判定侧 `STEALTH-PASS` **0 次**，且那只怪一条 `[STEALTH-DBG]` 都没有 | 攻击它的怪**从头到尾没跑过** `IsVisibleForOrDetect` |
+| 引擎侧所有 `AttackStart` 调用点都打了标记，仍只落到兑底 `src=CreatureAI::AttackStart` | 调用者在 **SD2 脚本**里，压根不走那些调用点 |
+| 运行时 `callerRva=0xe29fbf` 经 `mangosd.map` 反查 = `OnPeriodicTickEnd@DetectThroughInvisibilityMob` [game:spell_scripts.obj] | 直接点名到函数 |
+| 与"相位节奏严格同步"（每 30 秒那一拍必咬） | `ForcePeriodicity` 每秒 tick + 相位隐身 8 秒窗口 |
+
+### 三、修法（两处，均已本地编译 **0 error**）
+
+- `src/game/AI/ScriptDevAI/scripts/world/spell_scripts.cpp`（**本条主修**）：
+  `DetectThroughInvisibilityMob::OnPeriodicTickEnd` 的判定补上
+  `nearby->IsVisibleForOrDetect(invisible, invisible, true)`：看不见（潜行距离 + 正面 + 视线）就不进战斗；
+  同类隐身互见、本来就看得见的情况行为完全不变。
+- `src/game/MotionGenerators/WrapperMovementGenerator.cpp`（顺带修掉的**另一个真实旁路**）：
+  `AbstractWrapperMovementGenerator::Initialize` 在位移"面朝某单位"时会 `owner.Attack(target)` 直接进战斗，
+  并且只查阵营（`CanAttackInCombat`）。全工程只有 `MoveCharge(Unit&)`（= `SPELL_EFFECT_CHARGE`）会设置朝向目标，
+  即"**冲锋把潜行玩家拖进战斗**"；同样补上可见性判定后才代为攻击。
+
+### 四、验收（站长实测 2026-10-01 16:46–16:49）
+
+- 步骤：潜行 → `.go creature id 18884`（虚空风暴）→ 10 码外等 30 秒。
+- 修前：`[STEALTH-DBG-ATTACK] ... dist=17.33 stealthAura=1 visGroup=2 threats=0`（**必被拉进战斗**）。
+- 修后：`ATTACK 0 行`、冲锋拦截 `0 行`，同一时间窗内却有 **35 条**潜行检查（REJECT）
+  ⇒ 怪在正常判定，只是正确地判成"看不见"。
+
+### 五、更正与保留
+
+- 本主题前几章的结论**部分作废**：`45→30` 上限、`stealthStrength = max(法术值, 5×等级)`、
+  "隐身/潜行状态切换不再排全场扫描" 都是**独立成立**的修正（保留），但它们**不是**这条症状的原因；
+  原因只有一个 —— 上面那个每秒 tick 的脚本。
+- 排查手段留档：**`mangosd.map` + 运行时 `callerRva` 反查**（工具 `_agent_tmp/resolve_map_addr.py`）。
+  以后遇到"所有调用点都排除干净、现象却仍在"的情况，直接抓返回地址比继续读代码快得多。
+  ⚠️ 注意两个坑：① `CreatureAI::AttackStart` **覆盖**了 `UnitAI::AttackStart` 且不调基类，
+  所以给基类打标记对怪无效；② 全局标记会被"提前 return 的 Attack 调用"残留成**陈旧值**。
+
+### 六、状态
+
+- 所有 `[STEALTH-DBG*]` 临时诊断**已从源码删除**（`git revert 00186a9e8` + 撤销另外 10 个文件的临时改动），
+  本地 Debug 已重编并重启（16:49:02 `World initialized`），运行的是干净二进制。
+- 待办：随夜间窗口上云端（源码同步后由 `6 4 * * *` nightly 编译安装）。
+
+
 
 
 

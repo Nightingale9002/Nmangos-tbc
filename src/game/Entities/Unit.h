@@ -1036,7 +1036,18 @@ enum ReactiveType
 
 // delay time next attack to prevent client attack animation problems
 #define ATTACK_DISPLAY_DELAY 200
-#define MAX_PLAYER_STEALTH_DETECT_RANGE 45.0f               // max distance for detection targets by player
+// [STEALTH-RANGE] Single tuning knob of the player side stealth visibility. Used in three places:
+//   VisibilityData::GetStealthVisibilityDistance (Entities/ObjectVisibility.cpp) - hard cap of the result
+//   Player::HandleStealthedUnitsDetection        (Entities/Player.cpp)           - search radius for stealth units
+//   Unit::IsVisibleForOrDetect                   (Entities/Unit.cpp)            - "must be in front" arc radius
+// Detection distance = max(combatReach, min(0.3 * (30 + 5*(viewerLevel-1) + detectStrength - stealthStrength), this))
+// Every stealth aura of the world DB is applied as stealthStrength via Aura::HandleModStealth; the flat
+// NPC stealth spells (Sneak 22766, Faded 6408, Shadowstalker Stealth 5916, ...) carry a value of only 0..5,
+// so for every player above ~level 35 the raw formula returns 90+ yards and this cap alone decides how
+// far away a stealthed NPC pops in (269 of 298 stealth spawns in our DB land exactly on the cap).
+// 45 yards was reported far too generous; TrinityCore uses 30.0f for the same constant. Lower it further
+// (e.g. 20.0f) to tighten stealth even more - nothing else needs to be changed.
+#define MAX_PLAYER_STEALTH_DETECT_RANGE 30.0f               // max distance for detection targets by player
 #define MAX_CREATURE_ATTACK_RADIUS 45.0f                    // max distance for creature aggro (use with CONFIG_FLOAT_RATE_CREATURE_AGGRO)
 
 // Regeneration defines
@@ -2125,10 +2136,16 @@ class Unit : public WorldObject
         SpellSchoolMask GetMainAttackSchoolMask();
 
         // Visibility system
+        // [INVIS-AGGRO 2026-10-01] forceAINotify = false recomputes visibility for everyone around but does
+        // NOT let the AI sweep the area for aggro targets (see Unit::UpdateVisibilityAndViewInternal).
+        // Entering stealth/invisibility must not be the trigger that makes a creature attack a stealthed
+        // unit that it was unable to see a moment earlier.
         UnitVisibility GetVisibility() const { return m_Visibility; }
-        void SetVisibility(UnitVisibility x);
+        void SetVisibility(UnitVisibility x, bool forceAINotify = true);
         void SetVisibilityWithoutUpdate(UnitVisibility x) { m_Visibility = x; }
         void UpdateVisibilityAndView() override;            // overwrite WorldObject::UpdateVisibilityAndView()
+        void UpdateVisibilityAndViewNoAINotify();           // [INVIS-AGGRO] same without ScheduleAINotify(0)
+        void UpdateVisibilityAndViewInternal(bool forceAINotify);
 
         // common function for visibility checks for player/creatures with detection code
         bool IsVisibleForOrDetect(Unit const* u, WorldObject const* viewPoint, bool detect, bool inVisibleList = false, bool is3dDistance = true, bool spell = false, bool ignorePhase = false) const;     

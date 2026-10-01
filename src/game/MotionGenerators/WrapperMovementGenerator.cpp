@@ -50,6 +50,12 @@ void AbstractWrapperMovementGenerator::Initialize(Unit& owner)
             {
                 if (owner.CanAttackInCombat(target, false, false))
                 {
+                    // [STEALTH-FIX 2026-10-01] 冲锋/特效位移的收尾会在这里**直接**调用 Unit::Attack，
+                    // 绕过 AI 的可见性判定：目标看不见（潜行距离 + 正面 + 视线判定失败）时不代它发起攻击，
+                    // 位移照常结束。全工程只有 MoveCharge(Unit&)（SPELL_EFFECT_CHARGE）会让位移"面朝单位"。
+                    if (!target->IsVisibleForOrDetect(&owner, &owner, true))
+                        return;
+
                     owner.Attack(target, owner.AI()->IsMeleeEnabled());
                     owner.SetTarget(target);
                 }

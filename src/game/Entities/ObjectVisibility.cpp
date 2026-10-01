@@ -170,7 +170,20 @@ float VisibilityData::GetStealthVisibilityDistance(Unit const* target, bool aler
         if (Unit* owner = static_cast<GameObject*>(m_owner)->GetOwner())
             detectionValue -= int32(owner->GetLevelForTarget(dynamic_cast<Unit*>(m_owner)) - 1) * 5;
 
-    detectionValue -= GetStealthStrength(STEALTH_UNIT);
+    // [STEALTH-LEVEL 2026-10-01] 潜行强度 = max(法术值, 5 × 等级)
+    //   为什么需要补这一项（站长 2026-10-01 在正式服实测："NPC 潜行的等级感是对的"，据此对齐）：
+    //     * 玩家/宠物的潜行法术自带每级 +5（EffectRealPointsPerLevel = 5，例如盗贼 1784/1787），
+    //       所以它们的法术值**本来就等于 5×等级**（60 级 = 300、70 级 = 350）；
+    //     * 而 NPC 的潜行法术（22766 Sneak / 6408 Faded / 5916 …）rpl = 0、恒定只有 1，
+    //       公式里潜行方因此**完全没有等级项** ⇒ 70 级观察者的原始值 = 30 + 345 − 1 = 374，
+    //       ×0.3 = 112 码，全部被上限截断 ⇒ 299/298 个潜行刷怪点的可见距离完全一样（没有等级感）。
+    //   取 max() 而不是相加：对盗贼/潜行宠物（法术值已经是 5×等级）不会重复叠加，
+    //   对"法术值更高"的情况（例如 Master of Deception 额外 +15）也仍然按更高值算。
+    //   只对 Unit 生效；GO 陷阱走 STEALTH_TRAP（另有已知缺口：本函数只减 STEALTH_UNIT，见 KNOWN_ISSUES）。
+    int32 stealthStrength = GetStealthStrength(STEALTH_UNIT);
+    if (m_owner->isType(TYPEMASK_UNIT))
+        stealthStrength = std::max(stealthStrength, 5 * int32(static_cast<Unit const*>(m_owner)->GetLevel()));
+    detectionValue -= stealthStrength;
 
     // Calculate max distance
     float visibilityRange = float(detectionValue) * 0.3f;
