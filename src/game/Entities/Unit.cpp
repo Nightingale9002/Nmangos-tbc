@@ -528,25 +528,61 @@ void Unit::Update(const uint32 diff)
     // update abilities available only for fraction of time
     UpdateReactives(diff);
 
-    // Dynamically update swimming state: the SWIMMING flag is only set at creature
-    // creation based on the spawn point. A water dweller spawned in shallow water and
-    // chasing into deep water stays flagged as a land unit and sinks/evades. Recompute
-    // from the current position each tick (SetSwim only sends packets on state change).
-    // Skip WALK_IN_WATER creatures (crabs etc.): they must walk on the seabed, forcing
-    // them to swim makes the client sink/bob against the server position.
+    // 动态维护游泳状态：MOVEFLAG_SWIMMING 只在生物创建时按刷点位置判定过一次
+    // （Creature.cpp:498-502）。浅水里刷出的水生怪追人进深水时仍带着"陆地"标记，
+    // 于是一边下沉一边疯狂闪避。所以每个 tick 按当前位置重算
+    // （SetSwim 只在状态真正变化时才发包/发字段更新）。
+    // 跳过 WALK_IN_WATER 的生物（螃蟹等）：它们必须贴水底走，强制游泳会让客户端
+    // 相对服务端位置上下浮沉。
     if (GetTypeId() == TYPEID_UNIT && CanSwim() &&
         !(static_cast<Creature const*>(this)->GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER))
     {
-        // A swimmer starts swimming as soon as it is below the surface (with a
-        // small hysteresis band so the waterline does not flip-flop the state),
-        // and stops swimming only once it is clearly out of the water. This
-        // keeps it swimming across the shallow bank too, instead of wading the
-        // seabed when it follows the target back toward the shore.
-        float waterLevel = GetMap()->GetTerrain()->GetWaterLevel(GetPositionX(), GetPositionY(), GetPositionZ());
+        // 判据口径必须与刷点判据一致：Creature.cpp:501 用的是
+        // TerrainInfo::IsSwimmable(pos, GetCollisionHeight())，即
+        //     liquid.level - liquid.depth_level > radius        // GridMap.cpp:1215
+        // 「水比怪还深、站不住」才算游泳。而本补丁原先写的是"脚底比液面低 0.5 码
+        // 就游泳"（GetWaterLevel 只返回液面高度，GridMap.cpp:1391-1410，它不知道
+        // 深浅），于是岸边只到脚踝/小腿的浅水也整片播放游泳动作，和刷点判据自相
+        // 矛盾 —— 这就是站长报的现象。
+        //
+        // 现在把每 tick 的判据统一到"水深"，并保留水面检查，两级迟滞：
+        //   开始游泳：水深 > 碰撞高度（同一个半径，与刷点判据完全一致）
+        //   停止游泳：水深 <= max(0.5, 碰撞高度 - 0.5)，留 0.5 码迟滞带，
+        //             避免水线附近来回翻转状态（客户端动画抖动）
+        // GetWaterLevel 的第四个参数是**输出参数**：它被写成该点的静态地面高度
+        // （GridMap.cpp:1396-1398 的 GetHeightStatic；紧接着的 getLiquidStatus 正是用这个
+        // 高度去查液体状态的），因此 (waterLevel - liquidBottom) 就是"站在此处的水深"，
+        // 与 IsSwimmable 里用的 `liquid.level - liquid.depth_level` 是同一个量，
+        // 而且**不额外增加地形查询**（调用次数与原代码相同）。
+        // 站在栈桥/码头/礁石上时这个高度取到桥面（WMO 面），水深算出来是负的；
+        // 再配合下面的水面检查，不会把"水面之上的怪"误判成游泳。
+        float liquidBottom = INVALID_HEIGHT;
+        float const waterLevel = GetMap()->GetTerrain()->GetWaterLevel(GetPositionX(), GetPositionY(),
+                                                                       GetPositionZ(), &liquidBottom);
         bool const swimming = m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
-        if (!swimming && waterLevel > INVALID_HEIGHT && GetPositionZ() < waterLevel - 0.5f)
-            SetSwim(true);
-        else if (swimming && (waterLevel <= INVALID_HEIGHT || GetPositionZ() > waterLevel + 0.5f))
+        // [SURFACE-GUARD] 水面检查：怪站在水面之上的栈桥/码头/岸边礁石上（地表
+        // 由 WMO 提供，MAP 高度图里的水底在它下方很深）时，水深可能超过碰撞高度，
+        // 但它在水面上，绝不能判成游泳。原判据靠 z < 水面 - 0.5 天然躲开了这个坑，
+        // 只改成纯"水深"就会引入新 bug，所以显式要求脚底没有高出液面。
+        // 这一条也做成 0.2 码的迟滞带（进入要求在水面下 0.2 码以内，退出要真正
+        // 高出水面 0.2 码），避免浮在液面附近的怪被水面抖动反复切状态。
+        bool surfaceOk;
+        if (waterLevel <= INVALID_HEIGHT)
+            surfaceOk = false;
+        else if (swimming)
+            surfaceOk = (GetPositionZ() <= waterLevel + 0.2f);
+        else
+            surfaceOk = (GetPositionZ() < waterLevel - 0.2f);
+        // 开始用碰撞高度当门槛、停止用带迟滞的较小门槛，所以门槛在状态外算
+        float const collisionHeight = GetCollisionHeight();
+        float const swimDepth = swimming ? std::max(0.5f, collisionHeight - 0.5f) : collisionHeight;
+        bool const deepEnough = (liquidBottom > INVALID_HEIGHT && (waterLevel - liquidBottom) > swimDepth);
+        if (deepEnough && surfaceOk)
+        {
+            if (!swimming)
+                SetSwim(true);
+        }
+        else if (swimming)
             SetSwim(false);
     }
 

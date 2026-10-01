@@ -147,7 +147,14 @@ namespace Movement
                     // through to the water below it)
                     if (groundZ < waterLevel && p.z <= waterLevel + 2.0f)
                     {
-                        sawUnderwater = true;
+                        // [SWIM-DEPTH 2026-10-01] 只有"水深 > 碰撞高度"才算真正进入水体，
+                        // 与 Unit::Update 的新判据一致（那边用同一个量：水面 - 静态地面高度）。
+                        // 只没过脚踝/小腿的浅滩不再置游泳标记 —— 否则 Unit::Update 下一 tick 就会把它
+                        // 清掉，而 TargetedMovementGenerator 以"标记翻转"触发重新寻路，
+                        // 表现为岸边闪一下游泳动作。
+                        // 注意：下面的 z 修正对**所有**水深仍然生效（那段浅水夹取逻辑本来就是为浅滩写的）。
+                        if ((waterLevel - groundZ) > unit.GetCollisionHeight())
+                            sawUnderwater = true;
                         // fully-submerged band requires enough depth (bottom+0.5 <
                         // surface-1.5). In a shallow pocket (e.g. waterline at 18.27,
                         // floor 18.20) max(groundZ+0.5, min(p.z, surface-1.5)) used to

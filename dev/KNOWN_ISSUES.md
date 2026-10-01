@@ -6895,9 +6895,17 @@ $ python dev/tools/vmap_los_probe.py ray 556 34.11 302.45 26.92 5.36 316.72 31.3
   `5306137 (3417.31, 3753.94) 组 21138/28016`、`5306141 (3482.38, 3683.87) 组 21139/28015`、
   `5306143 (3573.50, 3647.71) 组 21145/28016`、`5306148 (3516.86, 3525.74) 组 28015`
   （推断 entry：同组多数 18873/18872，**五个参考库都没有值可抄**，站长要先在游戏里看一眼）。
-- B 类（需站长判断，未落库）：`11559`/`11560`（map 0，坐标完全重合 `(-8351.66, 627.26)`，组 19980
-  "Stormwind - Battleground Emissary x2 - Patrol"，带 `Flags=10 / WorldState=19998`）——
-  或补 `22013 Eye of the Storm Emissary`、或另补一对使者、或判为遗留行删除。
+- B 类（**已定案并由站长放行**）：`11559`/`11560`（map 0，坐标完全重合 `(-8351.66, 627.26, 95.24)`，组 19980
+  "Stormwind - Battleground Emissary x2 - Patrol"，带 `Flags=10 / WorldState=19998`）。
+  站长 2026-10-01 现场确认"该位置现在看不到 NPC，可以添加" ⇒ **`dev/152` 给组 19980 补候选 entry
+  `15103 Stormpike Emissary`**。
+  **决定性依据**：`wotlkmangos`（WotLK mangos 库）在**完全相同的坐标** `(-8351.66, 627.26, 95.24)` 上摆的
+  正是**两只 `15103 Stormpike Emissary`**（成对，guid 94010/94011），而本库/`tbcmangos_orig`/`tbcdb_ref`/
+  `classicmangos_ref` 在这两行都是 `id = 0`（从未定下 entry）⇒ 组名里的 "x2" 与本组两个成员 guid 完全对应。
+  （同城另有两处 4/3 名使者是**静态**刷点 guid 190000-190013，不属任何刷怪组，与本组无关。）
+  写法与全库 2093 行的通用形态一致（`Chance=0` = 等概率，单候选时必然选中）。
+  本地已应用并验证：`spawn_group_entry` 19980 出现 1 行 `(19980,15103,0,0,0)`，
+  重启后启动自检从 **`6 of 1189 creature` 降到 `4 of 1189 creature`**（只剩 map 530 那 4 个待实地确认点）。
 - C 类（该废弃的）：**0 条**。
 - 复现脚本与全量明细：`_agent_tmp\delegation\spawn_sanity\{REPORT.md, findings.tsv, verify_agent.py, verify_refs.py, verify_membership.py, gen_dev151.py, gen_dev151_final.py}`。
 
@@ -7119,6 +7127,80 @@ DB-SCRIPTS 找不到 buddy 等）判得准。
 - 交付物：`_agent_tmp\delegation\wp_scan_fixed\{REPORT.md, wp_suspects_fixed.tsv, wp_candidates_fixed.tsv(438), tally_fixed.tsv, delta_vs_old.tsv, probe_point.py}`；
   上一版（有 bug 的）快照在 `old_buggy/`，便于复算对比。
 - **本轮结论不涉及任何数据修改**：站长尚未对 438 条做任何决定（本次只交清单与判读）。
+
+---
+
+## [上游/自研bug] 2026-10-01 「怪走到岸边、水只到脚踝也播游泳动作」＝**我们 08-22 的补丁把判据写成了"离水面多深"而不是"水深"**
+
+### 一、现象与根因（两处判据口径不一致）
+站长报告：怪物走到岸边的瞬间会有游泳动作，但那个水深根本不该游泳。
+
+| 位置 | 原判据 | 是否合理 |
+|---|---|---|
+| **刷点创建时** `Creature.cpp:498-502` | `TerrainInfo::IsSwimmable(pos, GetCollisionHeight())` = **液面 − 水底 > 碰撞高度**（`GridMap.cpp:1215`）⇒ "水比怪还深、站不住" | ✅ |
+| **每 tick 重算** `Unit.cpp:531-551`（**我们自己加的补丁 `d643793424`，2026-08-22「修复水下路径」**） | `GetPositionZ() < waterLevel - 0.5f` ⇒ **脚底低于液面 0.5 码就算游泳**（`GetWaterLevel` 只返回液面高度，拿不到深浅） | ❌ |
+
+- 该补丁的目的要保留：**浅水里刷出的水生怪追人进深水后仍带陆地标记 ⇒ 一边下沉一边疯狂闪避**（同一 commit 的
+  `WATER_MOVEMENT_NOTES.md` 里还明写"进入游泳：z < 水面 − 0.5（**浅水也游**，不贴浅滩）"—— 说明是有意设计，不是手误）。
+- 后果（走查仿真）：怪从水深 7.70 追回岸边时，旧判据会**一路 SWIM 到离岸 12.5 码、水深只剩 0.87 码（小腿深）**才切回走路。
+
+### 二、修法（判据统一到"水深"，两级迟滞 + 水面检查）
+```
+开始游泳：水深 > 碰撞高度（≈2.03，与刷点同一个量、同一个半径）
+停止游泳：水深 <= max(0.5, 碰撞高度 - 0.5)（=1.53，0.5 码迟滞防抖）
+         或脚底高出液面 0.2 码（进出各留 0.2 码迟滞）或无液体
+```
+- 水深取 `GetWaterLevel(x, y, z, &liquidBottom)` 的**输出参数**：它是该点的**静态地面高度**
+  （`GridMap.cpp:1396-1398` 的 `GetHeightStatic`，紧接着 `getLiquidStatus` 就是用这个高度查液体的），
+  所以 `waterLevel - liquidBottom` 就是"站在此处的水深"，与 `IsSwimmable` 的 `level - depth_level` 同源，
+  **每 tick 地形查询次数与原代码相同**。
+  （子代理初稿把这里注释成"输出的是 `getLiquidStatus` 的 `depth_level`"，我复核源码后改正了注释——数值口径不受影响。）
+- **`[SURFACE-GUARD]` 水面检查**必须保留：站在水面之上的栈桥/码头/礁石上时下方水可能很深，
+  纯用"水深"会把它误判成游泳（旧判据靠 `z < 水面 − 0.5` 天然躲开了这个坑）。
+
+### 三、离线验证（读本机 `.map` 液体+高度数据；解析器与 DB 独立数据吻合到 0.002 码）
+| 点位 | 液面 | 水底 | 水深 | 旧判据 | 新判据 |
+|---|---|---|---|---|---|
+| map0 塔伦米尔河岸 (-862.78, -596.69) | 32.933 | 31.276 | **1.657** | 游泳 | **walk** |
+| map0 塔伦米尔河岸 (-856.78, -594.69) | 32.933 | 32.892 | **0.041**（脚踝） | 游泳 | **walk** |
+| map1 杜隆塔尔海岸 (6509.88, -3733.20) | 0.000 | -0.157 | **0.157**（脚踝） | 游泳 | **walk** |
+| map0 栈桥面 z=33.933（下方水深 4.356） | 32.933 | 28.577 | 4.356 | walk | **walk**（未被误判 ✅） |
+| map1 大海深处（脚底 −2.5） | 0.000 | -5.634 | 5.634 | 游泳 | **游泳**（保留 ✅） |
+
+1672 个真实点位汇总：**脚踝浅水（水深 ≤0.5）旧判据 71/71 判游泳、新判据 0/71**；可涉水带（0.5<水深≤碰撞高度）
+429 点旧 429/429 误判、新 0/429；**深水 1172 点两判据完全一致**。
+⇒ 直接回答站长那一步：岸边脚踝深在新判据下**不再置游泳标记**。
+（另记一个解析陷阱：`.map` 液体高度图用 **−500.0 作"此处无水"哨兵**，而 `getLiquidStatus` 不显式判它，
+离线复算必须剔除，否则会凭空多出上万条"深水点"。）
+
+### 四、上游怎么做的（对照）
+- **cmangos 系**（`mangos-tbc Creature.cpp:458-462`、`mangos-classic :438-442`）刷点判据与我们**逐字相同**，
+  但**只在刷点判一次、之后永不重算**（`SetSwim` 在 classic 甚至没有调用者）；
+- **TrinityCore** 每 tick 重算，但门槛是"液体状态"（`delta = level - z > 0`）而不是水深，**没有 min-depth**；
+- ⇒ 我们分支的差异全在**运行时**那一处，本次就是把运行时口径**改回与上游刷点判据一致**。
+
+### 五、连带改的一处：`MoveSplineInit.cpp` 的 `sawUnderwater`
+`sawUnderwater`（`MoveSplineInit.cpp` 里"路径点进入水体"的判定）原来只要求 `groundZ < waterLevel`（不看水深），
+浅水也会 `SetSwim(true)`，下一 tick 被 `Unit::Update` 清掉，而 `TargetedMovementGenerator` 以"标记翻转"触发
+重新寻路（250ms 节流）⇒ 岸边可能闪一下游泳动作。现改为
+**只有 `(waterLevel - groundZ) > GetCollisionHeight()` 才置 `sawUnderwater`**；
+**z 修正逻辑对浅水仍然生效**（那段浅水夹取本来就是为浅滩写的），这一点特别标注以免后人误删。
+
+### 六、风险 / 只能靠游戏内确认的部分
+1. 螃蟹等 `WALK_IN_WATER`（`CREATURE_EXTRA_FLAG_WALK_IN_WATER`）跳过条件一字未动；
+2. 水生怪在浅水不再游泳、改贴水底/walk —— 这是本次的目的，且与上游刷点判定一致，但属**观感变化**；
+3. 追人上岸的切换点由"水深 0.87"提前到"1.53"，两侧都只翻转一次（无抖动）；深水段行为完全不变；
+4. 性能：地形查询次数不变，仅多一次 `GetCollisionHeight()`；
+5. **只能游戏内确认**：客户端动画是否真的跟着变（离线只证明服务端不再置 `MOVEFLAG_SWIMMING`/`UNIT_FLAG_SWIMMING`）、
+   浅水岸边是否还有"闪一下"（可用 `PFDBG_MSG` + `LOG_FILTER_PATHFINDING` 看 `set-swim` 是否仍在浅水触发）、
+   真实 WMO 码头上的 `GetPositionZ()`。
+   **验收建议**：希尔布莱德/杜隆塔尔河里找水生怪，`.gps` 记录它站在岸边（脚踝深）与深水时的位置与动作。
+
+### 七、状态
+- 本地：Debug 已编译（0 error，`Unit.cpp` 与 `MoveSplineInit.cpp` 均重新编译）；尚未布到本地实例（本地实例仍跑上一版二进制）。
+- 云端：**随 04:06 nightly 一起上**（源码已同步校验一致）。若观感不对，回滚只需还原这两个文件里对应的两处判据
+  （本提交的 diff 很小，见 `git show`），或等下一晚随新提交回滚。
+- 交付物：`_agent_tmp\delegation\swim_depth\{REPORT.md, liquid_probe.py, step2_evidence.py, evidence_output.txt, swim_logic_mirror.cpp, UPSTREAM.md, unit_cpp.diff}`。
 
 
 
