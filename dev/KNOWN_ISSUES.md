@@ -6657,6 +6657,10 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
      ⇒ 这些火盆**从来不生成**（节日祭坛/任务点会缺）；
   2. **6 个 creature 刷点**（map 530 ×4：组 28015/28016；map 0 ×2：组 19980）所在组没有任何随机候选。
   两类都要"给具体 entry"或"补候选"的**数据决策**，不建议照 AC 直接抄（需逐点核对坐标与用途）。
+- ⚠️ **2026-10-01 当天更正**：第 1 条**猜错了**。这 66 个点**不是火盆，是西部瘟疫之地的矿脉刷点**，
+  而且根因也不是"没候选"而是"**组缺成员行**"；凡"AzerothCore 同 guid 是 X"的推断都作废（两库 guid 池不共享）。
+  定案过程、证据与修复意向见本章后面新增的
+  「[数据] 2026-10-01 「永远刷不出的 72 个刷点」定案」一节（第 6803 行起）。
 
 ---
 
@@ -6798,4 +6802,73 @@ $ python dev/tools/vmap_los_probe.py ray 556 34.11 302.45 26.92 5.36 316.72 31.3
   `src/game/vmap/VMapManager2.{h,cpp}`、`src/game/vmap/MapTree.h`、
   `src/game/vmap/IVMapManager.h`、`src/game/vmap/VMapDefinitions.h`、`src/game/Maps/GridMap.cpp`、
   `src/game/Chat/{Level3.cpp,Chat.cpp,Chat.h}`）。
+
+---
+
+## [数据] 2026-10-01 「永远刷不出的 72 个刷点」定案：**66 个是西瘟疫之地矿脉刷点（组缺成员行）+ 6 个生物（组缺候选）** —— 也推翻了上一章的"火盆"猜测
+
+本节是对上一章（刷点诊断三件套）那句"待站长定"的**收口**：72 条已经逐条查清、有独立复核、有可直接采用的 SQL 草案，**但都还没落库**（数据决策在站长）。
+
+### 一、复现（两边对得上）
+- `python dev/tools/spawn_audit.py --list 0 --tsv` → **72 条 = 6 creature + 66 gameobject**，与启动自检日志
+  `SPAWN-SANITY: 6 of 1189 creature…` / `66 of 6181 gameobject…` 完全一致；分母也核对上了
+  （`SELECT COUNT(*) FROM creature WHERE id=0` = 1189、gameobject = 6181）。
+
+### 二、66 个 gameobject → **不是火盆，是「西部瘟疫之地矿脉」**（证据强度：强）
+1. **AC 线索必须否掉**：本库与 `acore_world` 的 guid 池**不共享** —— `acore_world` 的 guid 78606 不是 181355；
+   它的 creature guid 11559 是 map 560 的「Hillsbrad Peasant」，而本库 11559 在 map 0 暴风城。
+   ⇒ **凡"AC 同 guid 是 X"的推断一律作废**（上一章的 181355 结论就是踩了这个坑）。
+2. 这 66 个 guid 是 78606–78804 **步长 3**（经典"一矿点占 3 连 guid"），坐标 x∈[991,3116]、y∈[-2459,-867] = 西瘟疫之地；
+   30 码内全是本地图怪 + Andorhal Tower、Mountain Silversage。
+3. **组名本身就写着矿**：spawn_group **21–33** 的名字是
+   `Western Plaguelands - Mithril Deposit | Gold Vein | Truesilver Deposit (1) Ore 00x`、
+   `… Small Thorium Vein | Truesilver Deposit …`、`… Rich Thorium Vein | Truesilver Deposit …`；
+   `spawn_group_entry` 候选也在：`1734 Gold Vein / 2040 Mithril Deposit / 2047 Truesilver Deposit /
+   324 Small Thorium Vein / 175404 Rich Thorium Vein`。
+4. **根因（与"缺候选"相反）**：这 13 个组**缺的是成员行** —— `spawn_group_spawn` 里 **0 行**。
+   机制：`spawnGroupByGuidMap` 只在加载 `spawn_group_spawn` 时登记 guid（`ObjectMgr.cpp` 读表处），
+   组没有成员 ⇒ 这 66 个刷点谁也登记不到 ⇒ 组的候选 entry **永远作用不到任何刷点** ⇒ 静默不生成。
+   **全库"有候选但没成员"的组恰好只有这 13 个**（`spawn_group_entry` 左连 `spawn_group_spawn` 为空的结果就是 21..33）。
+5. **参考库对照（我自己复核过，非子代理口述）**：
+   | 库 | 组 21..33 的 `spawn_group_spawn` 行数 |
+   |---|---|
+   | `classicmangos_ref` | **66** |
+   | `wotlkmangos` | **66** |
+   | 本库 `tbcmangos` | **0** |
+   | `tbcmangos_orig`（我们改造前原件） | **0** |
+   | `tbcdb_ref`（上游 tbc-db） | **0** |
+   ⇒ **这是 cmangos TBC 系数据本身的缺口**（我们没改坏），而 classic/WotLK 两库都有这 66 行可抄。
+6. 逐行核对（脚本 `verify_membership.py`）：classic 的 66 个成员 guid **在本库全部存在**，`map=0`、`id=0` 一致，
+   **最大坐标漂移 0.005 码**，且本库当前**没有**任何一行占用这些 (组,guid) ⇒ **纯 INSERT、零冲突**。
+   每组成员数 5,5,5,6,6,5,5,5,6,6,4,4,4 = 66。
+
+### 三、6 个 creature → 方向相反：**组在、成员在，但组没有候选**
+| guid | map | 组 | 组名 | 说明 |
+|---|---|---|---|---|
+| 11559 / 11560 | 0 | 19980 | Stormwind - Battleground Emissary x2 - Patrol | 两个 guid **坐标完全重合（0.0 码）**；组带 `Flags=10`、`WorldState=19998` |
+| 5306137 | 530 | 21138（+28016） | Bloodmyst - Silverleaf - Blue Island left | 组缺候选 |
+| 5306141 | 530 | 21139（+28015） | Bloodmyst - Silverleaf - Blue Island right | 组缺候选 |
+| 5306143 | 530 | 21145（+28016） | Bloodmyst - Silverleaf - Axxarien | 组缺候选 |
+| 5306148 | 530 | 28015 | Netherstorm - Group 005 - Disembodied Protector (15) | 组缺候选 |
+
+- 这 6 个组 `spawn_group_entry` 与 `spawn_group_squad` **都是 0 行**（我复核：查询返回空集）⇒ 未赋值的成员永远解析不出 entry。
+- 更正上一章笔误：坏成员只在 **19980 / 21138 / 21139 / 21145 / 28015**，**28016 本身没有坏成员**。
+- 注意：**一个 guid 可以同时属于两个组**（5306137 ∈ {28016, 21138}、5306141 ∈ {28015, 21139}、5306143 ∈ {28016, 21145}），
+  这是 `spawn_group_spawn` 允许的（加载器用 guid→组 的多重映射），审计脚本"一个 guid 最多一个组"的假设在这一点上不严谨
+  （对本批结论无影响：这几个 guid 的两个组都没有候选）。
+- 4 个 map 530 的按"同组多数/同族"倾向可推 `18873`/`18872`，但**五个参考库都没有值可抄**，属推断。
+
+### 四、可直接采用的修复草案（**未落库**，等站长一句话）
+- `_agent_tmp\delegation\spawn_sanity\dev151_draft.sql`：66 行**全静态** `INSERT`（`(Id,Guid)` 逐行字面量，
+  先 `DELETE … WHERE Id BETWEEN 21 AND 33 AND Guid IN (…)` 保证幂等），并附带
+  `dev151_rollback_draft.sql`（`DELETE … WHERE Id BETWEEN 21 AND 33`，还原成现在的 0 行）。
+- 只补**成员关系**，**不动** `MaxCount`、**不动** `spawn_group_entry` 候选。
+  ⚠️ 需站长定：本库这 13 个组 `MaxCount=2`，而 classic/WotLK 都是 `1`（本库 TBC 口径 vs classic 口径）。
+
+### 五、结论与待决
+- A 类（建议补）：66 个矿点（补成员行）+ 4 个 map 530 生物（补组候选，推断值）；
+- B 类（需站长判断）：11559/11560 两个重合的"战场使者"，或补 `22013 Eye of the Storm Emissary`、或判定遗留行删除；
+- C 类（该废弃的）：**0 条**。
+- 复现脚本与全量明细：`_agent_tmp\delegation\spawn_sanity\{REPORT.md, findings.tsv, verify_agent.py, verify_refs.py, verify_membership.py, gen_dev151.py}`。
+
 
