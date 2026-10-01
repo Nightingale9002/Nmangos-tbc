@@ -6395,6 +6395,10 @@ X:  10.940949 Y: 303.282715 Z: 26.605505   grid[32,32] cell[0.9]   GroundZ: -200
 - 后果：每轮刷两条错误日志（`formation create(1) failed … 5550013 have already a formation!` /
   `formation remove(2) failed … 5550015 …`），而且 **5550013 上的动态队形永远不被清理**（魔宠一直保持单列队形状态）。
 - 全库扫描 `command=51 AND datalong IN (150,151)`：**成对出现的只有这一处**，其余都是"只建不删"的巡逻队形（有意为之）。
+  - ⚠️ **2026-10-01 更正（范围收窄）**：这句只在"**同表同 id**"范围内成立。全库 `command ∈ (51,58)` 共 **27 行**
+    （`dbscripts_on_relay` 7 / `dbscripts_on_creature_movement` 18 / `dbscripts_on_quest_end` 2），其中还有
+    **2 组是"跨表配对"**（The Eye：建在 relay `5500002-5500005`、删在 creature_movement `2003701-2003704`）、
+    **1 处"只删不建"**（Slave Pens 组 5470044）。详见「[数据] 2026-10-01 队形（formation）脚本审计」一节。
 - 修法：`UPDATE dbscripts_on_relay SET datalong2 = 5550013 WHERE id=5550007 AND command=51 AND datalong=151 AND delay=20000;`
 
 ### 二、`spawn_group_spawn` 两条无效引用
@@ -6954,6 +6958,74 @@ DB-SCRIPTS 找不到 buddy 等）判得准。
 - 本地：已编译（`build1` Debug，**0 error**）；**未部署**（与 vmap 修复一起等站长的凌晨窗口）。
 - 交接文档同步：`dev/部署注意事项_conf文件的坑.md` 的 AHBot 验证步骤已改为按标签 grep；
   另在 `dev/README_文档导航.md` 索引里加了本节。
+
+---
+
+## [数据] 2026-10-01 队形（formation）脚本全库审计：`command 51/58` 共 27 行，**5550007 已修好**，另发现 6 处同类脏数据（**均未动手**）
+
+### 一、命令语义（本库事实，源码为证）
+- "队形"就是 **`spawn_group`**；建/删用 **`command = 51`**（`SCRIPT_COMMAND_SPAWN_GROUP`），
+  **子命令在 `datalong`**：`150 = 建队形` / `151 = 删队形` / `100 = 改形状` / `101 = 改间距` / `102 = 改选项`，
+  **队形组 id 在 `datalong2`**（`ScriptMgr.h` 的命令表 + `ScriptMgr.cpp` 执行体；加载期校验在同文件）。
+- `command = 58`（`SPAWN_SPAWN_GROUP`）在本库 **0 行**。
+- 运行时**清队形的唯一实现**是 `CreatureGroup::ClearFormationData()`（`SpawnGroup.cpp`），
+  全库只有 `ScriptMgr.cpp` 一个调用点 ⇒ 没有别的机制会"顺手"把队形清掉。
+
+### 二、审计规模
+- 全库 `command ∈ (51,58)` 共 **27 行**：`dbscripts_on_relay` **7**、`dbscripts_on_creature_movement` **18**、
+  `dbscripts_on_quest_end` **2**（其余 6 张 dbscript 表 0 行）。`dbscripts_on_relay` 全表 3130 行 / 865 个 id。
+
+### 三、已修的那件：`dbscripts_on_relay 5550007` —— **复核通过，dev/146 的修复正确**
+`SELECT id,delay,priority,command,datalong,datalong2 FROM dbscripts_on_relay WHERE id=5550007` 共 12 行，关键两行：
+`delay 0 / priority 2 / 51 / 150 / 5550013`（建）与 `delay 20000 / priority 2 / 51 / 151 / 5550013`（删）⇒ **配对一致**。
+- 删除延迟 20s < 触发周期 27s ⇒ 不会被 `Map::ScriptsStart` 的 UNIQUE_BY_SOURCE_TARGET 整流跳过。
+- 注释 "Group 011" 与 `spawn_group 5550013 = Shadow Labyrinth - Group 011 - Cabal Familiar (5)` 吻合；
+  orig 里删的是 **5550015**（= Group 013，`spawn_group_formation` 里没有它，而且 5550015 同时是个 **path id**）
+  ⇒ 当年是**粘错了命名空间**（组 id 与 path id 同号，5 个相关 id 全部命中这个陷阱）。
+- 触发链：`creature_ai_scripts 5550124`（绑定 guid 5550124 = Cabal Warlock，entry 18640，map 555）→ 每 27 秒
+  `ACTION_T_START_RELAY_SCRIPT(53)` → relay 5550007；队形成员为 guid **5550128–5550132**（5× Cabal Familiar），
+  master = slot0 = **5550128**（`FormationData::GetMaster()`）。
+- ⚠️ **一处尚未闭环**（需实机一次）：修复后是否仍刷 `command 20 call for creature in formation, skipping`
+  —— 取决于 10 码内命中的魔宠是否恰为 slot0；云端日志里确实出现过这条（`ScriptMgr.cpp` 是拦截面）。
+
+### 四、新发现的 6 条（**全部是老数据，不是我们改坏的**）
+参考库整表 diff（relay 表 removed=1/added=1 就是 dev/146 那一行；`dbscripts_on_creature_movement` 7171 行、
+`spawn_group_formation` 357 行完全一致）证明：51/58 相关改动**只有 dev/146 那两件**。
+
+| # | 位置 | 问题 | 严重度 |
+|---|---|---|---|
+| 1 | `dbscripts_on_creature_movement 1795702` | `51/151` 删掉组 **5470044 的静态队形**（`spawn_group_formation` 里有它），全库无重建 ⇒ 巡逻一圈后队形**永久消失**，之后每圈报 remove 失败 | 中（功能） |
+| 2 | `dbscripts_on_relay 5500002 / 5500003` | 两行都建组 **5500005**，而该组**本就有静态队形** ⇒ 后触发者每轮报 create 失败 | 低（日志噪音） |
+| 3 | `dbscripts_on_relay 5500004 / 5500005` | 同上，目标组 **5500006** | 低 |
+| 4 | `creature_ai_scripts 2003704-2003711 + 2003803-2003826` | **32 行 / 16 只怪**各自 15–30s 计时器分别启动同一条 relay ⇒ 每循环"1 次建成功 + ~7 次 create 失败" | 低（噪音+无用功） |
+| 5 | `dbscripts_on_relay 5500002-5500005`（12 行） | 注释组名整体**错位一格**（写 "Group 006/007"，实际作用于组 5500005/5500006 = "Group 005/006 - Patrol 002/003"）；id/触发者/路径三者自洽，只是注释错 | 极低 |
+| 6 | `dbscripts_on_relay 1162501` | 往组 19019 建队形、全库无删除（上游一致、疑似有意），但触发点是 `creature_spawn_data_template 11625.RelayId` ⇒ **每次地图重载都会再建一次并报 create 失败** | 低 |
+
+### 五、这 6 条正好解释了日志普查里的那 21 行
+日志模式表里 `formation create(1) failed … have already a formation`（10 行）与
+`formation remove(2) failed …`（11 行）就是 The Eye 与 Slave Pens 这两处的产物
+（见「[运维] 2026-10-01 日志噪音普查」一节）。**不是新 bug，是长期存在的老数据**。
+
+### 六、修复建议（**只出草案，未执行**，等站长定）
+- **P3（零功能风险，建议做）**：`UPDATE dbscripts_on_relay SET comments = REPLACE(...)` 修 4 条 relay 的注释错位（12 行）。
+- **P2（需站长确认作者意图）**：
+  - 删 `creature_ai_scripts 2003803…2003826`（**24 行**，已核实区间正好 24 行、`creature_id` 全为 Phoenix-Hawk Hatchling 的 Guid EAI）——若确认"每只怪各自启动同一条 relay"不是本意；
+  - 或删 `1795702` 的 151 行（**1 行**）——若确认 Slave Pens 那组队形本来就该在巡逻到某点后消失。
+- **源码小问题（不改仓库，仅记录）**：`ScriptMgr.cpp` 里删队形分支的报错文案是从建队形分支复制来的
+  （删队形却写 "create(1) failed"、没有队形却写 "have already a formation"）；且 `case 150` **不校验**
+  `data1` 指向的 `spawn_group` 是否存在（只有 `case 151` 校验）⇒ 建议补校验。
+
+### 七、存疑
+1. 5550007 修复后是否仍刷 `… in formation, skipping`（需实机一次日志；拦截面在 `ScriptMgr.cpp`）；
+2. The Eye 那 4 行（#2/#3）是刻意循环还是历史残留（形态像刻意：路径末端删、relay 再建；但"16 只怪各自启动同一条 relay"大概不是作者本意）；
+3. 注释错位的成因（注释写错 vs 组 id 编错过）——成员关系/路径名/StringId 三者都指向现组 id，倾向"只是注释错"，但无法证明；
+4. 未展开：`spawn_group_squad` / `spawn_group_entry` / `spawn_group_linked_group`、`script_waypoint`、
+   `movement_template` 与队形的交互；
+5. 云端未接触 ⇒ dev/146 那条 UPDATE 在云端是否生效未复核（可跑
+   `SELECT id,delay,priority,datalong,datalong2 FROM dbscripts_on_relay WHERE id=5550007 AND command=51;` 闭环）。
+
+- 交付物与复现脚本：`_agent_tmp\delegation\relay_formation\{REPORT.md, formation_audit.tsv, audit1.py, audit2.py, audit3.py, verify_agent.py, count51158.py}`。
+
 
 
 
