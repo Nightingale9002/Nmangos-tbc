@@ -97,3 +97,9 @@ cmake_install.cmake
 # Module files
 #
 src/modules/
+
+#
+# Python 探针运行产物（dev/tools/*.py 被 import 时生成的字节码缓存）
+#
+__pycache__/
+*.pyc
