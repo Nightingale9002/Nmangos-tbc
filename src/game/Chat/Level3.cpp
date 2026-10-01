@@ -3283,29 +3283,109 @@ bool ChatHandler::HandleGetLosCommand(char* /*args*/)
     bool normalLos = player->IsWithinLOS(x, y, z + player->GetCollisionHeight(), false);
     bool m2Los = player->IsWithinLOS(x, y, z + player->GetCollisionHeight(), true);
 
-    // [LOS-DIAG 2026-09-30] "同一根柱子有时挡有时不挡" 需要区分三种成因，只打印两个布尔值分不出来：
+    // [LOS-DIAG 2026-09-30 / 2026-10-01] "同一根柱子有时挡有时不挡" 需要区分三种成因：
     //   ① 几何本身（vmap 面）——用 firstHit 看挡在哪、由谁挡；
-    //   ② 这张图的 vmap 树没加载 —— VMapManager2::isInLineOfSight() 在 GetMapTree() 找不到树时
-    //      **直接返回 true（= 通视）**，所以"有时不挡"可能是这个（按实例状态，重进本就会变）；
+    //   ② 这张图的 vmap 树没在内存里——VMapManager2::isInLineOfSight() 在 GetMapTree() 找不到树时
+    //      **直接返回 true（= 通视）**，整张图 LOS 全失效。这是"有时挡有时不挡"最可能的成因，
+    //      见 VMapManager2::EnsureMapLoaded() 的长注释；tree= 就是用来一眼看出来的字段：
+    //        tree=NO  => 这次查询根本没几何可用（无论柱子在哪都不挡）；
+    //        tree=YES => 结果由真实几何决定。
     //   ③ 测试用的两点与想象的不一样（.los 的终点是**当前选中单位**的位置，且两端用的碰撞高度不同）。
     // gameplayLOS 用与法术/近战相同的判定（目标自身碰撞高度），便于和实际战斗表现对齐。
     VMAP::IVMapManager* vmgr = VMAP::VMapFactory::createOrGetVMapManager();
-    GridPair gp = MaNGOS::ComputeGridPair(player->GetPositionX(), player->GetPositionY());
-    bool vmapTile = vmgr->IsTileLoaded(player->GetMap()->GetId(), gp.x_coord, gp.y_coord);
+    uint32 const mapId = player->GetMap()->GetId();
+    bool const treeLoaded = vmgr->IsMapTreeLoaded(mapId);
+
+    // 注意：这里必须用引擎自己的网格换算（TerrainInfo::GetGrid(): (int)(32 - coord / SIZE_OF_GRIDS)），
+    // 不能用 MaNGOS::ComputeGridPair()——后者是"就近取整"的坐标对，跟 .map/.vmtile 文件号差 1；
+    // 之前用 ComputeGridPair 查到的是隔壁图块（对非分块图恰好无害，因为那种图 IsTileLoaded 恒为 true）。
+    int gx = int(CENTER_GRID_ID - player->GetPositionX() / SIZE_OF_GRIDS);
+    int gy = int(CENTER_GRID_ID - player->GetPositionY() / SIZE_OF_GRIDS);
+    bool const tileValid = (gx >= 0 && gx < MAX_NUMBER_OF_GRIDS && gy >= 0 && gy < MAX_NUMBER_OF_GRIDS);
+    bool const vmapTile = tileValid && vmgr->IsTileLoaded(mapId, uint32(gx), uint32(gy));
 
     float hx = x, hy = y, hz = z;
     bool firstHit = player->GetMap()->GetHitPosition(player->GetPositionX(), player->GetPositionY(),
         player->GetPositionZ() + player->GetCollisionHeight(), hx, hy, hz, 0.0f);
 
-    PSendSysMessage("Los check: Normal: %s M2: %s gameplay: %s | vmapTile=%d losCalc=%d heightCalc=%d | src=(%.2f, %.2f, %.2f) ch=%.2f dst=(%.2f, %.2f, %.2f) ch=%.2f | firstHit=%s(%.2f, %.2f, %.2f)",
+    PSendSysMessage("Los check: Normal: %s M2: %s gameplay: %s | map=%u inst=%u tree=%s tiled=%s tile=%s(%d,%d) losCalc=%d heightCalc=%d | src=(%.2f, %.2f, %.2f) ch=%.2f dst=(%.2f, %.2f, %.2f) ch=%.2f | firstHit=%s(%.2f, %.2f, %.2f)",
                     normalLos ? "true" : "false", m2Los ? "true" : "false",
                     player->IsWithinLOSInMap(target, true) ? "true" : "false",
-                    vmapTile ? 1 : 0, vmgr->isLineOfSightCalcEnabled() ? 1 : 0, vmgr->isHeightCalcEnabled() ? 1 : 0,
+                    mapId, player->GetMap()->GetInstanceId(),
+                    treeLoaded ? "YES" : "NO", vmgr->IsMapTiled(mapId) ? "YES" : "NO",
+                    vmapTile ? "YES" : "NO", gx, gy,
+                    vmgr->isLineOfSightCalcEnabled() ? 1 : 0, vmgr->isHeightCalcEnabled() ? 1 : 0,
                     player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->GetCollisionHeight(),
                     x, y, z, target->GetCollisionHeight(),
                     firstHit ? "hit" : "none", hx, hy, hz);
+
+    if (!treeLoaded)
+        PSendSysMessage("Los check: map %u had NO vmap tree in memory before this query - vmap geometry (walls, pillars, floors) was NOT part of the check above. See dev/KNOWN_ISSUES.md 'VMAP-KEEPALIVE'.",
+                        mapId);
     return true;
 }
+
+// [LOS-DIAG 2026-10-01] 服务器控制台专用：不依赖客户端/角色，直接对指定两点做 vmap 查询，
+// 并打印树状态（treeBefore/treeAfter）。用于验证 "树被清掉后查询自愈"（VMapManager2::EnsureMapLoaded）。
+bool ChatHandler::HandleVMapLosCommand(char* args)
+{
+    uint32 mapId;
+    if (!ExtractUInt32(&args, mapId))
+    {
+        SendSysMessage("usage: vmaplos <mapId> <x1> <y1> <z1> <x2> <y2> <z2>");
+        return false;
+    }
+
+    float c[6];
+    for (float& v : c)
+    {
+        if (!ExtractFloat(&args, v))
+        {
+            SendSysMessage("usage: vmaplos <mapId> <x1> <y1> <z1> <x2> <y2> <z2>");
+            return false;
+        }
+    }
+
+    VMAP::IVMapManager* vmgr = VMAP::VMapFactory::createOrGetVMapManager();
+    bool const treeBefore = vmgr->IsMapTreeLoaded(mapId);
+    bool const tiledBefore = vmgr->IsMapTiled(mapId);
+
+    bool const losNormal = vmgr->isInLineOfSight(mapId, c[0], c[1], c[2], c[3], c[4], c[5], false);
+    bool const losM2 = vmgr->isInLineOfSight(mapId, c[0], c[1], c[2], c[3], c[4], c[5], true);
+
+    float rx = c[3], ry = c[4], rz = c[5];
+    bool const hit = vmgr->getObjectHitPos(mapId, c[0], c[1], c[2], c[3], c[4], c[5], rx, ry, rz, 0.0f);
+    float const h1 = vmgr->getHeight(mapId, c[0], c[1], c[2] + 2.0f, 10.0f);
+    float const h2 = vmgr->getHeight(mapId, c[3], c[4], c[5] + 2.0f, 10.0f);
+
+    PSendSysMessage("VMapLOS: map=%u treeBefore=%s treeAfter=%s tiled=%s | Normal=%s M2=%s | hit=%s(%.2f, %.2f, %.2f) | height1=%.2f height2=%.2f",
+                    mapId, treeBefore ? "YES" : "NO", vmgr->IsMapTreeLoaded(mapId) ? "YES" : "NO", tiledBefore ? "YES" : "NO",
+                    losNormal ? "true" : "false", losM2 ? "true" : "false",
+                    hit ? "yes" : "no", rx, ry, rz, h1, h2);
+    return true;
+}
+
+// [LOS-DIAG 2026-10-01] 服务器控制台专用：把某张图的 vmap 树强制卸掉，用来复现/验证
+// "树在玩家还在图里时被清掉" 的故障态（VMapManager2::unloadMap(mapId) 正是 TerrainInfo 析构
+// 和"最后一条 tile 记账被清"时走的那条路）。卸掉之后紧接着做一次 vmaplos，应当看到
+// treeBefore=NO / treeAfter=YES（查询自愈）。
+bool ChatHandler::HandleVMapUnloadCommand(char* args)
+{
+    uint32 mapId;
+    if (!ExtractUInt32(&args, mapId))
+    {
+        SendSysMessage("usage: vmapunload <mapId>");
+        return false;
+    }
+
+    VMAP::IVMapManager* vmgr = VMAP::VMapFactory::createOrGetVMapManager();
+    bool const before = vmgr->IsMapTreeLoaded(mapId);
+    vmgr->unloadMap(mapId);
+    PSendSysMessage("VMap: map %u tree: before=%s after=%s (run 'vmaplos %u ...' next and watch treeBefore=NO/treeAfter=YES)",
+                    mapId, before ? "YES" : "NO", vmgr->IsMapTreeLoaded(mapId) ? "YES" : "NO", mapId);
+    return true;
+}
+
 
 bool ChatHandler::HandleDieCommand(char* args)
 {

@@ -6686,3 +6686,116 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
      `random(own table)`（真随机，未展开成具体 entry）；
   3. 它只读库、不写库、不碰服务端 ⇒ 可以随便跑。
 
+---
+
+## [上游bug] 2026-10-01 塞泰克大厅「同一根柱子有时挡视线、有时完全不挡」＝**副本图的 vmap 树会在玩家还在本里时被整棵删掉**（`VMAP-KEEPALIVE`）
+
+### 一、站长报告与 `.los` 输出里的决定性一列
+
+站长在塞泰克大厅（Talon King Ikiss 房间）反复打 `.los`，同一场战斗里出现两种完全相反的结果：
+
+```
+Los check: Normal: false M2: false gameplay: false | vmapTile=1 losCalc=1 heightCalc=1 | src=(18.84, 318.02, 26.42) ch=1.91 dst=(25.14, 294.63, 25.06) ch=4.06 | firstHit=hit(20.09, 313.40, 27.68)
+Los check: Normal: true  M2: true  gameplay: true  | vmapTile=0 losCalc=1 heightCalc=1 | src=(34.11, 302.45, 25.01) ch=1.91 dst=(5.36, 316.72, 29.39) ch=4.06 | firstHit=none(...)
+```
+
+**`vmapTile` 这一列就是答案**，理由要说清楚（否则会误读成"图块没加载，很正常"）：
+
+- 塞泰克大厅（map **556**）是**非分块图**：`vmaps/` 里只有 `556.vmtree`，**一个 `556_*.vmtile` 都没有**
+  （本地与云端完全一致，md5 `eb8a4166c01cbef3f907be9670a61991`；TBC 副本图基本都是这种形态，564 黑庙是少数例外）。
+- 非分块图的碰撞几何由 `StaticMapTree::InitMap()` **一次性**加载；`StaticMapTree::LoadMapTile()` 对非分块图
+  只写一条**值为 false 的"假 tile 记录"**（注释原文：*fake tile loads to know when we can unload map geometry*）。
+- `StaticMapTree::IsTileLoaded()` 的第一行就是 `if (!iIsTiled) return true;` ⇒ **对非分块图，只要树在就恒为 true**。
+- 于是对 map 556：`vmapTile=1` ⇔ **树在内存里**；`vmapTile=0` ⇔ **树根本不在了**，没有第三种解释。
+  这一列取的是"地图级"状态，和测试点落在哪一格无关 —— 所以那场战斗里**有 3 次查询是在"整张图没有任何 vmap 几何"的状态下做的**。
+- 而 `VMapManager2::isInLineOfSight()` 在 `GetMapTree()` 找不到树时是 **直接 `return true`（= 通视）** ⇒ 柱子当然不挡。
+
+**离线复核**（`dev/tools/vmap_los_probe.py`，直接读 `556.vmtree` 算射线，与服务端同一份数据）：
+
+```
+$ python dev/tools/vmap_los_probe.py ray 556 18.84 318.02 28.33 25.14 294.63 29.12
+  t=0.199  game(20.09, 313.36, 28.49)  flags=0x6 WMO  model=Demon_Wing.wmo      ← 与游戏内 firstHit 完全一致
+$ python dev/tools/vmap_los_probe.py ray 556 34.11 302.45 26.92 5.36 316.72 31.30
+  t=0.161  game(29.49, 304.74, 27.62)  flags=0x6 WMO  model=Demon_Wing.wmo
+  t=0.194  game(28.54, 305.22, 27.77)  flags=0x6 WMO  model=Demon_Wing.wmo
+  t=0.569  game(17.75, 310.57, 29.41)  flags=0x6 WMO  model=Demon_Wing.wmo
+  t=1.238  game(-1.49, 320.12, 32.34)  flags=0x6 WMO  model=Demon_Wing.wmo
+```
+
+即：**那一对"不挡"的坐标其实应该被挡 4 次**（最近一次离玩家只有 5.2 码）。游戏里"不挡"是错的 ⇒ 唯一解释就是树没了。
+（`firstHit` 的 z 略差 0.8 码是因为 `.los` 的 `GetHitPosition` 用的 z 切面/`modifyDist` 与本次探针不同，x/y 完全相同。）
+
+### 二、代码级根因（四步，全部可查）
+
+1. **记账是"假的"**：`StaticMapTree::LoadMapTile()`（`MapTree.cpp`）对非分块图只写 `iLoadedTiles[packTileID(x,y)] = false;` 就返回；
+   真正的模型是 `StaticMapTree::InitMap()` 加载的。
+2. **删树只看记账条数**：`VMapManager2::unloadMap(mapId, x, y)` → `StaticMapTree::UnloadMapTile()` 把这条记录 `erase`，
+   回到 `VMapManager2::unloadMap()` 里 `if (numLoadedTiles() == 0) { delete tree; }` ⇒ **最后一条记录消失 = 整棵树被删**。
+3. **清账的人**：`TerrainInfo::CleanUpGrids()`（`GridMap.cpp`，**每 60 秒**）把"引用计数为 0 的网格"连同它的 vmap 记录一起释放。
+   `TerrainInfo` 是**同一 mapId 的所有副本实例共用**的（`sTerrainMgr.LoadTerrain(mapId)`），所以另一个副本小队的进出也会影响它。
+4. **补账的路被堵死**：`TerrainInfo::LoadMapAndVMap()` 过去写的是
+   `if (m_GridMaps[x][y] && IsTileLoaded() && IsMMapIsLoaded()) { return; }`，
+   而非分块图只要树在 `IsTileLoaded()` 就恒为 true ⇒ **新加载的网格从不登记** ⇒ 记录**只减不增**，
+   树被删掉之后**没有任何路径把它加载回来**（`loadMap` 只在网格加载时被调用，而那个网格的 `GridMap` 还在，不会重走这条路）。
+
+⇒ 表现就是"进本时正常，过一会儿（≤ 每 60 秒一轮清账之后）整张图的 LOS 全部失灵，直到有人跨格触发一次网格加载"。
+这与站长的体感完全一致：**随机、且和柱子无关**（同一条线路上时挡时不挡）。
+
+### 三、修复（两处代码 + 两个诊断命令，不动任何数据）
+
+1. **补登记**（`TerrainInfo::LoadMapAndVMap()`，`GridMap.cpp`）：不再用 `IsTileLoaded()` 当"要不要登记"的判据，
+   **无条件**调用 `vmgr->loadMap(...)` 补一次登记；`loadMap()` 改成**幂等**（见下），已登记的 tile 立刻返回，不会重复读文件/重复取模型。
+   这样保证「**网格在用 ⇒ 一定有一条记录**」，整树删除就再也不会发生在还有网格活着的时候。
+2. **幂等 + 自愈**（`VMapManager2`）：
+   - `_loadMap()` 新增"该 tile 已登记就直接返回"（防重复 `acquireModelInstance` 造成模型引用计数泄漏）；
+   - 新增 `EnsureMapLoaded(mapId, x1,y1, x2,y2)`：**查询时发现树不在就按需重新加载**
+     （`isInLineOfSight()` / `getObjectHitPos()` / `getHeight()` 三处入口都调用；正常路径只多一次哈希查找，不碰磁盘）；
+   - 新成员 `iBasePath`（`loadMap()` 传进来的数据目录，重载要用）与 `iNoVmapDataMaps`（`.vmtree` 打不开的图只记一次，
+     避免每次都去 `fopen`）；这类图 `loadMap()` 现在返回 `IGNORED` 而不是 `ERROR`，`Server.log` 不会被"本来就没数据"的地图刷屏。
+3. **诊断**（`dev/KNOWN_ISSUES.md` 本节 + `Level3.cpp`）：
+   - `.los` 输出改为：`map=<id> inst=<id> tree=YES/NO tiled=YES/NO tile=YES/NO(gx,gy) …`，
+     其中 **`tree`** 就是上面那列的决定性字段；树不在时**额外再打一行红字**提示"本次结果不含任何 vmap 几何"。
+     同时修正了旧版 `.los` 的一个坐标 bug：它用 `MaNGOS::ComputeGridPair()`（就近取整的坐标对）去查 `IsTileLoaded`，
+     与实际网格号差 1；正确的换算是 `Map::EnsureGridCreated()` 的 `63 - p.x_coord` / `TerrainInfo::GetGrid()` 的 `(int)(32 - x/533.33)`（两者等价）。
+   - **服务器控制台命令**（`SEC_CONSOLE`，玩家看不到也用不了）：
+     - `vmaplos <mapId> <x1> <y1> <z1> <x2> <y2> <z2>`：对任意两点直接做 vmap 查询，输出
+       `treeBefore=… treeAfter=… tiled=… | Normal=… M2=… | hit=… | height1=… height2=…`；
+     - `vmapunload <mapId>`：**强制把某张图的 vmap 树卸掉**，用来复现"树在玩家还在本里时被删"的故障态。
+   - 自愈发生时 `Server.log` 会留一行（关键字 `had NO vmap tree`），可直接 grep 监控：
+     `VMAP: map 556 had NO vmap tree in memory (it was unloaded while still in use) - reloaded on demand for tile 31,31; …`
+
+### 四、本地验证（2026-10-01，本地 mangosd，控制台直连）
+
+| 步骤 | 命令 | 结果 |
+|---|---|---|
+| ① 站点原始"挡"的那一对 | `vmaplos 556 18.84 318.02 28.33 25.14 294.63 29.12` | `treeBefore=NO treeAfter=YES tiled=NO \| Normal=false M2=false \| hit=yes(20.09, 313.36, 28.49)` ← **与离线探针逐位一致**（自愈在同一个调用里完成） |
+| ② 站点原始"不挡"的那一对 | `vmaplos 556 34.11 302.45 26.92 5.36 316.72 31.30` | `treeBefore=YES treeAfter=YES \| Normal=false M2=false \| hit=yes(29.49, 304.74, 27.62)` ← **树在时确实被挡**（与离线探针一致）⇒ 云端那次"通视"是错的 |
+| ③ 复现故障态 | `vmapunload 556` | `tree: before=YES after=NO` |
+| ④ 自愈 | `vmaplos 556 34.11 … 31.30` | `treeBefore=NO treeAfter=YES \| Normal=false \| hit=yes(29.49, 304.74, 27.62)`，并打出 `had NO vmap tree … reloaded on demand for tile **31,31**` ← tile 号与 `GetGrid`/`63-ComputeGridPair` 两种换算都对得上 |
+| ⑤ 幂等（重复查询不再重载） | 同一条命令再打一次 | `treeBefore=YES treeAfter=YES`，结果不变 |
+| ⑥ 分块图不受影响 | `vmaplos 0 -8949 500 100 -8949 550 100` | `treeBefore=YES treeAfter=YES **tiled=YES** \| Normal=true M2=true \| hit=no` |
+| ⑦ 另一张副本图 | `vmaplos 552 0 0 0 10 10 10` | `treeBefore=NO treeAfter=YES tiled=NO \| Normal=false \| hit=yes(8.91, 8.91, 8.91)`，日志同样留下 `map 552 … reloaded on demand` |
+
+编译：`build1` Debug，`mangosd` 目标，**0 error**（只有既有的 C4819「源文件含非 936 字符」警告）。
+
+### 五、影响面 / 为什么以前没发现
+
+- **只影响"非分块图"（副本）**，而且**只在树被清掉之后**才失灵 ⇒ 玩家侧看到的是"随机、时好时坏"，GM 现场查又常常是好的
+  （跨格/有人进出就会把树刷回来），所以极难复现；`.los` 里加了 `tree=` 之后才变成一眼可见。
+- 世界地图（0/1/530 等）是分块图，`IsTileLoaded()` 语义不同，且它们的树在正常游戏里不会被清到 0 条记录 ⇒ 基本不受影响。
+- 另一条**更隐蔽**的同类风险：`VMapManager2::unloadMap(mapId)`（不带 tile 参数）**无论还有没有网格在用**都会删整棵树，
+  它由 `TerrainInfo::~TerrainInfo()` 调用；而 `TerrainInfo` 是同 mapId 的多副本共用的 ⇒ 一个副本实例销毁时，
+  另一个还在跑的副本会瞬间进入"全图通视"。本节的 `EnsureMapLoaded()`（查询自愈）**同时兜住了这种情形**。
+
+### 六、状态 / 验收
+
+- 本地：已编译、已在控制台按上表 7 步验证（含故障复现与自愈）。
+- 云端：**尚未部署**（未动云上一行代码/二进制）。部署后自带 `tree=` 字段的新 `.los`，站长可在塞泰克大厅/任意副本里再打几次确认。
+  - 注意：云端现在跑的仍是**旧版 `.los`**（没有 `tree=` 字段；旧版的 `vmapTile` 列取的是差 1 的坐标），要看新字段必须等这次代码上云。
+- 部署后要看的日志关键字：`Server.log` 里 `had NO vmap tree`（应当**趋近于 0**：补登记生效后树不会被误删；
+  偶尔出现说明还有别的路径删树，属"已自愈但要继续查"的信号）。
+- 相关提交：本次提交（标题以 `vmap: 副本图（非分块图）vmap 树被提前删除…` 开头；`git log --oneline | grep vmap` 可查）—— 涉及
+  `src/game/vmap/VMapManager2.{h,cpp}`、`src/game/vmap/MapTree.h`、
+  `src/game/vmap/IVMapManager.h`、`src/game/vmap/VMapDefinitions.h`、`src/game/Maps/GridMap.cpp`、
+  `src/game/Chat/{Level3.cpp,Chat.cpp,Chat.h}`）。
+

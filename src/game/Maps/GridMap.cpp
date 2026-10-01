@@ -1299,10 +1299,23 @@ GridMap* TerrainInfo::GetGrid(const float x, const float y, bool loadOnlyMap /*=
 
 GridMap* TerrainInfo::LoadMapAndVMap(const uint32 x, const uint32 y, bool mapOnly /*= false*/)
 {
-    if ((m_GridMaps[x][y] && mapOnly)
-        || (VMAP::VMapFactory::createOrGetVMapManager()->IsTileLoaded(m_mapId, x, y) && MMAP::MMapFactory::createOrGetMMapManager()->IsMMapIsLoaded(m_mapId, x, y)))
+    if (m_GridMaps[x][y] && mapOnly)
+        return m_GridMaps[x][y];
+
+    VMAP::IVMapManager* vmgr = VMAP::VMapFactory::createOrGetVMapManager();
+    MMAP::MMapManager* mmgr = MMAP::MMapFactory::createOrGetMMapManager();
+
+    if (m_GridMaps[x][y] && vmgr->IsTileLoaded(m_mapId, x, y) && mmgr->IsMMapIsLoaded(m_mapId, x, y))
     {
-        // nothing to load here
+        // [VMAP-KEEPALIVE 2026-10-01] 数据都在，但 vmap 这边的 (x,y) 记账可能缺：
+        //   非分块图（副本，例如 556 塞泰克大厅只有 556.vmtree）的 tile 记录只是"假记账"
+        //   （StaticMapTree::LoadMapTile() 的 !iIsTiled 分支，值为 false），而 IsTileLoaded()
+        //   对非分块图只要树还在就恒为 true ⇒ 以前这里直接 return，于是**新加载的网格从不登记**，
+        //   记录只减不增；等 VMapManager2::unloadMap(mapId, x, y) 把最后一条记录清掉，整棵树
+        //   就被删掉，而没有任何路径把它加载回来 ⇒ 整张图的 vmap 消失、LOS 变成"全图通视"，
+        //   游戏里就是"同一根柱子有时挡视线、有时完全不挡"。
+        //   loadMap() 现在是幂等的（已登记的 tile 立刻返回，不会重复加载模型），所以这里补一次登记。
+        vmgr->loadMap((sWorld.GetDataPath() + "vmaps").c_str(), m_mapId, x, y);
         return m_GridMaps[x][y];
     }
 
@@ -1334,13 +1347,16 @@ GridMap* TerrainInfo::LoadMapAndVMap(const uint32 x, const uint32 y, bool mapOnl
     if (mapOnly)
         return m_GridMaps[x][y];
 
-    if (!m_vmgr->IsTileLoaded(m_mapId, x, y))
+    // [VMAP-KEEPALIVE 2026-10-01] 这里原来写成 if (!IsTileLoaded()) { load }，对非分块图
+    // （副本）IsTileLoaded() 只要树在就恒为 true ⇒ 网格没登记也不补，记账只减不增（见上面注释）。
+    // 现在无条件调用：loadMap() 幂等（已登记的 tile 立刻返回），未登记的就补上登记，
+    // 于是"网格在用 ⇒ 一定有记录"，VMapManager2 的整树删除就不会再发生在还有网格活着的时候。
     {
         // load VMAPs for current map/grid...
         const MapEntry* i_mapEntry = sMapStore.LookupEntry(m_mapId);
         const char* mapName = i_mapEntry ? i_mapEntry->name[sWorld.GetDefaultDbcLocale()] : "UNNAMEDMAP\x0";
 
-        int vmapLoadResult = m_vmgr->loadMap((sWorld.GetDataPath() + "vmaps").c_str(), m_mapId, x, y);
+        int vmapLoadResult = vmgr->loadMap((sWorld.GetDataPath() + "vmaps").c_str(), m_mapId, x, y);
         switch (vmapLoadResult)
         {
             case VMAP::VMAP_LOAD_RESULT_OK:
@@ -1350,6 +1366,7 @@ GridMap* TerrainInfo::LoadMapAndVMap(const uint32 x, const uint32 y, bool mapOnl
                 // [LOS-DIAG 2026-09-30] 这个以前只在 LOG_FILTER_MAP_LOADING 打开时才可见，于是
                 // "vmap 没加载"会静默表现为"视线永远通畅"（isInLineOfSight 找不到树时直接返回 true）。
                 // 加载失败是真问题，按 error 记录，方便事后从 Server.log 定位。
+                // （磁盘上根本没有这张图的 vmap 数据时 VMapManager2 会返回 IGNORED，不会在这里刷屏。）
                 sLog.outError("VMAP: could not load vmap data for map %s (id %u, tile %d,%d) - line of sight and height queries for this map will be MISSING!",
                               mapName, m_mapId, x, y);
                 break;
@@ -1359,10 +1376,10 @@ GridMap* TerrainInfo::LoadMapAndVMap(const uint32 x, const uint32 y, bool mapOnl
         }
     }
 
-    if (!MMAP::MMapFactory::createOrGetMMapManager()->IsMMapIsLoaded(m_mapId, x, y))
+    if (!mmgr->IsMMapIsLoaded(m_mapId, x, y))
     {
         // load navmesh
-        MMAP::MMapFactory::createOrGetMMapManager()->loadMap(sWorld.GetDataPath(), m_mapId, x, y);
+        mmgr->loadMap(sWorld.GetDataPath(), m_mapId, x, y);
     }
 
     if (m_GridMaps[x][y])

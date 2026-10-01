@@ -94,6 +94,18 @@ namespace VMAP
                     return false;
                 return itr->second;
             }
+
+            /**
+            [VMAP-KEEPALIVE 2026-10-01] 原始记账查询：只回答"这个 (x,y) 有没有登记过"，
+            不区分分块/非分块图。非分块图（副本，例如 556 塞泰克大厅只有 556.vmtree）的登记项
+            值一定是 false（没有对应 .vmtile 文件），因此上面 IsTileLoaded() 对非分块图恒为 true，
+            不能用它判断"要不要补登记"或"是不是重复加载"。
+            */
+            bool IsTileRegistered(uint32 x, uint32 y) const
+            {
+                return iLoadedTiles.find(packTileID(x, y)) != iLoadedTiles.end();
+            }
+
             void UnloadMapTile(uint32 tileX, uint32 tileY, VMapManager2* vm);
             bool isTiled() const { return iIsTiled; }
             uint32 numLoadedTiles() const { return iLoadedTiles.size(); }

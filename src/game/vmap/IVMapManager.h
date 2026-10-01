@@ -92,6 +92,17 @@ namespace VMAP
             virtual std::string getDirFileName(unsigned int pMapId, int x, int y) const = 0;
             virtual bool IsTileLoaded(uint32 mapId, uint32 x, uint32 y) const = 0;
             /**
+            [VMAP-KEEPALIVE 2026-10-01] 诊断用：这张图的 vmap 树当前是否还在内存里。
+            注意 IsTileLoaded() 在"树不存在"和"非分块图的假 tile"两种情况下语义不同，
+            要判断"整张图是不是完全没 vmap 数据"必须用这个。
+            */
+            virtual bool IsMapTreeLoaded(uint32 mapId) const = 0;
+            /**
+            [VMAP-KEEPALIVE 2026-10-01] 诊断用：这张图是不是"分块图"（有 .vmtile，几何按 tile 流式加载）。
+            副本图基本都是非分块图（只有一张 .vmtree，几何在 InitMap 时一次性加载）。
+            */
+            virtual bool IsMapTiled(uint32 mapId) const = 0;
+            /**
             Query world model area info.
             \param z gets adjusted to the ground height for which this are info is valid
             */

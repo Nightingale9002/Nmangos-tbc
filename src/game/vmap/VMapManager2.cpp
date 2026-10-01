@@ -98,8 +98,11 @@ namespace VMAP
         VMAPLoadResult result = VMAP_LOAD_RESULT_IGNORED;
         if (isMapLoadingEnabled())
         {
+            iBasePath = pBasePath ? pBasePath : "";     // [VMAP-KEEPALIVE] 供 EnsureMapLoaded() 按需重载用
             if (_loadMap(pMapId, pBasePath, x, y))
                 result = VMAP_LOAD_RESULT_OK;
+            else if (iNoVmapDataMaps.find(pMapId) != iNoVmapDataMaps.end())
+                result = VMAP_LOAD_RESULT_IGNORED;      // 这张图磁盘上就没有 vmap 数据：不是"加载失败"，别刷错误日志
             else
                 result = VMAP_LOAD_RESULT_ERROR;
         }
@@ -117,6 +120,21 @@ namespace VMAP
     }
 
     //=========================================================
+    // [VMAP-KEEPALIVE 2026-10-01] 诊断用：树是否在内存里（IsTileLoaded 分不清"树没了"和"非分块图的假 tile"）
+    bool VMapManager2::IsMapTreeLoaded(uint32 mapId) const
+    {
+        return GetMapTree(mapId) != iInstanceMapTrees.end();
+    }
+
+    //=========================================================
+    // [VMAP-KEEPALIVE 2026-10-01] 诊断用：分块图（有 .vmtile）还是非分块图（只有 .vmtree）；树不在时报 false
+    bool VMapManager2::IsMapTiled(uint32 mapId) const
+    {
+        InstanceTreeMap::const_iterator instanceTree = GetMapTree(mapId);
+        return instanceTree != iInstanceMapTrees.end() && instanceTree->second->isTiled();
+    }
+
+    //=========================================================
     // load one tile (internal use only)
 
     bool VMapManager2::_loadMap(unsigned int mapId, const std::string& basePath, uint32 tileX, uint32 tileY)
@@ -130,6 +148,11 @@ namespace VMAP
                 MANGOS_ASSERT(false && "Invalid mapId passed to VMapManager2 after startup in thread unsafe environment");
         }
 
+        // [VMAP-KEEPALIVE 2026-10-01] 磁盘上就没有这张图的 vmap 数据（.vmtree 打不开）：记住，
+        // 以后不要再反复 fopen（网格加载、LOS 查询都会走这里）。
+        if (iNoVmapDataMaps.find(mapId) != iNoVmapDataMaps.end())
+            return false;
+
         if (!instanceTree->second)
         {
             std::string mapFileName = getMapFileName(mapId);
@@ -137,6 +160,7 @@ namespace VMAP
             if (!newTree->InitMap(mapFileName, this))
             {
                 delete newTree;
+                iNoVmapDataMaps.insert(mapId);
                 return false;
             }
 
@@ -146,7 +170,75 @@ namespace VMAP
                 instanceTree->second = newTree;
             }
         }
+
+        // [VMAP-KEEPALIVE 2026-10-01] 同一个 tile 不重复加载：对分块图，LoadMapTile() 会重新
+        // fopen .vmtile 并重新 acquireModelInstance()（引用计数只增不减 => 模型泄漏）；对非分块图
+        // 则是覆盖同一条假记录。TerrainInfo::LoadMapAndVMap() 现在会用 loadMap() 来补登记
+        // （见那里的注释），所以这里必须幂等。
+        if (instanceTree->second->IsTileRegistered(tileX, tileY))
+            return true;
+
         return instanceTree->second->LoadMapTile(tileX, tileY, this);
+    }
+
+    //=========================================================
+    // [VMAP-KEEPALIVE 2026-10-01] 让 vmap 查询自愈，为什么需要它：
+    //   ① 副本图是"非分块图"（例如 556 塞泰克大厅只有 556.vmtree，没有 .vmtile）：
+    //      碰撞几何由 StaticMapTree::InitMap() 一次性加载，LoadMapTile() 只写一条值为 false 的
+    //      "假 tile 记录"，而 unloadMap(mapId, x, y) 只要 iLoadedTiles 空了就把整棵树删掉。
+    //   ② 清账的是 TerrainInfo::CleanUpGrids()：每 60 秒把引用计数为 0 的网格连同它的 vmap
+    //      记录一起释放；TerrainInfo 是同一 mapId 的所有副本实例共用的。
+    //   ③ 而 TerrainInfo::LoadMapAndVMap() 过去在 IsTileLoaded()==true 时直接 return ——
+    //      非分块图只要树还在就恒为 true，于是新加载的网格从不登记，记录只减不增，
+    //      树被删掉后再没有任何路径把它加载回来。
+    //   后果：整张图的 vmap 消失，VMapManager2::isInLineOfSight() 找不到树就直接
+    //   return true（= 全图通视），游戏里的表现就是"同一根柱子有时挡视线、有时完全不挡"，
+    //   而且是"进本时正常、打一会儿就失灵"这种随机形态。
+    //   这里做两层修复的第 2 层（第 1 层见 TerrainInfo::LoadMapAndVMap 的补登记）：
+    //   查询时发现树不在就按需重新加载。正常情况（树在）只多一次哈希查找，不会碰磁盘。
+    bool VMapManager2::EnsureMapLoaded(uint32 mapId, float x1, float y1, float x2, float y2)
+    {
+        if (GetMapTree(mapId) != iInstanceMapTrees.end())
+            return true;
+
+        if (!isMapLoadingEnabled() || iBasePath.empty())
+            return false;
+
+        // 不在启动时注册的 map 列表里：不做动态插入（线程不安全环境下会 assert）
+        if (iInstanceMapTrees.find(mapId) == iInstanceMapTrees.end())
+            return false;
+
+        // 这张图本来就没有 vmap 数据
+        if (iNoVmapDataMaps.find(mapId) != iNoVmapDataMaps.end())
+            return false;
+
+        std::lock_guard<std::mutex> lock(m_vmEnsureMutex);
+        if (GetMapTree(mapId) != iInstanceMapTrees.end())       // 双检：可能已被别的线程加载回来
+            return true;
+
+        // 两个端点各自所在的图块都试一次（非分块图随便哪个 tile 都会把同一棵树建起来）
+        static constexpr float tileSize = 533.33333333f;        // SIZE_OF_GRIDS
+        static constexpr uint32 maxTiles = 64;                  // MAX_NUMBER_OF_GRIDS
+        float const points[2][2] = { { x1, y1 }, { x2, y2 } };
+        for (auto const& pt : points)
+        {
+            Vector3 const p = convertPositionToInternalRep(pt[0], pt[1], 0.0f);
+            // 与 TerrainInfo::GetGrid()/LoadMapAndVMap() 一致：grid = (int)(32 - coord / SIZE_OF_GRIDS)
+            uint32 const tileX = uint32(p.x / tileSize);
+            uint32 const tileY = uint32(p.y / tileSize);
+            if (tileX >= maxTiles || tileY >= maxTiles)
+                continue;
+
+            if (_loadMap(mapId, iBasePath, tileX, tileY) && GetMapTree(mapId) != iInstanceMapTrees.end())
+            {
+                NOTICE_LOG("VMAP: map %u had NO vmap tree in memory (it was unloaded while still in use) - "
+                           "reloaded on demand for tile %u,%u; all line of sight / height queries for this map "
+                           "returned 'clear' until now", mapId, tileX, tileY)
+                return true;
+            }
+        }
+
+        return GetMapTree(mapId) != iInstanceMapTrees.end();
     }
 
     //=========================================================
@@ -187,6 +279,8 @@ namespace VMAP
     {
         if (!isLineOfSightCalcEnabled()) return true;
         bool result = true;
+        // [VMAP-KEEPALIVE 2026-10-01] 树没了 => 以前这里直接返回 true（全图通视），现在先尝试按需重载
+        EnsureMapLoaded(mapId, x1, y1, x2, y2);
         InstanceTreeMap::const_iterator instanceTree = GetMapTree(mapId);
         if (instanceTree != iInstanceMapTrees.end())
         {
@@ -212,6 +306,7 @@ namespace VMAP
         rz = z2;
         if (isLineOfSightCalcEnabled())
         {
+            EnsureMapLoaded(mapId, x1, y1, x2, y2);     // [VMAP-KEEPALIVE] 同上：树没了先尝试按需重载
             InstanceTreeMap::const_iterator instanceTree = GetMapTree(mapId);
             if (instanceTree != iInstanceMapTrees.end())
             {
@@ -238,6 +333,7 @@ namespace VMAP
         float height = VMAP_INVALID_HEIGHT_VALUE;           // no height
         if (isHeightCalcEnabled())
         {
+            EnsureMapLoaded(mapId, x, y, x, y);             // [VMAP-KEEPALIVE] 同上：树没了先尝试按需重载
             InstanceTreeMap::const_iterator instanceTree = GetMapTree(mapId);
             if (instanceTree != iInstanceMapTrees.end())
             {

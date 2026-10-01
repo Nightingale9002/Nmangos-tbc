@@ -25,6 +25,8 @@
 
 #include <unordered_map>
 #include <mutex>
+#include <set>
+#include <string>
 
 //===========================================================
 
@@ -68,8 +70,17 @@ namespace VMAP
         private:
             std::mutex m_vmStaticMapMutex;
             std::mutex m_vmModelMutex;
+            // [VMAP-KEEPALIVE 2026-10-01] 专用于 EnsureMapLoaded() 的串行化锁。不能用
+            // m_vmStaticMapMutex：_loadMap() 内部自己也会去拿它，嵌套会自死锁。
+            std::mutex m_vmEnsureMutex;
 
             bool m_thread_safe_environment;
+
+            // [VMAP-KEEPALIVE 2026-10-01] 见 VMapManager2::EnsureMapLoaded()：
+            // loadMap() 传进来的数据目录，按需重载 vmap 树时要用。
+            std::string iBasePath;
+            // InitMap() 失败过（磁盘上就没有这张图的 .vmtree）=> 以后不要再反复 fopen。
+            std::set<uint32> iNoVmapDataMaps;
 
         protected:
             // Tree to check collision
@@ -78,6 +89,12 @@ namespace VMAP
 
             bool _loadMap(uint32 pMapId, const std::string& basePath, uint32 tileX, uint32 tileY);
             /* void _unloadMap(uint32 pMapId, uint32 x, uint32 y); */
+
+            /**
+            [VMAP-KEEPALIVE 2026-10-01] 让查询本身自愈：树不在（被 VMapManager2::unloadMap()
+            提前删掉）时按需重新加载，返回是否已经有树可用。详见实现处的长注释。
+            */
+            bool EnsureMapLoaded(uint32 mapId, float x1, float y1, float x2, float y2);
 
         public:
             // public for debug
@@ -92,6 +109,8 @@ namespace VMAP
 
             VMAPLoadResult loadMap(const char* pBasePath, unsigned int pMapId, int x, int y) override;
             bool IsTileLoaded(uint32 mapId, uint32 x, uint32 y) const override;
+            bool IsMapTreeLoaded(uint32 mapId) const override;
+            bool IsMapTiled(uint32 mapId) const override;
 
             void unloadMap(unsigned int pMapId, int x, int y) override;
             void unloadMap(unsigned int pMapId) override;
