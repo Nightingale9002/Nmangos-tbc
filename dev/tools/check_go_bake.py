@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 验证 GO 烘焙：在世界坐标点处查导航面。
-坐标约定（实测校准 2026-09-30）：
-  · mmtile 文件名 = <map><tileY><tileX>，其中 tileY = 32 - floor(world_x/533.33)、
-    tileX = 32 - floor(world_y/533.33)
+坐标约定（实测校准 2026-09-30；文件命名 2026-10-01 修正）：
+  · mmtile 文件名 = "%03u%02u%02u.mmtile" % (mapId, 32 - world_x/533.33, 32 - world_y/533.33)
+    —— mapId 必须零填充到 3 位（服务端 MoveMap.cpp:48 / Chat/Level2.cpp:5144）。
+    旧版这里漏了 mapId 零填充，mapId < 100 的地图会全部"文件不存在"。
   · mmtile 里的顶点空间 = (world_y, 高度, world_x)  —— 与生成器的 mesh 空间一致
 用法: python check_go_bake.py <mapId> <x> <y> <z> <dirA> [dirB]
 """
@@ -22,9 +23,8 @@ map_id = int(sys.argv[1])
 x, y, z = float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
 dirs = sys.argv[5:]
 
-ty = int(32 - x / 533.33333)
-tx = int(32 - y / 533.33333)
-name = "%u%02u%02u.mmtile" % (map_id, ty, tx)
+first, second = rgp.tile_indices(x, y)
+name = rgp.MMTILE_NAME_FORMAT % (map_id, first, second) + ".mmtile"
 print("世界点 (%.2f, %.2f, %.2f) → 文件 %s；查询空间 (%.2f, %.2f) = (world_y, world_x)"
       % (x, y, z, name, y, x))
 

@@ -33,7 +33,7 @@ cmake --build D:\Game\cmangos\build1 --config Release
 | `config_prod.json` | **生产 mmap 配置**：出厂 `config.json` 的全套 per-map/tile 值 + 两处修正（见下） |
 | `gen_go_bake.py` | 从世界库导出 GO 刷点 + `GameObjectDisplayInfo.dbc` 解析模型名，生成 `--gameObjectInput` 文件 |
 | `check_go_bake.py` | 在世界坐标处查导航面（验证烘焙是否把模型位置挖掉），依赖 `ray_ground_probe.py` |
-| `ray_ground_probe.py` | mmtile 解析库（被 `check_go_bake.py` import） |
+| `ray_ground_probe.py` | mmtile 解析库（被 `check_go_bake.py` / `wp_scan.py` import）。**2026-10-01 修正三处口径**：① mmtile 文件名必须把 mapId **零填充 3 位**（`mmaps/%03i%02i%02i.mmtile`，见 `MoveMap.cpp:48`）——旧版用 `%u%02u%02u`，mapId<100 的图全部找不到图块；② 取层改为"离该点 z 最近的候选面"，并按 贴地/悬空/穿地/多层/无面 分档（旧的 min/max 区间口径会漏报）；③ `poly_height_at` 原来只用前三点算法线，近共线多边形会把高度外推到 ±1000~4800 码（实测 21,742 条假阳性），现用 Newell 法线 + 顶点 y 范围 clamp + 退化标记 |
 | `vmtree_probe.py` | 解析 `<map>.vmtree`：tiled 标志、BIH 规模、全局模型 |
 | `vmo_probe.py` | 解析 `*.vmo`：每个 group 的顶点/三角形数（判断模型有没有碰撞几何） |
 | `vmap_los_probe.py` | **vmap 通视探针**：`spawns <map>` 打印 `<map>.vmtree` 的模型刷点；`ray <map> x1 y1 z1 x2 y2 z2 [眼高源] [眼高目标]` 沿连线做 3D 射线求交，分别给出 `ignoreM2Model=false/true`（= `.los` 的 Normal/M2 两列）的命中点、模型名和 WMO/M2 属性。坐标换算与核心一致（`mid-x, mid-y, z`，mid=17066.667） |
