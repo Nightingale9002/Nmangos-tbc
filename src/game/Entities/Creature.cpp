@@ -41,6 +41,7 @@
 #include "OutdoorPvP/OutdoorPvP.h"
 #include "Spells/Spell.h"
 #include "Util/Util.h"
+#include "Util/CallerAddress.h"
 #include "Grids/GridNotifiers.h"
 #include "Grids/GridNotifiersImpl.h"
 #include "Grids/CellImpl.h"
@@ -830,6 +831,12 @@ void Creature::Update(const uint32 diff)
         {
             Unit::Update(diff);
 
+            // [REVIVE-DIAG] 2026-10-02: "corpse with health" - a script that healed the victim while
+            // Unit::Kill was still running (SetDeathState is only called at its very end) leaves
+            // exactly this half-dead state; see the analysis in KNOWN_ISSUES 2026-10-02.
+            if (GetHealth() > 0 && GetMap())
+                GetMap()->ReportRevive(this, "corpse-with-health", MANGOS_CALLER_ADDR());
+
             if (m_loot)
                 m_loot->Update();
 
@@ -856,6 +863,13 @@ void Creature::Update(const uint32 diff)
             // CORPSE/DEAD state will processed at next tick (in other case death timer will be updated unexpectedly)
             if (!IsAlive())
                 break;
+
+            // [REVIVE-DIAG] 2026-10-02: "alive yet still holding a future respawn time" - the exact
+            // inconsistency 站长 hit (mob acted normally while .npc info showed a respawn countdown).
+            // The m_respawnTime check keeps this free for healthy creatures (it is 0 there, so no
+            // time() call); one report per unit per run.
+            if (m_respawnTime && m_respawnTime > time(nullptr) && GetMap())
+                GetMap()->ReportRevive(this, "alive-with-pending-respawn", MANGOS_CALLER_ADDR());
 
             // Creature can be dead after unit update
             if (IsAlive())
@@ -964,6 +978,14 @@ void Creature::RegenerateHealth()
 
 bool Creature::AIM_Initialize()
 {
+    // [DOOR-DIAG 2026-10-03] (Re)initialising the AI of a creature that is not alive re-arms everything
+    // that should be dormant on a corpse (scripts, EventAI timers, summon/aura addons) - name the caller
+    // (Util/CallerAddress.h) so the "corpse casts / corpse moves" reports can be traced to a driver.
+    // Filter: creatures that are DEAD (respawn pending, despawned/invisible) are re-armed by design in
+    // LoadFromDB -> AIM_Initialize; only a client-visible CORPSE is worth reporting (log must stay quiet).
+    if (!IsAlive() && !IsDespawned() && GetMap())
+        GetMap()->ReportCorpseDriver(this, "aim-initialize", MANGOS_CALLER_ADDR());
+
     i_motionMaster.Initialize();
     m_ai.reset(FactorySelector::selectAI(this));
 
@@ -2092,6 +2114,10 @@ void Creature::SetDeathState(DeathState s)
 
     if (s == JUST_ALIVED)
     {
+        // [REVIVE-DIAG] 2026-10-02: the regular revive path - see Map::ReportRevive
+        if (GetMap())
+            GetMap()->ReportRevive(this, "SetDeathState-JUST_ALIVED", MANGOS_CALLER_ADDR());
+
         clearUnitState(static_cast<uint32>(UNIT_STAT_ALL_STATE));
 
         Unit::SetDeathState(ALIVE);
@@ -2128,6 +2154,12 @@ void Creature::SetDeathState(DeathState s)
 
 void Creature::Respawn()
 {
+    // [REVIVE-DIAG] 2026-10-02: this is the "script/mechanism revives a creature" entry point
+    // (70 call sites in the tree) - report who state it was in before it goes further
+    if (GetMap())
+        GetMap()->ReportRevive(this, IsUsingNewSpawningSystem() ? "Respawn-dynguid" : "Respawn",
+                               MANGOS_CALLER_ADDR());
+
     // Dynguid creatures (new spawning system) are (re)spawned by the SpawnManager,
     // which owns their respawn schedule. In-place revive does not work for them:
     // their m_respawnTime is set to max at death and LoadFromDB rejects a future

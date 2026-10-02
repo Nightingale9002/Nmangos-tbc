@@ -1954,6 +1954,9 @@ bool ChatHandler::HandleNpcDeleteCommand(char* args)
 // move selected creature
 bool ChatHandler::HandleNpcMoveCommand(char* args)
 {
+    // [DIAG 2026-10-03] GM-driven respawn: keep [REVIVE] quiet (see Map::GmRespawnScope)
+    Map::GmRespawnScope const gmRespawnScope;
+
     uint32 lowguid = 0;
     Player* player = m_session->GetPlayer();
 
@@ -2026,6 +2029,9 @@ bool ChatHandler::HandleNpcMoveCommand(char* args)
  */
 bool ChatHandler::HandleNpcSetMoveTypeCommand(char* args)
 {
+    // [DIAG 2026-10-03] GM-driven respawn: keep [REVIVE] quiet (see Map::GmRespawnScope)
+    Map::GmRespawnScope const gmRespawnScope;
+
     // 3 arguments:
     // GUID (optional - you can also select the creature)
     // stay|random|way (determines the kind of movement)
@@ -2177,6 +2183,9 @@ bool ChatHandler::HandleNpcFactionIdCommand(char* args)
 // set spawn dist of creature
 bool ChatHandler::HandleNpcSpawnDistCommand(char* args)
 {
+    // [DIAG 2026-10-03] GM-driven respawn: keep [REVIVE] quiet (see Map::GmRespawnScope)
+    Map::GmRespawnScope const gmRespawnScope;
+
     Creature* pCreature = getSelectedCreature();
     if (!pCreature)
     {
@@ -3045,6 +3054,9 @@ bool ChatHandler::HandleWpAddCommand(char* args)
  */
 bool ChatHandler::HandleWpModifyCommand(char* args)
 {
+    // [DIAG 2026-10-03] GM-driven respawn: keep [REVIVE] quiet (see Map::GmRespawnScope)
+    Map::GmRespawnScope const gmRespawnScope;
+
     DEBUG_LOG("DEBUG: HandleWpModifyCommand");
 
     if (!*args)

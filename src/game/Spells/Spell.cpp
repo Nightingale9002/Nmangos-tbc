@@ -17,6 +17,7 @@
  */
 
 #include "Spells/Spell.h"
+#include "Util/CallerAddress.h"
 #include "Database/DatabaseEnv.h"
 #include "Server/WorldPacket.h"
 #include "Server/WorldSession.h"
@@ -3232,6 +3233,17 @@ SpellCastResult Spell::SpellStart(SpellCastTargets const* targets, Aura* trigger
 
 void Spell::Prepare()
 {
+    // [DEADHIT-DIAG] a creature casting while it should not be able to (dead / zero health /
+    // still scheduled to respawn) - one line per (unit, site), see Map::ReportDeadAction.
+    // 记下法术 id 与"是不是被光环/法术触发"，这样"尸体在放什么、谁让它放的"一行就够。
+    if (m_caster && m_caster->IsCreature() && m_caster->GetMap())
+        if (char const* why = m_caster->GetNonActingStateReason())
+            m_caster->GetMap()->ReportDeadAction(m_caster, "spell-prepare", why, m_targets.getUnitTarget(),
+                                                 m_spellInfo->Id,
+                                                 IsTriggeredByAura() && GetTriggeredByAuraSpellInfo() ? GetTriggeredByAuraSpellInfo()->Id : 0,
+                                                 m_triggeredBySpellInfo ? m_triggeredBySpellInfo->Id : 0,
+                                                 MANGOS_CALLER_ADDR());
+
     m_spellState = SPELL_STATE_CASTING;
 
     // Prepare data for triggers

@@ -5679,6 +5679,10 @@ bool ChatHandler::HandleBanListIPCommand(char* args)
 
 bool ChatHandler::HandleRespawnCommand(char* /*args*/)
 {
+    // [DIAG 2026-10-03] keep [REVIVE] quiet for a deliberate GM respawn (batch or single target):
+    // one .respawn used to print one line per visible corpse.
+    Map::GmRespawnScope const gmRespawnScope;
+
     Player* pl = m_session->GetPlayer();
 
     // accept only explicitly selected target (not implicitly self targeting case)

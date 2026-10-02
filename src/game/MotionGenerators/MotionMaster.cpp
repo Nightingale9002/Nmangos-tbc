@@ -17,6 +17,7 @@
  */
 
 #include "MotionGenerators/MotionMaster.h"
+#include "Util/CallerAddress.h"
 #include "MotionGenerators/PfDebug.h"   // [PFDBG]
 #include "HomeMovementGenerator.h"
 #include "IdleMovementGenerator.h"
@@ -66,6 +67,22 @@ void MotionMaster::Initialize()
         { "instance_id", std::to_string(m_owner->GetInstanceId()) }
     }, 1000);
 #endif
+    // [DOOR-DIAG 2026-10-03] This is the ONLY path that (re)installs the default movement generator of a
+    // creature (random wander / waypoints). Doing that for a non-alive creature is what the "corpse with
+    // RANDOM_MOTION_TYPE" report showed (2026-10-02 [DOOR] move-while-dead, movegen=1), so name the
+    // caller here - `caller` resolves against the linker map (Util/CallerAddress.h).
+    // Filter: only a CORPSE (client-visible body) is suspicious.  A creature that is merely DEAD
+    // (respawn pending, despawned/invisible) is deliberately loaded with an armed AI and default motion
+    // by Creature::LoadFromDB -> Creature::AIM_Initialize -> here, which is normal upstream behaviour and
+    // would otherwise print one line per killed creature at every grid load (2026-10-03: the very first
+    // run of this hook caught exactly that path, stack = LoadFromDB <- ObjectGridLoader <- EnsureGridLoaded).
+    if (!m_owner->IsAlive() && m_owner->GetTypeId() == TYPEID_UNIT && m_owner->GetMap() &&
+        !static_cast<Creature*>(m_owner)->IsDespawned())
+    {
+        m_owner->GetMap()->ReportCorpseDriver(static_cast<Creature*>(m_owner), "mm-initialize",
+                                              MANGOS_CALLER_ADDR());
+    }
+
     // stop current move
     m_owner->StopMoving();
 
@@ -115,6 +132,20 @@ void MotionMaster::UpdateMotion(uint32 diff)
 {
     if (m_owner->hasUnitState(UNIT_STAT_CAN_NOT_MOVE))
         return;
+
+    // [DOOR-DIAG] 2026-10-02: a non-alive creature should sit on its idle generator (set by
+    // Unit::SetDeathState -> MoveIdle). Anything else means a path started movement on a corpse.
+    // [DIAG 2026-10-03] FALL_MOTION_TYPE is whitelisted: Unit::SetDeathState itself calls MoveFall() so a
+    // creature killed in mid-air drops to the ground (observed 2026-10-03 01:38 on guid 5300854, entry
+    // 25063: mm-mutate newgen=18 came from Unit::SetDeathState, and this hook then reported the完全正常的
+    // fall every tick).  Only generators that can not belong to a corpse are worth a line.
+    if (!m_owner->IsAlive() && m_owner->GetTypeId() == TYPEID_UNIT && m_owner->GetMap() &&
+        top()->GetMovementGeneratorType() != IDLE_MOTION_TYPE &&
+        top()->GetMovementGeneratorType() != FALL_MOTION_TYPE)
+    {
+        m_owner->GetMap()->ReportCorpseDriver(static_cast<Creature*>(m_owner), "move-while-dead",
+                                              MANGOS_CALLER_ADDR());
+    }
 #ifdef BUILD_METRICS
     metric::duration<std::chrono::microseconds> meas("motionmaster.updatemotion", {
         { "entry", std::to_string(m_owner->GetEntry()) },
@@ -626,6 +657,20 @@ bool MotionMaster::MoveFall(ObjectGuid guid/* = ObjectGuid()*/, uint32 relayId/*
 
 void MotionMaster::Mutate(MovementGenerator* m)
 {
+    // [DOOR-DIAG 2026-10-03] Mutate() is the single funnel through which every Move* helper installs a
+    // movement generator (21 call sites, no direct push(new ...) anywhere), so a corpse that suddenly
+    // holds a non-idle generator is named here - together with the generator being installed and the
+    // caller chain (Util/CallerAddress.h).
+    // Filter: same rule as the other two hooks - only a client-visible CORPSE is suspicious.  The first run
+    // (2026-10-03 01:37) caught a legitimate DEAD path instead: Unit::SetDeathState -> MoveFall for a
+    // creature killed in mid-air (newgen=18 FALL_MOTION_TYPE), which is not worth a log line.
+    if (m && !m_owner->IsAlive() && m_owner->GetTypeId() == TYPEID_UNIT && m_owner->GetMap() &&
+        !static_cast<Creature*>(m_owner)->IsDespawned())
+    {
+        m_owner->GetMap()->ReportCorpseDriver(static_cast<Creature*>(m_owner), "mm-mutate",
+                                              MANGOS_CALLER_ADDR(), m->GetMovementGeneratorType());
+    }
+
     if (!empty())
     {
         switch (top()->GetMovementGeneratorType())

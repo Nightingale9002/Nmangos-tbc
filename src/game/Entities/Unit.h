@@ -1232,6 +1232,9 @@ class Unit : public WorldObject
          * @return True if an attack was made and no error happened, false otherwise
          */
         bool UpdateMeleeAttackingState();
+        // [DEADHIT-DIAG] 2026-10-02: "not alive" / "zero health" / "alive but still scheduled to
+        // respawn" - returns nullptr when the unit is in a clean state (see Map::ReportDeadAction).
+        char const* GetNonActingStateReason() const;
         /**
          * Check is a given equipped weapon can be used, ie the mainhand, offhand etc.
          * @param attackType The attack type to check, ie: main/offhand/ranged

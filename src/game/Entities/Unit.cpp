@@ -17,6 +17,7 @@
  */
 
 #include "Entities/Unit.h"
+#include "Util/CallerAddress.h"
 #include "Log/Log.h"
 #include "Server/Opcodes.h"
 #include "Server/WorldPacket.h"
@@ -731,6 +732,30 @@ enum SwingErrors
     SWING_ERROR_CANT_ATTACK_TARGET,
 };
 
+// [DEADHIT-DIAG] 2026-10-02: short reason when this unit is in a state in which it must NOT be
+// able to attack or cast; nullptr when everything looks normal. See Map::ReportDeadAction.
+//   not-alive       : death state != ALIVE yet the unit is acting
+//   zero-health     : health 0 but not flagged dead (GM kill / script zeroing the HP)
+//   respawn-pending : ALIVE with health > 0, but the creature's respawn clock is still running
+//                     (站长报告的那个矛盾组合：它活着在打人，同时重生计时还在走)
+char const* Unit::GetNonActingStateReason() const
+{
+    if (!IsAlive())
+        return "not-alive";
+
+    if (GetHealth() == 0)
+        return "zero-health";
+
+    if (GetTypeId() == TYPEID_UNIT)
+    {
+        Creature const* c = static_cast<Creature const*>(this);
+        if (c->GetRespawnTimeEx() > time(nullptr))
+            return "respawn-pending";
+    }
+
+    return nullptr;
+}
+
 bool Unit::UpdateMeleeAttackingState()
 {
     Unit* victim = GetVictim();
@@ -741,7 +766,14 @@ bool Unit::UpdateMeleeAttackingState()
     // hp == 0 is treated as dead even if the death state was never set
     // (GM kill spells can zero the health without going through SetDeathState).
     if (!victim || !IsAlive() || GetHealth() == 0 || IsNonMeleeSpellCasted(false))
+    {
+        // [DEADHIT-DIAG] a unit that should not be able to act still holds a victim: log it once
+        // per unit (the guard below already blocks the swing - this tells us the path is reached)
+        if (victim && GetTypeId() == TYPEID_UNIT && GetMap())
+            if (char const* why = GetNonActingStateReason())
+                GetMap()->ReportDeadAction(this, "melee-blocked", why, victim, 0, 0, 0, MANGOS_CALLER_ADDR());
         return false;
+    }
 
     if (GetTypeId() != TYPEID_PLAYER && (!static_cast<Creature*>(this)->CanInitiateAttack()))
         return false;
@@ -2869,6 +2901,13 @@ void Unit::CalculateAbsorbResistBlock(Unit* caster, SpellNonMeleeDamage* spellDa
 
 void Unit::AttackerStateUpdate(Unit* pVictim, WeaponAttackType attType, bool extra)
 {
+    // [DEADHIT-DIAG] this is the only function that actually deals melee damage - if a unit that
+    // should not be able to act ever arrives here, the report names it and prints its real state
+    // (see Map::ReportDeadAction; 站长报告的矛盾组合就靠这一行定案).
+    if (GetMap() && GetTypeId() == TYPEID_UNIT)
+        if (char const* why = GetNonActingStateReason())
+            GetMap()->ReportDeadAction(this, "melee-swing", why, pVictim, 0, 0, 0, MANGOS_CALLER_ADDR());
+
     if (hasUnitState(UNIT_STAT_CAN_NOT_REACT) || HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PACIFIED))
         return;
 
@@ -6786,7 +6825,12 @@ bool Unit::Attack(Unit* victim, bool meleeAttack)
 
     // dead units can neither attack nor be attacked
     if (!IsAlive() || !victim->IsInWorld() || !victim->IsAlive())
+    {
+        // [DOOR-DIAG] something tried to make a non-alive unit attack - name it once per guid
+        if (!IsAlive() && GetTypeId() == TYPEID_UNIT && GetMap())
+            GetMap()->ReportCorpseDriver(static_cast<Creature*>(this), "attack-while-dead", MANGOS_CALLER_ADDR());
         return false;
+    }
 
     // player cannot attack in mount state
     if (GetTypeId() == TYPEID_PLAYER && IsMounted())

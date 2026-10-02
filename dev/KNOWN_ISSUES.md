@@ -7674,6 +7674,334 @@ Warp Chaser 这类怪的"相位隐身"（`creature_template_addon` 里 18884 的
 
 ---
 
+## [机制] 2026-10-02 云端 guid 5300482「Unleashed Hellion」死后仍在近战+放技能 —— **已定案（四条链）并修复，2026-10-03**
+
+### 一、站长报告（云端实测）
+- 目标：`guid 5300482`（云端库只读副本 3307 可查）= **entry 25002 Unleashed Hellion**，
+  map 530、坐标 `12588.40 / -6923.11 / 4.61`（奎尔丹纳斯岛），**静态刷点**、刷新 **300 秒**、
+  `AIName = EventAI`、`ExtraFlags = 0`（**不是 ACTIVE 标记怪**，与网格锁那件事无关）。
+- 现象：① 打死后它**继续普通攻击（近战）**、② **继续放技能**（和活着时一样）、
+  ③ `.npc info` 显示"复活时间还剩 2 分钟多"、④ 玩家**无法攻击它**、⑤ 跑开再回来它"看起来复活了"。
+- 战斗记录里那一下写的是 **「被释放的恶鬼 的 普通攻击」**（近战）。
+
+### 二、代码侧事实（证明"真死怪不该能动手"）
+| 行为 | 守卫 | 位置 |
+|---|---|---|
+| 近战挥砍 | `!victim \|\| !IsAlive() \|\| GetHealth() == 0 \|\| IsNonMeleeSpellCasted(false)` → 直接 return（`m_extraAttacks` 也在其后） | `Unit.cpp:743` |
+| 施法 / EventAI 行为 | `if (!m_unit->IsAlive() \|\| m_unit->GetHealth() == 0) return;` 位于 `UpdateTimers/SelectHostileTarget/UpdateEventTimers` **之前** | `UnitAI.cpp:1105` |
+| EventAI 能否绕过 | **不能**：`CreatureEventAI` 全类**没有覆写 `UpdateAI`**（.cpp/.h 均 0 命中），其每 tick 逻辑走 `UpdateEventTimers/UpdateTimers`，都在守卫之后 | — |
+| 唯一真正造成近战伤害的函数 | `Unit::AttackerStateUpdate`（调用点：`UpdateMeleeAttackingState`、`DoExtraAttacks`、SD2 `mob_generic_creature.cpp:119`） | `Unit.cpp:2870` |
+| 该怪的全部技能 | EventAI 2500201/2500202（`event_type 0`＝战斗中，17~24 s 循环）：**20754 Rain of Fire**（`Effect1=27` 持续区域效果，施法者死后地面火仍烧完自己那段时长）、**11876 War Stomp** | — |
+
+### 三、关键转折（站长 2026-10-02 追加）：**问题不在守卫，而在"它算不算真死亡单位"**
+
+站长补充的两条把方向纠正了：
+1. 他确认是**同一只**（排除"误认成旁边同类"）；
+2. 现象是：**它确实变成了尸体**（点它显示"无效的目标"，与其他尸体一样），**但仍在正常行动/放技能**。
+
+⇒ 我们的两道守卫判的是 `IsAlive()`（`m_deathState == ALIVE`）与 `GetHealth() == 0`，
+**只要服务端认为它"活着"（哪怕客户端画的是尸体），守卫就全部放行**，它自然"和活着时候一样"。
+所以真正要回答的是：**它的服务端真实状态是什么**。代码里"真死亡"的定义：
+| 概念 | 定义 |
+|---|---|
+| `IsAlive()` | `m_deathState == ALIVE` |
+| `IsDespawned()` | `GetDeathState() == DEAD`（**注意不是 CORPSE**，`Creature.h:642`） |
+| 守卫真正拦的条件 | `!IsAlive() \|\| GetHealth() == 0`（`Unit.cpp:743`、`UnitAI.cpp:1105`） |
+
+**最自洽的一条链（待日志证实）**：
+1. 怪被打死 ⇒ 服务端 `CORPSE`、`m_respawnTime = 死亡时刻 + 300 s`、客户端收到死亡（显示尸体）；
+2. **某个脚本/机制调用 `Creature::Respawn()`**（全仓 **70 处调用**：SD2 副本/事件脚本、`CreatureLinkingMgr`、GM 命令、`GridNotifiers` …）
+   —— 这正好解释"随机、每次都在不同地方"；
+3. 而 `Respawn()`（`Creature.cpp:2129-2153`）的行为可疑：
+```cpp
+    if (IsUsingNewSpawningSystem()) { map->GetSpawnManager().RespawnCreature(...); return; }  // 直接委托并返回
+    RemoveCorpse();                       // CORPSE -> DEAD（并"强制客户端删掉尸体"）
+    if (!IsInWorld()) return;
+    if (IsDespawned())                    // ← 只有 deathState==DEAD 才清！
+    { SaveCreatureRespawnTime(..., 0); m_respawnTime = time(nullptr); }
+```
+   ⇒ **存在"它已经开始活动，但 `m_respawnTime` 还是死亡时那个未来值"的路径** —— 这**恰好**解释
+   `.npc info` 里"重生还剩 2 分钟多"；
+4. 常规复活路径（`Creature::Update` 的 `DEAD` 分支，`Creature.cpp:780-826`）是干净的：`m_respawnTime = 0;` →
+   `SetDeathState(JUST_ALIVED)` → 血量由 `ResetEntry(true)`→`SelectLevel()`→`SetHealth(GetMaxHealth())`
+   （`Creature.cpp:1623`）恢复 ⇒ **ALIVE + 血>0**，守卫全放行；
+5. **客户端的"尸体"**：`Creature::SetDeathState(JUST_ALIVED)`（`Creature.cpp:2093-2127`）里**没有任何可见性/血量刷新调用**
+   （只有 `RemoveCorpse()` 那条路径才做"强制客户端重建"的可见性技巧）⇒ 客户端那份副本可能仍是尸体
+   ⇒ 点它"无效的目标"，与"和其他尸体一样"完全吻合。
+
+**⇒ 修正本文档上一版的结论**："真死怪不可能挥砍"只在 `deathState != ALIVE` **或** 血量 0 时成立；
+本次现象更可能是"**服务端活着 + 重生时钟未清 + 客户端旧尸体副本**"三者叠加，而不是守卫被绕过。
+
+### 四、已布诊断（随 2026-10-03 04:06 夜间窗口上云）
+
+**(1) `[DEADHIT]`（回答"动手那一刻它在服务端是什么状态"）**
+`Unit::GetNonActingStateReason()`（`Unit.cpp`）+ `Map::ReportDeadAction()`（`Map.cpp`，**每单位每次运行只报一行**），
+在三个位置调用：`Unit::AttackerStateUpdate`（唯一真正打出近战伤害的函数）、
+`Unit::UpdateMeleeAttackingState`（被守卫拦下时也报）、`Spell::Prepare`（`m_caster` 是生物时）。
+`what=` 取值：
+| what | 含义 |
+|---|---|
+| `not-alive` | 死亡状态还在动手 |
+| `zero-health` | 血 0 还在动手 |
+| **`respawn-pending`** | **活着（血>0、deathState=ALIVE）却在动手，同时重生时钟还在走** ← 站长的那个矛盾 |
+行内字段：`map / guid / entry / type / alive / health/max / deathState / flags / dynFlags / respawnIn / victim / victimHealth / pos`
+
+**(2) `[REVIVE]`（回答"它是被谁、在什么状态下复活的；时钟有没有清"）** —— 2026-10-02 追加，站长确认
+`Map::ReportRevive()`（`Map.cpp`，**每单位每次运行只报一行**），三个调用点：
+| what | 位置 | 用途 |
+|---|---|---|
+| `Respawn` / `Respawn-dynguid` | `Creature::Respawn()` 入口 | 抓到"脚本/机制复活"，并看当时 `deathState/health/respawnIn/inWorld/despawned` |
+| `SetDeathState-JUST_ALIVED` | `Creature::SetDeathState()` 的 `JUST_ALIVED` 分支 | 常规复活路径（`Creature::Update` DEAD 分支） |
+| **`alive-with-pending-respawn`** | `Creature::Update()` 的 **ALIVE 分支**（`m_respawnTime && m_respawnTime > now`） | **不依赖它动手**就能抓到那个不一致态（活着却挂着未来重生时间）——直接判据 |
+行内字段：`map / guid / entry / deathState / alive / health/max / respawnIn / inWorld / despawned / viewers / pos`
+（`viewers=0` 说明复活时它周围没人看着 ⇒ 客户端那份"尸体"很可能只是**离开视野后残留的旧副本**）
+
+**判据**：
+- `[DEADHIT] ... respawn-pending` 或 `[REVIVE] ... alive-with-pending-respawn` ⇒ **情况成立**（服务端活着+时钟未清），
+  再顺着 `[REVIVE] what=Respawn*` 看是**谁**把它复活的；
+- 只有 `[DEADHIT] ... not-alive/zero-health` ⇒ 才是守卫被绕过（真 bug，按 flags/调用点继续查）；
+- 云端**一条都不出现**而玩家仍看到"尸体打人" ⇒ 服务端状态是干净的 ALIVE（那就是**客户端旧副本**问题，
+  要查可见性/死亡-复活更新的下发），修法方向完全不同。
+
+(3) **`[DOOR]` + `[CENSUS]`（2026-10-02 当天追加，"没法稳定复现"的兜底）**
+- `Map::ReportCorpseDriver()`（`Map.cpp`，每 (guid,原因) 一次）：`Unit::Attack` 里"死单位被拉进战斗"
+  （`attack-while-dead`）、`UnitAI::EnterEvadeMode` 里"死单位被叫去闪避"（`evade-while-dead`）、
+  `MotionMaster::UpdateMotion` 里"死单位挂着非 idle 生成器"（`move-while-dead`）；
+- `Map::CensusAnomalies()`（`Map.cpp`，**每 5 分钟在本图线程内**扫全部生物，只在发现异常时写日志）：
+  扫 `CORPSE 但 health>0` / `ALIVE 但重生时钟还在走` / `非存活却在战斗` / `非存活却挂着移动生成器`，
+  输出一行汇总 + 最多 8 条 offender。这是"抓不到现场"的兜底：**状态一旦出现，5 分钟内必被记录**。
+- `[REVIVE]` 增加 **`diedAgo`**（用 `m_respawnTime - m_respawnDelay` 反推死亡时刻），
+  并加了**噪声过滤**：只在"重生时钟还在走"（＝按逻辑它此刻不该已经活着）时才写。
+  ⚠️ 实测依据：不过滤时本地 0 玩家 6 分钟写了 **298 行**（全是天灾入侵 active 怪 25027/25028/25030 的
+  收起/重生 churn），过滤后 **0 行** —— 云端必须保持安静，否则真正那一行会被淹掉。
+
+### 四之二、**第一个实证：尸体挂着随机移动生成器（`move-while-dead`）**
+
+本地实测（2026-10-02 23:37，1 人在线）：
+```
+[DOOR] what=move-while-dead map=530 guid=5300655 entry=25028 deathState=2 alive=0 health=0/6761
+       respawnIn=18s flags=0x00000000 incombat=0 movegen=1 victim=- pos=(11732.2,-7073.3,25.2)
+[DOOR] what=move-while-dead map=530 guid=5300658 entry=25028 deathState=2 alive=0 health=0/6761
+       respawnIn=13s ...
+```
+**含义**：`movegen=1` = `RANDOM_MOTION_TYPE`（`MotionMaster.h:52`）、`deathState=2` = CORPSE
+⇒ **一具正常死亡、正在等重生的尸体，身上挂着随机游走生成器**（会在尸体状态下继续走动）。
+
+**为什么这不正常**：死亡路径明确把它设成 idle —— `Unit::SetDeathState(JUST_DIED)`（`Unit.cpp:9231-9234`）：
+`StopMoving(); i_motionMaster.Clear(false, true); MoveIdle();`。⇒ **死亡之后有人把"默认移动"重新装了回去**。
+
+**装默认移动的唯一入口**是 `MotionMaster::Initialize()`（`MotionMaster.cpp:58-100`，按 `spawndist` 选随机游走）。已排除两条：
+- "生成器列表变空后自动 `Initialize()`"：`IdleMovementGenerator::Update` 恒返回 `true`（`IdleMovementGenerator.cpp:25-28`），
+  idle 不会过期、列表不会变空；
+- 队形/刷怪组路径（`SpawnGroup.cpp:903/1029/1361`）：25027/25028/25030 **不在任何 `spawn_group` 里**（云端库查证 0 行）。
+⇒ 剩下 `Creature::AIM_Initialize()`（`Creature.cpp:980`，被 `UpdateEntry`/`LoadFromDB`/召唤/图腾/临时召唤调用）、
+`SetDeathState(JUST_ALIVED)`（`Creature.cpp:2142`）、脚本/GM 命令路径 —— **具体哪一个还没点名**。
+
+**与站长那个 bug 的关系**：同族 —— "死亡后仍被驱动"。本命中的只表现为**移动**；
+站长遇到的那只还**攻击 + 施法**（需重新驱动 AI/施法，比移动更进一步），很可能是同一条路径的不同后果。
+**点名办法**：在 `MotionMaster::Initialize()`（及 `MoveRandom*` 等入口）里，若 owner 非存活 ⇒
+打一行带**调用者返回地址**的日志（MSVC `_ReturnAddress()` / GCC `__builtin_return_address(0)`），
+云端用 `mangosd.map` 反查函数名（工具 `_agent_tmp/resolve_map_addr.py`，即抓潜行那次的方法）。**已于 2026-10-03 实施，见 §四之三。**
+
+一条都没有 ⇒ 说明"动手"那侧确实没有被死怪绕过（那问题就落在"我为什么点不动它"，需要另配客户端侧证据）。
+
+### 四之三、2026-10-03 本机复现 + **"点名驱动者"诊断已实施**（本地已部署）
+
+**A. 本机复现（站长本机登录 + 实测，00:39:57–00:40:07，全部为日志原文）**
+
+| 时间 | 证据 | 含义 |
+| --- | --- | --- |
+| 00:39:26–32 | `[AUTH] new world session created: account='NYMPH' … from 127.0.0.1`，Char.log `Login Character:[Asggd]` | 站长在本机登录 |
+| 00:39:57–59 | **75 条 `[REVIVE] what=Respawn`**，全在 map 530 奎尔丹纳斯岛（entry 24960/24966/24972/24976/24978/24979），状态清一色 `deathState=2(CORPSE) alive=0 health=0 respawnIn=300s diedAgo=0 viewers=0 inWorld=1` | **驱动者＝GM 命令 `.respawn` 的批量分支**（`Chat/Level3.cpp:5695-5718`：未选中目标时用 `MaNGOS::RespawnDo` 扫玩家视野内**所有** grid object，再 `RespawnSpawnGroupsInVicinity`）⇒ **这是站长自己的操作**，不是脚本自发；判读时务必区分 |
+| 00:40:00 | **3 条 `[DEADHIT] site=spell-prepare reason=not-alive`**：5300325→法术 **45104 Shadow Channelling**（目标自己）、5300326→45104（自己）、5300322→**30944 Red Beam (Drops)**（目标＝**活着的** creature 23033，血 42） | 尸体会施法；`Effect1=6`（APPLY_AURA）+ `DurationIndex=21` ⇒ 这俩是**引导型光束光环**（脚本/事件用），不是攻击法术 |
+| 00:40:07 | 服务器崩溃（见 `[崩溃] 2026-10-03` 章的新增小节） | 与本节 bug 可能相关，需继续查 |
+
+**机制（代码层，已确认）**：`Creature::Update()` 的 **CORPSE 分支**（`Creature.cpp:829-855`）会调用 `Unit::Update(diff)`，
+而 `Unit::Update` 里 **`m_events.Update(diff)`（`Unit.cpp:504`）与 `MotionMaster::UpdateMotion`（`:590`）都不判 `IsAlive()`**
+（只有"AI 决策/主动施法"那层才有守卫：`UnitAI.cpp:1105`）⇒ **尸体每 tick 仍在跑事件队列与移动生成器**：
+死亡前排入/延迟的 `SpellEvent` 会在死后照常走到 `Spell::Prepare`（＝上面抓到的三条），移动生成器也会继续驱动它。
+⇒ **"尸体会施法/会走"至少有一条不需要"守卫被绕过"就能解释**；剩下要回答的是"**谁排的那个事件 / 谁把随机移动装回尸体**"。
+
+**B. 已实施的点名诊断（2026-10-03）**
+
+| 项 | 内容 |
+| --- | --- |
+| 新头文件 | `src/shared/Util/CallerAddress.h`：`MANGOS_CALLER_ADDR()`（MSVC `_ReturnAddress()` / GCC `__builtin_return_address(0)`）与 `MANGOS_IMAGE_BASE()`（MSVC 用链接器符号 `__ImageBase`；ELF 非 PIE ⇒ 0）。**必须是宏**：内联函数拿到的是"函数的调用者"而不是我们要的那一层 |
+| 新增钩子 | `MotionMaster::Initialize()`（**全代码唯一安装默认移动生成器的入口** ⇒ 尸体挂 RANDOM 的必经点）→ `[DOOR] what=mm-initialize`；`Creature::AIM_Initialize()`（重建 AI/脚本/EventAI 定时器）→ `[DOOR] what=aim-initialize` |
+| 现有钩子加 caller | `[DEADHIT]`（melee-swing / melee-blocked / spell-prepare）、`[REVIVE]`（Respawn / SetDeathState-JUST_ALIVED / corpse-with-health / alive-with-pending-respawn）、`[DOOR]`（move-while-dead / attack-while-dead / evade-while-dead）行内统一追加 `caller=0x… base=0x…` |
+| 解析办法 | MSVC：`RVA = caller - base` → `python _agent_tmp/resolve_map_addr.py build1\bin\x64_Release\mangosd.map --rva <RVA>`（map 与 exe 同一次链接，`/MAP` 已在本地 CMake 缓存里）；Linux：二进制非 PIE ⇒ **raw 地址直接** `addr2line -f -C -e /opt/mangos/bin/mangosd <caller>` |
+| 宏语义实证 | 独立自检程序 `_agent_tmp/caller_addr_selftest.cpp`：MSVC `caller=0x7FF776061009 / fnStart=0x7FF776061000`（**delta=9**，落在调用者函数体内 ✓）、`imageBase == GetModuleHandle(NULL)` ✓；GCC `delta=25` ✓、`imageBase=0`（非 PIE 约定）✓ ⇒ 两个分支都能用 |
+| 验证状态 | 本地 MSVC Release `mangosd`/`realmd` **0 error**；WSL GCC 15.2（含 PCH）**rc=0**；本地已部署（`mangosd.exe`+`mangosd.map` 01:00:03 同一次链接，已拷到 `x64_Debug`），起服正常、**诊断标签保持安静**（`SOCKDIAG`=0 行） |
+
+**下一步判读**：下次再出现 `[DOOR] what=mm-initialize` / `aim-initialize` / `[DEADHIT] site=spell-prepare`，
+直接拿 `caller` 反查函数名 ⇒ 就能回答"谁把随机移动装回尸体、谁给尸体排了那个法术事件"。**目前仍是未定案。**
+
+### 四之四、2026-10-03 01:03–01:17 点名的第一批实测：**caller 已能反查，单层不够 → 已升级为整条栈**
+
+**日志实测（本机，01:02–01:06 那一轮，站长在线打怪 + 敲了两次 `.respawn`）**
+
+| 标签 | 条数 | 反查到的驱动者 |
+| --- | --- | --- |
+| `[DEADHIT] site=spell-prepare reason=not-alive` | **12**（entry 24978 十一只 + 25001 两只） | 全部同一个 caller = **`Spell::SpellStart`**（`Spell.obj`，`+0x214`）⇒ 只是"Prepare 的上一跳"，**信息不足** |
+| `[REVIVE] what=Respawn` | 83（01:03:13 / 01:04:57 两批） | caller = **`MaNGOS::RespawnDo::operator()(Creature*)`**（`GridNotifiers.obj`）⇒ **＝站长自己敲的 `.respawn`**（`Chat/Level3.cpp:5714`），坐实上一节的判断 |
+| `[DOOR] what=evade-while-dead` | 2（entry 12922，两只） | caller = **`GuardianAI::EnterEvadeMode`** ⇒ 死掉的守护被自己的 AI 覆写叫去闪避 |
+| `[DOOR] what=move-while-dead` | 1（entry 25063 guid 5300854） | caller = **`Unit::Update`**（正常每 tick 移动更新）；**`movegen=18 = FALL_MOTION_TYPE`**（空中被击杀的坠落） |
+| `[SOCKDIAG]` | **0** | 本轮没有"带着在途写关连接/销毁 socket" |
+| 崩溃 | 无 | 该轮跑完没崩；01:12 我换新版重启 |
+
+**顺手拿到的机制证据（开服加载时，我新钩子第一次跑就抓到，整条栈已用 map 解析）**：
+
+```
+Map::ReportCorpseDriver  <-  MotionMaster::Initialize  <-  Creature::AIM_Initialize
+  <-  Creature::LoadFromDB  <-  ObjectGridLoader::LoadHelper<Creature>
+  <-  ObjectGridLoader::Visit / LoadN  <-  Map::EnsureGridLoaded
+  <-  Camera::VisibleNotifier::VisitCircle / VisitAllObjects
+```
+
+⇒ **`Creature::LoadFromDB` 对"重生时间还没到"的生物把 `m_deathState` 设成 `DEAD`（`Creature.cpp:1884`），随后照样调 `AIM_Initialize()`**
+⇒ **这些"待复活"的生物在加载时就被装上了 AI + 默认移动生成器（随机游走/路径）**。这也顺手解释了我们更早看到的"尸体挂着 RANDOM 生成器"（`[DOOR] move-while-dead movegen=1`）：生成器**本来就是加载时装的**，死亡路径（`Unit::SetDeathState(JUST_DIED)` → `MoveIdle`）只对"加载后才死"的怪生效。
+
+而"**尸体施法**"这一半，机制是**事件队列没被清**：
+`Creature::Update` 的 **CORPSE 分支会调 `Unit::Update`**（`Creature.cpp:829-855`），其中 **`m_events.Update(diff)`（`Unit.cpp:504`）不看死活**；
+而 `Unit::SetDeathState(JUST_DIED)` 只做 `RemoveAllAurasOnDeath / StopMoving / 清移动 / CombatStop / 打断施法` —— **不清 `m_events`**。
+⇒ 死亡前排队/延迟的 `SpellEvent`（EventAI 的延迟施法、光环触发等）会在尸体状态下继续执行到 `Spell::Prepare`
+（实测那 12 条里 `spellTrigger=45227`，即"被法术触发"的链也照跑）。
+**注意：这是上游行为，不是我们改出来的。**
+
+**本轮诊断升级（已编译部署）**
+
+| 变化 | 说明 |
+| --- | --- |
+| **整条栈** | 所有 `[DEADHIT]/[REVIVE]/[DOOR]` 增加 `stack=0x…,0x…`（跳过前两帧＝helper+Report 本体，第一条即钩子点）。实现了 `MaNGOS::CaptureStack`（Windows `CaptureStackBackTrace` / Linux `backtrace()`），MSVC 与 GCC 均已实测可用 |
+| **新漏斗钩子** | `MotionMaster::Mutate()` → `[DOOR] what=mm-mutate` + 新字段 `newgen=`（**`Mutate(new …)` 是安装生成器的唯一漏斗：21 处，`push(new` 0 处**）⇒ 下次"尸体突然有了移动生成器"能直接点出是哪个 `Move*` 调用 |
+| **噪声过滤（重要）** | `mm-initialize` / `aim-initialize` **只在 `!IsDespawned()`（＝CORPSE，客户端看得见的尸体）时上报**：待复活的 DEAD 生物被刻意装 AI+移动是上游正常行为，不过滤会"每次加载网格刷一行"（这正是新钩子第一次跑就喷出来的东西）。实测：**过滤后开服 0 行** ✓ |
+
+**验证**：MSVC Release `mangosd` 0 error；WSL GCC 15.2 rc=0；本地已部署（01:12 / 01:17 两次，`map` 与 `exe` 同一次链接）；启动与首轮在线均安静。
+**仍待**：下一次 `[DEADHIT] site=spell-prepare` 出现时看 `stack=` ⇒ 直接把"谁排的那个法术事件"点出来（预计能看到 `Spell::SpellStart ← Spell::prepare ← SpellEvent::Execute / Unit::CastSpell …`）。
+
+### 四之五、**定案（2026-10-03 01:18–01:24）：三条链全部点名成功 + 三处修复已实施**
+
+同一轮 `stack=` 数据（本机，反查用 `x64_Debug\mangosd.map`），三条驱动链**完全查明**：
+
+**① 尸体施法（CORPSE，entry 24978 ×8）＝ DB 脚本队列驱动**
+```
+Spell::Prepare ← Spell::SpellStart ← Unit::CastSpell
+  ← ScriptAction::ExecuteDbscriptCommand(WorldObject*, uint32, Object*, bool)   [ScriptMgr.obj]
+    ← ScriptAction::HandleScriptStep()  ← Map::ScriptsProcess()  ← Map::Update()  ← MapUpdater::WorkerThread
+```
+⇒ `dbscripts_on_*` 脚本在被杀的**尸体**上执行 `SCRIPT_COMMAND_CAST_SPELL`，命令里**没有施法者死活判定**。
+法术 45104 Shadow Channelling / 30944 Red Beam 正是 Sunwell 岛 Dawnblade 区域的**引导光束脚本效果**。
+
+**② "待复活"生物施法（DEAD，entry 25001 ×2）＝ `AIM_Initialize` 直接跑 EventAI 的 spawn 事件**
+```
+Spell::Prepare ← Spell::SpellStart ← Unit::CastSpell(Unit*, SpellEntry*, …)
+  ← UnitAI::DoCastSpellIfCan  ← CreatureEventAI::ProcessAction ← ProcessEvent ← ProcessEvents(Unit*)
+    ← Creature::AIM_Initialize()  ← Creature::LoadFromDB()
+```
+⇒ `Creature::LoadFromDB` → `AIM_Initialize` → `CreatureEventAI::JustRespawned()`（注释已写明"也会被 AI 构造函数调用"）
+会**把所有事件置 enabled，并立刻处理 SPAWNED 事件**，于是**还没复活的生物**就执行了 `DoCastSpellIfCan`
+—— 这条路径**不经过 `UnitAI::UpdateAI`**，所以 `UnitAI.cpp:1105` 那道死活守卫**根本拦不到**（原先"守卫被绕过"的判断方向对、位置错）。
+
+**③ 尸体挂随机移动（CORPSE + `movegen=1`）＝ 上游 `CreatureRespawnRelocation` 无条件重装移动**
+```
+MotionMaster::Initialize  ← Map::CreatureRespawnRelocation(Creature*)   [Map.cpp:1501，:1518 无条件 Initialize]
+  ← ObjectGridUnloader::MoveToRespawnN()  ← Map::UnloadGrid()  ← RemovalState::Update()
+    ← MapManager::UpdateGridState()  ← Map::Update()  ← MapUpdater::WorkerThread
+```
+⇒ **网格卸载时把生物搬回刷新点、顺带给它装上默认随机/路径生成器；对尸体也照装**，随后
+`Creature::Update` 的 CORPSE 分支 → `Unit::Update` → `UpdateMotion` 就**真的驱动尸体走动**
+（同一只怪 5300656 在 01:24:20 一秒内先 `mm-initialize`、再 `move-while-dead movegen=1`，两条栈都抓到）。
+⚠️ **我们的 A+ 懒卸载是放大器**（没人时更频繁卸载网格 ⇒ 更容易踩到这条上游 bug）。
+
+**三处修复（2026-10-03 实施，均已编译 + 本地部署）**
+
+| # | 文件 | 改动 |
+| --- | --- | --- |
+| ③ | `Maps/Map.cpp` `CreatureRespawnRelocation` | `if (c->IsAlive()) Initialize(); else MoveIdle();` —— 死单位只保留干净 idle 栈，不再被装随机/路径生成器 |
+| ② | `AI/EventAI/CreatureEventAI.cpp` | ① `JustRespawned()`：`if (!m_creature->IsAlive()) return;`（放在 `InitAI()`/状态初始化之后、事件置位与 `ProcessEvents` 之前）—— 真正复活时该函数会被再调一次，不丢任何东西；② `CheckEvent()` 兜底：非存活生物一律不处理事件，**只放行 `EVENT_T_DEATH`**（`JustDied` 在生物已死时跑它） |
+| ① | `DBScripts/ScriptMgr.cpp` | `SCRIPT_COMMAND_CAST_SPELL`(15) 与 `SCRIPT_COMMAND_CAST_CUSTOM_SPELL`(46)：**施法者是生物且非存活 ⇒ 跳过**（目标侧不动，脚本仍可对被尸体生效的对象做事） |
+| 诊断 | `Maps/Map.cpp` `CensusAnomalies` | "deadMoving" 判据加 `!IsDespawned()`（只看客户端可见的尸体）—— 上一轮 39 条 anomaly **全是 DEAD**（待复活生物被刻意装 AI+移动，且 DEAD 不跑 `Unit::Update`，根本不会动）＝假阳性 |
+
+**验证**：MSVC Release `mangosd` 0 error；WSL GCC 15.2（含 PCH）rc=0；本地已部署（`mangosd.exe`+`map` 01:35:59 同一次链接），**开服与首轮运行诊断全 0 行**（`[DOOR]/[DEADHIT]/[CENSUS]/[SOCKDIAG]/[REVIVE]`）。
+**运行期验证待做**：需游戏内复现旧场景（打死 Dawnblade 一带的怪、`.respawn`、走开再回来、被围打掉线重连）——
+判据＝同样的操作下 `[DEADHIT] spell-prepare` / `[DOOR] mm-initialize`(CORPSE) / `move-while-dead` **不再出现**。
+
+**两条判据再收敛（2026-10-03 01:38–01:44，都是为了"日志保持安静"）**
+
+| 现象 | 定论 | 处理 |
+| --- | --- | --- |
+| `[DOOR] move-while-dead` on guid 5300854（entry 25063，**CORPSE**，`movegen=18`，z=52.1 悬空） | 栈＝`Creature::Update`(CORPSE 分支) → `Unit::Update` → `MotionMaster::UpdateMotion`；而那个 18 号生成器是**死亡路径自己装的**：`Unit::SetDeathState` → `MoveFall()`（上游设计：空中被击杀要让尸体落到地面），`[DOOR] mm-mutate newgen=18` 那条就是它 | **正常路径** ⇒ `move-while-dead` 与 CENSUS 的 `deadMoving` 都**白名单掉 `FALL_MOTION_TYPE`**（只留"尸体不该有的"生成器：随机/路径/追击…） |
+| `[REVIVE] what=Respawn` 一次 `.respawn` 刷 40–83 行 | 驱动者已查明＝`MaNGOS::RespawnDo`（GM 命令） | 新增 `Map::GmRespawnScope`（**thread_local** 作用域）：`.respawn`、`.npc move`、`.npc set movetype`、`.npc spawndist`、`.wp modify` 执行期间**抑制 `[REVIVE]`**——站长自己的操作不算证据；脚本/机制触发的复活照报 |
+
+> 结论口径：**只有"客户端看得见的尸体"且"生成器不是 IDLE/FALL"** 才值得一行日志；GM 主动操作一律静默。
+> 实测（01:46 起）：开服与首轮 `[DOOR]/[DEADHIT]/[CENSUS]/[SOCKDIAG]/[REVIVE]` **全 0 行**。
+
+### 四之六、第四条链（2026-10-03 01:48 抓到）：**法术打中尸体 ⇒ 尸体的 AI 试图反击** → 已修（④）
+
+`[DOOR] what=attack-while-dead`（guid 5300323 entry 24978，CORPSE，`respawnIn=300s`，`incombat=0`，`movegen=0`＝**我们的 ③ 修复生效中，移动是干净的 idle**）整条栈：
+
+```
+Map::ReportCorpseDriver ← Unit::Attack                      ← 守卫拦下（没真打）
+  ← CreatureAI::AttackStart(+0x22e)
+    ← Unit::SetInCombatState ← Unit::EngageInCombatWith      ← ★ 尸体已经被推进战斗状态
+      ← CreatureAI::AttackStart(+0x241)
+        ← UnitAI::AttackedBy  ← Unit::AttackedBy
+          ← Unit::CasterHitTargetWithSpell ← Spell::DoSpellHitOnUnit
+```
+⇒ **有法术命中这具尸体**，`Unit::AttackedBy` → 它的 AI `AttackedBy` → `CreatureAI::AttackStart` → `EngageInCombatWith`/`SetInCombatState`
+（**此时尸体已被置入战斗状态**）→ 再 `AttackStart` → `Unit::Attack` 被守卫拦下并打日志。
+即"尸体打人"的最后一道伤害确实没打出来（守卫有效），但**尸体被拉进战斗状态**这一步是真的发生了（客户端可能表现为"它在跟我打"）。
+
+**修复（④，2026-10-03 实施）**：
+| 文件 | 改动 |
+| --- | --- |
+| `AI/BaseAI/UnitAI.cpp` `AttackedBy` | 开头 `if (!m_unit->IsAlive()) return;` —— 非存活单位不因被攻击而反击 |
+| `AI/BaseAI/CreatureAI.cpp` `AttackStart` | 开头 `if (!m_creature->IsAlive()) return;` —— 死单位绝不进入攻击/战斗状态（连 `COMBAT_PING` 也不发） |
+
+> `CreatureEventAI` 没有覆写 `AttackStart`（只在动作里调用它），所以基类这道守卫覆盖 EventAI 生物 ✓。
+
+**验证**：MSVC 0 error；WSL GCC rc=0；本地已部署（01:50），开服与首轮诊断全 0 行。
+**待游戏内复现验证**：对尸体放范围/单体法术，判据＝不再出现 `[DOOR] attack-while-dead`，且尸体的 `incombat` 保持 0。
+
+### 四之七、收尾：修复清单 + 本地验证结果（2026-10-03 01:50）
+
+**四条链与对应修复（全部已实施、已编译、已部署本地、已同步云端）**
+
+| # | 现象 | 驱动者（栈反查结论） | 修复 | commit |
+| --- | --- | --- | --- | --- |
+| ① | **尸体施法**（CORPSE，Dawnblade 24978，法术 45104/30944） | `Map::ScriptsProcess`（`dbscripts_on_*` 队列）→ `ScriptAction::ExecuteDbscriptCommand` → `Unit::CastSpell`，命令里没有施法者死活判定 | `SCRIPT_COMMAND_CAST_SPELL`(15) / `CAST_CUSTOM_SPELL`(46) 加"施法者是生物且非存活 ⇒ 跳过" | `4ab217ead` |
+| ② | **"待复活"生物施法**（DEAD，25001，法术 45227） | `Creature::LoadFromDB` → `AIM_Initialize` → `CreatureEventAI::JustRespawned`（把所有事件置位并处理 SPAWNED 事件）→ `DoCastSpellIfCan`；**不经过 `UpdateAI`，绕过那道 IsAlive 守卫** | `JustRespawned()` 非存活直接 return + `CheckEvent()` 兜底只放行 `EVENT_T_DEATH` | `4ab217ead` |
+| ③ | **尸体挂随机移动**（CORPSE + `movegen=1`，25028） | `Map::UnloadGrid` → `ObjectGridUnloader::MoveToRespawnN` → `Map::CreatureRespawnRelocation` → **无条件** `MotionMaster::Initialize()`（上游代码；我们的 A+ 懒卸载是放大器） | 只有 `IsAlive()` 才 `Initialize()`，死单位 `MoveIdle()` | `4ab217ead` |
+| ④ | **尸体被拉进战斗状态/试反击**（法术命中尸体，24978） | `Spell::DoSpellHitOnUnit` → `Unit::CasterHitTargetWithSpell` → `Unit::AttackedBy` → `UnitAI::AttackedBy` → `CreatureAI::AttackStart` → `EngageInCombatWith`/`SetInCombatState` → `AttackStart` → `Unit::Attack`（被拦下，但战斗状态已置） | `UnitAI::AttackedBy` + `CreatureAI::AttackStart` 各加 `!IsAlive() ⇒ return` | `6cf195b67` |
+
+**诊断口径的最终收敛**（保证云端日志安静，只在"真可疑"时出字）
+
+| 钩子 | 口径 |
+| --- | --- |
+| `[DEADHIT]`（melee-swing / melee-blocked / spell-prepare） | 每 (guid, 调用点) 一次；行内含 `caller=` + **`stack=`**（整条栈，可直接反查函数名） |
+| `[DOOR]` mm-initialize / aim-initialize / mm-mutate / move-while-dead / attack-while-dead / evade-while-dead | **只报客户端可见的尸体（`!IsDespawned()`）**；`move-while-dead` 额外**白名单掉 `FALL_MOTION_TYPE`**（死亡自带的下落）；`mm-mutate` 带 `newgen=` |
+| `[REVIVE]` | 只在"重生时钟还在走"时报（过滤天灾入侵 churn），且**GM 主动复活静默**（`Map::GmRespawnScope`：`.respawn`/`.npc move`/`.npc set movetype`/`.npc spawndist`/`.wp modify`） |
+| `[CENSUS]` | 5 分钟扫一遍，只看 CORPSE 的异常（`deadMoving` 同样白名单掉 IDLE/FALL） |
+| `[SOCKDIAG]` | `Close()`/析构时若还有在途写 ⇒ 每 socket 一行（对应 `[崩溃] 2026-10-03` 章的调查） |
+
+**本地验证结果（真实登录 + 打怪）**
+
+- 01:36–01:50（①②③ 生效期间，共约 **14 分钟**，站长 4 次登录并在打怪）：
+  `[DEADHIT]` **0 行**、`[DOOR] mm-initialize`/`move-while-dead`(非 FALL) **0 行** ⇒ 尸体不再施法、不再被装随机移动。
+- 01:50 起（④ 生效，3 分钟）：`[DOOR] attack-while-dead` **0 行**；站长现场确认"**没这方面日志了**"。
+- 全程 `[SOCKDIAG]` **0 行**、无崩溃。
+- 说明：④ 的观察窗口偏短（3 分钟），**云端 04:06 nightly 上线后**这几条诊断仍挂着 —— 若再出现任何一条，`stack=` 会直接指出新驱动者。
+
+**状态**：**尸体打人/尸体放技能这一项＝已修复（本地验证通过，云端今晚生效）**；本机 mangosd 全程未崩。
+
+### 五、状态
+- 本地：MSVC Release 编译 0 error；WSL GCC 预检 `ninja rc=0`；**未在本地重启验证**（现象随机、本地难触发）。
+- 云端：源码已同步，等 2026-10-03 04:06 夜间窗口编译上线；下次现场 grep `[DEADHIT]` / `[REVIVE]` 即可定案：
+  `[REVIVE] what=Respawn*` 能指出**是脚本/机制把尸体复活了**，`alive-with-pending-respawn` 与
+  `[DEADHIT] respawn-pending` 则坐实"活着 + 重生时钟未清"这个核心矛盾。
+
+---
+
 ## [运维] 2026-10-02 夜间构建失败复盘：**手工同步清单漏了 `Unit.h`** ⇒ 改为"全树比对"（P0 流程）
 
 ### 一、现象
@@ -7718,6 +8046,288 @@ Unit.h:2129: note: candidate is: 'void Unit::SetVisibility(UnitVisibility)'
 3. 云端源码与本地**逐字节一致**是"本地能编 ⇒ 云端能编"的前提；但编译器不同（本地 MSVC / 云端 GCC 10），
    所以本地编完仍应在 WSL 里用 GCC 对改动过的 TU 做一次针对性编译（见 `_agent_tmp/_wsl_preflight.sh`，
    本次 9 个 TU 全部通过）。
+
+---
+
+## [平衡] 2026-10-02 四项平衡调整可行性分析（站长下单，**全部未实施**）
+
+> 站长原话要点：① 双手武器先**预留接口不动**；② 怒气口径**确认**（吸收 100% + 格挡计入）；
+> ③ 英勇/嗜血+图腾改全团要先想清楚**平衡**（原版没有限制，再全团会更不平衡）；④ 风怒图腾可考虑**缩短附魔时长**来解决遗留问题。
+> **以上均只做可行性分析，代码/数据一行未改**。本章只留档结论与落点。
+
+### 〇、结论速览
+
+| 项 | 可行性 | 改动量 | 要不要动 DBC | 建议顺序 |
+|---|---|---|---|---|
+| ① 双手武器伤害 | 可行，**先只留 conf 接口** | 极小（1 键 + 1 乘点） | 不需要 | 第 4 |
+| ② 怒气：吸收 100% + 格挡计入 | 可行，口径已确认 | 小（`CleanDamage` 加 2 字段） | 不需要 | 第 2 |
+| ③ 图腾全团（英勇/嗜血另议） | 可行，**建议分两步** | 中（目标枚举 + 移除范围） | 图腾不需要 | 第 3 |
+| ④1 同种图腾不叠加 | 可行 | 小（排他规则） | 不需要 | **第 1** |
+| ④2 图腾 buff 遗留时间 | 可行（时长须服务端补） | 小 | 不需要 | 第 3 |
+| ④3 风怒图腾改 buff | 可行但＝**换实现** | 大 | 待定 | 最后 |
+
+### 一、双手武器伤害（站长定：**只预留接口，不动数值**）
+
+- **"1.03~1.10"不是端差异，是各家私服自己的玩法旋钮**。核实：我们仓库（含 conf）`git grep -i twohand`
+  **只命中装备槽逻辑、没有任何双手伤害系数**；TrinityCore 参考端只有 `ItemDamageTwoHand.db2`（后续资料片物品表，与加成无关）；
+  AzerothCore 参考端无命中。公开资料里也没有"双手武器内置伤害加成"这回事，官方给的杠杆是**天赋**（武器专精）。
+- 原版真正与双手有关的只有一处：`Unit::GetAPMultiplier`（`Unit.cpp:11247-11270`）——
+  **归一化速度 双手 3.3 / 单手 2.4 / 匕首 1.7 / 远程 2.8**，它决定"攻击强度如何折算成武器伤害"，不是平白加 %。
+- **接口设计（将来要做就照这个做）**：新 conf 键 `Rate.Weapon.TwoHandDamage = 1.0`（沿用 `Rate.*` 风格）
+  → `World.h` 加 `CONFIG_FLOAT_...` 枚举 → `World.cpp` `setConfigPos(...)` 读取
+  → **唯一乘点** `StatSystem.cpp:416-417`（`min/max_damage = ((base_value + weapon_*damage) * base_pct + total_value) * total_pct`），
+  用现成的 `Player::IsTwoHandUsed()`（`Player.h:1201`）判定，**只乘武器伤害部分**，AP 收益不动。
+  **默认 1.0 ⇒ 零行为变化**，以后调数值只改 conf（重启生效）。
+- ⚠️ **不要**做进 `GetAPMultiplier`：那是共享机制，改它等于连 AP 一起放大，还会影响所有依赖它的公式。
+- 站长此前询问的数值建议（留档）：先 **只武器部分 ×1.05**，观察一周（白字/技能占比、双手职业 DPS 分布）再调。
+
+### 二、怒气：护盾吸收 100% + 格挡计入（**站长已确认**）
+
+- **规则**：挨打怒气基数 = 实际吃到的伤害 **+ 护盾吸收量（100%）+ 格挡量**；
+  **护甲/抗性减伤不计**（现状本来就不计）；**完全免疫不计**（免疫时伤害与吸收皆为 0，自然不产怒）。
+- **落点**：`CleanDamage`（`Unit.h:668-676`）目前只有一个 `takenOrAbsorbedDamage` **布尔**，没有数值字段 ⇒
+  需加 `absorbed` / `blocked`：
+  - 近战路径（`Unit::AttackerStateUpdate`）填 `CalculateAbsorbAndResist` 的 `absorb` + 挥砍里的 `blocked_amount`；
+  - 法术路径（`Spell::DealSpellDamage`）只填 `absorb`（**法术不可格挡**）；
+  - 挨打方 `Unit.cpp:1167` / `:1478` 的 `RewardRage(cleanDamage->damage, 0, false)` 基数改为 `damage + absorbed + blocked`。
+- **影响面**：战士/熊德挨打怒气；PVP 里"套盾反而喂对方怒气"会更明显（这正是站长要的效果，作为机制修正）。
+- **验证**：本地自测即可 —— 固定怪打自己，记录"无盾 / 有盾 / 举盾格挡"三种情况下的怒气增量对比。
+
+### 三、英勇/嗜血与图腾改全团：建议**分两步**（站长问"怎么做最合适"）
+
+**已查实的事实**：
+- TBC 原版**没有**"精疲力竭/过载"类锁定；英勇/嗜血是**小队**范围（`EffectImplicitTargetA1 = 22`、半径 12）、
+  持续 40 秒（`DurationIndex = 64`）、**CD 10 分钟**（`RecoveryTime = 600000`）。
+- **我们的 fork 已有一层保护**：`SpellAuras.cpp:5907 / 5927` 对 `32182 / 2825 / 49725 / 45856` 做了
+  "**只取最大值**"排他 ⇒ 同一角色身上两个英勇**不会叠加**急速/攻速。
+  但**等量**的第二个英勇会替换前一个并**续上时间** ⇒ 多个萨满轮流放，仍可让一个人**持续挂着英勇**
+  （这就是站长担心的"重复吃到"）。
+- 图腾光环：**`Effect1 = 35`＝`SPELL_EFFECT_APPLY_AREA_AURA_PARTY`**（"队伍"写在效果类型里）、
+  时长 **`DurationIndex = 21`＝-1（无限）**；`Totem::UnSummon`（`Totem.cpp:145-157`）在图腾消失瞬间
+  只对**同小队**成员 `RemoveAurasDueToSpell`。
+
+**方案与取舍（我的推荐）**：
+
+| 方案 | 内容 | 评价 |
+|---|---|---|
+| **A（推荐先做）** | **只把图腾改全团**（+ ④1 同种不叠加、④2 遗留时长），**英勇/嗜血保持原版**（小队 + 现有"只取最大"） | TBC 语义不变、通胀可控（图腾是持续小 buff）；改动集中在目标枚举与 `Totem::UnSummon` |
+| **B（WLK 模型，要做再单独上）** | 英勇/嗜血**改全团 + 每人 10 分钟锁定**（debuff 时长＝CD） | 这就是 WLK 的做法，从根上杜绝"反复吃"；单体萨满团队更爽、多萨满团队收益被削平 |
+| C（不建议） | 全团 + 无锁定 | 明确通胀：一个萨满就能让 25 人吃满，多萨满还能续时间 |
+
+**B 的唯一障碍是"可见 debuff"**：TBC 客户端数据里**没有** Sated/Exhaustion（`57723/57724` 全库查无），三选一：
+**(a)** 纯服务端计时锁定（零 DBC，玩家看不到 debuff）；**(b)** 借一个现有 TBC debuff 当可见标记
+（需先列候选给站长挑，名字/图标未必贴切）；**(c)** 改客户端 DBC 新增（**须发客户端补丁**，属 P0 红线，需站长明确批准）。
+
+### 四、图腾三件事
+
+1. **同种图腾不叠加（④1，建议第一个做）—— 机理已确认**：
+   `Unit::AddSpellAuraHolder`（`Unit.cpp:5179`）**只在 `casterGuid` 相同**时才做去重 ⇒
+   两个萨满插同种图腾 = **两个 aura holder = 双份效果**（站长看到的现象）。修法：仿照 `SpellAuras.cpp:5907`
+   的排他写法，给"图腾光环类"加"**同类型只取最强**"（类型键用 `SpellIconID` 或 `SpellFamilyFlags`）。
+2. **图腾消失后的遗留时间（④2）**：现状是**瞬间移除**（`Totem::UnSummon`：主人 + 同小队）。
+   要"遗留 N 秒"必须：**不立即移除** + **给一段服务端时长**（DBC 里是 -1 无限，无法自己过期）。
+   建议 N = **2 秒**（可配），并与 ③A 的全团范围一起改。
+3. **风怒图腾（④3）**：它的效果**不是 aura，而是临时武器附魔** ——
+   `8514 Windfury Totem Effect`：`Effect1 = 92 = SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY`、**附魔 id = 1783**
+   （`SpellItemEnchantment.dbc` 里 1783 存在）、`EffectBasePoints1 = -1`。
+   - **站长提的"缩短附魔时长"可行性高**：时长在 `Spell::EffectEnchantItemTmp`
+     （`SpellEffects.cpp:4862-4885`：`if (damage > 0) duration = damage;` 否则默认 **3600 秒**，
+     最后 `SetEnchantment(TEMP_ENCHANTMENT_SLOT, enchant_id, duration * 1000, ...)`）。
+     它**天然是"到点自己消失"**，所以缩短时长正好解决"图腾没了 buff 还在"，比 ④2 的 aura 方案更简单。
+     ⚠️ **动手前必须先核实**：`8514` 的 `EffectBasePoints1 = -1` 到底算出多少 `damage`（决定现在是几秒），
+     再定"改到几秒"（量级约 10 秒）。
+   - **要真改成 buff ＝换实现**（新增一条 proc 光环、复刻风怒触发概率与额外攻击次数），
+     且会带来**与真附魔共存**的强度变化（现在风怒会顶掉毒药/磨刀石/巫师之油）⇒ 列为**大改、最后做**。
+
+### 五、建议开工顺序（等站长点名，本章不做）
+
+1. **④1 同种图腾不叠加**（小、见效快）
+2. **② 怒气（吸收 + 格挡计入）**
+3. **③A 图腾改全团** + **④2 遗留时长**（顺带把 `Totem::UnSummon` 的移除范围改全团）
+4. **① 双手接口**（conf 键，默认 1.0，零行为变化）
+5. **③B 英勇 WLK 化** 与 **④3 风怒改 buff**（大改，需先定 debuff 载体与"是否与附魔共存"）
+
+### 六、状态
+
+- **未改任何代码/数据**（本章仅为分析留档，仓库工作区干净）。
+- 待站长决策的 3 个点：① 双手接口是否现在就加（默认 1.0）；③B 的 debuff 载体走 (a)/(b)/(c)；④3 是"缩短附魔时长"还是"改 buff"。
+
+---
+
+## [崩溃] 2026-10-03 00:01:51 云端 mangosd 段错误（异步写回调里析构 shared_ptr，`WorldSocket::SendPacket` 的 lambda）—— **未定案；宕机约 110 秒，watchdog 已自动拉起**
+
+### 一、事实（全部为云端只读取证，未做任何变更）
+
+| 项目 | 证据 |
+| --- | --- |
+| 崩溃 | `kernel: mangosd[4772]: segfault at 11 ip 00000000008110e7 sp ... error 4 in mangosd[6b6000+984000]`，时间 **2026-10-03 00:01:51**（进程 PID 4697，即 10-01 03:04 那版二进制） |
+| core | `systemd-coredump` 已存：`/var/lib/systemd/coredump/core.mangosd.0.16cb…4697….lz4`（**363 MB**，写入完成 00:02:22） |
+| 自动拉起 | watchdog（`/etc/cron.d/mangos_watchdog`，每分钟一次）00:03:03 记 `mangosd 未运行，启动中...`，00:03:05 记 `已启动`；`Server.log` 首行 `2026-10-03 00:03:04 [CMaNGOS TBC World server v0.18]`，世界初始化完成 00:03:41 |
+| 停机时长 | **约 110 秒**（00:01:51 → 00:03:41），期间 realmd/mysqld 正常；00:00 时在线 2 人 |
+| 当前状态 | mangosd 在 screen 会话 `66999.mangosd` 中运行（`pgrep` 可得），8086/3724 均在监听，mysqld(1098) 在跑；内存 1870MB 中 used 999MB、swap 用 302MB |
+| **不是被杀** | 内核记录的是 **SIGSEGV + core**；`kill -9`/`stop` 不会产生段错误与 core。本次重启是 watchdog 的自动行为，**不是人工/远端下发的关闭** |
+
+> 附带澄清两条：① 本机 `D:\Game\cmangos\build_deploy_restart.bat` 的 `taskkill` 只作用于**本机** `mangosd.exe`/`realmd.exe`，脚本里没有任何云端步骤；② 本次会话对云端只发过只读命令（进程/日志/core/监听端口/DB 查询），段错误类崩溃在原理上也不可能由只读命令产生。
+
+### 二、崩溃栈（`coredumpctl` 符号 + `addr2line -f -C -i`）
+
+崩溃线程是 **网络线程 4772**（`Master::Run` 的 asio 线程）：
+
+```
+#0  0x8110e7  std::_Sp_counted_base<__gnu_cxx::_Lock_policyE2>::_M_release()
+#1  0xa5ad02  std::_Function_handler<void(error_code const&, unsigned long),
+                WorldSocket::SendPacket(WorldPacket const&)::{lambda(...)#1}>::_M_manager(...)
+                → WorldSocket.cpp（无 DWARF，行号不可知）
+#2  0x81a7a2  boost::asio::detail::reactive_socket_send_op<const_buffers_1,
+                write_op<basic_stream_socket<tcp>, const_buffers_1, const const_buffer*,
+                transfer_all_t, std::function<void(error_code const&, unsigned long)>>>::do_complete(...)
+#3  0x80f549  asio::detail::scheduler::do_run_one(...)
+#4  0x80f761  asio::detail::scheduler::run(...)
+#5  0x80a766  std::thread::_State_impl<...Master::Run()::{lambda()#1}...>::_M_run()  (Master.cpp)
+```
+
+要点：
+
+- lambda `#1` = `WorldSocket.cpp:138` 那个（`[self, fullMessage]`，即 `pct.size() > 0` 分支），不是 144 行的 header 分支；
+  崩溃点发生在 **asio 的 send 操作对象析构 → 析构它持有的 std::function → 析构捕获的 `shared_ptr`** 时。
+- 反汇编现场为 `mov rax,[rbp+0]` / `mov rdi,rbp` / `call qword ptr [rax+0x10]`（`_M_dispose()` 虚调用），
+  而 `rax` 读出的是 **1** ⇒ 故障地址 `0x1+0x10 = 0x11`。也就是说 **控制块对象所在内存的 vptr 已被写成 1**：
+  该内存要么已被释放后被复用、要么同一操作对象被析构了第二次 ⇒ **典型的"操作队列被破坏 → handler 二次析构"**。
+- 云端二进制 `not stripped` 但**无 DWARF**（`readelf -S` 只有 `.symtab`），所以只能到符号级，取不到行号。
+
+### 三、触发上下文（同刻日志）
+
+崩溃前 1-2 分钟内，两次玩家登录/断线风暴，且风控在刷单：
+
+```
+[00:04:33 之前] Cheat detected: Player: Asggd IP: 119.119.79.143 Account ID: 6
+                Detector: BadOrderAck  Received ACK CMSG_MOVE_SET_CAN_FLY_ACK (837) counter = 2 which was not pending
+[AUTH] new world session created: account='NYMPH' …  / account='Asggd' …
+```
+
+即 **"客户端断线/被风控踢 + 地图线程仍在给该玩家发包"** 的时刻。这与"异步 send 操作对象被并发破坏"的画像一致。
+
+### 四、初步分析（**假设，尚未证实**）
+
+1. 这套"全异步写"来自**上游**提交 `a0b44d1f8 Network: Remove built in nagle algo and fully go async (#653)`（killerwife，2024-01-30），
+   **不是我们改的**；我们只在其上加过 `m_worldSocketMutex`（`9aaa6dd27`，为 crypt/opcode 历史加锁）。
+2. `WorldSocket::SendPacket`（`WorldSocket.cpp:101-146`）在 `m_worldSocketMutex` 保护下**从任意线程**（地图线程/世界线程）直接
+   调 `AsyncSocket::Write` → `boost::asio::async_write(m_socket, ...)`；
+   而 `AsyncSocket::Close()`（`AsyncSocket.hpp:44-53`）走的是**另一把锁** `m_closeMutex` ⇒
+   **`close()` 与 `async_write()` 在同一 socket 上没有任何互斥**。asio 的 `basic_stream_socket` 是
+   "Shared objects: Unsafe"，同一对象上并发发起操作/关闭属未定义行为，最典型的后果就是**内部 op 队列损坏 → 同一 handler 被析构两次**，
+   正好对应上面 `_M_release` 读到 vptr=1 的现象。
+3. 代码里作者自己留了 TODO（`WorldSocket.cpp:112`）："encrypt thread unsafe due to being executed from map contexts frequently
+   - TODO: **move to post service context in future**" —— 即上游也知道该路径最终应改为 post 到 io_context/strand。
+
+### 五、历史崩溃对比（不是同一个 bug，别混为一谈）
+
+云端 9-10 起共 11 条 coredump 记录，只有 3 个 core 文件还在（其余 `none/missing`）：
+
+| 时间 | 崩溃线程栈顶 | 备注 |
+| --- | --- | --- |
+| 2026-09-23 11:10 | `Camera::Event_AddedToWorld` ← `Map::CreatePlayerOnClient` ← `HandlePlayerReconnect` | 登录/重连路径 |
+| 2026-09-24 23:11 | `GridReference<Creature>::targetObjectBuildLink` ← `Map::AddToGrid` ← `CreatureRelocation` | 网格插入 |
+| 2026-09-29 11:57 / 12:01 | `npc_spawned_oronok_tornheartAI::MovementInform` ← `PointMovementGenerator::MovementInform` ← `MotionMaster::DirectExpire` | 两次同栈，脚本 AI |
+| **2026-10-03 00:01** | **`_Sp_counted_base::_M_release` ← `WorldSocket::SendPacket` 的写回调 `_M_manager` ← asio `reactive_socket_send_op::do_complete`（网络线程）** | **首次出现该签名** |
+
+⇒ 本前缀（10-01 03:04 二进制）**不是**我们近期内存/网格改动的直接产物；但**崩溃频率不低（约每 2-4 天一崩）**，属于稳定性主线问题。
+
+### 六、候选修法（**均未动手，等站长点名**）
+
+| 方案 | 内容 | 风险/代价 |
+| --- | --- | --- |
+| A（最小） | 让 `AsyncSocket::Close()` 与 `SendPacket` 共用同一把锁（把 `m_closeMutex` 与 `m_worldSocketMutex` 合并，或 `Close()` 里补锁） | 改动最小；但 `Close()` 从网络线程调用、`SendPacket` 从地图线程调用，需确认不会长时间持锁/自锁（`Close()` 只做 `shutdown`+`close`，非阻塞） |
+| B（对症） | 按上游 TODO：所有 socket 异步操作改到**同一 strand**（或统一 `boost::asio::post` 到 io_context）后再发起，地图线程只入队 | 需要重排 `SendPacket`/`Read`/`Close` 的线程模型，回归面较大 |
+| C（折中） | `SendPacket` 改为"仅入队 + post 一次写"，由网络线程串行取队列发起 `async_write` | 中等；能消除"地图线程直接碰 socket"这一根因 |
+
+**验证手段（先于修法）**：① 在本地复现——多线程发包 + 同时断线（如 GM 踢人/客户端强杀）压测；② 若难以复现，加一次性诊断：在 `SendPacket`/`Close` 记录线程 id、socket 状态与调用点，抓"同刻并发"证据。切勿在云端跑 gdb/重编译（见"不要在 mangosd 运行时在云端跑 gcc"那章，1.8GB 内存会触发内核 OOM）。
+
+### 七、运维遗留
+
+- `/var/lib/systemd/coredump/` 现存 **821 MB**（3 个 core，最大的就是本次 363 MB）；根分区 40G 用 25G（**67%**，余 13G）。
+  是否清理旧 core（9-29 的两个）需站长决定；本次 core 建议**先留着**以便进一步定位。
+- 崩溃前那版二进制（10-01 03:04）仍在跑；10-02 04:06 夜间构建失败 ⇒ 本地已修好的一批诊断/修复**仍未上云**。
+
+### 八、修复（2026-10-03 当天完成本地验证）：把 socket 的"发起操作"与"关闭"放进同一把锁
+
+**先复现，再改**（复现器 `_agent_tmp/asio_race_test.cpp`，WSL GCC 15.2 + Boost 1.90 + ThreadSanitizer，
+场景＝3 个"地图线程"不停 `async_write` + 1 个"世界线程"每 1.5 ms `shutdown+close`，对端不读因此写操作堆在 asio 队列里）：
+
+| 模式 | 含义 | TSan 结果 | 运行结果 |
+| --- | --- | --- | --- |
+| 0 | **现状**：两处都直接调 asio | **2 条 data race**：`close()` 调用的 `reactive_socket_service_base::construct`（写 `reactive_socket_service_base.ipp:51/53`）vs 写线程 `async_write→async_send→start_op`（读同一块内存） | 另一轮直接 **SEGV 在 `epoll_reactor::start_op`**（`epoll_reactor.ipp:273`）＝**崩溃可稳定复现** |
+| 1 | **方案 A**：两处共用一把 `std::mutex` | **0 race** | 127,814 次发起全部正常完成/中止，**0 双重完成** |
+| 2 | 方案 C：全部 `post` 到 io_context | **0 race** | 同样干净（但改动面大得多，暂不需要） |
+
+⇒ 定案：**竞争确凿存在**（`close()` 与"新发起的异步写"并发 = asio "Shared objects: Unsafe" 的典型踩雷），
+且**最小改法即可消除**，不需要重排线程模型。
+
+**改动（唯一文件 `src/shared/Network/AsyncSocket.hpp`）**：把原来的 `m_closeMutex` 升级为 `m_socketOpMutex`，
+**罩住对同一个 asio socket 的每一次调用** —— `Read`/`ReadUntil`/`ReadSkip`（发起读）、`Write`（发起写）、
+`Close()`（`shutdown`+`close`）、`~AsyncSocket`（改为调用 `Close()`，拿回同一套加锁的关闭配对）。
+锁只在"发起/关闭"这一瞬持有（都是非阻塞调用），**不覆盖回调执行**，所以 asio "handler 绝不会在发起函数里被调用"的
+保证让我们不会自锁；锁序只有 `m_worldSocketMutex → m_socketOpMutex` 一条，`Close()` 只取后者，**无环**。
+
+**验证**：本地 MSVC Release `mangosd`/`realmd` 均 **0 error**；WSL GCC 15.2 重编（含 PCH）
+`Server/WorldSocket.cpp`、`Server/WorldSession.cpp`、`mangosd/RASocket.cpp`、`realmd/AuthSocket.cpp` **rc=0**；
+本地已部署并起服（8086/3724 正常监听，旧版留档 `mangosd.exe.bak_before_netfix` / `realmd.exe.bak_before_netfix`）。
+
+**残留风险（未处理，建议单独排期）**：`WorldSession::~WorldSession`/`SetOffline` 关闭并析构 socket 时，
+地图线程若正通过 session 指针发包，session/socket 的生命周期本身仍有竞争窗口 —— 彻底的解法就是上面模式 2 的方案 C
+（发包改成入队 + `post` 到 io_context，socket 只由网络线程触碰），可作为下一步加固。
+
+### 九、2026-10-03 00:40 本机又崩了一次：**说明第八节那个修复不够**（同位置、同族签名）
+
+**现场（本机 WER + 事件日志 + `cdb` + `mangosd.map` 反查）**：
+- 事件日志 `Application Error`：`mangosd.exe`，**0xc0000005**，模块 timestamp `6abfdbf9` = **10-03 00:29:45 的构建**
+  （就是带第八节那个 socket 修复的版本），进程 uptime **9 分 20 秒**；转储 `x64_Debug\Crashes\a3a1ee39_mangosd.exe_[3-10_0-40-0].dmp`（另附 WER 文本报告）。
+- 反汇编：`mov r8,qword ptr [rax+10h]`，**`rax = 0x00007ff6_00000001`**（＝模块基址高半 + 低半 1）⇒ 指针被破坏/内存被复用；
+  与云端那次的 `segfault at 11`（`rax` 读成 1）**同族签名**。
+- `cdb` 解析栈（模块基址 0x7ff6`1deb0000，RVA 用 `resolve_map_addr.py --rva` 反查）：
+
+| RVA | 符号 |
+| --- | --- |
+| `0x1D41A` | 崩溃指令所在（`any_executor` 相关内联代码，`Master.obj`） |
+| `0x29014` | `boost::asio::detail::win_iocp_socket_send_op<const_buffers_1, write_op<…>>::do_complete` ← **asio 写完成回调** |
+| `0x1752B` / `0x18504` | `win_iocp_io_context::do_one` / `run`（`Main.obj`） |
+| `0x1B3E3` | `Master::Run` 的线程 lambda（io_context 线程） |
+
+⚠️ 栈里显示 `[RASocket.obj]` **只是 MSVC ICF 合并实例化的落点**，本机 `Ra.Enable = 0`，与 RASocket 无关。
+
+**结论（必须诚实）**：崩点与云端那次**同一位置**（asio 写完成回调里析构/搬运 handler 时读到被破坏的指针）⇒
+第八节的"close 与发起合锁"**不足以覆盖它**。剩下两条候选：
+**(a)** 还有别的生命周期竞争（`WorldSession`/socket 在别处被替换/清空时地图线程正在发包 ⇒ 撕裂的 `shared_ptr`，
+正好解释"低半 = 1"这种半个指针）；**(b)** 别处堆破坏（当天 00:39:57 的 `.respawn` 批量复活 + 尸体状态错乱那条链）
+把 asio 操作对象内存踩坏，崩溃只是"最先踩到雷的线程"。
+
+**本节实施的诊断与加固（本地已部署）**
+
+| 项 | 内容 |
+| --- | --- |
+| 在途写计数 | `AsyncSocket::Write` 现在把调用方的 handler 包一层：发起时 `m_outstandingWrites++`、完成时 `--`（handler 与缓冲区生命周期规则不变） |
+| 关闭/析构点名 | `Close()` 若发现"还有写在途"⇒ 打**一行**（每 socket 一次）`[SOCKDIAG] close-with-writes-in-flight pending=N caller=0x… base=0x…`；`~AsyncSocket()` 同理打 `destroy-with-writes-in-flight`（**socket 被销毁却还有在途写 = 正是崩溃的形态**） |
+| **真加固**：session 侧 socket 访问 | `WorldSession` 新增 `mutable std::mutex m_socketLock` + `GetSocketSnapshot()/SetSocket()/TakeRequestSocket()/HasRequestSocket()`：`m_socket`/`m_requestSocket` 的**写入点**（`SetOffline`、`RequestNewSocket`、重连交接、踢人）全部走锁，**发包热路径**（`SendPacket`，地图线程）改为先取快照副本再用；反作弊用的 `GetOutOpcodeHistory/GetIncOpcodeHistory/SetPacketLogging` 也改走快照。残留：`Update()` 等**同线程**读点仍直接读（与世界线程写点同线程，不构成竞争），已在头文件注明 |
+| 验证 | 本地 MSVC `mangosd`/`realmd` 0 error；WSL GCC 15.2 rc=0；本地已部署起服，`SOCKDIAG` 0 行（安静） |
+
+**下一步**：等 `[SOCKDIAG]` 出现（崩溃前那几秒应有证据）；若 (a) 成立，快照改动本身可能就是修复点；若仍崩，再上方案 C（发包入队 + post 到 io_context）。
+
+**另归档（与本族无关）**：10-01 凌晨本机 6 次崩溃是**另一族** —— `ucrtbased.dll` BEX64 / **0xc0000409**（Debug CRT 的 fast-fail），
+与本次和云端那次（asio 写完成路径）无关。
+
+### 十、收口（2026-10-03 02:00，站长判定）
+
+站长判定 **"socket 崩溃应该通过了，没问题"**，本站收口，依据：
+1. 10-03 00:03 watchdog 自动拉起后，云端至今（02:00 前后，约 2 小时）**没有再崩**；
+2. 本机从 00:30 起连续换过多版仍未复现第八节那个"写完成回调里读到坏指针"的签名（唯一一次是本机 00:40 那次，之后再无）；
+3. **`[SOCKDIAG]` 全程 0 行** —— 即没有出现"带着在途写关连接/销毁 socket"（第八节假设的那条路径）。
+
+**保留的保险（不撤）**：
+- `AsyncSocket::m_socketOpMutex`（第八节的合锁，修 close 与发起异步写并发）；
+- `AsyncSocket::m_outstandingWrites` + `[SOCKDIAG]` 一次性告警（若真有"带在途写关闭/销毁"会立刻出字）；
+- `WorldSession::m_socketLock` + `GetSocketSnapshot()/SetSocket()`（消除地图线程撕裂读 `shared_ptr`）。
+⇒ 若云端日后**再出现同签名崩溃**，先 grep `[SOCKDIAG]` 与 `/var/lib/systemd/coredump/`，再按第八节/第九节的方法用 `mangosd.map` + `addr2line` 反查。
+（今天那次本机崩溃的转储 `x64_Debug\Crashes\a3a1ee39_mangosd.exe_[3-10_0-40-0].dmp` 暂留作证据，其余旧 core/转储已按站长要求清理。）
 
 
 

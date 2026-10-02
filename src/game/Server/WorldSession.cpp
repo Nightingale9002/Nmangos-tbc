@@ -136,14 +136,14 @@ void WorldSession::SetOffline()
     }
 
     // be sure its closed (may occur when second session is opened)
-    if (m_socket)
+    if (std::shared_ptr<WorldSocket> sock = GetSocketSnapshot())
     {
-        if (!m_socket->IsClosed())
-            m_socket->Close();
+        if (!sock->IsClosed())
+            sock->Close();
 
         // unexpected socket close, let it be deleted
-        m_socket->FinalizeSession();
-        m_socket = nullptr;
+        sock->FinalizeSession();
+        SetSocket(nullptr);
     }
 
     m_sessionState = WORLD_SESSION_STATE_OFFLINE;
@@ -151,7 +151,8 @@ void WorldSession::SetOffline()
 
 void WorldSession::SetOnline()
 {
-    if (_player && m_socket && !m_socket->IsClosed())
+    std::shared_ptr<WorldSocket> const sock = GetSocketSnapshot();
+    if (_player && sock && !sock->IsClosed())
     {
         m_sessionState = WORLD_SESSION_STATE_READY;
         m_kickTime = 0;
@@ -166,6 +167,9 @@ void WorldSession::SetInCharSelection()
 
 bool WorldSession::RequestNewSocket(WorldSocket* socket)
 {
+    // [DIAG 2026-10-03] called from the network thread while the world thread may consume it - see
+    // the m_socketLock comment in WorldSession.h
+    std::lock_guard<std::mutex> guard(m_socketLock);
     if (m_requestSocket)
         return false;
 
@@ -216,7 +220,12 @@ void WorldSession::SendPacket(WorldPacket const& packet, bool forcedSend /*= fal
     }
 #endif
 
-    if (!m_socket || (m_sessionState != WORLD_SESSION_STATE_READY && !forcedSend))
+    // [DIAG 2026-10-03] Snapshot the socket under the lock: this function runs on map threads while the
+    // world thread may replace/clear m_socket (logout, reconnect handoff).  Reading the shared_ptr
+    // unsynchronised can tear and hand the send path a garbage control block - the shape of the
+    // 2026-10-03 crash (pointer whose low half read as 1).
+    std::shared_ptr<WorldSocket> const sendSocket = GetSocketSnapshot();
+    if (!sendSocket || (m_sessionState != WORLD_SESSION_STATE_READY && !forcedSend))
     {
         //sLog.outDebug("Refused to send %s to %s", packet.GetOpcodeName(), _player ? _player->GetName() : "UKNOWN");
         return;
@@ -270,7 +279,7 @@ void WorldSession::SendPacket(WorldPacket const& packet, bool forcedSend /*= fal
 
 #endif                                                  // !MANGOS_DEBUG
 
-    m_socket->SendPacket(packet);
+    sendSocket->SendPacket(packet);
 }
 
 /// Add an incoming packet to the queue
@@ -500,22 +509,22 @@ bool WorldSession::Update(uint32 /*diff*/)
     {
         case WORLD_SESSION_STATE_CREATED:
         {
-            if (m_requestSocket)
+            if (HasRequestSocket())
             {
                 std::lock_guard<std::mutex> guard(m_recvQueueLock);
                 if (!IsOffline())
                     SetOffline();
 
-                m_socket = m_requestSocket;
-                m_requestSocket = nullptr;
-                sLog.outDetail("New Session key %s", m_socket->GetSessionKey().AsHexStr());
+                std::shared_ptr<WorldSocket> const newSocket = TakeRequestSocket();
+                sLog.outDetail("New Session key %s", newSocket->GetSessionKey().AsHexStr());
             }
             
             // [2026-09-18] 握手留痕：这里是"卡在读取角色列表"的最后一个环节 ——
             // 确认到底有没有把 SMSG_AUTH_RESPONSE 发出去、socket 是开是关。
             // 配合 WorldSocket 里的 [AUTH] 日志，一次复现就能定位卡在哪一步。
+            std::shared_ptr<WorldSocket> const authSocket = GetSocketSnapshot();
             sLog.outBasic("[AUTH] sending AUTH_RESPONSE(ok/queued) to account id %u (state=CREATED, socket=%s, inQueue=%u)",
-                GetAccountId(), (m_socket && !m_socket->IsClosed()) ? "open" : "closed", uint32(m_inQueue));
+                GetAccountId(), (authSocket && !authSocket->IsClosed()) ? "open" : "closed", uint32(m_inQueue));
 
             if (m_inQueue)
                 SendAuthQueued();
@@ -847,10 +856,10 @@ void WorldSession::LogoutPlayer()
 
     if (m_kickSession)
     {
-        if (m_socket)
+        if (std::shared_ptr<WorldSocket> sock = GetSocketSnapshot())
         {
-            m_socket->Close();
-            m_socket = nullptr;
+            sock->Close();
+            SetSocket(nullptr);
         }
         m_kickSession = false;
     }
@@ -1287,24 +1296,29 @@ void WorldSession::SynchronizeMovement(MovementInfo& movementInfo)
 
 std::deque<uint32> WorldSession::GetOutOpcodeHistory()
 {
-    if (m_socket)
-        return m_socket->GetOutOpcodeHistory();
+    // [DIAG 2026-10-03] the anticheat reads this from map threads while the world thread may clear the
+    // socket - go through the synchronised snapshot (WorldSession.h)
+    std::shared_ptr<WorldSocket> const sock = GetSocketSnapshot();
+    if (sock)
+        return sock->GetOutOpcodeHistory();
     else
         return std::deque<uint32>();
 }
 
 std::deque<uint32> WorldSession::GetIncOpcodeHistory()
 {
-    if (m_socket)
-        return m_socket->GetIncOpcodeHistory();
+    std::shared_ptr<WorldSocket> const sock = GetSocketSnapshot();
+    if (sock)
+        return sock->GetIncOpcodeHistory();
     else
         return std::deque<uint32>();
 }
 
 void WorldSession::SetPacketLogging(bool state)
 {
-    if (m_socket)
-        m_socket->SetPacketLogging(state);
+    std::shared_ptr<WorldSocket> const sock = GetSocketSnapshot();
+    if (sock)
+        sock->SetPacketLogging(state);
 }
 
 void WorldSession::SendAuthOk() const

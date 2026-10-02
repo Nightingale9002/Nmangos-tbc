@@ -234,6 +234,36 @@ class WorldSession
         bool IsOffline() const { return m_sessionState == WORLD_SESSION_STATE_OFFLINE; }
         WorldSessionState GetState() const { return m_sessionState; }
 
+        // [DIAG 2026-10-03] Synchronised access to m_socket / m_requestSocket - see the member comment.
+        std::shared_ptr<WorldSocket> GetSocketSnapshot() const
+        {
+            std::lock_guard<std::mutex> guard(m_socketLock);
+            return m_socket;
+        }
+        void SetSocket(std::shared_ptr<WorldSocket> socket)
+        {
+            std::lock_guard<std::mutex> guard(m_socketLock);
+            m_socket = std::move(socket);
+        }
+        std::shared_ptr<WorldSocket> GetRequestSocketSnapshot() const
+        {
+            std::lock_guard<std::mutex> guard(m_socketLock);
+            return m_requestSocket;
+        }
+        // Consumes m_requestSocket into m_socket (reconnect handoff on the world thread).
+        std::shared_ptr<WorldSocket> TakeRequestSocket()
+        {
+            std::lock_guard<std::mutex> guard(m_socketLock);
+            m_socket = m_requestSocket;
+            m_requestSocket = nullptr;
+            return m_socket;
+        }
+        bool HasRequestSocket() const
+        {
+            std::lock_guard<std::mutex> guard(m_socketLock);
+            return m_requestSocket != nullptr;
+        }
+
         bool PlayerLoading() const { return m_playerLoading; }
         bool PlayerLogout() const { return m_playerLogout; }
         bool PlayerLogoutWithSave() const { return m_playerLogout && m_playerSave; }
@@ -945,6 +975,12 @@ class WorldSession
         Player* _player;
         std::shared_ptr<WorldSocket> m_socket;              // socket pointer is owned by the network thread which created it
         std::shared_ptr<WorldSocket> m_requestSocket;       // a new socket for this session is requested (double connection)
+        // [DIAG 2026-10-03] m_socket/m_requestSocket are written on the world thread (logout, reconnect
+        // handoff) and on the network thread (RequestNewSocket) while map threads send through the socket
+        // (WorldSession::SendPacket).  All writes go through the lock below and the send path takes a
+        // snapshot, so no shared_ptr can be read while it is being replaced (that torn read is what
+        // produced the garbage pointer of the 2026-10-03 crashes).
+        mutable std::mutex m_socketLock;
         std::string m_localAddress;
         WorldSessionState m_sessionState;                   // this session state
 
