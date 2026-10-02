@@ -7527,6 +7527,168 @@ Warp Chaser 这类怪的"相位隐身"（`creature_template_addon` 里 18884 的
   本地 Debug 已重编并重启（16:49:02 `World initialized`），运行的是干净二进制。
 - 待办：随夜间窗口上云端（源码同步后由 `6 4 * * *` nightly 编译安装）。
 
+---
+
+## [内存] 2026-10-02 定案：日增 ~600MB ＝ **active 怪的「出生网格锁」把网格永久钉住**（8-20 只修了一半）— 本地已修，待云端
+
+> 起点是站长一句"被访问过的地图网格/生物缓存没有清理吗"，以及"以 CPU 换内存，现在 CPU 基本空闲"。
+> 结论：**清理机制是好的，但有一条锁让网格永远回不去**；这条锁我们 8-20 只拆了一半。
+
+### 一、现象与数据（先把"是不是泄漏"钉死）
+
+样本：云端 `mem_monitor.log` 8542 条 + `MemStat.log` 4198 条（5 分钟粒度，2026-09-17 起）。
+
+- 每天 04:10 夜间重启把 RSS 打回 **~540MB**，一路涨到夜里 **~1.25GB**（约 **+30MB/h**），22 点后走平。
+- **重启后的基线两周没漂**：`heap_inuse` 每日最小值一直 312–338MB ⇒ **不是"每 tick 泄漏"**，是"当天加载的东西不再释放"。
+- 关键新证据（两次全量扫描）：
+  - 把"5 分钟内掉 >2000 只怪"的事件全列出来，**掉到接近 0 的每一次时间点都对得上进程重启/停服**；
+    纯运行中的卸载**最大只掉过 2884 只**。
+  - 玩家走光后世界**回不到空载基线**：`10-02 01:00`（世界中 0 人）仍 **7521 只怪**；`09-30 01:30–03:00`（0 人）仍 **4831–4928**。
+  - 一天里的"地板"**单向爬升**（`10-01`：05:00 地板 903 → 10:00 3516 → 14:00 6529 → 20:00 7621）。
+- ⇒ 2026-09-17 那一章"对象侧没有泄漏，涨的是分配器/THP（②③④）"的结论**不完整**：
+  `creatures` 计数摆在那里，**对象确实还在内存里**，不是单纯的 arena 不归还。
+
+### 二、定位：`unloadLock` 自锁（新增 `[MEMSTAT] grids/glocked/gremoval` 后本地实测）
+
+- 本地服（`Autoload.Active=0`，**0 玩家**）：`grids=8 glocked=6 gremoval=8`，**15 分钟一动不动**
+  ⇒ 8 个网格全在"该卸载"状态（REMOVAL），其中 **6 个被锁卡死**。
+- 卸载只有两个条件（`src/game/Grids/GridStates.cpp:59`）：`if (!info.getUnloadLock())` + 清除计时到期。
+- 锁的**唯一**来源：`Map::AddToActive`（`src/game/Maps/Map.cpp:1710-1727`）——
+  `Creature::AddToWorld()`（`Creature.cpp:245`）对带 **`CREATURE_EXTRA_FLAG_ACTIVE`** 的怪调
+  `SetActiveObjectState(true)` → `AddToActive` → 给它的**出生网格** `incUnloadActiveLock()`。
+  （`setUnloadExplicitLock` 全仓**没有调用点**，所以观测到的锁只可能来自这个引用计数。）
+- 解锁的唯一入口 `RemoveFromActive` 只有三个调用点：
+  `ObjectGridUnloader::Visit`（**卸载之后**才跑，即我们 9 月的 `[GRIDFIX]` 防 UAF 那处）、
+  `SetActiveObjectState(false)`（只有脚本与 `HomeMovementGenerator` 回家还原）、`Camera`。
+  `Creature::RemoveFromWorld` **不调**它。
+- ⇒ **自锁**：网格因为锁卸不掉，而解锁只发生在"卸掉时"。
+- 8-20 的 `8499927c2「修复内存泄漏」` 只拆掉了 `ForceLoadGrid` 里的**显式锁**，注释原文写的
+  "Grid lifetime is already managed correctly by AddToActive / RemoveFromActive … so this lock is redundant"
+  **是错的**：两把锁不等价，剩下的那把同样还不了。
+  上游 `3fb122cc3「Implement active objects support」` 本来就是同一结构（其 `ActiveState` 还额外要求
+  `ActiveObjectsInGrid()==0`），所以**这不是我们引入的 bug，是上游设计**；我们 8-20 只是把"永不卸载"
+  从 ACTIVE 状态挪到了 REMOVAL 状态。
+- 受影响面：`creature_template.ExtraFlags & 4096` 共 **227 个模板 / 1133 个刷点**（跨 14 张图），
+  普通怪一只不涉及。
+
+### 三、修法（站长先选 **A**，实测后又确认 **A+**）
+
+文件：`src/game/Maps/Map.h`、`src/game/Maps/Map.cpp`、`src/game/Grids/GridStates.cpp`。
+
+1. `Map::AddToActive`：**锁与"活动列表成员"严格配对**（重复 Add 不再重复计数 —— 否则计数永远还不清）。
+2. `Map::RemoveFromActive`：不在活动列表里就**直接 return**（幂等）。
+   顺带修掉一个隐患：旧代码在 `m_activeNonPlayersIter == end()` 分支里 `erase(itr)`，当对象不存在时
+   是 `erase(end())`（**UB**）。幂等还有第二个用处：A+ 的"收起"会先放锁，随后队列里的删除路径
+   会**再调一次** `RemoveFromActive`，此时必须是 no-op。
+3. 新增 `Map::ReleaseActiveGridLocks(x, y)`：解绑**出生点在本网格**的 active 怪，分两类：
+   - **人还在本网格里** → 直接解绑（随后的卸载会删掉它）；
+   - **人已经跨到别的网格** → 见第 5 条（A+）。
+4. `RemovalState::Update`：无玩家 + 清理计时到期 → 先解绑，**同一 tick 内卸载**
+   （不留"解绑了却没删掉"的窗口）；若解绑后锁仍在（有玩家旁观的持有者），重置计时下次再试。
+5. **A+（2026-10-02 追加，站长确认）**：只做 A 时仍有残留，`[MEMLOCK]` 诊断一跑就抓到了真相 ——
+   被钉住的网格**每个只有 1 个持有人**，而且持有人**只走出了 6.5 / 6.5 / 21.5 / 21.9 码**
+   （即出生点就在网格边界附近，日常游荡跨过一条线而已），且**全部 `playersNearIt=0`**。
+   于是对这类"人跑出去了"的持有者再分两种：
+   - **它当前所在网格附近有玩家** → 保留锁（那格有人用；等玩家走开、持有人随自己那格被卸载时自然释放）；
+   - **它当前所在网格附近也没有玩家** → **随本网格一起收起**：`RemoveFromActive()` 当场放锁 +
+     `AddObjectToRemoveList()` 交给标准删除路径（`Map::Remove` 会 `SaveRespawnTime()` 再删，
+     网格下次加载时按 DB 在出生点重生）。语义与"它自己那格被卸载时一起消失"完全一致。
+
+### 四、验证（本地，2026-10-02）
+
+**A 的第一轮**（站长登录玩了一会儿，正好当压力测试）：
+
+| 时间 | players | grids | glocked | gremoval | creatures | mangosd RSS |
+|---|---|---|---|---|---|---|
+| 08:59 | 0 | 5 | 5 | 5 | 1666 | — |
+| 09:04 | 1 | 140 | 30 | 113 | 14736 | 1228MB |
+| 09:09 | 0 | 59 | 16 | 55 | 6544 | 849MB |
+| 09:14 | 0 | 28 | 14 | 27 | 4127 | 852MB |
+| 09:24 | 0 | 24 | 13 | 21 | 3520 | — |
+
+⇒ 修前"6-8 个网格 15 分钟不动"的形态消失，但**稳定后仍有 ~13 个网格被锁**（就是 A+ 要治的那批）。
+
+**`[MEMLOCK]` 诊断抓到的持有人**（0 玩家、刚启动）：
+
+```
+09:44:17 [MEMLOCK] map=530 grid=(37,44) STILL LOCKED unbound=0 kept=1
+09:44:17 [MEMLOCK]   holder guid=9010400 entry=22304 spawn=(37,44) cur=(36,45) movedBy=21.9yd playersNearIt=0
+09:44:17 [MEMLOCK] map=530 grid=(22,32) STILL LOCKED unbound=0 kept=1
+09:44:17 [MEMLOCK]   holder guid=9010471 entry=23188 spawn=(22,32) cur=(23,32) movedBy=21.5yd playersNearIt=0
+09:47:11 [MEMLOCK] map=530 grid=(24,32) STILL LOCKED unbound=0 kept=1
+09:47:11 [MEMLOCK]   holder guid=9010457 entry=23188 spawn=(24,32) cur=(23,32) movedBy=6.5yd playersNearIt=0
+```
+
+**A+ 的第二轮**（站长 10:00:30 登录、骑着飞行坐骑满世界跑）：
+
+| 时间 | players | grids | glocked | gremoval | creatures | mangosd RSS |
+|---|---|---|---|---|---|---|
+| 10:04 | 0（刚下线采样点） | 142 | 25 | 141 | 15668 | **1699MB** |
+| 10:09 | 0 | **9** | 5 | 9 | 1510 | **693MB** |
+| 10:14 | 0 | 9 | 7 | 9 | 1297 | 696MB |
+| 10:19 | 0 | 10 | 6 | 7 | 1364 | 696MB |
+
+⇒ 关键两点：① **满世界飞、加载 142 个网格时 `[MEMLOCK]` 一条都没有**（A 那轮同样条件立刻刷 3 条
+"STILL LOCKED"）；② 下线后 5 分钟内 **RSS 1699 → 693MB**、网格 142 → 9。
+全程无崩溃、无 `stale grid` 断言；GCC 预检（WSL `_agent_tmp/_wsl_preflight.sh`）对改动的 TU 全部通过（`ninja rc=0`）。
+
+### 五、待办 / 残余风险
+
+- **云端未部署**（10-02 04:06 那次夜间构建失败，见下一章），等 10-03 04:06 窗口或站长指定的手工窗口。
+  上线后要盯：夜间 `glocked` 是否趋 0、`mangosd_rss` 是否不再日增、有没有 `stale grid` 与 `[MEMLOCK]` 报错。
+- **小残留（继续观察）**：A+ 后本地 0 玩家时稳定在 **9-10 个网格 / ~1300 只怪 / ~696MB**，
+  `glocked` 6-7 但**没有任何 `STILL LOCKED` 报告** ⇒ 这些锁应该都是"处于清理计时窗口内的过渡态"
+  （本地 `GridCleanUpDelay = 300000`，即 5 分钟），不是永久钉住。若云端长期不归零，再按套路上诊断。
+- C 方案（数据侧减量）：1133 个 ACTIVE 刷点里，天灾入侵那 271 个（25027/25028/25030）本质是事件怪，
+  可改由 `game_event` 驱动，直接减少会被钉住的网格。
+
+---
+
+## [运维] 2026-10-02 夜间构建失败复盘：**手工同步清单漏了 `Unit.h`** ⇒ 改为"全树比对"（P0 流程）
+
+### 一、现象
+
+`2026-10-02 04:06` 夜间窗口 `build failed rc=2, skip install/restart`，
+随后 `[warn] restarting mangosd on the CURRENT (old) binary after failed build`：
+
+```
+Unit.cpp:8913: error: no declaration matches 'void Unit::UpdateVisibilityAndViewInternal(bool)'
+Unit.cpp:8953: error: no declaration matches 'void Unit::SetVisibility(UnitVisibility, bool)'
+Unit.h:2129: note: candidate is: 'void Unit::SetVisibility(UnitVisibility)'
+```
+
+**后果**：云端二进制停在 `10-01 03:04`（旧），所以 10-01 晚上做的那批修复
+（潜行/隐身全链、宠物尖啸自动释放、`[MEMSTAT]` 统计）**一条都没上线**；
+而**与二进制无关的两项已生效**：`Rate.Creature.Elite.Elite.Damage = 1`（conf）与 `dev/151`+`dev/152`（SQL，marker=152）。
+
+### 二、根因（流程问题，不是代码问题）
+
+`_agent_tmp/sync_to_cloud.py` 用的是**手工维护的文件清单**：清单里只写了 `src/game/Entities/Unit.cpp`，
+**漏了同一次改动里的 `src/game/Entities/Unit.h`**（另外还漏了 `ObjectVisibility.cpp`、`Player.cpp`）。
+云端于是出现"Unit.cpp 是新的、Unit.h 是旧的"，编译必然失败。
+`--check-only` 当时报 `ALL-OK` —— 因为它**只检查清单里的文件**，漏掉的文件根本不进比对。
+
+### 三、措施（已落地）
+
+- 新增 `_agent_tmp/_tree_cmp.py`：遍历**整个** `src/` + `cmake/` + `CMakeLists.txt`，
+  逐文件 **CR 归一化 md5** 比对本地与云端；`--upload` 可一键补齐并复验。
+  首次运行即抓出 **7 个不一致**：漏掉的 3 个（`Unit.h`/`ObjectVisibility.cpp`/`Player.cpp`）
+  + 本次锁修复的 3 个 + `CMakeLists.txt`。已上传 6 个，复验 **0 个不一致**。
+- `CMakeLists.txt` **故意不传**：云端那份是 Linux 专用（`Boost_USE_STATIC_LIBS OFF` + Boost **1.66**），
+  仓库里是 Windows 用的（`ON` + **1.70**）—— 传上去会把云端构建搞坏。
+- `sync_to_cloud.py` 的清单补上那 3 个文件，并注明"以后一律先做全树比对"。
+- ⚠️ 另注：云端 `src/` 下还有两个历史残留 `*.cpp.bak`（`RandomMovementGenerator.cpp.bak`、
+  `WaypointMovementGenerator.cpp.bak`），不影响构建，未处理。
+
+### 四、规矩（写给下次）
+
+1. **同步 = 全树比对 + 上传**，手工清单只作补充；`--check-only` 通过 ≠ 云端一致。
+2. **每晚窗口后必须核对两件事**：`/root/nightly_build.log` 的 rc，以及 `/opt/mangos/bin/mangosd` 的 mtime。
+   这次是隔了 **5 小时**才发现的（若不是查内存日志顺带看 MEMSTAT 格式，还会继续以为修复已上线）。
+3. 云端源码与本地**逐字节一致**是"本地能编 ⇒ 云端能编"的前提；但编译器不同（本地 MSVC / 云端 GCC 10），
+   所以本地编完仍应在 WSL 里用 GCC 对改动过的 TU 做一次针对性编译（见 `_agent_tmp/_wsl_preflight.sh`，
+   本次 9 个 TU 全部通过）。
+
 
 
 

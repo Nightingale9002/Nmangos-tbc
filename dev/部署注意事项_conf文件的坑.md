@@ -80,5 +80,17 @@
   云端 `mangosd.conf` 带线上库连接串（`tbccharacters` 的密码）、`/opt/mangos/...` 数据与日志路径，
   直接覆盖会让本地跑不起来。若将来要覆盖面更大的，**只挑玩法相关键逐条对齐**（连接串/路径必须保留本地值）。
 
+### ✅ 已还原（2026-10-01，站长指示）：精英怪物理伤害比例回到 1
+
+- 键：`Rate.Creature.Elite.Elite.Damage`，云端 **`0.8` → `1`**（＝精英档近战/物理伤害不再打八折）。
+- 云端：`/opt/mangos/bin/mangosd.conf` 第 1117 行；
+  - 备份 `mangosd.conf.bak_elite_dmg_0.8_20261001`（改前 md5 `a8d86fe7278e65a24a81e2c3a16de811`，改后 `03165116dd9a48ba2a2a78bf679c62b3`）；
+  - 全文 `diff` 只有这一行、行数仍 1922、行尾仍 LF（无 \r）、无 BOM。
+- 本地：`D:\Game\cmangos\x64_Debug\mangosd.conf` 同步改为 `1`（备份 `mangosd.conf.bak_elite_dmg_0.8_20261001`，71446 B → 71444 B，只差这一行）。
+- **生效时点＝下一次重启**读 conf 时（云端＝当晚 04:06 夜间窗口；本地＝下次本地重启）。**改 conf 不影响正在运行的进程**，本次没有重启任何服务。
+- 复查过：`Rate.Creature.*` / `Rate.Damage.*` / `Rate.Spell.*` 里**只有这一个键**不是 1，
+  其余 `Rate.Creature.Elite.{RAREELITE,RARE,WORLDBOSS}.Damage`、各档 `SpellDamage`、各档 `HP` 云端本来就是 1，未动。
+- 回滚：`cp -p /opt/mangos/bin/mangosd.conf.bak_elite_dmg_0.8_20261001 /opt/mangos/bin/mangosd.conf` 然后重启。
+
 **规矩**：要在本地复现云端行为（尤其是拍卖行/经济类改动），**ahbot.conf 必须先与云端一致**
 （现在已一致）；改本地 conf 做实验后，**实验完要么改回云端值、要么明确记档**，否则下次又会"本地好好的、云端不一样"。
