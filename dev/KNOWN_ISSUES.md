@@ -7636,9 +7636,39 @@ Warp Chaser 这类怪的"相位隐身"（`creature_template_addon` 里 18884 的
 
 - **云端未部署**（10-02 04:06 那次夜间构建失败，见下一章），等 10-03 04:06 窗口或站长指定的手工窗口。
   上线后要盯：夜间 `glocked` 是否趋 0、`mangosd_rss` 是否不再日增、有没有 `stale grid` 与 `[MEMLOCK]` 报错。
-- **小残留（继续观察）**：A+ 后本地 0 玩家时稳定在 **9-10 个网格 / ~1300 只怪 / ~696MB**，
-  `glocked` 6-7 但**没有任何 `STILL LOCKED` 报告** ⇒ 这些锁应该都是"处于清理计时窗口内的过渡态"
-  （本地 `GridCleanUpDelay = 300000`，即 5 分钟），不是永久钉住。若云端长期不归零，再按套路上诊断。
+- **小残留（9-10 个网格 / ~1200-1360 只怪 / ~700MB，已确认不是永久钉住）**：A+ 后本地 0 玩家时
+  稳定在这个地板（10:19→10:49 七个采样：grids 10/7/10/10/10/9/10、creatures 1364/1140/1360/1362/1359/1180/1363、
+  RSS 704MB），而且这段时间 **`[MEMLOCK]` 一条都没有** ⇒ 没有任何网格被判"锁着卸不掉"，
+  `creatures` 也在 ±10% 来回摆（**滚动加载**的形态，不是钉死）。
+  ⚠️ **归因更正（2026-10-02 当天）**：我最初写"运输工具 + 常驻事件滚动加载"**站不住**，已核实：
+  - 运输工具模板 `gameobject_template.ExtraFlags = 0`（`transports` 表 10 条全是 0）⇒ **不是 active 对象**，
+    `Map::Add` 对非 active 对象只 `EnsureGridCreated`（`Map.cpp:500-503`），**不会加载网格内容**；
+  - **事件系统也不加载网格**：`GameEventMgr` 只在 `map->IsLoaded(...)` 时才生成事件对象
+    （`GameEventMgr.cpp:871/881`）；池系统同理（`PoolManager.cpp:450/491` 只在已加载时生成）；
+  - 实测本地当前 18 个激活事件 = **78 个刷点、10 个网格，且 `active_flag_spawns = 0`**（没有一个带 ACTIVE 标记）
+    ⇒ 事件既不加载网格、也不通过 `AddToActive` 锁网格。
+  0 玩家时**真正还能加载网格**的调用点只剩三类（全仓 `EnsureGridLoaded*/ForceLoadGrid` 调用点核对）：
+  `CreatureCellRelocation`（非 active 的怪自己跨过网格边界，`Map.cpp:1245`）、
+  `GameObjectRelocation`（非 active 的 GO 移动，`Map.cpp:1217`）、脚本/`ForceLoadGrid`
+  （`ObjectMgr::LoadActiveEntities` 的 active 预载、Malchezaar、Cinematics）。**具体是哪一类尚未证实**；
+  要证实只需再加一条"0 玩家时记录网格加载来源 + 格子坐标"的日志（与 `[MEMLOCK]` 同级的量级）。
+- **✅ 2026-10-02 当天已证实（`[GRIDLOAD]` 日志，本地 0 玩家新开服）**：链条是
+  **`AddToActive` → 级联 `creature-cross`**：
+  ```
+  14:02:51 [GRIDLOAD] map=530 grid=(37,44) src=AddToActive  by=Creature entry=22304 DBGuid:160814
+  14:02:51 [GRIDLOAD] map=530 grid=(39,42) src=AddToActive  by=Creature entry=23153 DBGuid:161145
+  14:03:27 [GRIDLOAD] map=530 grid=(37,45) src=creature-cross by=Creature entry=22304 DBGuid:160814
+  14:04:09 [GRIDLOAD] map=530 grid=(22,32) src=AddToActive  by=Creature entry=23188 DBGuid:160669
+  14:04:35 [GRIDLOAD] map=530 grid=(23,32) src=creature-cross by=Creature entry=23188 DBGuid:160669
+  ```
+  即：**带 `ACTIVE` 标记的怪在"它的网格还没加载"的情况下被生成出来**（dynguid/刷怪组的重生路径
+  `SpawnManager` 不看网格是否加载，与事件系统 `if (map->IsLoaded(...))` 的做法不一致），
+  随后 `Creature::AddToWorld` → `SetActiveObjectState(true)` → `AddToActive` → **`EnsureGridLoaded`
+  把那一格拉起来**（`Map.cpp:1713`，全仓唯一一条"没有玩家也能加载网格内容"的路径）；
+  这些 active 怪再自己巡逻跨格 → `creature-cross` 级联，一格接一格（每格约 130 只怪）。
+  **这就是 0 玩家时那 9-10 格 / ~1300 只怪 / ~70-105MB 的来源。**
+  若要彻底抹掉这个地板，正解是与事件系统对齐：**dynguid/刷怪组重生也只在"网格已加载"时才生成**
+  （否则 active 怪就不该出现在未加载的格里，`AddToActive` 也就无从加载网格）。**未实施**。
 - C 方案（数据侧减量）：1133 个 ACTIVE 刷点里，天灾入侵那 271 个（25027/25028/25030）本质是事件怪，
   可改由 `game_event` 驱动，直接减少会被钉住的网格。
 

@@ -396,6 +396,12 @@ bool Map::EnsureGridLoaded(const Cell& cell)
     MANGOS_ASSERT(grid != nullptr);
     if (!isGridObjectDataLoaded(cell.GridX(), cell.GridY()))
     {
+        // [GRIDLOAD-DIAG] 2026-10-02: a grid really is being loaded here. With nobody in this map
+        // that is exactly the thing we want to name (the "who keeps ~10 grids loaded with 0
+        // players" puzzle, KNOWN_ISSUES "[内存] 2026-10-02"). One line per grid per process run;
+        // the tagged call sites (Add-active / creature-cross / go-cross / forceload / AddToActive)
+        // insert first, so this fallback only fires for a path that has no tag yet.
+        ReportGridLoad("unknown-path", nullptr, cell.GridX(), cell.GridY());
         // it's important to set it loaded before loading!
         // otherwise there is a possibility of infinity chain (grid loading will be called many times for the same grid)
         // possible scenario:
@@ -411,6 +417,24 @@ bool Map::EnsureGridLoaded(const Cell& cell)
     }
 
     return false;
+}
+
+// [GRIDLOAD-DIAG] 2026-10-02: report a grid load that happens while nobody is in this map -
+// one line per grid per process run, so it can never spam. See KNOWN_ISSUES "[内存] 2026-10-02"
+// (the ~10 grids that stay loaded with 0 players: we want to know which path loads them).
+void Map::ReportGridLoad(char const* tag, WorldObject const* obj, uint32 x, uint32 y)
+{
+    if (GetPlayers().getSize() != 0)
+        return;                                  // normal case: players are around, nothing to report
+
+    if (!m_gridLoadReportedGrids.insert(x * MAX_NUMBER_OF_GRIDS + y).second)
+        return;                                  // already reported once for this grid
+
+    if (obj)
+        sLog.outError("[GRIDLOAD] map=%u grid=(%u,%u) src=%s by=%s entry=%u",
+                      i_id, x, y, tag, obj->GetGuidStr().c_str(), obj->GetEntry());
+    else
+        sLog.outError("[GRIDLOAD] map=%u grid=(%u,%u) src=%s", i_id, x, y, tag);
 }
 
 uint32 Map::GetLoadedGridsCount()
@@ -429,6 +453,7 @@ void Map::ForceLoadGrid(float x, float y)
     {
         CellPair p = MaNGOS::ComputeCellPair(x, y);
         Cell cell(p);
+        ReportGridLoad("forceload", nullptr, cell.GridX(), cell.GridY());   // [GRIDLOAD-DIAG]
         EnsureGridLoadedAtEnter(cell);
         // [MEMFIX] Do not permanently lock the grid. The permanent lock (setUnloadExplicitLock(true))
         // kept every grid containing an active creature loaded forever: startup loaded 74 grids and
@@ -498,7 +523,10 @@ void Map::Add(T* obj)
 
     Cell cell(p);
     if (obj->isActiveObject())
+    {
+        ReportGridLoad("Add-active", obj, cell.GridX(), cell.GridY());      // [GRIDLOAD-DIAG]
         EnsureGridLoadedAtEnter(cell);
+    }
     else
         EnsureGridCreated(GridPair(cell.GridX(), cell.GridY()));
 
@@ -1214,6 +1242,7 @@ void Map::GameObjectRelocation(GameObject* go, float x, float y, float z, float 
             DEBUG_FILTER_LOG(LOG_FILTER_CREATURE_MOVES, "Creature (GUID: %u Entry: %u) attempt move from grid[%u,%u]cell[%u,%u] to unloaded grid[%u,%u]cell[%u,%u].", go->GetGUIDLow(), go->GetEntry(), old_cell.GridX(), old_cell.GridY(), old_cell.CellX(), old_cell.CellY(), new_cell.GridX(), new_cell.GridY(), new_cell.CellX(), new_cell.CellY());
             return;
         }
+        ReportGridLoad("go-cross", go, new_cell.GridX(), new_cell.GridY());       // [GRIDLOAD-DIAG]
         EnsureGridLoadedAtEnter(new_cell);
     }
 
@@ -1242,6 +1271,7 @@ bool Map::CreatureCellRelocation(Creature* c, const Cell& new_cell)
             DEBUG_FILTER_LOG(LOG_FILTER_CREATURE_MOVES, "Creature (GUID: %u Entry: %u) attempt move from grid[%u,%u]cell[%u,%u] to unloaded grid[%u,%u]cell[%u,%u].", c->GetGUIDLow(), c->GetEntry(), old_cell.GridX(), old_cell.GridY(), old_cell.CellX(), old_cell.CellY(), new_cell.GridX(), new_cell.GridY(), new_cell.CellX(), new_cell.CellY());
             return false;
         }
+        ReportGridLoad("creature-cross", c, new_cell.GridX(), new_cell.GridY());   // [GRIDLOAD-DIAG]
         EnsureGridLoadedAtEnter(new_cell);
     }
 
@@ -1710,6 +1740,9 @@ void Map::AddToActive(WorldObject* obj)
     bool const newlyTracked = m_activeNonPlayers.insert(obj).second;
 
     Cell cell = Cell(MaNGOS::ComputeCellPair(obj->GetPositionX(), obj->GetPositionY()));
+    // [GRIDLOAD-DIAG] this is one of the few paths that can load a grid with no players around
+    // (an active creature coming to world pulls its own grid in)
+    ReportGridLoad("AddToActive", obj, cell.GridX(), cell.GridY());
     EnsureGridLoaded(cell);
 
     // also not allow unloading spawn grid to prevent creating creature clone at load

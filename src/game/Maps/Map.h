@@ -199,6 +199,9 @@ class Map : public GridRefManager<NGridType>
         // [MEMFIX-A 2026-10-02] Drop the spawn-grid unload locks of the active objects living
         // in this grid so it can be unloaded; see the definition for the exact scope.
         bool ReleaseActiveGridLocks(uint32 x, uint32 y);
+        // [GRIDLOAD-DIAG] 2026-10-02: name the path that loads a grid while nobody is in the map
+        // (one line per grid per run); see KNOWN_ISSUES "[内存] 2026-10-02".
+        void ReportGridLoad(char const* tag, WorldObject const* obj, uint32 x, uint32 y);
         void ForceLoadGrid(float x, float y);
         bool UnloadGrid(const uint32& x, const uint32& y, bool pForce);
         virtual void UnloadAll(bool pForce);
@@ -492,6 +495,8 @@ class Map : public GridRefManager<NGridType>
         // process run, key = x * MAX_NUMBER_OF_GRIDS + y) - diagnosis of the memory fix A,
         // see KNOWN_ISSUES "[内存] 2026-10-02".
         std::set<uint32> m_memLockReportedGrids;
+        // [GRIDLOAD-DIAG] 2026-10-02: same idea for "which path loaded this grid with 0 players".
+        std::set<uint32> m_gridLoadReportedGrids;
         MapStoredObjectTypesContainer m_objectsStore;
         std::map<uint32, uint32> m_tempCreatures;
         std::map<uint32, uint32> m_tempPets;
