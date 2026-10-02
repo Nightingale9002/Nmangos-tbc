@@ -1702,12 +1702,18 @@ bool Map::ActiveObjectsNearGrid(uint32 x, uint32 y) const
 
 void Map::AddToActive(WorldObject* obj)
 {
-    m_activeNonPlayers.insert(obj);
+    // [MEMFIX-A 2026-10-02] The unload lock below is a refcount paired with active-list
+    // membership: an object that is already tracked must not take the lock a second time,
+    // otherwise the counter can never be balanced off again and its spawn grid stays pinned
+    // forever. (Membership and counter now change strictly together; RemoveFromActive uses
+    // the same rule in reverse.)
+    bool const newlyTracked = m_activeNonPlayers.insert(obj).second;
+
     Cell cell = Cell(MaNGOS::ComputeCellPair(obj->GetPositionX(), obj->GetPositionY()));
     EnsureGridLoaded(cell);
 
     // also not allow unloading spawn grid to prevent creating creature clone at load
-    if (obj->GetTypeId() == TYPEID_UNIT)
+    if (newlyTracked && obj->GetTypeId() == TYPEID_UNIT)
     {
         Creature* c = (Creature*)obj;
 
@@ -1730,16 +1736,19 @@ void Map::AddToActive(WorldObject* obj)
 
 void Map::RemoveFromActive(WorldObject* obj)
 {
+    // [MEMFIX-A 2026-10-02] Mirror of AddToActive: only an object that is really in the
+    // active list ever took the spawn-grid unload lock, so anything else returns here. This
+    // keeps the counter balanced when the object is unbound twice (the unload path calls
+    // this again for every active object it deletes) and it avoids erasing
+    // m_activeNonPlayersIter when it happens to be end() (was UB before).
+    ActiveNonPlayers::iterator itr = m_activeNonPlayers.find(obj);
+    if (itr == m_activeNonPlayers.end())
+        return;
+
     // Map::Update for active object in proccess
-    if (m_activeNonPlayersIter != m_activeNonPlayers.end())
-    {
-        ActiveNonPlayers::iterator itr = m_activeNonPlayers.find(obj);
-        if (itr == m_activeNonPlayersIter)
-            ++m_activeNonPlayersIter;
-        m_activeNonPlayers.erase(itr);
-    }
-    else
-        m_activeNonPlayers.erase(obj);
+    if (itr == m_activeNonPlayersIter)
+        ++m_activeNonPlayersIter;
+    m_activeNonPlayers.erase(itr);
 
     // also allow unloading spawn grid
     if (obj->GetTypeId() == TYPEID_UNIT)
@@ -1761,6 +1770,119 @@ void Map::RemoveFromActive(WorldObject* obj)
             }
         }
     }
+}
+
+// [MEMFIX-A 2026-10-02] Release the spawn-grid unload locks that the active objects living in
+// this grid hold, so the grid can finally be unloaded.
+//
+// Background: Map::AddToActive takes an unload lock on the SPAWN grid of every active object
+// (creatures with CREATURE_EXTRA_FLAG_ACTIVE) and the only release path used to be
+// RemoveFromActive, whose realistic trigger is "the grid is being unloaded and the object is
+// deleted" - i.e. exactly what the lock prevents (GridStates.cpp RemovalState checks
+// getUnloadLock() before UnloadGrid). Result: any grid that ever loaded an active creature
+// stayed resident until the process restarted, which is what the daily RSS growth was made of.
+//
+// Scope: objects whose spawn is in this grid AND that are inside it right now are simply
+// unbound - the unload that follows deletes them (or respawn-moves them within the same grid),
+// so no live creature is left behind with an unprotected spawn grid (the "creature clone at
+// load" scenario the lock was meant to guard, Map.cpp:1709).
+//
+// [MEMFIX-A+ 2026-10-02] Objects whose spawn is here but that have walked out of this grid are
+// what the [MEMLOCK] diagnostic caught as the real problem: measured on the local server they
+// had moved only 6.5-21.9 yd (i.e. they just stepped over a grid border, 7 of 8 startup grids
+// were pinned that way) and in every observed case nobody was near them (playersNearIt=0).
+// They cannot be unbound silently (unloading this grid does not delete them, so a reload would
+// spawn a second copy), so they are DESPAWNED instead - exactly what happens to them when the
+// grid they are standing in unloads: the respawn time is saved by the standard path
+// (Map::Remove -> SaveRespawnTime) and they respawn at their spawn point from the DB. A holder
+// that has players near it is left alone (keptHolders): that grid is in use, and it self-heals
+// once those players leave and the holder is deleted with its own grid.
+//
+// The caller must have verified that no player is near the grid (Map::ActiveObjectsNearGrid).
+// Returns true when the grid's unload lock is fully released afterwards.
+bool Map::ReleaseActiveGridLocks(uint32 x, uint32 y)
+{
+    NGridType* grid = getNGrid(x, y);
+    if (!grid || !grid->getUnloadLock())
+        return true;
+
+    std::vector<WorldObject*> toUnbind;
+    std::vector<Creature*>    toDespawn;
+    std::vector<Creature*>    keptHolders;   // spawn grid is here, holder is elsewhere and watched
+    for (WorldObject* obj : m_activeNonPlayers)
+    {
+        if (obj->GetTypeId() != TYPEID_UNIT)
+            continue;
+
+        Creature* c = static_cast<Creature*>(obj);
+        if (c->IsPet() || !c->HasStaticDBSpawnData())
+            continue;
+
+        float rx, ry, rz;
+        c->GetRespawnCoord(rx, ry, rz);
+        GridPair const spawnGrid = MaNGOS::ComputeGridPair(rx, ry);
+        if (spawnGrid.x_coord != x || spawnGrid.y_coord != y)
+            continue;
+
+        GridPair const curGrid = MaNGOS::ComputeGridPair(c->GetPositionX(), c->GetPositionY());
+        if (curGrid.x_coord == x && curGrid.y_coord == y)
+        {
+            toUnbind.push_back(obj);                  // inside: unload of this grid will take it
+            continue;
+        }
+
+        if (ActiveObjectsNearGrid(curGrid.x_coord, curGrid.y_coord))
+        {
+            keptHolders.push_back(c);                 // watched by a player: leave everything as is
+            continue;
+        }
+
+        toDespawn.push_back(c);                       // stepped out and unwatched: goes with its grid
+    }
+
+    for (WorldObject* obj : toUnbind)
+        RemoveFromActive(obj);
+
+    for (Creature* c : toDespawn)
+    {
+        // release the lock now (so the unload below can happen in this same tick); the queued
+        // removal repeats RemoveFromActive later, which is a no-op thanks to its idempotency
+        RemoveFromActive(c);
+        c->AddObjectToRemoveList();                   // Map::Remove saves the respawn time and deletes
+    }
+
+    bool const released = !grid->getUnloadLock();
+
+    // [MEMLOCK-DIAG] 2026-10-02: one report per grid per process run - "who still holds the lock".
+    // A grid is only reachable here when no player is near it, so the report is the wanted
+    // diagnostic and not a per-tick spam; it also tells us (playersNearIt) whether the holder
+    // could safely be despawned by the A+ pass above.
+    uint32 const key = x * MAX_NUMBER_OF_GRIDS + y;
+    if (!released && m_memLockReportedGrids.insert(key).second)
+    {
+        sLog.outError("[MEMLOCK] map=%u grid=(%u,%u) STILL LOCKED unbound=%zu despawned=%zu kept=%zu",
+                      i_id, x, y, toUnbind.size(), toDespawn.size(), keptHolders.size());
+        uint32 shown = 0;
+        for (Creature* c : keptHolders)
+        {
+            float rx, ry, rz;
+            c->GetRespawnCoord(rx, ry, rz);
+            GridPair const spawnGrid = MaNGOS::ComputeGridPair(rx, ry);
+            GridPair const curGrid = MaNGOS::ComputeGridPair(c->GetPositionX(), c->GetPositionY());
+            float const movedBy = std::sqrt(c->GetDistance2d(rx, ry));
+            sLog.outError("[MEMLOCK]   holder guid=%u entry=%u spawn=(%u,%u) cur=(%u,%u) movedBy=%.1fyd playersNearIt=%u",
+                          c->GetGUIDLow(), c->GetEntry(), spawnGrid.x_coord, spawnGrid.y_coord,
+                          curGrid.x_coord, curGrid.y_coord, movedBy,
+                          ActiveObjectsNearGrid(curGrid.x_coord, curGrid.y_coord) ? 1 : 0);
+            if (++shown >= 8)
+            {
+                sLog.outError("[MEMLOCK]   ... %zu more holders not listed", keptHolders.size() - shown);
+                break;
+            }
+        }
+    }
+
+    return released;
 }
 
 void Map::AddToOnEventNotified(WorldObject* obj)

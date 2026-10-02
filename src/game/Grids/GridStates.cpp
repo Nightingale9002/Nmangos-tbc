@@ -56,16 +56,42 @@ IdleState::Update(Map& m, NGridType& grid, GridInfo&, const uint32& x, const uin
 void
 RemovalState::Update(Map& m, NGridType& grid, GridInfo& info, const uint32& x, const uint32& y, const uint32& t_diff) const
 {
-    if (!info.getUnloadLock())
+    // [MEMFIX-A 2026-10-02] A grid that is only pinned by active-object spawn locks is no
+    // longer stuck forever. Removal used to be skipped whenever getUnloadLock() was set, but
+    // the only code releasing that lock runs *inside* the unload (ObjectGridUnloader ->
+    // RemoveFromActive), so any grid that ever loaded a creature with
+    // CREATURE_EXTRA_FLAG_ACTIVE stayed resident until the process restarted - that is what
+    // the measured daily RSS growth (30 MB/h, 540MB -> 1.25GB) was made of.
+    // Now, once the cleanup timer has expired with no player near, the active objects living
+    // in this grid are unbound (Map::ReleaseActiveGridLocks) and the unload runs in this same
+    // tick, so the lock is never released for an object the unload does not take care of.
+    if (info.getUnloadLock())
+    {
+        if (m.ActiveObjectsNearGrid(x, y))
+            return;
+
+        info.UpdateTimeTracker(t_diff);
+        if (!info.getTimeTracker().Passed())
+            return;
+
+        if (!m.ReleaseActiveGridLocks(x, y))
+        {
+            // a holder outside this grid (an active object that wandered away) keeps its
+            // lock: stay in removal state and retry on the next cleanup interval
+            m.ResetGridExpiry(grid);
+            return;
+        }
+    }
+    else
     {
         info.UpdateTimeTracker(t_diff);
-        if (info.getTimeTracker().Passed())
-        {
-            if (!m.UnloadGrid(x, y, false))
-            {
-                DEBUG_LOG("Grid[%u,%u] for map %u differed unloading due to players or active objects nearby", x, y, m.GetId());
-                m.ResetGridExpiry(grid);
-            }
-        }
+        if (!info.getTimeTracker().Passed())
+            return;
+    }
+
+    if (!m.UnloadGrid(x, y, false))
+    {
+        DEBUG_LOG("Grid[%u,%u] for map %u differed unloading due to players or active objects nearby", x, y, m.GetId());
+        m.ResetGridExpiry(grid);
     }
 }

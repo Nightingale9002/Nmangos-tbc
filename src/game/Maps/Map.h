@@ -196,6 +196,9 @@ class Map : public GridRefManager<NGridType>
 
         bool GetUnloadLock(const GridPair& p) const { return getNGrid(p.x_coord, p.y_coord)->getUnloadLock(); }
         void SetUnloadLock(const GridPair& p, bool on) { getNGrid(p.x_coord, p.y_coord)->setUnloadExplicitLock(on); }
+        // [MEMFIX-A 2026-10-02] Drop the spawn-grid unload locks of the active objects living
+        // in this grid so it can be unloaded; see the definition for the exact scope.
+        bool ReleaseActiveGridLocks(uint32 x, uint32 y);
         void ForceLoadGrid(float x, float y);
         bool UnloadGrid(const uint32& x, const uint32& y, bool pForce);
         virtual void UnloadAll(bool pForce);
@@ -485,6 +488,10 @@ class Map : public GridRefManager<NGridType>
         typedef WorldObjectSet ActiveNonPlayers;
         ActiveNonPlayers m_activeNonPlayers;
         ActiveNonPlayers::iterator m_activeNonPlayersIter;
+        // [MEMLOCK-DIAG] 2026-10-02: grids already reported as "still locked" (one report per
+        // process run, key = x * MAX_NUMBER_OF_GRIDS + y) - diagnosis of the memory fix A,
+        // see KNOWN_ISSUES "[内存] 2026-10-02".
+        std::set<uint32> m_memLockReportedGrids;
         MapStoredObjectTypesContainer m_objectsStore;
         std::map<uint32, uint32> m_tempCreatures;
         std::map<uint32, uint32> m_tempPets;
