@@ -17,7 +17,8 @@
  */
 
 #include "Spells/Spell.h"
-#include "Util/CallerAddress.h"
+#include "Util/CallerAddress.h"     // [DIAG 2026-10-03]
+#include <atomic>                   // [HOLDER-UAF-FIX 2026-10-03] report cap
 #include "Database/DatabaseEnv.h"
 #include "Server/WorldPacket.h"
 #include "Server/WorldSession.h"
@@ -1377,6 +1378,44 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
         static_cast<Creature*>(m_trueCaster)->AI()->SpellHitTarget(unit, m_spellInfo, missInfo);
     if (affectiveCaster && affectiveCaster != m_caster && affectiveCaster->IsCreature() && static_cast<Creature*>(affectiveCaster)->AI())
         static_cast<Creature*>(affectiveCaster)->AI()->SpellHitTarget(unit, m_spellInfo, missInfo);
+
+    if (m_spellAuraHolder && m_caster)
+    {
+        // [HOLDER-UAF-FIX 2026-10-03] m_spellAuraHolder is cached on the Spell object and, for a delayed spell
+        // (Spell::handle_delayed), that cache survives into later ticks.  In between the target can release the
+        // holder (Unit::RemoveSpellAuraHolder unregisters it and queues it in m_deletedHolders) and destroy it
+        // (Unit::CleanupDeletedAuras -> delete), after which this epilogue used to write into freed memory:
+        //   ASan 2026-10-03: "heap-use-after-free WRITE of size 4" here, 80 bytes (= offset 0x50 =
+        //   SpellAuraHolder::m_spellAuraHolderState) inside a 152 byte SpellAuraHolder.  On the live server that
+        //   freed chunk had been reused by a FollowMovementGenerator, so the very same write of
+        //   SPELLAURAHOLDER_STATE_READY (value 1) landed on i_path (+0x50) and crashed the world server on
+        //   2026-10-03 10:50:06 (see dev/KNOWN_ISSUES.md, section 11.4).
+        // Only touch the holder while its target still owns this exact object.  That also stops a holder that is
+        // already on its way out (removed, state REMOVING) from being pushed back to READY.
+        bool const stillOwned = unit->HasAuraHolder(m_spellInfo->Id,
+            [this](SpellAuraHolder const* holder) { return holder == m_spellAuraHolder; });
+
+        if (!stillOwned)
+        {
+            // One line per distinct spell per process run (plus a hard cap): the local ASan verification run of
+            // 2026-10-03 showed this condition is hit dozens of times per minute (spell 33657 "Resonance" cast on
+            // dying pets), so an unthrottled line would flood the log.
+            static std::atomic<uint32> s_holderUafLastSpell{0};
+            static std::atomic<uint32> s_holderUafReports{0};
+
+            uint32 const previousSpell = s_holderUafLastSpell.exchange(m_spellInfo->Id);
+            if (previousSpell != m_spellInfo->Id && s_holderUafReports.fetch_add(1) < 30)
+            {
+                sLog.outError("[HOLDER-UAF] spell=%u caster=%s target=%s targetDead=%d holder=0x%llX - cached "
+                              "SpellAuraHolder is no longer held by the target, skipping the state write",
+                              m_spellInfo->Id, m_caster->GetGuidStr().c_str(), unit->GetGuidStr().c_str(),
+                              unit->IsAlive() ? 0 : 1,
+                              static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(m_spellAuraHolder)));
+            }
+
+            m_spellAuraHolder = nullptr;
+        }
+    }
 
     if (m_spellAuraHolder && m_caster)
     {

@@ -182,6 +182,11 @@ class MotionMaster : private std::stack<MovementGenerator*>
     private:
         void Mutate(MovementGenerator* m);                  // use Move* functions instead
 
+        // [PATHCORRUPT-DIAG 2026-10-03] The ONLY way a movement generator may be deleted: checks the
+        // generator's PathFinder* member for a stray write (see MovementGenerator.h) and records it with the
+        // owner's identity instead of dereferencing a bogus pointer.  `site` names the deleting path.
+        void GuardedDeleteGenerator(MovementGenerator* gen, char const* site);
+
         void DirectClean(bool reset, bool all);
         void DelayedClean(bool reset, bool all);
 

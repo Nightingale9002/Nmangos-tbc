@@ -61,6 +61,11 @@ class TargetedMovementGeneratorMedium
         float GetOffset() const { return i_offset; }
         float GetAngle() const { return i_angle; }
 
+        // [PATHCORRUPT-DIAG 2026-10-03] see MovementGenerator: lets MotionMaster spot a PathFinder* member that
+        // was overwritten by a stray write (cloud crash of 2026-10-03 10:50:06) instead of dereferencing it.
+        void* GetPathPointerForDiag() const override { return i_path; }
+        void  ClearPathPointerForDiag() override { i_path = nullptr; }
+
         virtual void UnitSpeedChanged() override { i_speedChanged = true; }
 
         virtual bool RemoveOnInvalid() const { return true; };

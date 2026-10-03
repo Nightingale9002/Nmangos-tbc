@@ -36,6 +36,9 @@
 
 #include "Platform/Define.h"
 
+#include <cstdio>
+#include <string>
+
 #if defined(_MSC_VER)
 #  include <intrin.h>
 // linker-provided symbol: its address is this module's load base (works with ASLR)
@@ -74,6 +77,31 @@ namespace MaNGOS
 #else
     inline size_t CaptureStack(void**, size_t) { return 0; }
 #endif
+
+    /// [DIAG 2026-10-03] Format the current backtrace as "0xAAAA,0xBBBB,..." with the innermost `skip`
+    /// frames dropped (skip = 2 makes the first printed address the CALLER of the reporting function) and
+    /// MANGOS_IMAGE_BASE() subtracted, so the values can be fed straight into the linker map (Windows) or
+    /// addr2line (Linux).  Never throws, never allocates more than the returned string; returns "-" when no
+    /// frame could be captured.
+    inline std::string FormatBacktrace(size_t skip = 2, size_t maxFrames = 12)
+    {
+        if (maxFrames > 12)
+            maxFrames = 12;
+
+        void* frames[12];
+        size_t const n = CaptureStack(frames, maxFrames);
+        uintptr_t const base = MANGOS_IMAGE_BASE();
+
+        std::string out;
+        for (size_t i = skip; i < n; ++i)
+        {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%s0x%llX", out.empty() ? "" : ",",
+                     static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i]) - base));
+            out += buf;
+        }
+        return out.empty() ? std::string("-") : out;
+    }
 }
 
 #endif // MANGOS_CALLER_ADDRESS_H

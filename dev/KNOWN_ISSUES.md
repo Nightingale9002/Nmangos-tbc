@@ -7992,7 +7992,11 @@ Map::ReportCorpseDriver ← Unit::Attack                      ← 守卫拦下�
 - 全程 `[SOCKDIAG]` **0 行**、无崩溃。
 - 说明：④ 的观察窗口偏短（3 分钟），**云端 04:06 nightly 上线后**这几条诊断仍挂着 —— 若再出现任何一条，`stack=` 会直接指出新驱动者。
 
-**状态**：**尸体打人/尸体放技能这一项＝已修复（本地验证通过，云端今晚生效）**；本机 mangosd 全程未崩。
+**状态**：**尸体打人/尸体放技能这一项＝已修复（本地验证通过）**；本机 mangosd 全程未崩。
+**云端已上线**：2026-10-03 **02:40** 手动提前跑了夜间脚本（当时 0 人在线、无待应用 dev SQL，marker=152）——
+`[100%] Built target mangosd` → 安装 → 起服；`/opt/mangos/bin/mangosd` mtime **02:40:34**、md5 `ddb67a5eb5839b7a54b88cef86486ff5`（与构建树一致），
+世界初始化 02:41:10，8086/3724 在听，起服后 `DEADHIT/DOOR/SOCKDIAG/CENSUS` **全 0 行**；
+旧二进制留在 `/opt/mangos/bin/mangosd.bak_nightly` 可回滚。跑完 `make -n` = 0 条 ⇒ **04:06 的 cron 那一跑不会再停一次服**。
 
 ### 五、状态
 - 本地：MSVC Release 编译 0 error；WSL GCC 预检 `ninja rc=0`；**未在本地重启验证**（现象随机、本地难触发）。
@@ -8329,7 +8333,140 @@ Unit.h:2129: note: candidate is: 'void Unit::SetVisibility(UnitVisibility)'
 ⇒ 若云端日后**再出现同签名崩溃**，先 grep `[SOCKDIAG]` 与 `/var/lib/systemd/coredump/`，再按第八节/第九节的方法用 `mangosd.map` + `addr2line` 反查。
 （今天那次本机崩溃的转储 `x64_Debug\Crashes\a3a1ee39_mangosd.exe_[3-10_0-40-0].dmp` 暂留作证据，其余旧 core/转储已按站长要求清理。）
 
+### 十一、2026-10-03 10:50:06 云端第二次崩溃 —— **另一族**：活着的移动发生器 `i_path` 被写成 `1`（已加固+已加检测，本地编译通过、待部署）
 
+站长 11:0x 要求"检查云端宕机日志"，查出 02:40 上线那版**运行 8 小时后又崩了一次**。**与第八/九节的 socket 族无关**（`[SOCKDIAG]` 全程 0 行），是新签名。
+
+#### 11.1 事实
+
+| 项目 | 证据 |
+| --- | --- |
+| 崩溃 | `kernel: mangosd[2047]: segfault at 61 ip 00000000009ef5be sp 00007f4635f121d0 error 4 in mangosd[6b7000+98a000]`，时间 **2026-10-03 10:50:06**（进程 PID 1968，即 02:40 部署的那版） |
+| core | `coredumpctl` 存 `/var/lib/systemd/coredump/core.mangosd.0.1fdf…1968….lz4`（**173 MB**），已解出临时副本 `/tmp/c1050.core`（963 MB，分析用） |
+| 自动拉起 | watchdog 10:51:03 记 `mangosd 未运行，启动中...` → 10:51:05 `已启动`；`Server.log` 世界初始化 **10:51:33**，8086 在听（PID 16754） |
+| 停机 | **约 57 秒**（10:50:06 → 10:51:33）；10:00 在线 1 人、11:00 在线 4 人，无回档/数据丢失 |
+| 二进制核对 | `/opt/mangos/bin/mangosd` md5 `ddb67a5e…` = 构建树产物，`strings` 含 `SOCKDIAG`/`DEADHIT`/`mm-initialize` ⇒ **跑的就是 02:40 那版**（`Server.log` 里 "Built on Sep 29" 只是生成式版本串没重编，非旧二进制） |
+| ⚠️ 证据缺口 | `Server.log` 以 `"w"` 打开 ⇒ 重启即截断（156 KB → 3.8 KB），**崩溃前 8 小时的全部 `[DOOR]/[DEADHIT]` 行丢失**（本次已按 11.4-C 修掉） |
+
+#### 11.2 崩溃栈（`coredumpctl dump` + `gdb -batch` 全符号化）
+
+```
+#0  PathFinder::~PathFinder()                                  0x9ef5be   ← 崩点
+#1  FollowMovementGenerator::~FollowMovementGenerator()        0xa071b2
+#2  MotionMaster::DirectClean(bool, bool)                      0x9e0512
+#3  Unit::SetDeathState(DeathState)                            0x90b99f
+#4  Creature::SetDeathState(DeathState)                        0xc34315
+#5  Pet::SetDeathState(DeathState)                             0xc71b19
+#6  Unit::JustKilledCreature(Unit*, Creature*, Player*)        0x8fc89f
+#7  Unit::Kill(...)                                            0x901516
+#8  Unit::DealDamage(...) / #9 Unit::DealSpellDamage(...)
+#10 Spell::DoAllEffectOnTarget(Spell::TargetInfo*)             0xa766a3
+#11 Spell::handle_delayed(...) … #16 Map::Update …（地图更新线程 LWP 2047）
+```
+
+即：**太阳井一批召唤物（`Pet`）被打死**时，`Unit::SetDeathState` 清空移动发生器 → 删 `FollowMovementGenerator` → 删它的 `i_path` → 崩。
+
+#### 11.3 根因：**单字段被外部写坏，不是双重释放**（已到指令级）
+
+- `9ef5be: mov 0x60(%rbx),%rdi` 且 `rbx = 1` ⇒ 读 `0x61`（内核 `segfault at 61` 吻合）：`this == 1`。
+- 反汇编给出确切语义：`a0719a: mov 0x50(%rdi),%r12` = `i_path`（**对象 +0x50**）→ `test` → `call PathFinder::~PathFinder` → `operator delete(r12, 0x1d0)`。
+- core 里对象 `0x7f463a3a9640` 是**活的、链表完好的**发生器，逐字段核对与源码布局一致：
+  `+0x00` vptr(`FollowMovementGenerator`) / `+0x08` vptr(`FollowerReference`) / `+0x10,+0x18` 链表指针 /
+  `+0x20 iRefTo=0x234309a0`(Creature) / `+0x28 iRefFrom=自身+8`（= 源码 `i_target.link(&target, this)`） /
+  `+0x30 i_offset=3.0f` / `+0x38 i_angle=π/2` / `+0x40..0x48 i_lastTargetPos=0` / `+0x58 m_main=0`；
+  **只有 `+0x50 i_path = 0x0000000000000001`**（32 位写 1 的典型形态）。
+- 堆块：对象 chunk 尺寸 `0x70`（`+0x68` 处是下一块 header `0xb1`）；对象只被引用两处（`0x7f463a2c3748` = 该宠物的 MotionMaster 发生器数组、`0x22ac95c8`），无第二份引用 ⇒ **不是重复 push/重复 delete**。
+- 结论：**某个外部代码用悬垂指针写了"32 位的 1"**，落点正好是这块被复用的内存（use-after-free 写，与本 fork 之前那批 `MEMFIX-GUARD`/`Reference` 悬垂引用同族）。全二进制里"把 1 写到 +0x50"的写点中，**唯一落在本次调用链内**的是 `Spell::DoAllEffectOnTarget` 的 `a76a32: movl $0x1,0x50(%rax)`（`%rax` 取自 Spell 成员 `0x1a8`，旁边在判 `unit+0x25fa` 的字节标志）——**是重要嫌疑但非铁证**。
+
+#### 11.4 已实施的加固（三项，全部本地已改、已编译通过；**云端未部署**）
+
+| 项 | 内容 | 文件 |
+| --- | --- | --- |
+| **A 防崩守卫** | `MovementGenerator` 新增 `GetPathPointerForDiag()/ClearPathPointerForDiag()`（`TargetedMovementGeneratorMedium`、`AbstractRandomMovementGenerator` 各自实现），`MotionMaster` 的**所有** 发生器 delete 点（`dtor`/`update-expire`/`direct-clean`/`direct-expire`）统一走新漏斗 `GuardedDeleteGenerator()`：发现 `i_path` 是 `0 < p < 0x10000` 的非法值 ⇒ 打一行 `[PATHCORRUPT] site=… gen=… genptr=0x… path=0x… stackTop=… map=… owner=… ownerEntry=… ownerType=… alive=… deathState=… incombat=… caller=0x… base=0x… stack=…`，**丢弃坏指针再 delete**（把硬崩降级为记录） | `MotionGenerators/MovementGenerator.h`、`TargetedMovementGenerator.h`、`RandomMovementGenerator.h`、`MotionMaster.h/.cpp` |
+| **B 提前检测** | `TargetedMovementGeneratorMedium<T,D>::Update()` 开头一次性校验（每个发生器每 tick 一次比较，成本可忽略）：第一次发现非法即记 `[PATHCORRUPT] what=update …`（含 owner/target 身份与状态）并置空 ⇒ 把污染窗口从 8 小时压到**一个 tick**（400~800ms），基本等于点名凶手操作；置空后走原有懒创建逻辑，日志天然只出一次 | `MotionGenerators/TargetedMovementGenerator.cpp` |
+| **C 日志保命** | `Log::openLogFile()` 在 `mode[0]=='w'` 时先 `rename` 旧文件为 `<name>.prev`（覆盖更早的那份）⇒ 每次重启保留上一轮的 `Server.log`/`Realmd.log`，崩溃后仍有崩溃前现场（正是 `/root/nightly_build_restart.sh` 注释里 09-19 那次 SIGABRT"丢掉现场"的坑） | `shared/Log/Log.cpp` |
+| **D 沉默坏写也要有记录** | 站长问"如果坏写落在别的字段/别的对象，我们有记录吗"——答案是：**崩了有全套记录**（内核行 + `systemd-coredump` 全量 core + 三条启动路径都设了 `ulimit -c unlimited` ⇒ 谁拉起都有 core；二进制 not-stripped 可到指令级；今晚起还有 `Server.log.prev`），**不崩则完全没记录**。为补后者，已在云端**两条启动路径的 4 个 mangosd 启动点**加 `MALLOC_CHECK_=1`（`/opt/mangos/watchdog.sh` 164/178 行、`/root/nightly_build_restart.sh` 91/169 行；备份 `*.bak_before_malloccheck_20261003`，`bash -n` 通过）：glibc 在 malloc/free 时校验堆块元数据（越界写坏 header / 双重释放等），**发现问题只打印一行到 stderr 并继续跑（不 abort）**，stderr 由 screen 的 `-Logfile /tmp/mangosd_run.log` 收下 ⇒ 把"沉默坏写"变成一条第一现场记录。**刻意不选 `=3`**（会 abort）：代码里若有良性小越界，`=3` 会把今天不崩的情况变成停机。**生效时机＝下一次 mangosd 启动（今夜 04:06 nightly）**；撤回＝删掉该环境变量或还原备份 | 云端脚本（非源码） |
+| **E 真凶修复（定案）** | 本地 **MSVC ASan 构建**第一次跑就抓到写入者：`Spell::DoAllEffectOnTarget` 结尾的 `m_spellAuraHolder->SetState(SPELLAURAHOLDER_STATE_READY)`（**Spell.cpp:1386**，4 字节写、偏移 0x50、值 1）写进了**已被 `Unit::CleanupDeletedAuras()`（Unit.cpp:11684）删除的 `SpellAuraHolder`**。修法＝在写之前做**身份校验**：只有当目标单位的光环表里**仍然是同一个对象**时才写，否则置空跳过（`unit->HasAuraHolder(spellId, [&](h){ return h == m_spellAuraHolder; })`）。附带 `[HOLDER-UAF]` 节流诊断（每法术每进程一行、上限 30） | `src/game/Spells/Spell.cpp` |
+| 共用助手 | `MaNGOS::FormatBacktrace(skip=2, max=12)`：统一打印"不含自身两帧"的调用栈，已减去 `MANGOS_IMAGE_BASE()`，可直接丢给 `addr2line` / `mangosd.map` | `shared/Util/CallerAddress.h` |
+
+**编译验证**：本地 MSVC `--target mangosd --config Release` **exit 0**（仅历史 C4819 代码页告警），产物 `build1\bin\x64_Release\mangosd.exe`（11:22）。
+**本地冒烟未做**：11:19 起本机 mangosd（PID 45652）正在跑且有客户端连着 8086，未擅自重启打断，等站长给窗口。
+
+#### 11.5 仍未解决 / 下一步
+1. ~~**写坏 `i_path` 的那次写到底是谁**：尚未锁定~~ → **已定案，见 11.6**（站长追问"到底是谁"后，用本地 MSVC **ASan** 构建一次跑就抓到写入者）；
+2. **为什么本地同样操作不复现（站长实测）**：这是"悬垂指针写"型问题，依赖堆内存复用时序；Windows/MSVC 与 Linux/GCC 的分配器、对象尺寸取整、vtable 位置都不同，同一处坏写在本机可能落在无害内存上或该复用序列压根不出现 ⇒ **非确定性，不是"这个操作必崩"**。**ASan 的 quarantine 恰好把"本来落在无害内存上"的坏写毒化，所以它在本地能抓到** —— 这就是最终破案手段。
+3. **覆盖范围（诚实版）**：现有 `[SOCKDIAG]/[DOOR]/[DEADHIT]/[REVIVE]/[GRIDLOAD]/[MEMSTAT]/[MEMLOCK]/[PATHCORRUPT]/[HOLDER-UAF]` 都是**针对已知 bug 家族的点状诊断**，不是通用内存污染探测器；坏写若落在别的字段/别的对象上，**只有它最终导致崩溃才有记录**（core + 符号化），沉默发生则无记录 —— 11.4-D 的 `MALLOC_CHECK_=1` 是"glibc 元数据层"的兜底，**看不见"写进活对象体内"这类**（本案就属这类，靠 ASan 才现形）。
+4. 部署顺序建议：本地先冒烟 → 再等云端夜间窗口（本轮已按此执行）；
+5. 若云端**再次**崩在同一签名，先看 `[PATHCORRUPT]`/`[HOLDER-UAF]`，再用 `stack=` 里的 RVA 走 `addr2line`；`Server.log.prev` 是崩溃前证据；额外查 `/tmp/mangosd_run.log` 里有没有 glibc 的 `malloc(): ...` / `free(): ...` 自检行；
+6. 取证残留：云端仅保留今日 10:50 那次的 core（`…1968….lz4`，173MB）；00:02 那次的 core（363MB，socket 族，早已收口）与 `/tmp` 全部临时副本/反汇编缓存已清理（2026-10-03 13:04），根分区 66%→**65%**。
+
+#### 11.6 定案（2026-10-03 13:00）：凶手 = `Spell::DoAllEffectOnTarget` 的 `m_spellAuraHolder` 悬垂写
+
+**破案手段：本地 MSVC ASan 构建**（`D:\Game\cmangos\build_asan`，`/fsanitize=address`，`ASAN_OPTIONS=...:quarantine_size_mb=512:...`，运行目录 `D:\Game\cmangos\x64_asan`，启动脚本 `run_asan.bat`）。站长登录本地实例复现同一套操作，**第一次跑就当场报错**：
+
+```
+==ERROR: AddressSanitizer: heap-use-after-free ... WRITE of size 4   ← 80 字节处 / 152 字节区域（= SpellAuraHolder 大小）
+#0 Spell::DoAllEffectOnTarget   Spell.cpp:1386   ← m_spellAuraHolder->SetState(SPELLAURAHOLDER_STATE_READY)
+#1 Spell::handle_delayed        Spell.cpp:3643
+#2 SpellEvent::Execute          Spell.cpp:7665   #3 EventProcessor::Update
+#4 Unit::Update（玩家, Unit.cpp:505） #5 Player::Update → Map::Update → MapUpdateWorker
+
+freed by thread T7 here:
+#1 Unit::CleanupDeletedAuras    Unit.cpp:11684   ← delete *iter（遍历 m_deletedHolders）
+#2 Unit::Update(513) #3 Creature::Update(832) #4 Pet::Update(723)
+
+previously allocated by thread T7 here:
+#1 CreateSpellAuraHolder        SpellAuras.cpp:484（152 字节）
+#2 Spell::DoSpellHitOnUnit      Spell.cpp:1473   ← m_spellAuraHolder = CreateSpellAuraHolder(...)
+#3 Spell::DoAllEffectOnTarget   Spell.cpp:1238
+```
+
+**因果链（全部同一地图线程，纯逻辑 UAF，不是数据竞争）**
+
+1. 法术命中把 `SpellAuraHolder`（152B）挂到**宠物**身上，`Spell` 对象把它缓存在 `m_spellAuraHolder`；
+2. 这是 fork 的**延迟法术**（`handle_delayed`）⇒ `Spell` 对象**跨 tick 继续持有这个裸指针**；
+3. 期间目标把该 holder 撤下（`Unit::RemoveSpellAuraHolder`：从 `m_spellAuraHolders` 摘除 + 推入 `m_deletedHolders`，并 `SetDeleted()` 置 REMOVING）；
+4. 宠物下一次 `Unit::Update` → `CleanupDeletedAuras()` → **`delete` 该 holder**；
+5. 玩家的延迟法术事件随后跑到收尾，**无条件**写 `m_spellAuraHolder->SetState(READY)`（4 字节、值 1、偏移 **0x50** = `m_spellAuraHolderState`）；
+6. 云端 glibc 把这块 152B chunk 复用给了 `FollowMovementGenerator` ⇒ **"写 1 到 SpellAuraHolder+0x50" 变成 "写 1 到生成器 +0x50 = `i_path`"** ⇒ 宠物死亡清空移动发生器时 `delete i_path` 以 `this = 1` 调用 `PathFinder::~PathFinder` ⇒ **2026-10-03 10:50:06 段错误（`segfault at 61`）**。
+   ⇒ 与云端二进制里找到的**唯一**落在崩溃链内的写点 `a76a32: movl $0x1,0x50(%rax)`（`Spell::DoAllEffectOnTarget`）**字节级吻合**，11.3 末尾标为"重要嫌疑但非铁证"的那一条，现已坐实。
+
+**修复（`src/game/Spells/Spell.cpp`）**：写之前做**身份校验**——只有目标单位的光环表里**仍然是同一个对象**才写，否则置空跳过：
+
+```cpp
+bool const stillOwned = unit->HasAuraHolder(m_spellInfo->Id,
+    [this](SpellAuraHolder const* holder) { return holder == m_spellAuraHolder; });
+if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; */ }
+```
+顺带修掉一个逻辑隐患：已被标记删除（REMOVING）的 holder 不再被"复活"回 READY。
+
+**验证结果（2026-10-03 12:56，本地 ASan 实例）**
+- 修复前：同一条路径直接 **ASan 报错并终止进程**；
+- 修复后：**ASan 报告 0 条**，而 `[HOLDER-UAF]` **立刻出字**（说明这条路径确实在高频触发，只是不再写内存）→ 实测触发者：**法术 33657「Resonance」**、施法者 **玩家 Asggd(DBGuid 5)**、目标 **多只已死亡宠物**（`targetDead=1`，Petnumber 30/35/38/24/25…）⇒ 与云端那次"太阳井召唤宠被打死后"完全同型（法术命中 → 宠物死亡 → 光环被撤 → 延迟事件仍写 holder）；
+- 诊断节流：每**法术**每进程一行、上限 30 行（首版按次数节流会被这条高频路径瞬间打满 50 行，已按项目"日志安静"规矩改掉）。
+
+**踩到的两个环境坑（留档）**
+1. `-DCMAKE_CXX_FLAGS=` 是**整体替换** CMake 给 MSVC 的默认 flags，必须把基线一起写上（`/DWIN32 /D_WINDOWS /GR /EHsc /wd… /Zm500`），否则丢 `/EHsc /GR` ⇒ MSVC 不定义 `_CPPUNWIND` ⇒ Boost 定义 `BOOST_NO_EXCEPTIONS` ⇒ `LNK2001 boost::throw_exception` 链接失败；
+2. 用 `Set-Content -Encoding UTF8` 改 `mangosd.conf` 会写入 **UTF-8 BOM** ⇒ mangosd 报 `Could not find configuration file`（08-21 那条老坑复发）→ 改配置一律用 `[System.IO.File]::WriteAllText(path, text, UTF8Encoding($false))`。
+
+#### 11.7 云端部署验收（2026-10-03 13:06 → 13:45，站长下令"在云端部署"）
+
+按既定流程走 `nightly_build_restart.sh`：先停 mangosd → `make -j2`（改动含被广泛包含的头文件，属较全量重建：13:08 起、13:43 编完）→ md5 变化才安装 → 起服 → realmd 重启验证。**停机约 39 分钟**（13:06 → 13:45:37 世界初始化完成），期间 watchdog 由脚本 trap 标志压住，脚本自带的"编译失败用旧二进制拉起"保护未触发。
+
+| 验收项 | 结果 |
+| --- | --- |
+| 编译 | `[100%] Built target mangosd`（无 error；仅链接期 libssl 1.1/3 的既有 warning） |
+| 二进制 | `/opt/mangos/bin/mangosd` 19,889,520 字节（较上版 +5,488B）、mtime 13:44、md5 **`ce68060b2c1c14a3507979eedd17d878`** = 构建树产物（逐字节一致）；回滚件 `mangosd.bak_nightly` |
+| 新代码确实在里面 | `grep -a` 命中 `HOLDER-UAF`×1、`PATHCORRUPT`×2（**注意：`strings … \| grep -c` 在本机会给出 0，用 `grep -c -a` 才准**） |
+| realmd | 同步重建并安装（`Log.cpp` 轮转共享），md5 `78dd4b35…`，重启+功能性验证通过 |
+| 进程/端口 | mangosd PID 28959，8086 与 3724 均在听 |
+| 世界 | `13:45:37 CMANGOS: World initialized` |
+| **C 生效（首次云端验证）** | `/opt/mangos/logs/Server.log.prev` = **128,086 字节（上一轮完整日志，13:06）**，`Realmd.log.prev` 同时生成 ⇒ 崩溃前日志从此不再被重启截断 |
+| **D 生效** | 进程环境可见 `MALLOC_CHECK_=1`（+ 既有 `MALLOC_ARENA_MAX=2`）⇒ 堆元数据损坏类事件从本次起会打印到 `/tmp/mangosd_run.log`（只记不崩） |
+| 诊断安静 | 起服后 `HOLDER-UAF`/`PATHCORRUPT`/`SOCKDIAG`/`DEADHIT` 全 0 行 |
+| 其他 | watchdog 标志已自动清除；磁盘 65%（14G 空闲）；起服后 RSS 1222MB（ASan 无关，属正常加载后水位） |
+
+**云端后续观察点**：`[HOLDER-UAF]` 是否出现（出现即说明线上也在触发这条路径，且已被拦住而不是写坏内存）；`[PATHCORRUPT]` 是否出现（说明还有第二处坏写源）；`/tmp/mangosd_run.log` 里的 glibc `malloc(): …/free(): …` 自检行；`Server.log.prev` 是否按预期每轮滚动。
 
 
 

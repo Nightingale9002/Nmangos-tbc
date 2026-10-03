@@ -56,6 +56,45 @@ inline bool isStatic(MovementGenerator* mv)
     return (mv == &si_idleMovement);
 }
 
+// [PATHCORRUPT-DIAG 2026-10-03] Single funnel for deleting a movement generator.
+//
+// Cloud core 2026-10-03 10:50:06 (see dev/KNOWN_ISSUES.md): SIGSEGV at address 0x61 because
+// Pet::SetDeathState -> Unit::SetDeathState -> MotionMaster::DirectClean -> delete FollowMovementGenerator
+// read i_path == 1 (object+0x50) and called PathFinder::~PathFinder() with this == 1.  The generator itself
+// was alive and correctly linked - only that one pointer member had been overwritten from outside, i.e. this
+// is a stray write (use-after-free class), not a double delete.  The corruption itself has to be found by the
+// [PATHCORRUPT] line that TargetedMovementGeneratorMedium::Update emits on the first tick after it happens;
+// this guard makes sure the server survives the deletion until then, and records who was being deleted.
+void MotionMaster::GuardedDeleteGenerator(MovementGenerator* gen, char const* site)
+{
+    if (!gen || isStatic(gen))
+        return;                                             // static generators are never owned
+
+    uintptr_t const path = reinterpret_cast<uintptr_t>(gen->GetPathPointerForDiag());
+    if (path != 0 && path < 0x10000)
+    {
+        uint32 const topGen = empty() ? 0xFFFFFFFF : uint32(top()->GetMovementGeneratorType());
+
+        sLog.outError("[PATHCORRUPT] site=%s gen=%u genptr=0x%llX path=0x%llX stackTop=%u map=%u owner=%s ownerEntry=%u "
+                      "ownerType=%u alive=%d deathState=%u incombat=%d caller=0x%llX base=0x%llX stack=%s",
+                      site, uint32(gen->GetMovementGeneratorType()),
+                      static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(gen)),
+                      static_cast<unsigned long long>(path), topGen,
+                      m_owner->GetMapId(), m_owner->GetGuidStr().c_str(), m_owner->GetEntry(),
+                      uint32(m_owner->GetTypeId()), m_owner->IsAlive() ? 1 : 0, uint32(m_owner->GetDeathState()),
+                      m_owner->IsInCombat() ? 1 : 0,
+                      static_cast<unsigned long long>(MANGOS_CALLER_ADDR()),
+                      static_cast<unsigned long long>(MANGOS_IMAGE_BASE()),
+                      MaNGOS::FormatBacktrace().c_str());
+
+        // The value is not a PathFinder this generator owns, so there is nothing to free: forget it and let
+        // the generator rebuild one lazily on its next update.
+        gen->ClearPathPointerForDiag();
+    }
+
+    delete gen;
+}
+
 void MotionMaster::Initialize()
 {
 #ifdef BUILD_METRICS
@@ -123,8 +162,7 @@ MotionMaster::~MotionMaster()
     {
         MovementGenerator* m = top();
         pop();
-        if (!isStatic(m))
-            delete m;
+        GuardedDeleteGenerator(m, "dtor");                  // no Finalize: owner memory may already be gone
     }
 }
 
@@ -170,10 +208,7 @@ void MotionMaster::UpdateMotion(uint32 diff)
     if (m_expList)
     {
         for (auto mg : *m_expList)
-        {
-            if (!isStatic(mg))
-                delete mg;
-        }
+            GuardedDeleteGenerator(mg, "update-expire");
 
         delete m_expList;
         m_expList = nullptr;
@@ -197,8 +232,7 @@ void MotionMaster::DirectClean(bool reset, bool all)
         pop();
         curr->Finalize(*m_owner);
 
-        if (!isStatic(curr))
-            delete curr;
+        GuardedDeleteGenerator(curr, "direct-clean");
     }
 
     if (!all && reset)
@@ -251,7 +285,7 @@ void MotionMaster::DirectExpire(bool reset)
             MovementGenerator* temp = top();
             pop();
             temp->Finalize(*m_owner);
-            delete temp;
+            GuardedDeleteGenerator(temp, "direct-expire");
         }
     }
 
@@ -260,8 +294,7 @@ void MotionMaster::DirectExpire(bool reset)
     // it can add another motions instead
     curr->Finalize(*m_owner);
 
-    if (!isStatic(curr))
-        delete curr;
+    GuardedDeleteGenerator(curr, "direct-expire");
 
     if (empty())
         Initialize();

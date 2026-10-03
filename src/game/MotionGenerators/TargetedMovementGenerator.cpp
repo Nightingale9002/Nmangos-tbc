@@ -18,6 +18,7 @@
 
 #include "MotionGenerators/TargetedMovementGenerator.h"
 #include "MotionGenerators/PathFinder.h"
+#include "Util/CallerAddress.h"
 #include "MotionGenerators/PfDebug.h"
 #include "MotionGenerators/PfProbe.h"
 #include "Entities/Unit.h"
@@ -49,6 +50,30 @@ const char* ChaseModes[] =
 template<class T, typename D>
 bool TargetedMovementGeneratorMedium<T, D>::Update(T& owner, const uint32& time_diff)
 {
+    // [PATHCORRUPT-DIAG 2026-10-03] Early warning for the stray write that crashed the cloud world server on
+    // 2026-10-03 10:50:06 (SIGSEGV at address 0x61: Pet::SetDeathState -> MotionMaster::DirectClean ->
+    // ~FollowMovementGenerator -> PathFinder::~PathFinder): a live generator's PathFinder* member had been
+    // replaced by a small integer.  Reading the pointer here costs one compare per tick and reports the FIRST
+    // tick after the corruption, which pins the culprit to a single update interval instead of an eight hour
+    // window.  The bogus value is dropped so the generator rebuilds its PathFinder lazily - that also keeps
+    // the line one-shot, because i_path == nullptr is legal and stays quiet.
+    uintptr_t const pathPtr = reinterpret_cast<uintptr_t>(i_path);
+    if (pathPtr != 0 && pathPtr < 0x10000)
+    {
+        sLog.outError("[PATHCORRUPT] what=update gen=%u genptr=0x%llX path=0x%llX map=%u owner=%s ownerEntry=%u "
+                      "ownerType=%u alive=%d deathState=%u incombat=%d target=%s caller=0x%llX base=0x%llX stack=%s",
+                      uint32(static_cast<D*>(this)->GetMovementGeneratorType()),
+                      static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(this)),
+                      static_cast<unsigned long long>(pathPtr),
+                      owner.GetMapId(), owner.GetGuidStr().c_str(), owner.GetEntry(), uint32(owner.GetTypeId()),
+                      owner.IsAlive() ? 1 : 0, uint32(owner.GetDeathState()), owner.IsInCombat() ? 1 : 0,
+                      i_target.isValid() ? i_target->GetGuidStr().c_str() : "-",
+                      static_cast<unsigned long long>(MANGOS_CALLER_ADDR()),
+                      static_cast<unsigned long long>(MANGOS_IMAGE_BASE()),
+                      MaNGOS::FormatBacktrace().c_str());
+        i_path = nullptr;
+    }
+
     if (!i_target.isValid() || !i_target->IsInWorld())
         return !static_cast<D*>(this)->RemoveOnInvalid();
 
