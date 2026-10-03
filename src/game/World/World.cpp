@@ -714,6 +714,10 @@ void World::LoadConfigSettings(bool reload)
     // [AIR-CLAMP] minimum height above the walkable floor kept for creatures that
     // levitate by template (InhabitType & INHABIT_AIR). 0 disables the clamp.
     setConfigMin(CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE, "Creature.AirGroundClearance", 1.0f, 0.0f);
+    // [SWIM/AIR HEIGHT 2026-10-03] model-based vertical placement, operator-confirmed as correct. See World.h.
+    setConfigMin(CONFIG_FLOAT_CREATURE_SWIM_SURFACE_DEPTH_FACTOR, "Creature.SwimSurfaceDepthFactor", 1.0f, 0.0f);
+    setConfigMin(CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE_FACTOR, "Creature.AirGroundClearanceFactor", 0.5f, 0.0f);
+    setConfigMin(CONFIG_FLOAT_CREATURE_SWIM_START_DEPTH_FACTOR, "Creature.SwimStartDepthFactor", 0.5f, 0.0f);
     setConfigMin(CONFIG_UINT32_CREATURE_RESPAWN_AGGRO_DELAY, "CreatureRespawnAggroDelay", 5000, 0);
     setConfig(CONFIG_UINT32_CREATURE_PICKPOCKET_RESTOCK_DELAY, "CreaturePickpocketRestockDelay", 600);
 

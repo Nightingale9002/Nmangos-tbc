@@ -1118,6 +1118,20 @@ Rate.Creature.Aggro = 1
 CreatureRespawnAggroDelay = 5000
 LeashRadius = 30
 Creature.AirGroundClearance = 1.0
+#    Creature.SwimSurfaceDepthFactor
+#        [2026-10-03] Swimming model origin depth below the water surface = max(0.5, collisionHeight * factor).
+#        The client poses the swim animation around the position the server sends, so body size decides the
+#        depth (naga ~3.5 yd vs fish ~0.5 yd). 0 = legacy fixed 1.5 yd.
+#    Creature.AirGroundClearanceFactor
+#        [2026-10-03] Airborne flyer clearance above the walkable floor = max(Creature.AirGroundClearance,
+#        collisionHeight * factor). Big flyers keep their belly off the ground, small ones are unchanged.
+#        0 = legacy fixed Creature.AirGroundClearance only.
+#    Creature.SwimStartDepthFactor
+#        [2026-10-03] Water depth that starts the SWIMMING state = max(0.8, collisionHeight * factor).
+#        0 = legacy rule (water had to cover the whole body height, which made tall nagas wade).
+Creature.SwimSurfaceDepthFactor = 1.0
+Creature.AirGroundClearanceFactor = 0.5
+Creature.SwimStartDepthFactor = 0.5
 CreatureFamilyFleeAssistanceRadius = 30
 CreatureFamilyAssistanceRadius = 5
 CreatureFamilyAssistanceDelay = 1500

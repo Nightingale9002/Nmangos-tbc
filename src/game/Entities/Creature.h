@@ -1040,6 +1040,12 @@ class Creature : public Unit
         bool m_forceAttackingCapability;                    // can attack even if not selectable/not attackable
         bool m_noReputation;
         bool m_airborneFlagAutomatic;                       // MOVEFLAG_LEVITATING was set by the core for an airborne spawn/path
+        uint32 m_lastPosSyncTime;                           // [POS-SYNC] 上次给客户端补发移动包的时间
+    public:
+        // [POS-SYNC] create 后 2 秒内不重复补发移动包（同一只怪被多个玩家陆续看见时）
+        bool HasRecentPosSync(uint32 ms) const;
+        void MarkPosSync();
+    protected:
 
         CreatureSettings m_settings;
 

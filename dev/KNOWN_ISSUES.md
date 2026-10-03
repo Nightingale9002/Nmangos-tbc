@@ -936,6 +936,11 @@ DB 指向 Windows 上的 MySQL（`wow@%` 用户），用 `screen` 起进程（**
 > `SMSG_SPLINE_MOVE_START_SWIM(0x30B)` 只是**开场动画提示**，会 ~2 秒衰减、周期重发会抖，
 > 因此方案里**不再依赖它**。下文"各种方法都失败"一节是**历史记录（被否决的方案）**，不代表当前状态——
 > 只看到那张失败表就判断"此问题未解决"属于误读。
+>
+> ⚠️ **2026-10-03 修正（已定案，必读）**：字段 0x8000 是锚定这一点**没错**，但"进入游泳要靠 0x30B"
+> 的补充结论是**错的**（我当时误把站长的观察当成验证通过，已作废）。真实原因见本节末尾
+> 「2026-10-03 定案：create 块里内嵌的 spline 会顶掉客户端的游泳判定」——
+> **create 里带着内嵌 spline 时，客户端会跟随 spline 播移动动作（走路），把字段的游泳判定顶掉**。
 
 > 本文档由仓库根 WATER_MOVEMENT_NOTES.md 整合而来，后续水移动相关技术内容统一写入本手册。
 
@@ -981,6 +986,69 @@ DB 指向 Windows 上的 MySQL（`wow@%` 用户），用 `screen` 起进程（**
 `0x30B` 只是临时动画提示。**动态 SetFlag 是唯一持久方案，且已在 2026-08 落地并实测通过**
 （见上文"完整方案"组件 1/2，以及本节 08-23 水中随机移动、08-25 游泳怪上岸卡住两次修复）。
 上表只说明"为什么不能靠投递动画包来解决"，不是"没有解法"。
+
+### 2026-10-03 定案：**create 块里内嵌的 spline 会顶掉客户端的游泳判定**（纳迦 71576 走水面）
+
+> ⚠️ 本节下方 2026-10-03 早先写的"字段只负责保持、进入游泳必须靠 0x30B"是**错误结论**，已作废；
+> 正确结论看这里。手册最初那句"客户端认 `UNIT_FLAG_SWIMMING(0x8000)` 锚定"**一直是对的**，
+> 只是被 create 里的一条内嵌 spline 挡住了 —— 那条 spline 让客户端去跟随移动、播走路动作。
+
+**现象**：纳迦 npc 71576（`creature_template 20089` Bloodscale Wavecaller）深水刷点刷新后**在水面走**；
+之后（或被打断移动、进战斗）又会变回游泳。其它会游泳的生物（同水池的鱼 18212/18213、71577）一切正常。
+
+**根因**：客户端收到 create 时如果里面**带着内嵌 spline**（`MOVEFLAG_SPLINE_ENABLED` + spline 数据），
+就会进入"跟随这条 spline 播移动动作"的路径，把 `UNIT_FLAG_SWIMMING` 的游泳判定顶掉；而 2.4.3 的
+spline 标志位里**没有游泳位**（`MoveSplineFlag.h` 全表核对；`packet_builder.cpp` 还给 monster-move
+固定补一个 fake `Runmode=0x100`），所以"跟随 spline"一定是走路/跑。路径点怪（movementtype=2）几乎总是
+在**移动中**被看见，create 必然带 spline；随机移动的鱼是"窜一下停一下"，create 大多不带 spline ——
+这正好解释了"为什么只有它走路"。
+
+**抓包实测证据（本站 2026-10-03，逐字节解码客户端真正收到的包）**
+
+未修版，71576 首次出现在玩家画面里的 create 块：
+```
+moveFlags = 0x08200101  [SPLINE_ENABLED | SWIMMING | WALK_MODE | FORWARD]
+pos       = (530.30, 6437.26, 15.61)      水面 18.268、水底 2.11 -> 水面下 2.66 码
+field 46  = 0x8000      (UNIT_FIELD_FLAGS，字段掩码里确实有)
+speeds    = walk 2.5 / run 7.0 / run_back 4.5 / swim 4.722 / ...
+内嵌 spline: flags = 0x0 , timePassed = 312 , dur = 20344ms , nodes = 11 , dest = (482.06,6421.93,15.61)
+```
+同一次抓包里对照：
+- 会正常游泳的鱼 18212/18213：create `moveFlags=0x00200100 [WALK_MODE|SWIMMING]`，**没有内嵌 spline**；
+- **所有生物**（含鱼）的 monster-move 标志都是 `0x100 [Runmode]`、隐含速度都是 **2.50 yd/s**（鱼 n=218
+  同样 2.50）⇒ 移动包这一路**不携带任何游泳信息**，客户端不可能靠它区分生物；
+- 鱼收到的 `START/STOP_SWIM` 与 `UNIT_FIELD_FLAGS` 翻转和这只纳迦**完全一样**（也有 100ms 内 0x8000→0x）
+  ⇒ "字段被拍碎"不是原因；
+- 71576 的 10 个路径点 `WaitTime` **全是 0**（永不停留），鱼是随机移动 ⇒ 它 100% 时间在移动中。
+
+**修法**
+1. `Object::BuildMovementUpdate`：**存活的游泳怪**（`IsAlive() && MOVEFLAG_SWIMMING`）的 create 块里
+   **不写内嵌 spline**（同时把 `MOVEFLAG_SPLINE_ENABLED` 从写出的移动标志里去掉，否则客户端错位解析）。
+   生物的移动本身不受影响，路径点生成器下一条 monster-move 照常发。
+2. `Unit::ResyncMovementToClients()` + 两处调用（create 之后立刻一次、`Creature::Update` 里对游泳怪每
+   5 秒一次）：用**当前位置**向其 spline 终点补发一条 monster-move，把客户端模型钉回服务器位置。
+   这一步是必需的副作用修补：剥掉 spline 后客户端在 create 时不知道它在动，路径点怪一条 spline 可长
+   达 20 秒，会出现"服务器走远了、客户端还在原地"（站长报的"位置对不上"）。
+   注意：这条重发是"直线奔向原终点"，剩余路径若要绕障碍会抄一次近路，所以只对游泳怪做
+   （z 会被水路钳制在水体带内）。
+3. 前面的 create 前状态修正（`ShouldSwimAtCurrentPosition()` 与每 tick 判据同源）、尸体跳过游泳维护、
+   复活时补发一次 `SetSwim(true)` 都保留：它们让 create 的游泳位正确、且不在尸体上乱发包。
+
+**验收（站长实测）**：修好后 71576 一出现即游泳，位置也会被定期钉回；"走一会儿才游泳""位置对不上"
+两个症状同时消失。
+
+**排查工具（下次直接用）**
+- 抓包：游戏内 `.debug packetlog 1` → 复现 → `.debug packetlog 0`，文件在 `logs/<PacketLogFile>`（PKT 3.1）。
+  **注意：重启服务器会以 `wb` 重开该文件（内容被清空），抓完先复制走。**
+- 解析：`_agent_tmp/parse_sniff.py`（PKT 3.1 拆包）、`_agent_tmp/sniff_report.py`（create/monster-move 概览）、
+  `_agent_tmp/decode_creates.py`（create 块逐字段解码：注意 2.4.3 的 movement info 在 SWIMMING 时多一个
+  `s_pitch` 浮点 + `fallTime`，create 在 mask 前还有一个 `UPDATEFLAG_ALL` 的 uint32）。
+- 离线地图探针：`_agent_tmp/delegation/swim_depth/naga71576_spawn_probe.py`（注意该目录下 `liquid_probe.py`
+  的 `grid_of()` 用了另一套文件名约定，本仓库要用 `int(32 - x/533.333)` 组文件名）。
+
+**旧数字更正**：这只纳迦 `GetCollisionHeight()` = **3.541**（不是默认 2.03128）；停止游泳的门槛已从
+`碰撞高度-0.5`(=3.04) 改为 `GetSwimStartDepth()`（默认 `max(0.8, 碰撞高度×0.5)`≈1.77），避免它在水深
+3 码、脚底仍在水面下 2.4 码处被判"上岸"。
 
 ### 其他经验
 

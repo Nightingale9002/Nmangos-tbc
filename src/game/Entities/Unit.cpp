@@ -529,59 +529,29 @@ void Unit::Update(const uint32 diff)
     // update abilities available only for fraction of time
     UpdateReactives(diff);
 
-    // 动态维护游泳状态：MOVEFLAG_SWIMMING 只在生物创建时按刷点位置判定过一次
-    // （Creature.cpp:498-502）。浅水里刷出的水生怪追人进深水时仍带着"陆地"标记，
-    // 于是一边下沉一边疯狂闪避。所以每个 tick 按当前位置重算
-    // （SetSwim 只在状态真正变化时才发包/发字段更新）。
-    // 跳过 WALK_IN_WATER 的生物（螃蟹等）：它们必须贴水底走，强制游泳会让客户端
-    // 相对服务端位置上下浮沉。
-    if (GetTypeId() == TYPEID_UNIT && CanSwim() &&
+    // [SWIM-STATE 2026-10-03] 注意：**非存活单位整段跳过**，不能只让判据返回 false —— 那样会落到
+    // 下面的 `else if (swimming) SetSwim(false)` 上，把尸体/刚死的怪的游泳字段清掉并广播 STOP_SWIM，
+    // 而复活后移动标志本来就是"已游泳"，`SetSwim(true)`（只在状态变化时发包）便永远不再触发，
+    // 客户端因此收不到 START_SWIM，只能一直播走路（抓包证据：字段被设了 0x8000 却没有任何 START_SWIM）。
+    if (IsAlive() && GetTypeId() == TYPEID_UNIT && CanSwim() &&
         !(static_cast<Creature const*>(this)->GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER))
     {
-        // 判据口径必须与刷点判据一致：Creature.cpp:501 用的是
-        // TerrainInfo::IsSwimmable(pos, GetCollisionHeight())，即
-        //     liquid.level - liquid.depth_level > radius        // GridMap.cpp:1215
-        // 「水比怪还深、站不住」才算游泳。而本补丁原先写的是"脚底比液面低 0.5 码
-        // 就游泳"（GetWaterLevel 只返回液面高度，GridMap.cpp:1391-1410，它不知道
-        // 深浅），于是岸边只到脚踝/小腿的浅水也整片播放游泳动作，和刷点判据自相
-        // 矛盾 —— 这就是站长报的现象。
-        //
-        // 现在把每 tick 的判据统一到"水深"，并保留水面检查，两级迟滞：
-        //   开始游泳：水深 > 碰撞高度（同一个半径，与刷点判据完全一致）
-        //   停止游泳：水深 <= max(0.5, 碰撞高度 - 0.5)，留 0.5 码迟滞带，
-        //             避免水线附近来回翻转状态（客户端动画抖动）
-        // GetWaterLevel 的第四个参数是**输出参数**：它被写成该点的静态地面高度
-        // （GridMap.cpp:1396-1398 的 GetHeightStatic；紧接着的 getLiquidStatus 正是用这个
-        // 高度去查液体状态的），因此 (waterLevel - liquidBottom) 就是"站在此处的水深"，
-        // 与 IsSwimmable 里用的 `liquid.level - liquid.depth_level` 是同一个量，
-        // 而且**不额外增加地形查询**（调用次数与原代码相同）。
-        // 站在栈桥/码头/礁石上时这个高度取到桥面（WMO 面），水深算出来是负的；
-        // 再配合下面的水面检查，不会把"水面之上的怪"误判成游泳。
-        float liquidBottom = INVALID_HEIGHT;
-        float const waterLevel = GetMap()->GetTerrain()->GetWaterLevel(GetPositionX(), GetPositionY(),
-                                                                       GetPositionZ(), &liquidBottom);
         bool const swimming = m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
-        // [SURFACE-GUARD] 水面检查：怪站在水面之上的栈桥/码头/岸边礁石上（地表
-        // 由 WMO 提供，MAP 高度图里的水底在它下方很深）时，水深可能超过碰撞高度，
-        // 但它在水面上，绝不能判成游泳。原判据靠 z < 水面 - 0.5 天然躲开了这个坑，
-        // 只改成纯"水深"就会引入新 bug，所以显式要求脚底没有高出液面。
-        // 这一条也做成 0.2 码的迟滞带（进入要求在水面下 0.2 码以内，退出要真正
-        // 高出水面 0.2 码），避免浮在液面附近的怪被水面抖动反复切状态。
-        bool surfaceOk;
-        if (waterLevel <= INVALID_HEIGHT)
-            surfaceOk = false;
-        else if (swimming)
-            surfaceOk = (GetPositionZ() <= waterLevel + 0.2f);
-        else
-            surfaceOk = (GetPositionZ() < waterLevel - 0.2f);
-        // 开始用碰撞高度当门槛、停止用带迟滞的较小门槛，所以门槛在状态外算
-        float const collisionHeight = GetCollisionHeight();
-        float const swimDepth = swimming ? std::max(0.5f, collisionHeight - 0.5f) : collisionHeight;
-        bool const deepEnough = (liquidBottom > INVALID_HEIGHT && (waterLevel - liquidBottom) > swimDepth);
-        if (deepEnough && surfaceOk)
+        bool const wantSwim = ShouldSwimAtCurrentPosition();
+
+        if (wantSwim)
         {
             if (!swimming)
+            {
+                // 进入游泳时先把原点沉到客户端会播游泳的深度，否则它会继续"走在水面"直到自己沉下去
+                SinkToSwimOriginDepth(true);
                 SetSwim(true);
+            }
+            else if (movespline->Finalized())
+            {
+                // 站着（等刷新点/等路径等待）且原点太浅：沉到位（不动的话客户端只会一直播走路）
+                SinkToSwimOriginDepth(true);
+            }
         }
         else if (swimming)
             SetSwim(false);
@@ -12840,6 +12810,173 @@ float Unit::GetCollisionHeight() const
 
     float const collisionHeight = scaleMod * modelData->CollisionHeight * modelData->Scale * displayInfo->scale;
     return collisionHeight == 0.0f ? DEFAULT_COLLISION_HEIGHT : collisionHeight;
+}
+
+// [SWIM/AIR HEIGHT 2026-10-03] Model-based vertical placement (operator-confirmed as correct). The client
+// renders a unit's model around the position we send, so the swim depth below the surface and the flyer's
+// clearance above the floor have to suit the model's size (a ~3.5 yd naga vs a ~0.5 yd fish). 0 = legacy fixed.
+float Unit::GetSwimSurfaceDepth() const
+{
+    float const factor = sWorld.getConfig(CONFIG_FLOAT_CREATURE_SWIM_SURFACE_DEPTH_FACTOR);
+    if (factor <= 0.0f)
+        return 1.5f;                                        // legacy fixed value
+    return std::max(0.5f, GetCollisionHeight() * factor);
+}
+
+float Unit::GetAirGroundClearance() const
+{
+    float const minimum = sWorld.getConfig(CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE);
+    float const factor = sWorld.getConfig(CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE_FACTOR);
+    if (factor <= 0.0f)
+        return minimum;                                     // legacy fixed value
+    return std::max(minimum, GetCollisionHeight() * factor);
+}
+
+float Unit::GetSwimStartDepth() const
+{
+    float const collisionHeight = GetCollisionHeight();
+    float const factor = sWorld.getConfig(CONFIG_FLOAT_CREATURE_SWIM_START_DEPTH_FACTOR);
+    if (factor <= 0.0f)
+        return collisionHeight;                             // legacy: water had to cover the whole body
+    return std::max(0.8f, collisionHeight * factor);
+}
+
+// [SWIM-CRITERION 2026-10-03] 单位**当前所在位置**该不该是游泳状态 —— 每 tick 维护
+// （Unit::Update）与"给客户端建 create 之前的状态修正"（Object::SendCreateUpdateToPlayer）
+// 共用同一份判据，避免两处口径漂移（历史上正是口径漂移导致岸边浅水整片播游泳动作）。
+//
+// 判据（延迟式迟滞，站长的口径）：
+//   开始游泳：水深 > 碰撞高度（与刷点判据 TerrainInfo::IsSwimmable 完全一致，同一个量）
+//   停止游泳：水深 <= max(0.5, 碰撞高度 - 0.5)（0.5 码迟滞带，防水线附近来回翻转）
+//   水面检查：未游泳时要求脚底低于液面 0.2 码（防"站在栈桥/礁石上、下方水很深"被误判），
+//             已游泳时要求不高于液面 0.2 码（防"浮在空中"仍保持游泳）。
+//   跳过 WALK_IN_WATER（螃蟹等贴水底生物）。
+// GetWaterLevel 的第四个参数是**输出参数**：写成该点静态地面高度（GridMap.cpp:1396-1398），
+// 因此 (waterLevel - liquidBottom) 就是"站在此处的水深"，与 IsSwimmable 用的
+// `liquid.level - liquid.depth_level` 同源，且不额外增加地形查询。
+bool Unit::ShouldSwimAtCurrentPosition(float* outWaterLevel, float* outGround) const
+{
+    // 尸体不游泳：复活流程里 Corpse/DEAD 状态也会走到 Unit::Update，之前这套判据会去 SetSwim、沉位、
+    // 发 START_SWIM（日志里能看到"给尸体沉到游泳深度"），纯属脏操作。
+    if (!IsAlive())
+        return false;
+
+    if (GetTypeId() != TYPEID_UNIT || !CanSwim() || !GetMap())
+        return false;
+
+    Creature const* creature = static_cast<Creature const*>(this);
+    CreatureInfo const* cinfo = creature->GetCreatureInfo();
+    if (!cinfo || (cinfo->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER))
+        return false;
+
+    float liquidBottom = INVALID_HEIGHT;
+    float const waterLevel = GetMap()->GetTerrain()->GetWaterLevel(GetPositionX(), GetPositionY(),
+                                                                   GetPositionZ(), &liquidBottom);
+    if (outWaterLevel)
+        *outWaterLevel = waterLevel;
+    if (outGround)
+        *outGround = liquidBottom;
+
+    bool const swimming = m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
+
+    bool surfaceOk;
+    if (waterLevel <= INVALID_HEIGHT)
+        surfaceOk = false;
+    else if (swimming)
+        surfaceOk = (GetPositionZ() <= waterLevel + 0.2f);
+    else
+        surfaceOk = (GetPositionZ() < waterLevel - 0.2f);
+
+    float const collisionHeight = GetCollisionHeight();
+    // [SWIM-STOP-THRESHOLD 2026-10-03] 停止游泳的门槛**不能**用"碰撞高度−0.5"。
+    //
+    // 抓包实测（纳迦 71576）：它在 z=15.84 时被判成"停止游泳"并清掉 UNIT_FLAG_SWIMMING 字段 ——
+    // 而那里水面 18.268、水底 15.28，即脚底仍在水面下 **2.4 码**、水里 3.0 码深，只是因为
+    // 门槛写成 `碰撞高度(3.54) - 0.5 = 3.04` 才被判成"站得住、该上岸"。按手册已确认的结论
+    // （客户端认 UNIT_FIELD_FLAGS 的 0x8000 作游泳锚定），字段被清 -> 客户端立刻按走路处理，
+    // 并给模型加下坠、每帧被服务器位置拉回，表现就是"在水里走路 + 抖"。
+    //
+    // 现在：开始游泳仍然是"水深 > 碰撞高度"（与刷点判定一致），但**停止**改用一个低得多的门槛
+    // GetSwimStartDepth()（= max(0.8, 碰撞高度 × Creature.SwimStartDepthFactor)，本怪约 1.77 码），
+    // 只在真的快出水时才停。迟滞带因此从 0.5 码放大到 [1.77, 3.54]，浅滩段不再反复开关。
+    float const swimDepth = swimming ? GetSwimStartDepth() : collisionHeight;
+    bool const deepEnough = (liquidBottom > INVALID_HEIGHT && (waterLevel - liquidBottom) > swimDepth);
+
+    return deepEnough && surfaceOk;
+}
+
+// [SWIM-ORIGIN 2026-10-03] 客户端播不播游泳动作，取决于**它自己算出来的位置与水面之差**，与我们发的
+// 移动标志/UNIT_FLAG_SWIMMING(0x8000)/0x30B 都无关 —— 站长实测（本服 2.4.3 客户端，纳迦 entry 20089）：
+//   刷点 z=16.87（水面 18.268，下方 1.40 码）-> 客户端**走**在水面
+//   移动路径被水路钳制到 z=15.61（下方 2.66 码）-> 客户端**游泳**
+// 也就是门槛落在 1.40 ~ 2.66 码之间。而刷新/站立时原点用的是 DB 的 z（较浅），所以这里把游泳中的原点
+// 压到与移动路径同一个深度：waterLevel - GetSwimSurfaceDepth()（该值 = 碰撞高度 × conf 系数，本怪 2.66）。
+// 返回是否真的移动过。sendMove=true 时用一条 monster-move 让客户端把模型沉下去（否则客户端停留在旧
+// 位置的认知里，还是走路）；建 create 之前调用时用 false，位置直接写进 create 块。
+bool Unit::SinkToSwimOriginDepth(bool sendMove)
+{
+    if (GetTypeId() != TYPEID_UNIT || IsClientControlled())
+        return false;
+
+    float waterLevel = INVALID_HEIGHT;
+    float ground = INVALID_HEIGHT;
+    if (!ShouldSwimAtCurrentPosition(&waterLevel, &ground) || waterLevel <= INVALID_HEIGHT)
+        return false;
+
+    float const targetZ = waterLevel - GetSwimSurfaceDepth();
+    // 已经够深，或下方没有足够空间（浅水/贴近水底）就不动
+    if (GetPositionZ() <= targetZ + 0.1f || (ground > INVALID_HEIGHT && ground + 0.5f > targetZ))
+        return false;
+
+    float const x = GetPositionX();
+    float const y = GetPositionY();
+    float const o = GetOrientation();
+
+    if (sendMove && IsInWorld())
+    {
+        // 让客户端跟着沉下去：一条正常的 monster-move，客户端把模型放到新位置并播游泳动作。
+        // 位置由 spline 走完时同步，所以这里不再手动 Relocate（避免两套位置来源打架）。
+        Movement::MoveSplineInit init(*this);
+        init.MoveTo(x, y, targetZ);
+        init.SetWalk(true);
+        init.Launch();
+        return true;
+    }
+
+    if (IsInWorld() && GetMap())
+    {
+        GetMap()->CreatureRelocation(static_cast<Creature*>(this), x, y, targetZ, o);
+        m_movementInfo.ChangePosition(x, y, targetZ, o);
+    }
+    else
+        Relocate(x, y, targetZ, o);
+    return true;
+}
+
+// [POS-SYNC 2026-10-03] 定期/按需把服务器位置重新钉给客户端。
+//
+// 背景（同一天查明）：游泳怪的 create 块里不能再带内嵌 spline（那条 spline 会让客户端按"移动动作"播
+// 走路，顶掉 UNIT_FLAG_SWIMMING 的游泳判定）。代价是客户端在 create 时不知道它在移动，会把模型停在
+// 出现的位置 —— 路径点怪一条 spline 可长达 20 秒，于是"服务器早就走远了、客户端还在原地"。
+//
+// 这里用它当前 spline 的终点重新下发一条 monster-move：起点是它**现在的位置**（所以模型不会跳回），
+// 客户端拿到带 Runmode 的正常移动包后位置立刻对齐；游泳动作不受影响（实测：会正常游泳的鱼一直在收
+// monster-move）。
+// 注意：这条重发是"直线奔向原终点"，如果剩余路径本来要绕开障碍，会抄一次近路。因此调用点都限定在
+// 游泳怪（z 会被水路钳制在水体带内），不对陆地怪做。
+bool Unit::ResyncMovementToClients()
+{
+    if (GetTypeId() != TYPEID_UNIT || !IsAlive() || !IsInWorld() || !movespline)
+        return false;
+    if (movespline->Finalized())
+        return false;                                   // 没在移动：客户端位置本来就是对的
+
+    Vector3 const dest = movespline->FinalDestination();
+    Movement::MoveSplineInit init(*this);
+    init.MoveTo(dest.x, dest.y, dest.z);
+    init.SetWalk(m_movementInfo.HasMovementFlag(MOVEFLAG_WALK_MODE));
+    init.Launch();
+    return true;
 }
 
 float Unit::GetCollisionWidth() const

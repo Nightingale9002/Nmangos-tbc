@@ -162,7 +162,9 @@ namespace Movement
                         // -> creature floated out of the water. Clamp to the band when
                         // it exists, else floor or skim the waterline.
                         float const lo = groundZ + 0.5f;
-                        float const hi = waterLevel - 1.5f;
+                        // [SWIM/AIR HEIGHT 2026-10-03] model-derived surface margin (was a fixed 1.5 yd): the client poses the
+                        // swimming model around the position we send, so a tall naga needs a deeper origin than a small fish.
+                        float const hi = waterLevel - unit.GetSwimSurfaceDepth();
                         if (lo <= hi)
                             p.z = std::max(lo, std::min(p.z, hi));
                         else
@@ -177,7 +179,7 @@ namespace Movement
                 // movement flag and the client plays the swim animation. The z
                 // correction alone leaves it "walking through water". Unit::Update
                 // clears the flag when the unit surfaces (z > surface + 0.5).
-                if (sawUnderwater && canSwim && !walkInWater &&
+                if (sawUnderwater && canSwim && !walkInWater && unit.IsAlive() &&
                     !unit.m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING))
                 {
                     unit.SetSwim(true);
@@ -204,7 +206,8 @@ namespace Movement
         if (unit.GetTypeId() == TYPEID_UNIT && unit.IsLevitating() && !unit.IsHovering() && !unit.IsInWater())
         {
             Creature* creature = static_cast<Creature*>(&unit);
-            float const clearance = sWorld.getConfig(CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE);
+            // [SWIM/AIR HEIGHT 2026-10-03] model-derived clearance for airborne flyers
+            float const clearance = unit.GetAirGroundClearance();
             if (clearance > 0.0f && !creature->IsClientControlled() &&
                     (creature->GetCreatureInfo()->InhabitType & INHABIT_AIR) != 0 &&
                     creature->IsAirbornePosition(unit.GetPositionX(), unit.GetPositionY(), unit.GetPositionZ(), clearance * 0.5f))

@@ -46,6 +46,7 @@
 #include "Grids/GridNotifiersImpl.h"
 #include "Grids/CellImpl.h"
 #include "Movement/MoveSplineInit.h"
+#include "Movement/MoveSpline.h"
 #include "Entities/CreatureLinkingMgr.h"
 #include "Maps/SpawnManager.h"
 
@@ -185,6 +186,7 @@ Creature::Creature(CreatureSubtype subtype) : Unit(),
     m_immunitySet(UINT32_MAX), m_ai(nullptr),
     m_isInvisible(false), m_ignoreMMAP(false), m_forceAttackingCapability(false),
     m_airborneFlagAutomatic(false),
+    m_lastPosSyncTime(0),
     m_settings(this),
     m_countSpawns(false),
     m_creatureGroup(nullptr), m_imposedCooldown(false), m_healthMultiplier(1.f), m_damageMultiplier(1.f), m_baseAP(0), m_baseRAP(0),
@@ -241,6 +243,7 @@ void Creature::AddToWorld()
     }
 
     Unit::AddToWorld();
+
 
     // Make active if required
     if (sWorld.isForceLoadMap(GetMapId()) || (GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_ACTIVE))
@@ -300,8 +303,19 @@ void Creature::RemoveFromWorld()
     Unit::RemoveFromWorld();
 }
 
-void Creature::RemoveCorpse(bool inPlace)
+// [POS-SYNC 2026-10-03] 见 Object::SendCreateUpdateToPlayer：create 里被剥掉 spline 的游泳怪，
+// 客户端会停在出现的位置上，需要立刻补一条"从当前位置出发"的移动包；这里做 2 秒节流。
+bool Creature::HasRecentPosSync(uint32 ms) const
 {
+    return m_lastPosSyncTime && WorldTimer::getMSTimeDiff(m_lastPosSyncTime, WorldTimer::getMSTime()) <= ms;
+}
+
+void Creature::MarkPosSync()
+{
+    m_lastPosSyncTime = WorldTimer::getMSTime();
+}
+
+void Creature::RemoveCorpse(bool inPlace){
     if (!inPlace && !IsInWorld())
        return;
 
@@ -820,6 +834,25 @@ void Creature::Update(const uint32 diff)
                     GetCreatureGroup()->TriggerLinkingEvent(CREATURE_GROUP_EVENT_RESPAWN, this);
 
                 GetMap()->Add(this);
+
+
+                // [CREATE-ALIVE 2026-10-03] 复活时必须在"已经变回 ALIVE 之后"再让客户端重建对象。
+                //
+                // 复活流程是：RemoveCorpse() 先把怪挪回复活点（此刻状态仍是 DEAD）-> 发一次**尸体**的
+                // create -> 之后 Creature::Update 的 DEAD 分支才 SetDeathState(JUST_ALIVED)，而变活只发
+                // 字段更新、不再发位置。客户端因此只知道"一个尸体出现在复活点"，这个对象被字段更新成活的
+                // 时候用的还是客户端自己那份位置 —— 站长实测"远处打死、复活时客户端显示在死亡点、服务端却
+                // 在复活点"就是这个（本地日志：13 次 create 全是 dead=1，没有一次活着的 create）。
+                // 与 RemoveCorpse 里同样的做法：先让所有观察者销毁它，再重建 -> 客户端拿到"活着的、位置正确
+                // 的 create"，模型位置与动作状态一起归位。
+                if (IsInWorld())
+                {
+                    UnitVisibility const currentVisibility = GetVisibility();
+                    SetVisibility(VISIBILITY_OFF);
+                    UpdateObjectVisibility();
+                    SetVisibility(currentVisibility);
+                    UpdateObjectVisibility();
+                }
 
                 if (GetObjectGuid().GetHigh() != HIGHGUID_PET)
                     if (uint16 poolid = sPoolMgr.IsPartOfAPool<Creature>(GetDbGuid()))
@@ -2121,6 +2154,16 @@ void Creature::SetDeathState(DeathState s)
         clearUnitState(static_cast<uint32>(UNIT_STAT_ALL_STATE));
 
         Unit::SetDeathState(ALIVE);
+
+        // [SWIM-STATE 2026-10-03] 复活必须补发一次 SMSG_SPLINE_MOVE_START_SWIM(0x30B)。
+        //
+        // 客户端靠这条动画包**进入**游泳（UNIT_FLAG_SWIMMING(0x8000) 字段只负责保持），而 Unit::SetSwim
+        // 只在状态**变化**时发包。复活时移动标志往往已经带着 MOVEFLAG_SWIMMING（死亡不会清它），
+        // 于是"状态没变化 -> 一次 0x30B 都不发"，客户端只能一直播走路，直到它自己走到判据翻转处才补上 ——
+        // 这就是"刷点是深水，刷新后却走路，走一会儿才开始游泳"的成因（抓包证据：字段 0x8000 被设置过，
+        // 但整段会话没有任何 START_SWIM 包）。这里在变活的一刻无条件重发一次。
+        if (m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING) && IsInWorld())
+            SetSwim(true);
 
         SetWalk(true, true);
         ResetEntry(true);

@@ -313,6 +313,14 @@ enum eConfigFloatValues
     CONFIG_FLOAT_MOD_INCREASED_GOLD,
     CONFIG_FLOAT_MAX_RECRUIT_A_FRIEND_DISTANCE,
     CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE,
+    // [SWIM/AIR HEIGHT 2026-10-03] Model-based vertical placement (operator-confirmed as correct):
+    //   SwimSurfaceDepthFactor  : swim origin depth below the surface = max(0.5, collisionHeight * f)
+    //   AirGroundClearanceFactor: airborne flyer clearance above the floor = max(AirGroundClearance, ch * f)
+    //   SwimStartDepthFactor    : water depth that starts swimming = max(0.8, collisionHeight * f)
+    // 0 in each keeps the previous fixed behaviour.
+    CONFIG_FLOAT_CREATURE_SWIM_SURFACE_DEPTH_FACTOR,
+    CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE_FACTOR,
+    CONFIG_FLOAT_CREATURE_SWIM_START_DEPTH_FACTOR,
     CONFIG_FLOAT_VALUE_COUNT
 };
 

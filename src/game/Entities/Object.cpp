@@ -39,6 +39,7 @@
 #include "Maps/ObjectPosSelector.h"
 #include "Entities/TemporarySpawn.h"
 #include "Movement/packet_builder.h"
+#include "Movement/MoveSpline.h"
 #include "Entities/CreatureLinkingMgr.h"
 #include "Chat/Chat.h"
 #include "Loot/LootMgr.h"
@@ -204,6 +205,27 @@ void Object::BuildCreateUpdateBlockForPlayer(UpdateData* data, Player* target) c
 
 void Object::SendCreateUpdateToPlayer(Player* player) const
 {
+    // [SWIM-FIX 2026-10-03] create 块是客户端锚定"这只怪是否在游泳"的地方，所以**在构建之前**先把游泳
+    // 状态重新核一遍。
+    //
+    // 为什么需要：Creature::InitEntry 只在加载时按刷点判一次水（Creature.cpp:510-514，用的是
+    // TerrainInfo::IsSwimmable）。网格刚加载时地形/液体数据可能还没就绪，IsSwimmable 返回假，于是
+    // create 块里既没有 MOVEFLAG_SWIMMING 也没有 UNIT_FLAG_SWIMMING(0x8000) —— 同一个刷点、同一只怪，
+    // 不同次加载会发出**不同的 create 块**。
+    //
+    // 判据与每 tick 的维护完全同源（Unit::ShouldSwimAtCurrentPosition），因此不会与 Unit::Update 打架
+    // （它下一 tick 得出同样结论），也不会把浅水/水面上的怪误判成游泳。
+    if (GetTypeId() == TYPEID_UNIT)
+    {
+        Unit* unit = const_cast<Unit*>(static_cast<Unit const*>(this));
+        // 站立/刷新时原点用的是 DB 的 z（可能比"客户端会播游泳动作的深度"浅）-> 先沉到位，
+        // 再补游泳状态，这样 create 块一次就带全"在游泳 + 该在的深度"。
+        if (unit->movespline->Finalized())
+            unit->SinkToSwimOriginDepth(false);
+        if (!unit->m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING) && unit->ShouldSwimAtCurrentPosition())
+            unit->SetSwim(true);
+    }
+
     // send create update to player
     UpdateData updateData;
     BuildCreateUpdateBlockForPlayer(&updateData, player);
@@ -212,6 +234,21 @@ void Object::SendCreateUpdateToPlayer(Player* player) const
     {
         WorldPacket packet = updateData.BuildPacket(i);
         player->GetSession()->SendPacket(packet);
+    }
+
+    // [POS-SYNC 2026-10-03] create 里被剥掉 spline 的游泳怪（见 BuildMovementUpdate），客户端会把它
+    // 停在出现的位置上直到下一条移动包 —— 这里立刻用当前位置补一条移动包，位置从第一帧就是对的。
+    // 节流 2 秒（按怪记时，避免同一只被多个玩家陆续看见时反复重排移动）。
+    if (GetTypeId() == TYPEID_UNIT)
+    {
+        Unit* unit = const_cast<Unit*>(static_cast<Unit const*>(this));
+        Creature* creature = static_cast<Creature*>(unit);
+        if (unit->m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING) && unit->IsAlive() &&
+            !creature->HasRecentPosSync(2000))
+        {
+            creature->MarkPosSync();
+            unit->ResyncMovementToClients();
+        }
     }
 }
 
@@ -290,8 +327,33 @@ void Object::BuildMovementUpdate(ByteBuffer* data, uint8 updateFlags) const
         else
             const_cast<Unit*>(unit)->m_movementInfo.RemoveMovementFlag(MOVEFLAG_ONTRANSPORT);
 
-        // Write movement info
-        *data << unit->m_movementInfo;
+        // [SWIM-CREATE-NOSPLINE 2026-10-03 实验] 游泳怪（存活 + MOVEFLAG_SWIMMING）的 create 块里
+        // **不带内嵌 spline**，与实测"会正常游泳"的鱼保持一致。
+        //
+        // 依据（同一次抓包逐字节解码，见 dev/KNOWN_ISSUES.md 2026-10-03 节）：
+        //   · 纳迦 71576 首次出现的 create：moveFlags=0x08200101（含 SPLINE_ENABLED）、UNIT_FIELD_FLAGS
+        //     =0x8000、位置在水面下 2.66 码，**外加一条 flags=0x0 / dur=20344ms / 11 点的内嵌 spline**；
+        //   · 同场景会游泳的鱼（18212/18213）：create 的 moveFlags=0x00200100（SWIMMING|WALK_MODE），
+        //     **没有内嵌 spline**；
+        //   · 两者在字段位、速度、移动包标志（都 0x100[Runmode]）上完全一致 —— 包层面唯一的差别就是
+        //     "create 里带不带 spline"。
+        // 所以这里只剥掉 create 里那一段：标志位与数据同时去掉（否则客户端会错位解析），
+        // 客户端因此不会在 create 时进入"跟随 spline 播动作"的路径。生物的移动本身不受影响：
+        // 路径点生成器下一条 monster-move 照常发出。
+        bool const stripCreateSpline = (unit->GetTypeId() == TYPEID_UNIT) && unit->IsAlive() &&
+                                       unit->m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
+
+        if (stripCreateSpline)
+        {
+            MovementInfo movementInfoNoSpline(unit->m_movementInfo);
+            movementInfoNoSpline.RemoveMovementFlag(MOVEFLAG_SPLINE_ENABLED);
+            *data << movementInfoNoSpline;
+        }
+        else
+        {
+            // Write movement info
+            *data << unit->m_movementInfo;
+        }
 
         // Unit speeds
         *data << float(unit->GetSpeed(MOVE_WALK));
@@ -304,7 +366,7 @@ void Object::BuildMovementUpdate(ByteBuffer* data, uint8 updateFlags) const
         *data << float(unit->GetSpeed(MOVE_TURN_RATE));
 
         // 0x08000000
-        if (unit->m_movementInfo.GetMovementFlags() & MOVEFLAG_SPLINE_ENABLED)
+        if (!stripCreateSpline && (unit->m_movementInfo.GetMovementFlags() & MOVEFLAG_SPLINE_ENABLED))
             Movement::PacketBuilder::WriteCreate(*unit->movespline, *data);
     }
     // 0x40

@@ -1139,6 +1139,25 @@ class Unit : public WorldObject
         void CleanupsBeforeDelete() override;               // used in ~Creature/~Player (or before mass creature delete to remove cross-references to already deleted units)
 
         float GetCollisionHeight() const override;
+        // [SWIM/AIR HEIGHT 2026-10-03] Model-based vertical placement (operator-confirmed as correct):
+        //   GetSwimSurfaceDepth()   - how deep a swimming model's origin sits below the water surface
+        //   GetAirGroundClearance() - clearance kept above the floor for an airborne flyer
+        //   GetSwimStartDepth()     - water depth at which the unit starts swimming
+        // All three derive from the model's collision height and the matching Creature.* factor (0 = legacy fixed).
+        float GetSwimSurfaceDepth() const;
+        float GetAirGroundClearance() const;
+        float GetSwimStartDepth() const;
+        // [SWIM-CRITERION 2026-10-03] 当前位置该不该游泳（水深 vs 碰撞高度 + 水面迟滞）。
+        // Unit::Update 的每 tick 维护与 Object::SendCreateUpdateToPlayer 的 create 前状态修正共用。
+        // 两个可选输出参数返回该点的液面高度与静态地面高度（供调用方算游泳深度）。
+        bool ShouldSwimAtCurrentPosition(float* outWaterLevel = nullptr, float* outGround = nullptr) const;        // [SWIM-ORIGIN 2026-10-03] 把"游泳中"的原点压到客户端会播游泳动作的深度
+        // （waterLevel - GetSwimSurfaceDepth()）。返回是否真的动了。见 Unit.cpp 里的实测数据。
+        bool SinkToSwimOriginDepth(bool sendMove);
+        // [POS-SYNC 2026-10-03] 让客户端重新按服务器位置摆放这只生物：以它当前 spline 的终点重新发一条
+        // monster-move（从当前位置出发，所以不会跳）。用于 create 里被剥掉 spline 的游泳怪（客户端会
+        // 停在出现的位置上）以及其它需要定期纠正客户端位置的情形。返回是否真的发了。
+        bool ResyncMovementToClients();
+
         float GetCollisionWidth() const override;
         float GetObjectBoundingRadius() const override { return m_floatValues[UNIT_FIELD_BOUNDINGRADIUS]; } // overwrite WorldObject version
         float GetCombatReach() const override { return m_floatValues[UNIT_FIELD_COMBATREACH]; } // overwrite WorldObject version
