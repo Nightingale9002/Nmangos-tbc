@@ -1025,12 +1025,14 @@ speeds    = walk 2.5 / run 7.0 / run_back 4.5 / swim 4.722 / ...
 1. `Object::BuildMovementUpdate`：**存活的游泳怪**（`IsAlive() && MOVEFLAG_SWIMMING`）的 create 块里
    **不写内嵌 spline**（同时把 `MOVEFLAG_SPLINE_ENABLED` 从写出的移动标志里去掉，否则客户端错位解析）。
    生物的移动本身不受影响，路径点生成器下一条 monster-move 照常发。
-2. `Unit::ResyncMovementToClients()` + 两处调用（create 之后立刻一次、`Creature::Update` 里对游泳怪每
-   5 秒一次）：用**当前位置**向其 spline 终点补发一条 monster-move，把客户端模型钉回服务器位置。
+2. `Unit::ResyncMovementToClients()` + 两处调用（create 之后立刻一次、`Creature::Update` 里对"存活的、正在移动的游泳怪"每 5 秒一次）：
+   用**当前位置**向其 spline 终点补发一条 monster-move，把客户端模型钉回服务器位置。
    这一步是必需的副作用修补：剥掉 spline 后客户端在 create 时不知道它在动，路径点怪一条 spline 可长
    达 20 秒，会出现"服务器走远了、客户端还在原地"（站长报的"位置对不上"）。
    注意：这条重发是"直线奔向原终点"，剩余路径若要绕障碍会抄一次近路，所以只对游泳怪做
    （z 会被水路钳制在水体带内）。
+   5 秒那一档是 2026-10-04 加的：当天先在本地做过一轮对比（同一只纳迦走一圈），站长目视认为
+   "比只在 create 后补一次更有效"，于是保留并随下一次夜间窗口上线。
 3. 前面的 create 前状态修正（`ShouldSwimAtCurrentPosition()` 与每 tick 判据同源）、尸体跳过游泳维护、
    复活时补发一次 `SetSwim(true)` 都保留：它们让 create 的游泳位正确、且不在尸体上乱发包。
 

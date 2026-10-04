@@ -913,6 +913,30 @@ void Creature::Update(const uint32 diff)
         default:
             break;
     }
+
+    // [POS-SYNC-5S 2026-10-04] 移动中每 5 秒把服务器位置重新钉给客户端。
+    //
+    // 为什么需要：create 里被剥掉内嵌 spline 的游泳怪，客户端在两次移动包之间可能停在旧位置（路径点怪
+    // 一条 spline 可长达 20 秒）。只补 create 后那一次不够，移动中再定期钉一次，位置才跟得上。
+    //
+    // 代价（写在这里备查）：每次纠偏都是"从当前位置直线奔向它原定终点"，若剩余路径本来要绕障碍，会抄一次
+    // 近路。所以只对存活的、正在移动的游泳怪做（z 会被水路钳制在水体带内），且只在有玩家看得见它时才发。
+    //
+    // 本地对比（2026-10-04，同一只纳迦走一圈）：站长目视认为位置比"只在 create 后补一次"更贴合。
+    if (IsAlive() && IsInWorld() && m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING) &&
+        movespline && !movespline->Finalized() && !HasRecentPosSync(5000))
+    {
+        for (const auto& itr : GetMap()->GetPlayers())
+        {
+            Player* player = itr.getSource();
+            if (player && player->HasAtClient(this))
+            {
+                MarkPosSync();
+                ResyncMovementToClients();
+                break;
+            }
+        }
+    }
 }
 
 void Creature::RegenerateAll(uint32 diff)
