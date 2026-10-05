@@ -8547,3 +8547,55 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 
 
 
+
+
+---
+
+## [任务] 2026-10-05 追加：Exarch Nasuun(24932) 对话「问句 ↔ 子菜单」错位 + 补 12302/12303 —— 云端已写库，等下一次重启生效
+
+（本章是 2026-08-30「Exarch Nasuun(24932) 缺失对话补全」那章的续篇：上次处理的是 12300/12301 的**文本来源**，这次修的是**选项跳转**。文中含一条我当日自我更正的错误推断，保留过程是为了后面别再犯。）
+
+### 现象
+站长反馈 24932 的 gossip **答非所问**：选"港口"那句问句，答出来的却是另一段（对应关系见下表，由库表核对确定）。我另外"推测还有两条选项是空白"——**这条推测后来被源码与库表证伪，见下面「当日更正」**。
+
+### 定位（库表逐行核对 + AzerothCore 对照，未做任何猜测性改动）
+- gossip 纯数据库驱动：`npc_suns_reach_reclamation` 只有 `pQuestRewardedNPC`；menu 9046 所有选项 `action_script_id = 0`，也**没有** gossip 脚本 ⇒ 只可能是库数据。
+- menu 9046 现状（`dev/135` 于 2026-09-29 调过选项顺序之后）：
+
+  | id | option_broadcast_text | 条件 | action_menu_id | 落到正文 | 对不对 |
+  | --- | --- | --- | --- | --- | --- |
+  | 1 | 24227（港口问句） | 10306 Phase 3 Only | 51001 | 12301（铁砧） | ✗ 答非所问 |
+  | 2 | 24224（铁砧问句） | 10308 No Anvil | 51002 | 12302（港口） | ✗ 答非所问 |
+
+- AzerothCore 权威写法：它的 option1 = 24224 → 51001 → 12301（条件 event 108），option2 = 24227 → 51002 → 12302（event 106）；AC 的 102/106/108/113 与本库 302/306/308/313 **描述逐字相同**。
+  ⇒ 结论：我们的**问句与条件本来是对的，只有 `action_menu_id` 这两跳被互换了**（不是条件挂错，也不是顺序问题）。
+- ⚠️ **当日更正（源码级，2026-10-05，我自己的错误推断作废）**：我最初以为"另两条答句是空白，因为 `npc_text` 里没有 12302（阳湾港口）/ 12303（炼金实验室）两行"。**这个推断是错的。**
+  - 本服 gossip 正文真正走的是 `npc_text_broadcast_text` → `broadcast_text`：`ObjectMgr.cpp:6191-6209` 写明，某个 npc_text id 在 `npc_text_broadcast_text` 里有行且能解析到 broadcast_text 时，会把 `npc_text` 那行的 `Text_0/Text_1` **清空**、改为存 `broadcastTextId` 在运行期解析。
+  - 实测（本地库与云库一致）：`npc_text_broadcast_text` 12300–12303 四行齐备（→ 24223 / 24225 / 24228 / 24230），`broadcast_text` 有英文原文，`broadcast_text_locale.Locale='zhCN'` 有中文 ⇒ **四条答句本来就能正常显示，不存在"空白"问题**。
+  - 启动日志那四行 `ERROR:Table npc_text_broadcast_text has record in npc_text (ID 1230x) as well. Overwriting.` 就是这次覆盖动作的现场记录（12300/12301 早就有；12302/12303 是本次补完 `npc_text` 行之后才出现）。
+  - 教训（写进协作纪律的口径）：**"表里缺行"不等于"游戏里看不到"，尤其是本服有 broadcast_text 旁路时**——下判断前先把"谁真正决定显示"这条链读通。
+
+### 修复（追加进 `dev/135_纳苏恩对话顺序_修正.sql` 末尾，2026-10-05；按站长要求"直接把新 SQL 追加到后面"）
+1. **交换两跳（这才是真凶的对症修复）**，旧值守卫、可重复执行：id1 `action_menu_id 51001 → 51002`；id2 `51002 → 51001`。**问句、条件、选项顺序一律不动。**
+2. 兜底补行：`npc_text` 12302 / 12303 的英文原文（与 `acore_world`、`classicmangos_ref` 一致）+ `locales_npc_text.Text0_0_loc4` = 台服中文。⚠️ **按上面「当日更正」，这两行在运行期会被 broadcast_text 侧覆盖，属于无害的兜底（Belt & Braces）**，不承担功能；之所以仍然保留，是因为它与 broadcast_text 的英文逐字一致，且万一将来 `npc_text_broadcast_text` 被清掉还能显示。写之前先比对云上原有 locale 行的 **md5（`d9994c34…` / `fb5324f6…`）逐字节相同**，确认没有覆盖云上的原始中文。
+3. 一律先 `DELETE` 再 `INSERT`，规避 `locales_npc_text` **无主键**的重复行（2026-08-30 记过的老坑）；本次顺带把本地 12302/12303 各 5 条重复 locale 行收敛成 1 条。
+
+### 生效方式
+- `gossip_menu_option` / `npc_text` 只在**服务端启动时**载入 ⇒ 本地起服即生效；不重启的话要 `.reload gossip_menu_option` + `.reload npc_text`。
+- 云端按 P0 **不用 `.reload`**，本次为**手工写库**，**随下一次夜间重启（04:06）生效**。
+
+### 云端写库过程与证据（2026-10-05 22:5x）
+- 写前只读核对：云库 menu 9046 五行 `(id, broadcast, action_menu, condition)` 与本地**修改前完全一致**；云库 marker = `152` ⇒ `135` 早就被 `apply_dev_sql.sh` 应用过，而该 applier **只前进不回退**，所以**追加段不会被 applier 重跑**（这也是本次必须手工写库的原因）。
+- 备份 → 应用 → 复核：`/root/backup_20261005_nasuun_{menu9046,npctext,locales}.sql`；复核结果 `1 → (24227, 51002, 10306)`、`2 → (24224, 51001, 10308)`、`npc_text` 12302/12303 已出现、`locales_npc_text` 12300–12303 各 1 行。
+- 源码树副本：`/root/Nmangos-tbc/dev/135_纳苏恩对话顺序_修正.sql` 同步后 md5 `340d4b4ea8ad5d2e754dcdc3f084ae74`（与本地一致）。
+- 云库显示链复核（本次真正承重的表）：`npc_text_broadcast_text` 12300–12303 四行齐备；`broadcast_text` 24228/24230 英文在；`broadcast_text_locale.zhCN` 24222–24231 **十条全在** ⇒ 答句与中文都不会缺。
+
+### 验证（说到做到，不夸大）
+- **库层面：已核对通过**（上面两段 SELECT 的实际输出，云库与本地库两侧都看过）。
+- **游戏内：未验证**。等下次重启后请站长看一眼即可：选"港口"问句答港口那段、选"铁砧"问句答铁砧那段（顺带看中文是否正常）。
+- 本机：改动已写进本地库，mangosd 于 22:51 重启（`CMANGOS: World initialized` 已见、8086 在听），可用 GM 号直接点 24932 复看。
+
+### 待办 / 残留
+- `dev/rollback/135_回滚_纳苏恩对话顺序.sql` 末尾已追加反向语句（两条反向 UPDATE + 删除 12302/12303）。
+- 按纪律：**站长游戏内验收通过后，删除该回滚件**，保持工作区干净。
+- 台服译名（日境/链金/玛纳）沿用库里既有风格，未改写；若要国服风格需单独立项。

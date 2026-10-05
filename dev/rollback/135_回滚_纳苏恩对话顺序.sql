@@ -20,3 +20,24 @@ PREPARE r3 FROM @r3; EXECUTE r3; DEALLOCATE PREPARE r3;
 
 -- 核对：期望 1→10308、2→10306（回到原状）
 SELECT `id`, `condition_id` FROM `tbcmangos`.`gossip_menu_option` WHERE `menu_id` = 9046 ORDER BY `id`;
+
+
+-- =====================================================================================
+-- 追加回滚（2026-10-04 那一段）：撤销「action_menu_id 两跳交换」+ 删掉补进去的 12302/12303
+-- 反向守卫：只有仍是"修好后"的值才改回去。
+-- 注意：npc_text 12302/12303 与 locales_npc_text 对应行**本来就是缺的**（12302/12303 主表无行、
+--       locale 各有 5 条重复行），所以这里直接删除即为"回到原状"，不会丢原有数据。
+-- =====================================================================================
+
+UPDATE `tbcmangos`.`gossip_menu_option` SET `action_menu_id` = 51001
+ WHERE `menu_id` = 9046 AND `id` = 1 AND `action_menu_id` = 51002;
+
+UPDATE `tbcmangos`.`gossip_menu_option` SET `action_menu_id` = 51002
+ WHERE `menu_id` = 9046 AND `id` = 2 AND `action_menu_id` = 51001;
+
+DELETE FROM `tbcmangos`.`npc_text` WHERE `ID` IN (12302, 12303);
+DELETE FROM `tbcmangos`.`locales_npc_text` WHERE `entry` IN (12302, 12303);
+
+SELECT `id`, `option_broadcast_text`, `action_menu_id`, `condition_id`
+  FROM `tbcmangos`.`gossip_menu_option` WHERE `menu_id` = 9046 ORDER BY `id`;
+SELECT COUNT(*) AS npc_text_12302_12303 FROM `tbcmangos`.`npc_text` WHERE `ID` IN (12302, 12303);

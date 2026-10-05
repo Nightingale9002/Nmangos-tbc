@@ -1153,6 +1153,12 @@ class Unit : public WorldObject
         bool ShouldSwimAtCurrentPosition(float* outWaterLevel = nullptr, float* outGround = nullptr) const;        // [SWIM-ORIGIN 2026-10-03] 把"游泳中"的原点压到客户端会播游泳动作的深度
         // （waterLevel - GetSwimSurfaceDepth()）。返回是否真的动了。见 Unit.cpp 里的实测数据。
         bool SinkToSwimOriginDepth(bool sendMove);
+        // [SWIM-DEPTH-ADAPTIVE 2026-10-04] 按该点"实际水深"算游泳深度：水浅时只浮在水面下一点点，
+        // 水够深才用设定值 GetSwimSurfaceDepth()。修复"固定深度与水线冲突"——浅水处被顶回水面
+        // （于是没有游泳动作、看着像走水面），以及入水/出水时 z 跳档。
+        // 依据（71558 的 PFDBG 逐点日志）：水里那些路径点原始 z=19.02（比水面还高 0.75），被按到 15.14
+        // （固定 3.12 码深），跨水线一步就掉 3.9 码。
+        float GetSwimDepthForWaterDepth(float waterDepth) const;
         // [POS-SYNC 2026-10-03] 让客户端重新按服务器位置摆放这只生物：以它当前 spline 的终点重新发一条
         // monster-move（从当前位置出发，所以不会跳）。用于 create 里被剥掉 spline 的游泳怪（客户端会
         // 停在出现的位置上）以及其它需要定期纠正客户端位置的情形。返回是否真的发了。

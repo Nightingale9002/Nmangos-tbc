@@ -164,11 +164,16 @@ namespace Movement
                         float const lo = groundZ + 0.5f;
                         // [SWIM/AIR HEIGHT 2026-10-03] model-derived surface margin (was a fixed 1.5 yd): the client poses the
                         // swimming model around the position we send, so a tall naga needs a deeper origin than a small fish.
-                        float const hi = waterLevel - unit.GetSwimSurfaceDepth();
+                        // [SWIM-DEPTH-ADAPTIVE 2026-10-04] 但**不能对浅水也用这个固定深度**：水深不够时
+                        // "水面 - 固定深度"会落到水底以下，夹取退化，原来的兜底是把点钉回水面高度 ——
+                        // 于是怪贴在水面上、又因为游泳标记在那种水深不成立，客户端就成了"走水面"（没有游泳
+                        // 动作）；跨水线那一步还会从 ~19.0 直接掉到 15.14（实测 3.9 码，入水/出水看着猛沉）。
+                        // 改成按该点实际水深自适应：浅水只浮在水面下一点点，水够深才用设定深度。
+                        float const hi = waterLevel - unit.GetSwimDepthForWaterDepth(waterLevel - groundZ);
                         if (lo <= hi)
                             p.z = std::max(lo, std::min(p.z, hi));
                         else
-                            p.z = std::min(lo, waterLevel);        // shallow: walk floor / skim surface
+                            p.z = std::min(lo, waterLevel);        // 水深 < 0.5 码：贴底/擦水面（极端浅滩）
                     }
                     PFDBG_MSG(&unit, "MoveSplineInit water-rewrite pt(%.8f,%.8f) origZ=%.8f -> newZ=%.8f groundZ=%.8f waterLevel=%.8f walkInWater=%d canSwim=%d",
                               p.x, p.y, origZ, p.z, groundZ, waterLevel, walkInWater ? 1 : 0, canSwim ? 1 : 0);
