@@ -1061,6 +1061,42 @@ void PathFinder::BuildPointPath(const float* startPoint, const float* endPoint)
             }
 
             // last point
+            // [PATH-END-SNAP 2026-10-06] 上面的循环给**每一个中间点**都补了 mmap 面高度，
+            // 只有终点是直接塞请求值的。追击时"请求的终点"就是被追者当前的 z，于是
+            // 目标悬空/上一状态残留的高 z 会原样进入路径，客户端把那个高度当"地面"走：
+            // 实测 Slave Pens 水池里的 Bogstrok 稳定停在水面上方 ~3 码
+            // （PathFinder 日志 `FINAL pt2 z=0.19376564`，而该点 mmap 面（水面）是 -2.84、
+            // floorZ -4.23），并且会自我维持、传染给追它的其它单位。
+            // 这里只做一件事：给终点补同一套贴面。门槛刻意收窄，避免把本来该在空中的移动拽下来：
+            //   · 只处理**生物**（玩家的 z 由客户端决定，不动）
+            //   · 排除会飞/带空中标记的（模板 INHABIT_AIR 或已 SetLevitate）
+            //   · 排除**当前就在空中**的单位（"地面模板但会飞"的龙鹰等，其追击/飞行靠
+            //     MoveSplineInit 的 [FLY-FLAG] 依终点判定，终点一旦被贴地就会不再起飞）
+            // 判定阈值沿用全局的 CREATURE_AIRBORNE_TOLERANCE（4 码），与 airborne 逻辑同口径。
+            if (m_sourceUnit && m_sourceUnit->GetTypeId() == TYPEID_UNIT && !m_sourceUnit->IsLevitating())
+            {
+                Creature const* endSnapCreature = static_cast<Creature const*>(m_sourceUnit);
+                if ((endSnapCreature->GetCreatureInfo()->InhabitType & INHABIT_AIR) == 0 &&
+                    !endSnapCreature->IsAirbornePosition(endSnapCreature->GetPositionX(),
+                                                         endSnapCreature->GetPositionY(),
+                                                         endSnapCreature->GetPositionZ()))
+                {
+                    float endSnapPoint[3] = {endVec.y, endVec.z, endVec.x};
+                    float endSnapDistance = 0.0f;
+                    dtPolyRef endSnapPoly = getPolyByLocation(endSnapPoint, &endSnapDistance);
+                    if (endSnapPoly != INVALID_POLYREF)
+                    {
+                        float endSnapZ = endVec.z;
+                        if (dtStatusSucceed(m_navMeshQuery->getPolyHeight(endSnapPoly, endSnapPoint, &endSnapZ)) &&
+                            std::fabs(endSnapZ - endVec.z) > 0.01f)
+                        {
+                            PFDBG_MSG(m_sourceUnit, "PATH-END-SNAP last point z=%.4f -> %.4f (poly %u)",
+                                      endVec.z, endSnapZ, uint32(endSnapPoly));
+                            endVec.z = endSnapZ;
+                        }
+                    }
+                }
+            }
             m_pathPoints.push_back(endVec);
             pointCount = static_cast<uint32>(m_pathPoints.size());
 
