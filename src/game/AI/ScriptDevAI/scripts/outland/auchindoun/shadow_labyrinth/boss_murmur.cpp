@@ -86,6 +86,9 @@ struct boss_murmurAI : public CombatAI
     {
         if (eventType == AI_EVENT_CUSTOM_A)
         {
+            // [SL-MURMUR 2026-10-06] 定向诊断：门开事件是否真的到达 Murmur（若没到，则两个击杀动作永远不会被激活）
+            sLog.outError("[SL-MURMUR] AI_EVENT_CUSTOM_A received: alive=%u incombat=%u ooc=%u",
+                          m_creature->IsAlive() ? 1 : 0, m_creature->IsInCombat() ? 1 : 0, m_creature->IsInCombat() ? 0 : 1);
             // Murmur can cast Supression Blast first after door opens
             // resulting in a higher timer to kill the 2 Spellbinders that run out of the room
             ResetTimer(MURMUR_INTRO_KILL_01, urand(0, 5000));
@@ -96,23 +99,39 @@ struct boss_murmurAI : public CombatAI
     }
 
     // After door opens 2 Cabal Spellbinder run out of the room, both get killed from murmur individually
+    // [SL-MURMUR 2026-10-06] 定向诊断：打印 string_id 命中的目标数、每个目标的存活/距离与施法返回值
+    //   （DoCastSpellIfCan 失败会静默返回错误码，而且这两个动作是一次性的、不会重试）
     void HandleIntroKill01()
     {
         std::vector<Creature*> const* killTarget = m_creature->GetMap()->GetCreatures(MURMURS_WRATH_TARGETS_01);
+        sLog.outError("[SL-MURMUR] INTRO_KILL_01 fired: incombat=%u targets=%u",
+                      m_creature->IsInCombat() ? 1 : 0, killTarget ? uint32(killTarget->size()) : 0);
         if (killTarget)
         {
             for (Creature* creature : *killTarget)
-                DoCastSpellIfCan(creature, SPELL_MURMURS_WRATH);
-        }       
+            {
+                CanCastResult result = DoCastSpellIfCan(creature, SPELL_MURMURS_WRATH);
+                sLog.outError("[SL-MURMUR]   kill01 target guid=%u entry=%u alive=%u dist=%.1f result=%u",
+                              creature->GetGUIDLow(), creature->GetEntry(), creature->IsAlive() ? 1 : 0,
+                              m_creature->GetDistance(creature), uint32(result));
+            }
+        }
     }
 
     void HandleIntroKill02()
     {
         std::vector<Creature*> const* killTarget = m_creature->GetMap()->GetCreatures(MURMURS_WRATH_TARGETS_02);
+        sLog.outError("[SL-MURMUR] INTRO_KILL_02 fired: incombat=%u targets=%u",
+                      m_creature->IsInCombat() ? 1 : 0, killTarget ? uint32(killTarget->size()) : 0);
         if (killTarget)
         {
             for (Creature* creature : *killTarget)
-                DoCastSpellIfCan(creature, SPELL_MURMURS_WRATH);
+            {
+                CanCastResult result = DoCastSpellIfCan(creature, SPELL_MURMURS_WRATH);
+                sLog.outError("[SL-MURMUR]   kill02 target guid=%u entry=%u alive=%u dist=%.1f result=%u",
+                              creature->GetGUIDLow(), creature->GetEntry(), creature->IsAlive() ? 1 : 0,
+                              m_creature->GetDistance(creature), uint32(result));
+            }
         }
     }
 

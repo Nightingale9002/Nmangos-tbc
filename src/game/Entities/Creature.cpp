@@ -882,8 +882,20 @@ void Creature::Update(const uint32 diff)
             // creatures keep the old corpse-gated revival, their 25s default respawn delay is not
             // a real spawn timer. Creatures whose corpse must persist on purpose
             // (FOREVER_CORPSE_DURATION) are never touched either.
+            // [DYNGUID-CORPSE 2026-10-06] 新增第三种情形：新刷新系统（GetDbGuid() != GetGUIDLow()，即刷怪组成员）
+            // 在死亡时把 m_respawnTime 设成 numeric_limits<time_t>::max() 哨兵（Creature.cpp:2140），
+            // 真正的刷新计划存在 persistent state 的 CreatureRespawnTime 里 —— 于是上面那条"排定时间已过"
+            // 判据**永远不成立**，尸体只能等 m_corpseDelay 自然腐烂。尸体横在世界上期间，刷怪组无法重建该槽位
+            // （SpawnGroup.cpp:297-305 的守卫："槽位里还有对象就不重新生成"），表现就是整组"不刷新"：
+            // 实测破碎大厅 Legionnaire 001 身边那组（spawntimesecs=5，普通 5400002 / 英雄 5400003）从不回来。
+            // 这里把 persistent 里的排定时间也纳入判据（仅静态 DB 刷点、且确实存在一个已到期的非零时间）。
+            time_t savedRespawnTime = 0;
+            if (HasStaticDBSpawnData() && IsUsingNewSpawningSystem())
+                savedRespawnTime = GetMap()->GetPersistentState()->GetCreatureRespawnTime(GetDbGuid());
+
             if (IsCorpseExpired() ||
-                (HasStaticDBSpawnData() && m_respawnTime && m_respawnTime <= time(nullptr) && !GetSettings().HasFlag(CreatureStaticFlags3::FOREVER_CORPSE_DURATION)))
+                (HasStaticDBSpawnData() && m_respawnTime && m_respawnTime <= time(nullptr) && !GetSettings().HasFlag(CreatureStaticFlags3::FOREVER_CORPSE_DURATION)) ||
+                (savedRespawnTime && savedRespawnTime <= time(nullptr) && !GetSettings().HasFlag(CreatureStaticFlags3::FOREVER_CORPSE_DURATION)))
                 RemoveCorpse();
 
             break;

@@ -53,6 +53,7 @@
 #include "BattleGround/BattleGroundMgr.h"
 #include "Maps/MapPersistentStateMgr.h"
 #include "Maps/InstanceData.h"
+#include "Maps/SpawnGroup.h"
 #include "Server/DBCStores.h"
 #include "AI/EventAI/CreatureEventAIMgr.h"
 #include "Server/SQLStorages.h"
@@ -5701,13 +5702,22 @@ bool ChatHandler::HandleRespawnCommand(char* /*args*/)
             Creature* creature = static_cast<Creature*>(target);
             if (target->IsUsingNewSpawningSystem())
             {
-                if (!creature->GetCreatureGroup())
+                // [RESPAWN-FIX 2026-10-06] 选中目标的这条路上，"组怪"原来什么都不做 —— 而副本里的生物
+                // 绝大多数都是刷怪组（spawn_group）成员，于是 .respawn 对它们完全无效（站长实测）。
+                // 约定见 Creature::SetDeathState（Creature.cpp:2143-2149）：组员的刷新时间由刷怪组逻辑消费，
+                // 所以这里把该槽位的刷新时间重置为"现在"，并让所在组立刻补刷。
+                // 顺序很重要：必须先清掉选中这具尸体，否则 SpawnGroup::Spawn 会因为"槽位里还有对象"跳过它
+                // （SpawnGroup.cpp:297-305 的反闪烁守卫）；清掉之后组的下一次 Update 就会把整只补出来。
+                if (CreatureGroup* group = creature->GetCreatureGroup())
                 {
-                    if (creature->GetMap()->GetMapDataContainer().GetSpawnGroupByGuid(creature->GetDbGuid(), TYPEID_UNIT))
-                        target->GetMap()->GetPersistentState()->SaveCreatureRespawnTime(target->GetDbGuid(), time(nullptr));
-                    else
-                        target->GetMap()->GetSpawnManager().RespawnCreature(target->GetDbGuid(), 0);
+                    creature->ForcedDespawn();
+                    target->GetMap()->GetPersistentState()->SaveCreatureRespawnTime(target->GetDbGuid(), time(nullptr));
+                    group->Spawn(true, true); // 忽略刷新时间与 m_enabled；worldstate 条件仍会拦截（SpawnGroup.cpp:181）
                 }
+                else if (creature->GetMap()->GetMapDataContainer().GetSpawnGroupByGuid(creature->GetDbGuid(), TYPEID_UNIT))
+                    target->GetMap()->GetPersistentState()->SaveCreatureRespawnTime(target->GetDbGuid(), time(nullptr));
+                else
+                    target->GetMap()->GetSpawnManager().RespawnCreature(target->GetDbGuid(), 0);
             }
             else
                 creature->Respawn();

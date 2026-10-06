@@ -390,6 +390,11 @@ void GameObject::Update(const uint32 diff)
                     m_respawnTime = 0;
                     ClearAllUsesData();
 
+                    // [GO-NODESPAWN 2026-10-06] 定向诊断：重生计时到点
+                    if (GetGOInfo()->flags & GO_FLAG_NODESPAWN)
+                        sLog.outError("[GO-NODESPAWN] respawn timer expired guid=%u entry=%u state=%u spawnedByDefault=%u",
+                                      GetDbGuid(), GetEntry(), GetGoState(), m_spawnedByDefault ? 1 : 0);
+
                     switch (GetGoType())
                     {
                         case GAMEOBJECT_TYPE_FISHINGNODE:   // can't fish now
@@ -428,6 +433,8 @@ void GameObject::Update(const uint32 diff)
                             }
 
                             // respawn timer
+                            if (GetGOInfo()->flags & GO_FLAG_NODESPAWN)
+                                sLog.outError("[GO-NODESPAWN] re-added to map guid=%u entry=%u", GetDbGuid(), GetEntry());
                             GetMap()->Add(this);
                             AIM_Initialize();
                             break;
@@ -577,6 +584,13 @@ void GameObject::Update(const uint32 diff)
         case GO_JUST_DEACTIVATED:
         {
             sWorldState.HandleGameObjectRevertState(this);
+
+            // [GO-NODESPAWN 2026-10-06] 定向诊断：这条决定了"门消失后还会不会回来"
+            if (GetGOInfo()->flags & GO_FLAG_NODESPAWN)
+                sLog.outError("[GO-NODESPAWN] deactivated guid=%u entry=%u type=%u staticDbSpawn=%u newSpawningSystem=%u respawnDelay=%u goFlags=0x%X goState=%u animProgress=%u",
+                              GetDbGuid(), GetEntry(), GetGoType(), HasStaticDBSpawnData() ? 1 : 0,
+                              IsUsingNewSpawningSystem() ? 1 : 0, m_respawnDelay,
+                              GetUInt32Value(GAMEOBJECT_FLAGS), GetGoState(), GetGoAnimProgress());
 
             // If nearby linked trap exists, despawn it
             if (GameObject* linkedTrap = GetLinkedTrap())
@@ -1364,6 +1378,11 @@ void GameObject::ResetDoorOrButton(Unit* user/*= nullptr*/)
     SwitchDoorOrButton(false);
     SetLootState(GO_JUST_DEACTIVATED, user);
     m_cooldownTime = 0;
+
+    // [GO-NODESPAWN 2026-10-06] 定向诊断：自动关门（5 秒后）这一跳是否发生
+    if (GetGOInfo()->flags & GO_FLAG_NODESPAWN)
+        sLog.outError("[GO-NODESPAWN] auto-close guid=%u entry=%u state=%u loot=%u",
+                      GetDbGuid(), GetEntry(), GetGoState(), m_lootState);
 }
 
 void GameObject::UseOpenableObject(bool open, uint32 withRestoreTime /*=0*/, bool useAlternativeState /*=false*/)
@@ -1398,10 +1417,18 @@ void GameObject::UseDoorOrButton(uint32 time_to_restore, bool alternative /* = f
     if (!time_to_restore)
         time_to_restore = GetGOInfo()->GetAutoCloseTime();
 
+    // [GO-NODESPAWN 2026-10-06] 定向诊断：门口钥匙门（如破碎大厅 184912）开一次就不回来 —— 追状态迁移
+    uint32 const prevState = GetGoState();
+    uint32 const prevLoot = m_lootState;
+
     SwitchDoorOrButton(true, alternative);
     SetLootState(GO_ACTIVATED);
 
     m_cooldownTime = time(nullptr) + time_to_restore;
+
+    if (GetGOInfo()->flags & GO_FLAG_NODESPAWN)
+        sLog.outError("[GO-NODESPAWN] use  guid=%u entry=%u restore=%us state=%u->%u loot=%u->%u",
+                      GetDbGuid(), GetEntry(), time_to_restore, prevState, GetGoState(), prevLoot, m_lootState);
 }
 
 void GameObject::SwitchDoorOrButton(bool activate, bool alternative /* = false */)

@@ -291,6 +291,19 @@ struct boss_vazruden_heraldAI : public CombatAI
         if (summoned->GetEntry() != NPC_VAZRUDEN)
             return;
 
+        // [VAZRUDEN-GROUND 2026-10-06] 法术 30717「Summon Vazruden」的落点目标是
+        // TARGET_LOCATION_UNIT_MINION_POSITION(32)，本核心的实现等于"施法者位置"（Spell.cpp:1902/1922），
+        // 而使者此刻正悬停在投放点（空中 z≈89~91）⇒ Vazruden 会生成在半空并一直飘在那里（真机实测 z=91.09、
+        // 脚下 WMO 地板 81.11、该点连导航面都没有）。这里把他贴到脚下地面并重设刷新点，
+        // 让他像正式战斗那样站在院子里；地面高度取自 vmap（GetHeightInRange 会与 .map 地形取较高者）。
+        float groundZ = summoned->GetPositionZ();
+        if (summoned->GetMap()->GetHeightInRange(summoned->GetPositionX(), summoned->GetPositionY(), groundZ, 30.0f)
+            && groundZ < summoned->GetPositionZ() - 0.5f)
+        {
+            summoned->NearTeleportTo(summoned->GetPositionX(), summoned->GetPositionY(), groundZ, summoned->GetOrientation());
+            summoned->SetRespawnCoord(summoned->GetPositionX(), summoned->GetPositionY(), groundZ, summoned->GetOrientation());
+        }
+
         summoned->SetInCombatWithZone();
 
         m_vazrudenGuid = summoned->GetObjectGuid();
