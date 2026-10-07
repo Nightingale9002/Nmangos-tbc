@@ -539,30 +539,6 @@ void Unit::Update(const uint32 diff)
         bool const swimming = m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
         bool const wantSwim = ShouldSwimAtCurrentPosition();
 
-        // [SWIM-TRACE 本地临时 2026-10-04，不进云端] 记录纳迦家族(20088/20089)的游泳状态翻转及其判据输入，
-        // 用来查"入水时游泳动作切换奇怪"到底发生在哪一步。定位完就删。
-        if ((GetEntry() == 20088 || GetEntry() == 20089) && swimming != wantSwim)
-        {
-            static std::mutex s_traceLock;
-            static uint32 s_traceCount = 0;
-            bool report = false;
-            {
-                std::lock_guard<std::mutex> guard(s_traceLock);
-                report = (s_traceCount++ < 300);
-            }
-            if (report)
-            {
-                float liquidBottom = INVALID_HEIGHT;
-                float const waterLevel = GetMap()->GetTerrain()->GetWaterLevel(GetPositionX(), GetPositionY(),
-                                                                               GetPositionZ(), &liquidBottom);
-                sLog.outError("[SWIM-TRACE] guid=%u entry=%u %s -> %s z=%.2f WL=%.3f ground=%.3f depth=%.2f "
-                              "collH=%.2f startNeed=%.2f stopNeed=%.2f",
-                              GetGUIDLow(), GetEntry(), swimming ? "SWIM" : "walk", wantSwim ? "SWIM" : "walk",
-                              GetPositionZ(), waterLevel, liquidBottom, waterLevel - liquidBottom,
-                              GetCollisionHeight(), GetCollisionHeight(), GetSwimStartDepth());
-            }
-        }
-
         if (wantSwim)
         {
             if (!swimming)
@@ -12977,19 +12953,6 @@ bool Unit::SinkToSwimOriginDepth(bool sendMove)
     {
         // 让客户端跟着沉下去：一条正常的 monster-move，客户端把模型放到新位置并播游泳动作。
         // 位置由 spline 走完时同步，所以这里不再手动 Relocate（避免两套位置来源打架）。
-        if (GetEntry() == 20088 || GetEntry() == 20089)
-        {
-            static std::mutex s_sinkLock;
-            static uint32 s_sinkCount = 0;
-            bool report = false;
-            {
-                std::lock_guard<std::mutex> guard(s_sinkLock);
-                report = (s_sinkCount++ < 300);
-            }
-            if (report)
-                sLog.outError("[SWIM-TRACE] guid=%u entry=%u SINK %.2f -> %.2f (%.2f yd)", GetGUIDLow(), GetEntry(),
-                              GetPositionZ(), targetZ, GetPositionZ() - targetZ);
-        }
         Movement::MoveSplineInit init(*this);
         init.MoveTo(x, y, targetZ);
         init.SetWalk(true);
