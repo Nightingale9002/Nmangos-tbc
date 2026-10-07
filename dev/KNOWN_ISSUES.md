@@ -8822,3 +8822,35 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
   - 本地：执行成功，核对 0 行（原那行已自然到期）。
   - 云端 2026-10-07 11:2x：删掉 **1 行**（`guid=25826 entry=184912 map=530`，原定 10:59:01 到期）⇒ 门**立即**恢复；同表另一行 `guid=154239` 不属于门/按钮，按范围未动。mangosd **未重启**（PID 2050，起于当天 04:07:10 的夜间窗口）。
 - 通配分支（`!HasStaticDBSpawnData()` 的野生召唤门，`:669`）未改：那类对象要么没有静态刷点、要么 `m_forcedDespawn`，本次先不动。
+
+---
+
+## [机制] 水中移动：游泳深度改为**按实际水深自适应**（2026-10-04 本地改动；2026-10-07 剥诊断 + 同步到云）—— 2026-10-07
+
+### 这件事为什么单独记一笔
+2026-10-04 做的"游泳深度自适应"改完后**只在本地**（本地提交 `39854419a 修正水中移动动画`），云端源码一直是固定深度的老口径 —— 2026-10-07 同步破碎大厅门修复时，用 `_agent_tmp/_tree_cmp.py` 全树比对才发现这 3 个文件的差异。**教训**：源码同步必须跑全树比对（这条 2026-10-02 已写进流程），否则"本地修好、云端没生效"可以静默存在好几天。
+
+### 现象与根因
+- 原实现用**固定深度** `Unit::GetSwimSurfaceDepth()`（约 3.12~3.54 码）把游泳生物的 z 按到 `水面 - 固定深度`；
+- 水浅时这个值落到水底以下 ⇒ 夹取退化 ⇒ 原兜底把点**钉回水面高度**（`MoveSplineInit.cpp` 旧 `p.z = std::min(lo, waterLevel)`）⇒ 怪贴在水面上，而"游泳标记"在那种水深又不成立 ⇒ 客户端表现为**"走水面"**（没有游泳动作）；
+- 依据（71558 的 `[PFDBG]` 逐点日志）：水里那些路径点原始 `z=19.02`（比水面还高 0.75），被按到 `15.14`（固定 3.12 码深）⇒ **跨水线一步掉 3.9 码**，入水/出水看着猛沉。
+
+### 修法（3 个文件，成组生效）
+| 文件 | 改动 |
+|---|---|
+| `src/game/Entities/Unit.h` | 新增声明 `float GetSwimDepthForWaterDepth(float waterDepth) const;` |
+| `src/game/Entities/Unit.cpp` | 实现 `GetSwimDepthForWaterDepth()`：按该点实际水深算游泳深度 —— 水浅只浮在水面下一点点，够深才用设定值 |
+| `src/game/Movement/MoveSplineInit.cpp` | `float const hi = waterLevel - unit.GetSwimDepthForWaterDepth(waterLevel - groundZ);` 取代 `waterLevel - unit.GetSwimSurfaceDepth()`；水深 < 0.5 码的极端浅滩仍保留"贴底/擦水面"兜底 |
+
+### 顺带剥除的临时诊断（`d10c21ba2`）
+两处 `[SWIM-TRACE]`（纳迦 20088/20089 的游泳状态翻转 + `SINK` 落点），**代码里原本就标注"本地临时 2026-10-04，不进云端 … 定位完就删"**；同步前按标注剥掉（`Unit.cpp` −37 行），云端 `grep -c SWIM-TRACE` = **0** ✓，功能代码一字未动。
+
+### 同步与验证（2026-10-07）
+- 三个文件 scp 后 md5 双方一致：`Unit.cpp b22672ba5aff27fdba8859d4fca7ecf1`、`Unit.h cee2b9ecb649e7f0a351e6b2dc11448a`、`MoveSplineInit.cpp 92bd0e52a0ebf23e750f09d3de7d4946` ✓；
+- 云端 `GetSwimDepthForWaterDepth` 引用数 = `MoveSplineInit.cpp` 1 / `Unit.h` 1 / `Unit.cpp` 2 ✓（成组齐备）；
+- 本地 Release 0 error：`mangosd.exe` 2026-10-07 11:11:41，md5 `6f26ccac6cf5d55a79f06341f821e89b`，已放本地运行目录 `x64_Debug`；
+- 全树比对复核：`DIFFERENT` 仅剩 `CMakeLists.txt`（**故意不上传**：云端 Boost 1.66 动态版 / 仓库 1.70 静态版）✓；`ONLY ON CLOUD` 2 个 `.bak`（`RandomMovementGenerator.cpp.bak` / `WaypointMovementGenerator.cpp.bak`，历史残留，未处理）；
+- **云端未重启**（mangosd PID 2050，起于当天 04:07:10），随下一夜间构建（04:06）生效。
+
+### 游戏内验收口径
+入水/出水**不再猛沉**（跨水线 z 不再一步掉 3~4 码）；浅水区的游泳生物**有游泳动作**（不再"走水面"）；深水区的表现与改动前一致（仍用设定深度）。相关背景见上文"水移动系统"章（`GetSwimStartDepth` 一节）。
