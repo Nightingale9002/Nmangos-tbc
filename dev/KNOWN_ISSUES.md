@@ -8818,5 +8818,7 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 - 云端**未同步**（等站长指令）；本改动是源码，生效要重新编译 ⇒ 随夜间构建。
 
 ### 残留 / 注意
-- `characters.gameobject_respawn`（`MapPersistentStateMgr.cpp:111` 写入）里会留下本 bug 产生的"未来重生时间"行（本地现存 1 行：`guid=25826 respawntime=1791296177 instance=0`，正是这道门）；这些行在门被加载时会把门按旧计时藏起来，**可选清理**（改前产生的历史遗留，非新 bug）；
+- `characters.gameobject_respawn`（`MapPersistentStateMgr.cpp:111` 写入）里会留下本 bug 产生的"未来重生时间"行（门被加载时会把门按旧计时藏起来）。**已清理**：`dev/165_清理_门与按钮的残留重生计时.sql`（静态/幂等，只删"仍是未来时间"且属于 `GO_FLAG_NODESPAWN` 门/按钮刷点的行，`tbccharacters.` 前缀限定；回滚件说明见 `dev/rollback/165_回滚_清理残留重生计时.sql`）。
+  - 本地：执行成功，核对 0 行（原那行已自然到期）。
+  - 云端 2026-10-07 11:2x：删掉 **1 行**（`guid=25826 entry=184912 map=530`，原定 10:59:01 到期）⇒ 门**立即**恢复；同表另一行 `guid=154239` 不属于门/按钮，按范围未动。mangosd **未重启**（PID 2050，起于当天 04:07:10 的夜间窗口）。
 - 通配分支（`!HasStaticDBSpawnData()` 的野生召唤门，`:669`）未改：那类对象要么没有静态刷点、要么 `m_forcedDespawn`，本次先不动。
