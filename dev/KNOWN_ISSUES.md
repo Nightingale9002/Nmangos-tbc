@@ -8769,3 +8769,54 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 - 部落侧 `5301/5302` 本来就不发奖（发放口是 gossip `20492`，自带"锻造 ≥ 225"），不动；
 - **往返自检**：应用（`RewSpellCast` 就位、脚本 0 行）→ 回滚（复位 0、脚本复原 2 行原值）→ 再应用 ✓✓；
 - 回滚件：`dev/rollback/164_回滚_锻造专精奖励.sql`（含原样快照的 22 字段 INSERT）。
+
+---
+
+## [机制] `GO_FLAG_NODESPAWN` 从未被核心兑现：门/按钮自动关闭后被移出世界（破碎大厅门 184912 消失 181 秒）—— 2026-10-07（源码改动，本地编译通过，**未上云**）
+
+### 现象（站长云端实测）
+站长报：「我点开破碎大厅门之后，门关上之后就消失了」。云端 `Server.log` 里 10-06 布的 `[GO-NODESPAWN]` 定向诊断**两次**完整抓到（10:39:49 / 10:45:25）：
+
+```
+10:39:49 use        guid=25826 entry=184912 restore=5s state=1->0 loot=1->2   ← 点开（门开）
+10:39:55 auto-close guid=25826 state=1 loot=3                                 ← 5 秒自动关闭
+10:39:55 deactivated guid=25826 type=0 staticDbSpawn=1 newSpawningSystem=0 respawnDelay=181
+                    goFlags=0x22 goState=1 animProgress=100                  ← 被移出世界（181 秒后才回）
+10:48:32 respawn timer expired guid=25826 state=1 spawnedByDefault=1
+10:48:32 re-added to map guid=25826                                           ← 确实回来了，但要等 181 秒
+```
+
+### 根因（代码级，逐条可查）
+那道门 = GO `184912`（模板 `type=0 DOOR`、`flags=34=0x22`、`data1=1687` 钥匙锁、`data2>>16=5` 秒自动关闭）。`flags` 里的 **`GO_FLAG_NODESPAWN (0x20)`** 在 `Globals/SharedDefines.h:606` 的定义就是"**never despawn, typically for doors, they just change state**"，但**核心运行期从来没读过这个旗标**（全工程扫描：只有上游一处被注释掉的 `GameObject.cpp:346` + 本次已删的临时诊断）。
+
+于是关门走 `GameObject::Update` 的 `case GO_JUST_DEACTIVATED`（`GameObject.cpp:584` 起）后：
+1. `:682`（改前）`GetGOInfo()->IsDespawnAtAction() || GetGoAnimProgress() > 0` —— 日志里 `animProgress=100` ⇒ 成立 ⇒ **还给客户端发了一次消失动画**（`SendObjectDeSpawnAnim`）；
+2. `:705`（改前）"永不移除"的豁免名单只有 `CHEST` / `GOOBER`，**DOOR 不在其中**；
+3. `:709/:732/:736`（改前）`m_respawnDelay = 181`（DB `gameobject.spawntimesecs`）⇒ 排重生时间 ⇒ 门从世界消失 181 秒 ✗。
+
+### 影响面（本地库普查，模板 `flags & 0x20` 的刷点）
+| 类型 | 刷点数 | 其中"有自动关闭时间"（= 命中本 bug） |
+|---|---|---|
+| `type=0` DOOR | 517 | **142** |
+| `type=1` BUTTON | 42 | **24** |
+| 5 generic / 6 trap / 29 / 11 transport / 10 goober / 2 / 3 chest | 591 / 135 / 51 / 48 / 35 / 8 / 2 | 0（无自动关闭 ⇒ 不受影响） |
+
+⇒ 除破碎大厅这道门外，**另有 165 个同类刷点**（门/按钮）在犯同一个错。
+
+### 修法（`src/game/Entities/GameObject.cpp`，最小定向，无额外兜底）
+1. 在 `GO_JUST_DEACTIVATED` 的 `preventDespawn` 之后新增判据（`:652-660`）：
+   `neverDespawns = (flags & GO_FLAG_NODESPAWN) && !m_forcedDespawn && (type == DOOR || type == BUTTON)`；
+2. 消失动画那条加 `!neverDespawns`（`:678`）⇒ 门不再给客户端播消失动画；
+3. 清完 loot、`SetLootState(GO_READY)` 之后 `if (neverDespawns) break;`（`:697-700`）⇒ **保留在世界里只切状态**（不再排重生时间、不再移出世界）；
+4. 删掉 10-06 布的 4 处 `[GO-NODESPAWN]` ERROR 级临时诊断（根因已定，避免刷日志）。
+   - 范围只取 DOOR/BUTTON：其余带 `0x20` 的类型（含 consumable chest/goober）行为一字不改，避免引入新问题；
+   - `m_forcedDespawn`（强制移除）仍走原路径。
+
+### 验证
+- 本地 Release 构建 0 error：`build1\bin\x64_Release\mangosd.exe`（2026-10-07 10:52:13，md5 `53e40b7b849f017a588fd96ad1911452`），已复制到本地运行目录 `x64_Debug`（md5 一致 ✓，**本地服当时是停止状态，未启动**）；
+- 游戏内验收口径：点开破碎大厅门 → 5 秒自动关闭 → **门仍在原位**（保持关闭 + 保持 LOCKED，需再用钥匙）；`.gobject target` 应显示门存在；
+- 云端**未同步**（等站长指令）；本改动是源码，生效要重新编译 ⇒ 随夜间构建。
+
+### 残留 / 注意
+- `characters.gameobject_respawn`（`MapPersistentStateMgr.cpp:111` 写入）里会留下本 bug 产生的"未来重生时间"行（本地现存 1 行：`guid=25826 respawntime=1791296177 instance=0`，正是这道门）；这些行在门被加载时会把门按旧计时藏起来，**可选清理**（改前产生的历史遗留，非新 bug）；
+- 通配分支（`!HasStaticDBSpawnData()` 的野生召唤门，`:669`）未改：那类对象要么没有静态刷点、要么 `m_forcedDespawn`，本次先不动。
