@@ -1523,14 +1523,8 @@ void GameObject::Use(Unit* user, SpellEntry const* spellInfo)
     }
 
     bool scriptReturnValue = user->GetTypeId() == TYPEID_PLAYER && sScriptDevAIMgr.OnGameObjectUse((Player*)user, this);
-    bool dbScriptStarted = false;
     if (!scriptReturnValue)
-        dbScriptStarted = GetMap()->ScriptsStart(SCRIPT_TYPE_GAMEOBJECT_TEMPLATE, GetEntry(), spellCaster, this);
-
-    // [AVRUU-DBG 2026-10-09] temporary probe: Haal'eshi Altar (181606) use path
-    if (GetEntry() == 181606)
-        sLog.outError("[AVRUU-DBG] GO Use entry=181606 guid=%u user=%s sd2Handled=%u dbScriptStarted=%u",
-                      GetDbGuid(), user->GetGuidStr().c_str(), scriptReturnValue ? 1 : 0, dbScriptStarted ? 1 : 0);
+        GetMap()->ScriptsStart(SCRIPT_TYPE_GAMEOBJECT_TEMPLATE, GetEntry(), spellCaster, this);
 
     if (AI())
         AI()->OnUse(user, spellInfo);

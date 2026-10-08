@@ -324,11 +324,6 @@ void WorldSession::HandleGameObjectUseOpcode(WorldPacket& recv_data)
     if (!obj->CanUseNow(_player))
         return;
 
-    // [AVRUU-DBG 2026-10-09] temporary probe: did the client send a plain "use" for the Haal'eshi Altar?
-    if (obj->GetEntry() == 181606)
-        sLog.outError("[AVRUU-DBG] GAMEOBJ_USE entry=181606 guid=%u user=%s dist=%.2f canUse=1",
-                      obj->GetDbGuid(), _player->GetGuidStr().c_str(), _player->GetDistance(obj));
-
     obj->Use(_player);
 }
 
@@ -359,15 +354,70 @@ void WorldSession::HandleCastSpellOpcode(WorldPacket& recvPacket)
     }
 
     Unit* caster = mover;
+    Item* itemProvidedCast = nullptr;                       // [CLIENT253] item that grants this cast, if any
     if (mover->GetTypeId() == TYPEID_PLAYER)
     {
         // not have spell in spellbook or spell passive and not casted by client
         if (!((Player*)mover)->HasActiveSpell(spellId) || IsPassiveSpell(spellInfo))
         {
-            sLog.outError("World: Player %u casts spell %u which he shouldn't have", mover->GetGUIDLow(), spellId);
-            // cheater? kick? ban?
-            recvPacket.rpos(recvPacket.wpos());             // prevent spam at ignore packet
-            return;
+            /* [CLIENT253 2026-10-09] 2.5.3 client compatibility.
+             * The 2.4.3 client opens an item-locked gameobject (e.g. the Haal'eshi Altar 181606 whose
+             * lock 1656 requires item 23580 Avruu's Orb) by sending CMSG_GAMEOBJ_USE, while the 2.5.3
+             * client instead casts that key item's own spell (29764) at the object. That cast was
+             * dropped right here because the spell is not in the player's spellbook, so the whole
+             * "Avruu's Orb" chain did nothing on 2.5.3 (log: "casts spell 29764 which he shouldn't
+             * have"). Accept the cast when the player really carries an item that provides the spell
+             * with an on-use trigger; every other case keeps the previous behaviour. */
+            Player* player = (Player*)mover;
+            bool providedByItem = false;
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END && !providedByItem; ++slot)
+            {
+                Item* pItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+                if (!pItem)
+                    continue;
+
+                ItemPrototype const* proto = pItem->GetProto();
+                for (int i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+                    if (proto->Spells[i].SpellId == int32(spellId) && proto->Spells[i].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+                    {
+                        providedByItem = true;
+                        itemProvidedCast = pItem;
+                        break;
+                    }
+            }
+
+            for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END && !providedByItem; ++bagSlot)
+            {
+                Bag* pBag = (Bag*)player->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot);
+                if (!pBag)
+                    continue;
+
+                for (uint8 slot = 0; slot < pBag->GetBagSize() && !providedByItem; ++slot)
+                {
+                    Item* pItem = pBag->GetItemByPos(slot);
+                    if (!pItem)
+                        continue;
+
+                    ItemPrototype const* proto = pItem->GetProto();
+                    for (int i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+                        if (proto->Spells[i].SpellId == int32(spellId) && proto->Spells[i].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+                        {
+                            providedByItem = true;
+                            itemProvidedCast = pItem;
+                            break;
+                        }
+                }
+            }
+
+            if (!providedByItem)
+            {
+                sLog.outError("World: Player %u casts spell %u which he shouldn't have", mover->GetGUIDLow(), spellId);
+                // cheater? kick? ban?
+                recvPacket.rpos(recvPacket.wpos());             // prevent spam at ignore packet
+                return;
+            }
+
+            sLog.outError("[CLIENT253] accepted item-provided cast: player %u spell %u", mover->GetGUIDLow(), spellId);
         }
     }
     else
@@ -396,6 +446,7 @@ void WorldSession::HandleCastSpellOpcode(WorldPacket& recvPacket)
     recvPacket >> targets.ReadForCaster(_player);
 #endif
 
+
     // auto-selection buff level base at target level (in spellInfo)
     if (Unit* target = targets.getUnitTarget())
     {
@@ -419,6 +470,7 @@ void WorldSession::HandleCastSpellOpcode(WorldPacket& recvPacket)
     Spell* spell = new Spell(caster, spellInfo, TRIGGERED_NONE);
     spell->m_cast_count = cast_count;                       // set count of casts
     spell->m_clientCast = true;
+    spell->SetCastItem(itemProvidedCast);                   // [CLIENT253] item-provided cast (2.5.3 key/lock flow)
     if (caster->HasGCD(spellInfo) || !caster->IsSpellReady(*spellInfo))
     {
         if (caster->HasGCDOrCooldownWithinMargin(*spellInfo))

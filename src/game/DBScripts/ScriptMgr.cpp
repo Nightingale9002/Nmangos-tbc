@@ -2068,12 +2068,6 @@ bool ScriptAction::ExecuteDbscriptCommand(WorldObject* pSource, WorldObject* pTa
                 sLog.outErrorDb(" DB-SCRIPTS: Process table `%s` id %u, command %u failed for creature (entry: %u).", m_table, m_script->id, m_script->command, m_script->summonCreature.creatureEntry);
                 break;
             }
-
-            // [AVRUU-DBG 2026-10-09] temporary probe for the Avruu's Orb / Aeranas chain (entry 17085)
-            if (m_script->summonCreature.creatureEntry == 17085)
-                sLog.outError("[AVRUU-DBG] TEMP_SPAWN entry=17085 ok guid=%u pos=(%.2f,%.2f,%.2f) despawn=%ums table=%s id=%u",
-                              pCreature->GetDbGuid(), pCreature->GetPositionX(), pCreature->GetPositionY(), pCreature->GetPositionZ(),
-                              m_script->summonCreature.despawnDelay, m_table, m_script->id);
             break;
         }
         case SCRIPT_COMMAND_OPEN_DOOR:                      // 11
@@ -2704,11 +2698,6 @@ bool ScriptAction::ExecuteDbscriptCommand(WorldObject* pSource, WorldObject* pTa
 
             if (result)                                    // Terminate further steps of this script
             {
-                // [AVRUU-DBG 2026-10-09] temporary probe: report the Aeranas guard (entry 17085) firing
-                if (m_script->terminateScript.npcOrGOEntry == 17085)
-                    sLog.outError("[AVRUU-DBG] TERMINATE table=%s id=%u entry=17085 buddyFound=%u",
-                                  m_table, m_script->id, terminationBuddyFound ? 1 : 0);
-
                 if (m_script->textId[0] && !LogIfNotCreature(pSource))
                 {
                     Creature* cSource = static_cast<Creature*>(pSource);
