@@ -8854,3 +8854,80 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 
 ### 游戏内验收口径
 入水/出水**不再猛沉**（跨水线 z 不再一步掉 3~4 码）；浅水区的游泳生物**有游泳动作**（不再"走水面"）；深水区的表现与改动前一致（仍用设定深度）。相关背景见上文"水移动系统"章（`GetSwimStartDepth` 一节）。
+
+---
+
+## [机制] 泥沼巨人「HP 0–30% 激怒 + 喊话」在英雄难度不触发 ＝ `event_flags` 只写了 `EFLAG_NORMAL`（`dev/166` 对齐官方清单）—— 2026-10-07
+
+### 现象（站长）
+幽暗沼泽（The Underbog，map 546）泥沼巨人（Bog Giant 17723 / 英雄模板 `HeroicEntry` 20164）现在没有"HP 0–30% 激怒 + 喊话（泥沼巨人变得愤怒了！）"。
+
+### 先排除的两件事（都不是数据被删）
+- 事件行 **1772301 一直在**，且**本地 = 云端 = 上游 `tbcmangos_orig` 逐字段一致**：
+  `event_type=2`、`event_param1/2 = 30/0`、`event_param3/4 = 120000/120000`、
+  `action1 = 11/8599/0/0`（cast Enrage、target self）、`action2 = 1/2384`（TEXT）；
+- 文本也齐：`broadcast_text 2384` = `%s becomes enraged!`，其 `broadcast_text_locale.zhCN` = "**%s变得愤怒了！**"
+  ⇒ 游戏内显示"泥沼巨人变得愤怒了！"。
+
+### 根因（代码级）
+`event_flags = 1027 = 0x403` 的位含义（`AI/EventAI/CreatureEventAI.h:202-212`）：
+| 位 | 名称 | 含义 |
+|---|---|---|
+| 0x001 | `EFLAG_REPEATABLE` | 事件可重复 |
+| 0x002 | `EFLAG_NORMAL` | **仅普通难度** |
+| 0x400 | `EFLAG_COMBAT_ACTION` | 第一个动作必须先成功（= 你贴的 "After Event #3 才喊话" 的 EventAI 等价物） |
+
+而 `CreatureEventAI.cpp:123-134` 只要带了 `NORMAL|HEROIC` 任一位就按难度过滤：
+`(1 << (GetSpawnMode() + 1)) & event_flags`
+- 普通：spawnMode 0 ⇒ 需要 `0x02` ⇒ **命中** ✓（激怒 + 喊话正常）
+- 英雄：spawnMode 1 ⇒ 需要 **`0x04`**；`0x403` 里没有 ⇒ **整条事件被跳过** ✗（既不激怒、也不喊话）
+
+### 修复（`dev/166_幽暗沼泽泥沼巨人_激怒事件按官方清单对齐.sql`，静态/幂等）
+- `event_flags` 1027 → **1030**（`0x406 = EFLAG_NORMAL | EFLAG_HEROIC | EFLAG_COMBAT_ACTION`）：加英雄难度、去掉可重复位；
+  - 去掉 `EFLAG_REPEATABLE` 的语义有代码依据：`CreatureEventAI.cpp:628-629` —— HP 属可重复事件类型，缺该位即 `holder.enabled = false` ⇒ **每场战斗只激怒一次**（"No Repeat"）；
+- `action1_param3` 0 → **32**（`CAST_INTERRUPT_PREVIOUS`：激怒时打断当前施法）；
+- 同步更新 `comment`；保留 `30/0` 与 `120000/120000`（后者在不可重复下不再参与判定，留档代表原 2 分钟间隔）；
+- **往返自检**：应用（1030/32）→ 回滚（1027/0 + 原注释）→ 再应用（1030/32）✓✓；回滚件 `dev/rollback/166_回滚_泥沼巨人激怒对齐.sql`。
+
+### 对照 AzerothCore（口径一致）
+`acore_world.smart_scripts` 里 17723：`id3 = HP 0–30% Cast Enrage`（`event_flags=3` = No Repeat + 普通）、`id4 = event 61「After Event #3」Say Line 0`；另有 in-combat 的 Fungal Decay 32065 / Growth 40318(英雄) / Trample 15550。本改动与之一致，并额外把英雄难度也纳入。
+
+### 澄清（避免误判为"英雄侧丢了 EventAI/法术"）
+- **英雄侧照样吃 EventAI**：`Creature::UpdateEntry`（`Creature.cpp:405-406`）写的是 `SetEntry(Entry)` = **永远普通 entry**，只把模板换成 `HeroicEntry`；`CreatureEventAI.cpp:186` 用 `GetEntry()` 取脚本 ⇒ 挂在 17723 的行普通+英雄都生效，**不需要给 20164 另建行**（20164 的 `AIName` 本来就是空的，上游如此）；
+- 英雄侧"生长"由我们的 EventAI 行 `1772302`（≤50% 一次，`flags=6`=普通+英雄）覆盖 ✓；`dev/153` 删掉英雄法术列表 `2016401` 里那行循环生长是**有意**的（原行为是进战斗 10 秒就放、之后每 10 秒反复），不是丢功能。
+
+### 状态
+- 本地库已应用（`1772301`：`event_flags=1030`、`action1_param3=32`）；
+- `creature_ai_scripts` 启动时载入 ⇒ 需重启生效；**云端未同步**（等站长指令，随下一次夜间重启生效）；
+- 游戏内验收口径：**普通与英雄**两种难度下，泥沼巨人血量到 30% 以下时**激怒一次并喊"泥沼巨人变得愤怒了！"**，且激怒会打断它当前的施法。
+
+### 追加（2026-10-07）：全库普查「难度位」同类问题 + `dev/167` 第二批修正
+
+**普查口径**：`creature_ai_scripts` 里带难度位（`EFLAG_NORMAL|EFLAG_HEROIC`）**且该生物有刷点**的行，共 **193 行**；按"该生物有没有那一种难度的刷点（`creature.spawnMask` 位 1=普通 / 位 2=英雄）"分类。
+
+| 类别 | 行数 | 说明 |
+|---|---|---|
+| **故意分难度** | **124** | 同一能力在另一难度有**同族行**（同名法术、不同 id），注释里明写 `(Normal)` / `(Heroic)`（例：Coilfang Leper 普通 9613/13339/11642 ↔ 英雄 12739/14145/15586；Sunblade 系列、Negaton Screamer 同样）⇒ **不动** |
+| **英雄侧缺失** | 3 | 普通 only、但英雄也刷、且**没有英雄同族行** ⇒ 英雄难度完全没有该事件（泥沼巨人同款） |
+| **彻底死行** | 2 | 只带 HEROIC 而该生物没有英雄刷点 / 或带 `EFLAG_DEBUG_ONLY(0x80)`（release 直接跳过，`CreatureEventAI.cpp:120-121`） |
+| 其余 | 64 | 只有单一难度刷点的"英雄 only / 普通 only"，与刷点一致 ⇒ 正常 |
+
+**关键机制（判据根基）**：英雄模板（`HeroicEntry`，如 20164/20187）上 **0 行 EventAI** —— `Creature::UpdateEntry` 里 `SetEntry(Entry)` 永远写普通 entry（`Creature.cpp:405-406`），`CreatureEventAI.cpp:186` 按 `GetEntry()` 取脚本 ⇒ **英雄难度完全依赖普通 entry 的行**；所以"普通 only 且无英雄同族"的能力，在英雄难度就是没有。
+
+**`dev/167_EventAI难度位修正_第二批.sql`（6 处，静态/幂等）**
+| 生物 | 行 | 改前 | 改后 | 依据 |
+|---|---|---|---|---|
+| 10899 Goraluk Anvilcrack（黑石塔） | 1089903 Strike | flags `1205`（含 `DEBUG_ONLY`+`HEROIC` ⇒ 双重死行）、5-8s/6-10s | flags `1025`、5-7s/4-6s | wowhead SmartAI 三事件均 "Normal Dungeon"（Strike 5-7s→4-6s、Head Crack 5-10s/20s、Backhand 10s/10s）；AC 同值 |
+| 10899 Goraluk Anvilcrack | 1089901 Backhand | 5-8s 首放 | 10s/10s | 同上 |
+| 3338 Sergra Darkthorn（贫瘠之地，世界 NPC） | 333802 Whirlwind | flags `1029`（只带 HEROIC ⇒ `CreatureEventAI.cpp:88-92` 世界图不成立 ⇒ 永远不放） | flags `1025`（与其另两行一致） | 同生物 333801/333803 都是 1025 |
+| 17734 Underbog Lord（幽暗沼泽） | 1773403 Enrage | flags `1027`（普通 only） | flags `1030`（普通+英雄、去可重复位 ⇒ 每场一次） | 与泥沼巨人同款；AC 亦写 "No Repeat"；其"生长"不缺（英雄法术列表 2018701 有 40318，本库=上游） |
+| 17976 Commander Sarannis（生态船） | 1797606 Summon Reinforcement | flags `1026`（普通 only） | flags `1030` | 英雄也会刷（spawnMask 3）；**英雄是否召唤待 wowhead 复核** |
+| 17400 Felguard Annihilator（血熔炉） | 1740001 Reset Threat | flags `1027`（普通 only） | flags `1031` | AC 对应行 flags=0（无难度限制） |
+
+- **往返自检**：应用 → 回滚（1205/1029/1027/1026/1027 + 原定时）→ 再应用 ✓✓；回滚件 `dev/rollback/167_回滚_EventAI难度位修正.sql`。
+- ⚠️ **AC 不是权威**：站长指出本次泥沼巨人一类问题上 AC 写错了（它也只写 "Normal Dungeon"），因此 AC 仅作提示，最终以 wowhead 为准。
+- **遗留（站长 2026-10-07 已逐条确认，均处理完）**：
+  - ① `1797606` 英雄难度**应该**召唤增援 ⇒ `dev/167` 已加 `EFLAG_HEROIC`（flags `1026` → `1030`）✓；
+  - ② `1773403`（Underbog Lord）的喊话 —— ⚠️ **更正 + 判定不换**：该行**本来就有**第 2 个动作（TEXT `2384` "%s becomes enraged!"／"%s变得愤怒了！"，与泥沼巨人同款、中文正常显示），我上一轮只查 `action1` 列才误判成"没有喊话"。客户端/AC 数据显示该 NPC 的专属台词是 `38630`（"%s goes into a frenzy!"／"%s进入狂暴状态！"，来自 `acore_world.creature_text.BroadcastTextId`，本库 `broadcast_text` 里该 id 确实存在）—— 但这只是**保真度**差异、功能上没有缺失，**站长判定"如果不需要就不用换"⇒ 保持 `2384` 不动**；原先准备的 `dev/168` 已撤下（文件从仓库删除、本地库改回 2384）。机制备注：文本动作走 `ACTION_T_TEXT=1` 正 id ⇒ `broadcast_text`（本库已有 3294 行同款用法），且该行含 `EFLAG_COMBAT_ACTION` ⇒ **激怒成功后才喊**（与泥沼巨人一致）；
+  - ③ 无刷点生物（召唤/组刷点）另有 180 行带难度位，其难度由召唤者地图决定，本次未纳入判定（留作后续）。
+- **状态**：本地已应用（166/167）；`creature_ai_scripts` 启动时载入 ⇒ 需重启；`dev/166`+`dev/167` **云端均未同步**（等站长指令）。
