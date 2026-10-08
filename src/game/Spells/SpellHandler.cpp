@@ -324,6 +324,11 @@ void WorldSession::HandleGameObjectUseOpcode(WorldPacket& recv_data)
     if (!obj->CanUseNow(_player))
         return;
 
+    // [AVRUU-DBG 2026-10-09] temporary probe: did the client send a plain "use" for the Haal'eshi Altar?
+    if (obj->GetEntry() == 181606)
+        sLog.outError("[AVRUU-DBG] GAMEOBJ_USE entry=181606 guid=%u user=%s dist=%.2f canUse=1",
+                      obj->GetDbGuid(), _player->GetGuidStr().c_str(), _player->GetDistance(obj));
+
     obj->Use(_player);
 }
 

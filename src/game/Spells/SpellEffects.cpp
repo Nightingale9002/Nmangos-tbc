@@ -2826,10 +2826,20 @@ void Spell::EffectDummy(SpellEffectIndex eff_idx)
     SpellTargetImplicitType effectTargetType = data.implicitType[eff_idx];
 
     DEBUG_FILTER_LOG(LOG_FILTER_SPELL_CAST, "Spell ScriptStart spellid %u in EffectDummy", m_spellInfo->Id);
+    bool dbScriptStarted = false;
     if (effectTargetType == TARGET_TYPE_UNIT || effectTargetType == TARGET_TYPE_UNIT_DEST)
-        m_trueCaster->GetMap()->ScriptsStart(SCRIPT_TYPE_SPELL, m_spellInfo->Id, m_trueCaster, unitTarget);
+        dbScriptStarted = m_trueCaster->GetMap()->ScriptsStart(SCRIPT_TYPE_SPELL, m_spellInfo->Id, m_trueCaster, unitTarget);
     else if (effectTargetType == TARGET_TYPE_GAMEOBJECT || (effectTargetType == TARGET_TYPE_LOCK && gameObjTarget))
-        m_trueCaster->GetMap()->ScriptsStart(SCRIPT_TYPE_SPELL, m_spellInfo->Id, m_trueCaster, gameObjTarget);
+        dbScriptStarted = m_trueCaster->GetMap()->ScriptsStart(SCRIPT_TYPE_SPELL, m_spellInfo->Id, m_trueCaster, gameObjTarget);
+
+    // [AVRUU-DBG 2026-10-09] targeted probe: Avruu's Orb (item 23580) casts 29764 at the Haal'eshi Altar.
+    // Temporary - remove once the quest chain is verified in game.
+    if (m_spellInfo->Id == 29764)
+        sLog.outError("[AVRUU-DBG] EffectDummy spell=29764 targetType=%u unitTarget=%s gameObjTarget=%s dbScriptStarted=%u",
+                      uint32(effectTargetType),
+                      unitTarget ? unitTarget->GetGuidStr().c_str() : "none",
+                      gameObjTarget ? gameObjTarget->GetGuidStr().c_str() : "none",
+                      dbScriptStarted ? 1 : 0);
 }
 
 void Spell::EffectTriggerSpellWithValue(SpellEffectIndex eff_idx)

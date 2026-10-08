@@ -8931,3 +8931,63 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
   - ② `1773403`（Underbog Lord）的喊话 —— ⚠️ **更正 + 判定不换**：该行**本来就有**第 2 个动作（TEXT `2384` "%s becomes enraged!"／"%s变得愤怒了！"，与泥沼巨人同款、中文正常显示），我上一轮只查 `action1` 列才误判成"没有喊话"。客户端/AC 数据显示该 NPC 的专属台词是 `38630`（"%s goes into a frenzy!"／"%s进入狂暴状态！"，来自 `acore_world.creature_text.BroadcastTextId`，本库 `broadcast_text` 里该 id 确实存在）—— 但这只是**保真度**差异、功能上没有缺失，**站长判定"如果不需要就不用换"⇒ 保持 `2384` 不动**；原先准备的 `dev/168` 已撤下（文件从仓库删除、本地库改回 2384）。机制备注：文本动作走 `ACTION_T_TEXT=1` 正 id ⇒ `broadcast_text`（本库已有 3294 行同款用法），且该行含 `EFLAG_COMBAT_ACTION` ⇒ **激怒成功后才喊**（与泥沼巨人一致）；
   - ③ 无刷点生物（召唤/组刷点）另有 180 行带难度位，其难度由召唤者地图决定，本次未纳入判定（留作后续）。
 - **状态**：本地已应用（166/167）；`creature_ai_scripts` 启动时载入 ⇒ 需重启；`dev/166`+`dev/167` **云端均未同步**（等站长指令）。
+
+---
+
+## [任务/机制] 哈尔什祭坛「阿弗鲁的宝珠」用不出效果 ＝ 法术 29764 全程没有处理器（`dev/169`）—— 2026-10-09
+
+### 现象（站长）
+地狱火半岛「哈尔什祭坛」(GO **181606**, guid 22035)：点祭坛/用宝珠后**角色一直做施法动作、什么结果都没有、也没有报错**。
+
+### 数据链（逐段查实）
+| 环节 | 事实 |
+|---|---|
+| 物品 | 23580 Avruu's Orb：`class=12`(任务物品)、`spellid_1=29764`、`startquest=9418` ✓ |
+| 法术 | 29764「Avruu's Orb」：`Effect1 = 59 (SPELL_EFFECT_SCRIPT_EFFECT)`、`EffectImplicitTargetA1 = 23 (TARGET_GAMEOBJECT)` ⇒ **对着目标物体施放** |
+| 执行入口 | `Spell::EffectDummy` → `ScriptsStart(SCRIPT_TYPE_SPELL, spellId, caster, gameObjTarget)`（`SpellEffects.cpp:2829-2832`）⇒ 查表 **`dbscripts_on_spell`**（`ScriptMgrDefines.h:29`，该表云端日志显示已加载 109 行 ✓）|
+| **缺口** | **`dbscripts_on_spell` 里 id=29764 一行都没有**（本库 / tbcmangos_orig / tbcdb_ref / wotlkmangos **全为 0**）；`spell_scripts`(法术→C++脚本映射) 里也没有 29764 ⇒ `ScriptsStart` 找不到脚本**静默返回**（所以放完法术既没效果、也不打日志）✓ 与现象完全吻合 |
+| 祭坛点击那条路 | `dbscripts_on_go_template_use 181606` **是好的**：`command 31`（20 码内已有活着的 17085 就中止）+ `command 10`（`TEMP_SPAWN_CREATURE` 生成 Aeranas 17085，180 秒）✓ 云端两行俱在 ✓ |
+| 锁 | 祭坛 `data0 = lockId 1656` ⇒ 解客户端 `Lock.dbc`：**type=1 需要物品，index=23580**（宝珠）✓（所以"带宝珠点祭坛"时客户端走的是**用钥匙物品施法**那条路 = 上面缺处理器的 29764）|
+
+### 「为什么之前有 6 个角色能完成、现在不行」
+云端角色库 `character_queststatus`：任务 9418 共 7 人动过，**6 人 rewarded=1**（其中 `克蕾茜娅`/`琅玥` 最近仍在登录）⇒ **祭坛点击那条路一直是好的**；而 29764 这条路**从来没实现过**（四个库都没有）⇒ 差别在**客户端这次选择发的是"用钥匙物品施法"**（你身上正带着 23580，实测 ✓；`guid 21 Everbloom`：任务 9418 `status=1`、`rewarded=0`、背包持有 23580 ✓），而不是"直接点开祭坛"的 `CMSG_GAMEOBJ_USE`（后者才有脚本 ✓）。
+
+### 修复（`dev/169_阿弗鲁的宝珠_法术29764补召唤脚本.sql`，静态/幂等）
+照抄祭坛脚本的语义，给法术 29764 在 `dbscripts_on_spell` 加两行：
+- `command 31`（TERMINATE_SCRIPT，entry 17085、20 码、`data_flags=8`=找到就中止）
+- `command 10`（`TEMP_SPAWN_CREATURE` 17085、180000ms、`data_flags=8`）
+⇒ 补完后**两条路都能召出 Aeranas**（脚本行 x/y/z=0 ⇒ 召唤在**施法者(玩家)位置**，`Object.cpp:2200` ✓），且守卫保证不会出现两只 ✓。**往返自检** 2 行 → 0 → 2 ✓；回滚件 `dev/rollback/169_回滚_阿弗鲁的宝珠召唤脚本.sql`。
+- **状态**：本地已应用；**云端未同步**（站长尚未确认；若确认，需按 **新编号**（如 `dev/171`）补传 —— 因为云端 marker 已因 `dev/170` 前进到 170，150 号段不会回头补 169）。
+
+### 定向探针（本地，标签 `[AVRUU-DBG]`，共 4 处）
+为把"封包到底来没来 / 脚本有没有跑 / 召唤成没成"钉死，已在**本地**加临时日志（编译通过、本地服已用该二进制运行）：
+| 位置 | 打印 |
+|---|---|
+| `SpellHandler.cpp` `HandleGameObjectUseOpcode` | `GAMEOBJ_USE entry=181606 guid/dist`（客户端有没有发"使用"封包）|
+| `GameObject.cpp` `Use` | `GO Use entry=181606 sd2Handled / dbScriptStarted` |
+| `SpellEffects.cpp` `EffectDummy` | `spell=29764 targetType/unitTarget/gameObjTarget/dbScriptStarted`（宝珠施法那条路）|
+| `ScriptMgr.cpp` 命令 10 / 31 | `TEMP_SPAWN entry=17085 ok pos=(...)` / `TERMINATE ... buddyFound=1` |
+⇒ **待站长在本地服实测一次**即可判读；定位完这 4 处探针要删掉（属临时诊断）。
+
+---
+
+## [机制] 纳杉地面火没有伤害 ＝ 陷阱 GO 的触发直径是 0（`dev/170`，已上云）—— 2026-10-09
+
+### 现象（站长）
+地狱火城墙（Hellfire Ramparts，map 543）纳杉(Nazan) 落地后的**地面火没有伤害**。
+
+### 链路与根因
+- 火球 `Effect2 = 77 (SCRIPT_EFFECT)` → C++ 脚本 `spell_vazruden_liquid_fire_script`（`spell_scripts` 绑定 **30926 / 33793 / 33794 / 36921**，四库一致 ✓）→ 脚本内 `CastSpell` 23971(普通)/30928(英雄)「Summon Liquid Fire」
+- 23971/30928：`Effect1 = 76 (SUMMON_OBJECT_WILD)`、`EffectMiscValue1` = 召唤 **GO 180125(普通) / 182533(英雄)「Liquid Fire」**（`type = 6 TRAP`，`data3 = 23972 / 32492` 伤害法术「Blaze」）
+- 陷阱字段映射（`GameObject.h:122-139`）：`data0`=lockId、**`data1`=level**、**`data2`=diameter(触发直径)**、`data3`=spellId、`data4`=charges、`data5`=cooldown
+- **`data2 = 0`** ⇒ 触发半径 `0/2 = 0` ⇒ `GameObject::Update` 的陷阱分支（`GameObject.cpp:448-467`）：半径 0 时 **`valid = false`**（只有战场陷阱 `cooldown==3` 例外）⇒ **陷阱永不触发 ⇒ 火完全没有伤害** ✓
+- **证据**：AzerothCore 同两条是 **`data2 = 6`**；而 mangos 系五库（本库 / tbcmangos_orig / tbcdb_ref / wotlkmangos / classicmangos_ref）**全是 0** ⇒ **上游数据缺口，不是我们改坏的** ✓
+
+### 修复与状态
+- `dev/170_纳杉地面火_陷阱直径修正.sql`：`data2` 0 → **6**（180125 与 182533 两行，其余字段不动）；往返自检 ✓（0→6→0→6）；
+- **本地已应用**（本地服已重启加载 ✓）；**云端已应用**（`applier`：`170 applied (marker -> 170)`，**未重启** ✓，随下一次夜间重启生效）；
+- 表现口径：伤害来自 23972/32492「Blaze」（`Effect1 = 2` 直接伤害、无周期光环，与上游一致 ✓），触发有冷却（`GameObject.cpp:1638`：无 cooldown 时默认 4 秒）⇒ 站火里是**周期性挨打**而不是持续 DoT ✓。
+
+### 站长 2026-10-09 明确"不改"的两项（留档，勿反复提）
+1. **纳杉落地不立刻追击**：这是脚本自带定时 —— `boss_nazan_and_vazruden.cpp:195-209`，落地后 `ResetTimer(NAZAN_ATTACK_DELAY, 5000)` ⇒ 5 秒后 `HandleAttackDelay()` 才 `SetCombatMovement(true)`/`SetMeleeEnabled(true)`/`AttackClosestEnemy()`；站长定**不改** ✓
+2. **地狱火城墙穿墙**：map 543 的资源文件齐全（`543.vmtree` + 16 个 `.vmtile` + 20 个 `.mmtile` + `.map`）⇒ 非"文件缺失"型；站长定**不改** ✓（若日后要查，需先给具体位置：玩家/怪、哪一段）
