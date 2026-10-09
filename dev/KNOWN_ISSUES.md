@@ -8991,3 +8991,87 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 ### 站长 2026-10-09 明确"不改"的两项（留档，勿反复提）
 1. **纳杉落地不立刻追击**：这是脚本自带定时 —— `boss_nazan_and_vazruden.cpp:195-209`，落地后 `ResetTimer(NAZAN_ATTACK_DELAY, 5000)` ⇒ 5 秒后 `HandleAttackDelay()` 才 `SetCombatMovement(true)`/`SetMeleeEnabled(true)`/`AttackClosestEnemy()`；站长定**不改** ✓
 2. **地狱火城墙穿墙**：map 543 的资源文件齐全（`543.vmtree` + 16 个 `.vmtile` + 20 个 `.mmtile` + `.map`）⇒ 非"文件缺失"型；站长定**不改** ✓（若日后要查，需先给具体位置：玩家/怪、哪一段）
+
+---
+
+## [机制] 蒸汽地窟主厅大门不开 ＝ 我们那条 `GO_FLAG_NODESPAWN` 修复的连带回归（已修，本地+云端已部署）—— 2026-10-10
+
+### 现象
+站长报：蒸汽地窟（map 545）打死水术师瑟斯比亚 + 机械师斯蒂里格、拉完两个控制面板后**主厅大门（GO 183049，flags=34=LOCKED|NODESPAWN）不开**；且"**以前 2.5.3 客户端也正常**，是后来改坏的"。
+
+### 探针链（本地，纯日志）把链条逐段钉死
+| 探针 | 输出 | 判读 |
+|---|---|---|
+| 面板 | `panel used entry=184125 guid=5450035 hydro=3 mek=0` → `SetData HYDRO=SPECIAL, mek=0 -> door call=0` | 第一块面板时对方尚未 SPECIAL ✓ 正常 |
+| 面板 | `panel used entry=184126 guid=5450036 hydro=4 mek=3` → `SetData MEK=SPECIAL, hydro=4 (SPECIAL=4) -> door call=1` | **开门条件成立、调用发生** ✓ |
+| 实例脚本 | 无 `DoUseDoorOrButton … not in storage` | **门对象拿得到** ✓ |
+| 门 | `UseDoorOrButton entry=183049 … lootState=1 goState=1 goFlags=0x22 -> will open` | 无早退（`lootState=GO_READY`）✓ |
+| 门 | `OPENED: lootState=2 goState=0 goFlags=0x23` | **服务端确实开门**（`goState 1→0` = 关→开）✓，但多出 **`0x01 GO_FLAG_IN_USE`** ✗ |
+
+### 根因（本会话引入的回归，链路闭环）
+本会话为修"破碎大厅门关了就消失"在 `GO_JUST_DEACTIVATED` 加了 `neverDespawns`（DOOR/BUTTON + `0x20`）分支：跳过消失动画与"移出世界+排重生" ✓，但**连带跳过了那段 flags 复位**（实例内保留 LOCKED/INTERACT_COND/NO_INTERACT、其余清零 ⇒ 正是清 `GO_FLAG_IN_USE` 的地方）✗。
+更关键：这扇门 `data2=0` ⇒ **没有自动关闭** ⇒ 开门后永远停在 `GO_ACTIVATED`、**走不到失效流程** ⇒ 那段复位对它不可达 ✗ ⇒ `IN_USE` 永久挂着 ⇒ 客户端一直当它是"使用中"，看不到可通行的开门 ✓ 与"以前正常、现在不行"完全吻合 ✓
+
+### 修复（`src/game/Entities/GameObject.cpp`，仅针对 `GO_FLAG_NODESPAWN` 的门/按钮）
+1. `GO_JUST_DEACTIVATED` 的 `neverDespawns` 分支**补回 flags 复位**（仍不发消失动画、不移出世界 ✓）⇒ 覆盖"会被关上的门"；
+2. `UseDoorOrButton()` 开门成功后**就地清 `GO_FLAG_IN_USE`** ⇒ 覆盖"永不自动关的门"（本例 ✓）。
+站长本地实测**通过** ✓；破碎大厅那扇门的修复不受影响 ✓。**提交 `d135353b6`**（探针全撤 ✓）。
+云端：`deploy_now.sh`（停服→编译→装→起→realmd 验证 ✓），二进制 md5 `1cc9ec62…` → **`91a277c48e81a694f6fb90c4cd3f1e3f`**（mangosd PID 48205，8086/3724 在听 ✓）。
+
+---
+
+## [客户端兼容] 2.4.3 vs 2.5.3：同一交互走不同封包（哈尔什祭坛「阿弗鲁的宝珠」案例）—— 2026-10-09（已上云）
+
+- **现象**：2.4.3 点祭坛能召出 Aeranas ✓；**2.5.3 只做施法动作、无结果无报错** ✗
+- **差异（抓包实证）**：2.4.3 发 `CMSG_GAMEOBJ_USE` ⇒ 服务端跑 `dbscripts_on_go_template_use 181606` ✓；2.5.3 改为**对祭坛施放"钥匙物品"的法术 29764**（`size=17`、mask `0x800`=GO、packed guid 解出 low=22035 / entry=181606 ✓）⇒ 原来两处都挡：① `SpellHandler.cpp:364-371` 法术不在法术书 ⇒ 丢弃并记 `casts spell 29764 which he shouldn't have`；② 即便放行，未挂 castItem ⇒ `PreCastCheck` 判 `SPELL_FAILED_BAD_TARGETS(11)`
+- **三步修复**：① `HandleCastSpellOpcode` 允许"玩家确实持有以**使用**方式提供该法术的物品"的施法（否则照旧拒绝 ✓）；② 命中后 `spell->SetCastItem(item)`；③ `dev/171` 给 29764 补 `dbscripts_on_spell`（20 码守卫 + `TEMP_SPAWN 17085`）✓
+- **经验（可复用）**：遇到"**只在某个客户端不工作**"的交互，先假设封包/流程不同 ⇒ **本地加定向探针跑一次**比远程推断快得多 ✓（本次用 `[CLIENT253-DBG]` 抓原始字节 + `[AVRUU-DBG]` 分段探针定案 ✓；探针事后必须删除 ✓）
+---
+
+## [机制] 蒸汽地窟：门的两个现象定案 —— 一个是时序（非 bug）、一个是脚本切换早退（已修）—— 2026-10-10
+
+### 1. 主厅之门（183049）看着没开 = **时序，不是 bug**
+
+- 站长实测口径：开完开关**立刻飞/跑到门前**会先看到关闭态，**按正常速度走过去**门就是开的 ✓
+
+- 过程留痕：本会话曾为它加过两版补丁（清 GO_FLAG_IN_USE、强制值更新），**云端实测均无效** ✗ 已全部删除 ✓
+
+- 结论：**原行为正确，不许再加补丁**；门相关代码只保留"仅 184912 的 neverDespawns"这一条 ✓（见下一章）
+
+
+### 2. 督军卡利瑟里斯（17798）进战斗不关门、脱战反而关门 = **脚本里的"切换"被静默早退**（已修）
+
+- 原写法 `steam_vault.cpp`：`case TYPE_WARLORD_KALITHRESH: DoUseDoorOrButton(GO_MAIN_CHAMBERS_DOOR);` —— 是一个**切换**动作
+
+- 而 `GameObject::UseDoorOrButton()` 第一句 `if (m_lootState != GO_READY) return;`：面板把门打开后门停在 `GO_ACTIVATED`（探针实测 lootState=2）⇒ 进战斗那次切换**被静默吞掉** ✗（门不关）；脱战/失败后门被复位回 GO_READY，切换才生效 ⇒ **反而关门** ✗ 与现象完全吻合 ✓
+
+- 修法（只改本实例脚本）：进战斗 **显式关门**（GO_STATE_READY + loot GO_READY）、失败 **显式开门**、击杀保持开门 ✓（提交 6c3762f12）
+
+
+### 3. 门相关代码的最终范围（站长定：只影响目标对象，禁止通改）
+
+- `neverDespawns`（门被关后不消失）= **仅 entry 184912**（破碎大厅门）✓；其它门/按钮/面板**全为原始行为** ✓
+
+- 该条已在代码注释中写明"**不要再次放宽**，放宽前必须核对其它用 GO_FLAG_NODESPAWN 的对象" ✓
+
+
+---
+
+## [数据] 禁魔监狱 艾瑞达食魂者(20879)/死亡使者(20880) 只有 3 个刷点 = **tbc-db 历来如此，非回归** —— 2026-10-10
+
+- 站长记忆的"正常约 5 只"经查**不成立**：`Updates/Instances/552_arcatraz.sql` 在各历史节点均为 **3 处**（TBCDB 1.9.0 `e15de22a` / 1.10.0 `ed27fb76` / rework 前 `d2cf9def^` / rework 后 `424eec16` / HEAD）✓
+
+- 2024-06 的 `2fc51ef7 [ACID][Instance] the Arcatraz rework part 2 (#1209)` 只把候选槽 `creature_spawn_entry` 换成 `spawn_group 5520022`（MaxCount=1、1 个成员槽）并把 20880 点位由 301.778/125.168 挪到 301.797/127.444 ⇒ **位置数量前后都是 3** ✓
+
+- 另：单纯提高 `spawn_group.MaxCount` **无效**（组内只有 1 个成员槽）⇒ 要增加数量必须**新增刷点+成员行**（待站长给坐标；只挂进 5520022）
+
+- 遗留：该组 dynguid 成员**死后不刷新**（核心侧待用本地探针定位，修法将限制在 spawn_group 管理的 dynguid 这一条件上）
+
+
+---
+
+## [数据] 副本入口等级：禁魔监狱/生态船/能源舰 68 → 65（dev/172）—— 2026-10-10
+
+- `areatrigger_teleport` 三行（4468/4467/4469）`required_level = 68`，但它们**自身的失败提示文本**写的就是 "You must be at least level 65 to enter." ⇒ 数据与提示自相矛盾 ✓ 按站长口径改为 **65** ✓
+
+- 往返自检通过 ✓；本地已应用；**云端待同步**（纯数据、不重启）

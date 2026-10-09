@@ -126,7 +126,26 @@ void instance_steam_vault::SetData(uint32 uiType, uint32 uiData)
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_WARLORD_KALITHRESH:
-            DoUseDoorOrButton(GO_MAIN_CHAMBERS_DOOR);
+        {
+            /* 2026-10-10 (Kabu): 原来这里是无条件 `DoUseDoorOrButton(GO_MAIN_CHAMBERS_DOOR)` —— 一个"切换"动作。
+             * 但面板把门打开后门的 loot state 停在 GO_ACTIVATED，而 `GameObject::UseDoorOrButton()` 第一句
+             * `if (m_lootState != GO_READY) return;` 会静默早退 ⇒ 进战斗时"关门"实际没发生
+             * （站长实测：督军进战斗门不关、脱战反而关门）。改成**确定状态**，只影响本实例脚本：
+             *   进战斗(IN_PROGRESS) ⇒ 关门；失败/团灭(FAIL) ⇒ 开门；击杀(DONE) ⇒ 保持开门。 */
+            if (GameObject* pDoor = GetSingleGameObjectFromStorage(GO_MAIN_CHAMBERS_DOOR))
+            {
+                if (uiData == IN_PROGRESS)
+                {
+                    pDoor->SetGoState(GO_STATE_READY);
+                    pDoor->SetLootState(GO_READY);
+                }
+                else
+                {
+                    pDoor->SetGoState(GO_STATE_ACTIVE);
+                    pDoor->SetLootState(GO_ACTIVATED);
+                }
+            }
+
             if (uiData == FAIL)
             {
                 // Reset Distiller flags - respawn is handled by DB
@@ -141,6 +160,7 @@ void instance_steam_vault::SetData(uint32 uiType, uint32 uiData)
             }
             m_auiEncounter[uiType] = uiData;
             break;
+        }
     }
 
     if (uiData == DONE || uiData == SPECIAL)
