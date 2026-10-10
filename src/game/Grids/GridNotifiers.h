@@ -597,6 +597,14 @@ namespace MaNGOS
             void operator()(GameObject* u) const;
             void operator()(WorldObject*) const {}
             void operator()(Corpse*) const {}
+            // Fork addition (2026-10-10): dead dynamic-guid spawn group members whose corpse has to be
+            // dropped so that their group can rebuild the slot - .respawn on such a target was a no-op
+            // until the corpse decayed on its own (see ChatHandler::HandleRespawnCommand for the why).
+            // Only collected here: a cell visitor must not modify the world while it is iterating, the
+            // command removes those corpses after the visit is finished.
+            std::vector<Creature*> const& GetPendingCorpseRemoval() const { return m_pendingCorpseRemoval; }
+        private:
+            mutable std::vector<Creature*> m_pendingCorpseRemoval;
     };
 
     // GameObject checks

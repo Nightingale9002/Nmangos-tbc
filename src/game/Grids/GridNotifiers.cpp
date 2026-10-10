@@ -243,7 +243,12 @@ void MaNGOS::RespawnDo::operator()(Creature* u) const
         if (u->IsDead() && !u->GetCreatureGroup())
         {
             if (u->GetMap()->GetMapDataContainer().GetSpawnGroupByGuid(u->GetDbGuid(), TYPEID_UNIT))
+            {
                 u->GetMap()->GetPersistentState()->SaveCreatureRespawnTime(u->GetDbGuid(), time(nullptr));
+                // the slot stays blocked by this corpse until it is removed - see the comment in
+                // RespawnDo's declaration; the command drops it once the visit is over
+                m_pendingCorpseRemoval.push_back(u);
+            }
             else
                 u->GetMap()->GetSpawnManager().RespawnCreature(u->GetDbGuid(), 0);
         }

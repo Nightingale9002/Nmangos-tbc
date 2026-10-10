@@ -51,6 +51,9 @@ class SpawnGroup
         std::string to_string() const;
         uint32 GetObjectTypeId() const { return m_objectTypeId; }
         void SetEnabled(bool enabled) { m_enabled = enabled; }
+        // Fork addition (2026-10-10): used only by the .respawn GM command. RemoveObject sets a
+        // "full wipe" cooldown for outdoor groups; a deliberate GM respawn must not be swallowed by it.
+        void ClearCooldown() { m_cooldown = TimePoint(); }
         SpawnGroupEntry const& GetGroupEntry() const { return m_entry; }
         uint32 GetGroupId() const { return m_entry.Id; }
 

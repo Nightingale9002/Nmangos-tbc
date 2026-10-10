@@ -5700,24 +5700,32 @@ bool ChatHandler::HandleRespawnCommand(char* /*args*/)
         if (target->IsDead())
         {
             Creature* creature = static_cast<Creature*>(target);
+
             if (target->IsUsingNewSpawningSystem())
             {
-                // [RESPAWN-FIX 2026-10-06] 选中目标的这条路上，"组怪"原来什么都不做 —— 而副本里的生物
-                // 绝大多数都是刷怪组（spawn_group）成员，于是 .respawn 对它们完全无效（站长实测）。
-                // 约定见 Creature::SetDeathState（Creature.cpp:2143-2149）：组员的刷新时间由刷怪组逻辑消费，
-                // 所以这里把该槽位的刷新时间重置为"现在"，并让所在组立刻补刷。
-                // 顺序很重要：必须先清掉选中这具尸体，否则 SpawnGroup::Spawn 会因为"槽位里还有对象"跳过它
-                // （SpawnGroup.cpp:297-305 的反闪烁守卫）；清掉之后组的下一次 Update 就会把整只补出来。
-                if (CreatureGroup* group = creature->GetCreatureGroup())
+                // 2026-10-10 (Kabu): .respawn on a dead dynamic-guid creature.
+                //
+                // Non-group dynamic-guid spawns are re-materialized by SpawnManager::RespawnCreature(),
+                // which ends up in WorldObject::SpawnCreature() and therefore discards the old object
+                // itself - there .respawn behaves like it does for classic spawns.
+                //
+                // Spawn group members are the case that was broken: the upstream shape only resets the
+                // saved respawn time and relies on the group to rebuild the slot on a later map update.
+                // SpawnGroup::Spawn() skips any slot whose object is still in the world (guard in
+                // Maps/SpawnGroup.cpp), and a dead member keeps its corpse in the world until its corpse
+                // delay expires - so the command visibly did nothing for every grouped creature until
+                // the corpse decayed on its own. Drop the corpse here, exactly like Creature::Respawn()
+                // does on the classic path, and clear the group's wipe cooldown, so that the group can
+                // rebuild the member on its next update (every map update).
+                if (SpawnGroupEntry* groupEntry = creature->GetMap()->GetMapDataContainer().GetSpawnGroupByGuid(creature->GetDbGuid(), TYPEID_UNIT))
                 {
-                    creature->ForcedDespawn();
-                    target->GetMap()->GetPersistentState()->SaveCreatureRespawnTime(target->GetDbGuid(), time(nullptr));
-                    group->Spawn(true, true); // 忽略刷新时间与 m_enabled；worldstate 条件仍会拦截（SpawnGroup.cpp:181）
+                    creature->ForcedDespawn();   // removes the corpse; AI CorpseRemoved may set its own delay, so save after
+                    creature->GetMap()->GetPersistentState()->SaveCreatureRespawnTime(creature->GetDbGuid(), time(nullptr));
+                    if (SpawnGroup* group = creature->GetMap()->GetSpawnManager().GetSpawnGroup(groupEntry->Id))
+                        group->ClearCooldown();
                 }
-                else if (creature->GetMap()->GetMapDataContainer().GetSpawnGroupByGuid(creature->GetDbGuid(), TYPEID_UNIT))
-                    target->GetMap()->GetPersistentState()->SaveCreatureRespawnTime(target->GetDbGuid(), time(nullptr));
                 else
-                    target->GetMap()->GetSpawnManager().RespawnCreature(target->GetDbGuid(), 0);
+                    creature->GetMap()->GetSpawnManager().RespawnCreature(creature->GetDbGuid(), 0);
             }
             else
                 creature->Respawn();
@@ -5730,6 +5738,33 @@ bool ChatHandler::HandleRespawnCommand(char* /*args*/)
     Cell::VisitGridObjects(pl, worker, pl->GetVisibilityData().GetVisibilityDistance());
 
     pl->GetMap()->GetSpawnManager().RespawnSpawnGroupsInVicinity(pl->GetPosition(), pl->GetVisibilityData().GetVisibilityDistance());
+
+    // [RESPAWN-FIX 2026-10-10] Batch .respawn (no selected target) on dynamic-guid spawn group members.
+    //
+    // RespawnDo only resets their respawn time (and RespawnSpawnGroupsInVicinity does the same for the
+    // whole group), but SpawnGroup::Spawn() refuses to materialize a slot whose object is still in the
+    // world - a dead member keeps its corpse there until the corpse delay expires, so the batch command
+    // looked like a no-op for every grouped creature exactly like the single-target form did.
+    //
+    // The corpses were collected by the visitor on purpose: dropping them inside the visit would
+    // unlink objects from the cell container the visitor is iterating. Now that the visit is over they
+    // are removed (the same call the classic path does inside Creature::Respawn) and the group rebuilds
+    // the members on its next update.
+    std::set<uint32> cooldownClearedGroups;
+    for (Creature* creature : u_do.GetPendingCorpseRemoval())
+    {
+        if (!creature->IsInWorld() || !creature->IsDead())
+            continue;
+
+        SpawnGroupEntry* groupEntry = creature->GetMap()->GetMapDataContainer().GetSpawnGroupByGuid(creature->GetDbGuid(), TYPEID_UNIT);
+
+        creature->ForcedDespawn();               // AI CorpseRemoved may set its own delay, so save the time after
+        creature->GetMap()->GetPersistentState()->SaveCreatureRespawnTime(creature->GetDbGuid(), time(nullptr));
+
+        if (groupEntry && cooldownClearedGroups.insert(groupEntry->Id).second)
+            if (SpawnGroup* group = creature->GetMap()->GetSpawnManager().GetSpawnGroup(groupEntry->Id))
+                group->ClearCooldown();
+    }
     return true;
 }
 

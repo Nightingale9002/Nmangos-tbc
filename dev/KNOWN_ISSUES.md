@@ -9075,3 +9075,28 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 - `areatrigger_teleport` 三行（4468/4467/4469）`required_level = 68`，但它们**自身的失败提示文本**写的就是 "You must be at least level 65 to enter." ⇒ 数据与提示自相矛盾 ✓ 按站长口径改为 **65** ✓
 
 - 往返自检通过 ✓；本地已应用；**云端待同步**（纯数据、不重启）
+
+
+---
+
+## [核心] `.respawn` 对 dynguid 生物完全无效（选中与批量两种形式）—— 2026-10-10
+
+- 现象：走新刷怪系统（dynguid）的尸体，选中后 `.respawn` 毫无反应；**不带目标**直接 `.respawn` 同样无效。经典（非 dynguid）刷点一切正常 ✓
+
+- 定位：临时 `[RESPAWN-DBG]` 探针（只打日志、不改行为，验证完已删）实测输出
+  `guid=9000340 dbGuid=5450171 dead=1 creatureGroup=none spawnGroupByGuid=1`、`guid=9000347 dbGuid=5450030 …` ⇒ 目标都是**刷怪组成员，且尸体阶段已无 CreatureGroup**
+
+- 根因两条：
+  1. 死亡时 `Creature::SetDeathState(JUST_DIED)` 会 `ClearCreatureGroup()`（`Creature.cpp:2175`）⇒ **尸体阶段 `GetCreatureGroup()` 已经是空**，因此上游 `if (!GetCreatureGroup())` 命中的是"刷怪组成员"分支（探针证实），而不是"有组"分支；
+  2. 该分支上游只写重生时间（`SaveCreatureRespawnTime(dbGuid, now)`），重建交给刷怪组下一次 map update。但 `SpawnGroup::Spawn` 有一条守卫：**槽位在世界上还有对象就直接跳过**（`SpawnGroup.cpp:301`，`e411017b76` 闪怪修复所加），而尸体在 corpse delay 到期前一直在世界上 ⇒ 命令表现得完全无效，只能等尸体自然消失 ✓
+
+- 对照：**非**刷怪组成员的 dynguid 本来就没问题 —— `SpawnManager::RespawnCreature` → `WorldObject::SpawnCreature` 会自己把旧对象挂进删除列表（`Object.cpp:2353`）✓
+
+- 修法（只动 `.respawn` 这一条 GM 命令的两个入口，`SpawnGroup` 的通用刷怪逻辑一字未改）：
+  - **选中形式**（`Chat/Level3.cpp:5704`）：命中刷怪组成员时先 `ForcedDespawn()` 去掉尸体（等价于经典路径 `Creature::Respawn()` 内部的 `RemoveCorpse`），**再**写重生时间 = now（顺序反了会被 AI `CorpseRemoved` 设的延迟覆盖），最后 `ClearCooldown()`；刷怪组下一次 map update 重建该成员 ✓
+  - **批量形式**（`Chat/Level3.cpp:5728`）：遍历期间**不能**动手（`ForcedDespawn → CleanupsBeforeDelete → RemoveFromWorld` 会把对象从正在迭代的 cell 容器里摘掉），所以 `RespawnDo` 只把"死了 + 刷怪组成员"记进 `m_pendingCorpseRemoval`（`Grids/GridNotifiers.h:600` + `GridNotifiers.cpp:245`），命令在 `Cell::VisitGridObjects` 与 `RespawnSpawnGroupsInVicinity` 都跑完之后再统一去尸体 + 写时间 + 清冷却 ✓
+  - `Maps/SpawnGroup.h:54` 新增 `ClearCooldown()`，只给这条 GM 路径用（户外组全灭时 `RemoveObject` 会压一个 wipe 冷却，否则强制重生仍会被吞掉）✓
+
+- 边界：批量形式只作用于**视野范围内**的尸体（沿用原有 `GetVisibilityDistance()` 口径，实测站长同场景通过）；非刷怪组路径、经典路径、其它 `RespawnDo` 调用方均保持上游原样 ✓
+
+- 验证：站长本地实测"选中复活没问题" + "不选中复活也没问题了" ✓（两次均先本地 Release 构建 + `deploy_local_halaa.ps1` 部署）
