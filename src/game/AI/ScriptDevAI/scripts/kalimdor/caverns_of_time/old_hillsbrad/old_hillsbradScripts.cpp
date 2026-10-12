@@ -147,7 +147,14 @@ enum
 
     SAY_TH_LEAVE_COMBAT1            = 17607,
     SAY_TH_LEAVE_COMBAT2            = 17608,
-    SAY_TH_LEAVE_COMBAT3            = 10457,
+    // [TEXT-ID-FIX 2026-10-12] 这里原本写的是 10457 —— 那是祖尔格拉布哈卡的台词
+    // （"Blood and souls for Hakkar!  HAHAHAH!" / "鲜血和灵魂，为了哈卡而战！哈哈哈！"），
+    // 于是旧希尔斯布莱德护送里的萨尔一脱战就喊一句哈卡的话（站长 2026-10-12 报的问题）。
+    // 同组 LEAVE_COMBAT1/2 = 17607/17608 是"我欠你们的情，陌生人"/"谢谢你们，你们给了我希望"，
+    // 17609 正是同批第三句（"I will not waste this chance. I will seek out my destiny."），
+    // 而 17609 在源码与库脚本里**原本没有任何引用**（被这行写错而孤立）。
+    // 错值来自上游 cmangos 提交 e8b9665e3 "OHF: Rename old hillsbrad to new style part 1"（2023-05-28）。
+    SAY_TH_LEAVE_COMBAT3            = 17609,
 
     // reset texts
     SAY_ERONZION_RESET_THRALL       = 16729,

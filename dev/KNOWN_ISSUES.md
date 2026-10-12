@@ -9186,3 +9186,27 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
   - **回退**：把那一行改回 3（或 `cp -a` 备份文件覆盖）即可，同样随下次重启生效。
 
 - **未动但偏激进的项（等站长点）**：`Rare = 5`（蓝装 ×5 —— 引用组里 20% 的蓝装会变必掉）、`Uncommon = 2`、`Quest = 100`（任务物品必掉）、`Referenced = 1`（未放大，`dev/081` 也特意没用它，理由见该文件头部注释）。
+
+
+---
+
+## [本地化/文本] 萨尔在旧希尔斯布莱德脱战喊"为了哈卡而战" = 上游写错文本 id（10457 → 17609）—— 2026-10-12
+
+- 现象（站长）：旧希尔斯布莱德（CoT 敦霍尔德）护送里，**萨尔**一脱战就喊 `鲜血和灵魂，为了哈卡而战！哈哈哈！`
+
+- 定位：
+  - `broadcast_text` Id **10457** = `Blood and souls for Hakkar!  HAHAHAH!`（**祖尔格拉布哈卡**的台词，zh = "鲜血和灵魂，为了哈卡而战！哈哈哈！"）✓
+  - 全源码里**唯一**引用 10457 的地方 = `old_hillsbradScripts.cpp:150` 的 `SAY_TH_LEAVE_COMBAT3 = 10457`；使用点在同文件 `:432-434`（脱战随机在 LEAVE_COMBAT1/2/3 里挑一句）⇒ 就是它 ✓
+
+- **正确值 = 17609**，三条独立证据：
+  1. 同组 `SAY_TH_LEAVE_COMBAT1 = 17607`（"I am truly in your debt, strangers."）、`= 17608`（"Thank you, strangers. You have given me hope."），而 **17609 = "I will not waste this chance. I will seek out my destiny."**（"我不会浪费这个机会的。我要找到自己真正的命运。"）正是同批第三句；
+  2. 整个 17600-17613 文本块与枚举**顺序一一对应**：17600-17603 = 随机 aggro、17604-17606 = 随机 kill、17607-17609 = 脱战、17610-17613 = 低血/死亡 ✓
+  3. **17609 在源码与库脚本里原本没有任何文本引用**（被这行写错而孤立）：`dbscripts_on_creature_movement` 里那两处 17609（脚本 id 1761001/1761002，属 waypoint 路径 17610 = 萨尔护送路径）用的是 command 31 的 `datalong` = **条件 id**，不是文本引用 ✓
+
+- 来源：错值是**上游** cmangos 提交 `e8b9665e3 "OHF: Rename old hillsbrad to new style part 1"`（killerwife，2023-05-28）引入的，**不是我们改坏的**；本仓 `git log -S` 至今只有那一笔，上游没修 ✓
+
+- 修法：**只改这一行的值** 10457 → **17609**（定点；不动其它文本、不动脚本逻辑），并在注释里写明错值来源与判据 ✓
+
+- 连带确认：10457 这条哈卡台词在本库**没有任何 EventAI / dbscripts 引用**（祖尔格拉布那边根本没接它）⇒ 改这行不影响别处 ✓
+
+- 生效/验证：本地 Release 编译通过 + 本地 `deploy_local_halaa.ps1` 部署；游戏内请站长在旧希尔斯布莱德护送中确认（脱战台词应变成 17607/17608/17609 里随机一句，不再出现哈卡那句）；**云端待同步**（未游戏内验收前不 scp，按 P0）。
