@@ -9160,3 +9160,29 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 - **运维口径（顺带定案）**：**在线角色不能靠 SQL 挪** —— `characters` 的位置会被服务端定期保存覆盖；本次给 `UPDATE … WHERE online=0` 守卫实测**静默 0 行**（改库时他还在线）。在线只能走游戏内命令（命令表见 `Chat.cpp`：`.tele name <角色> <命名点>` / `.recall` / `.summon` / `.goname`）或先踢下线再写库。**炉石点存在 `character_homebind`（map/zone/x/y/z），不是 `characters` 的列**；本例炉石 = map 0 / zone 12 / `-8949.95, -132.493, 83.5312`（北郡修道院）。另：`game_tele` 里最近的命名点是 `NorthshireValley`（map 0 / `-8921.09, -119.135, 82.195`，与炉石相距约 30 码）。
 
 - 顺带记录（未改）：该角色 `health = 1000003712`、`power1 = 100000000`、`extra_flags = 7` —— 人为改过的超上限数值。
+
+
+---
+
+## [配置] 掉率设置审计 + 紫装掉率 3 → 1（云端配置，随下次重启生效）—— 2026-10-12
+
+- 起因：站长"检查掉率设置，适当调低紫装掉落"。查清了**紫装被放大了两次**：配置一次 + 数据一次。
+
+- **配置（云端 `/opt/mangos/bin/mangosd.conf:1555-1564`）**：
+  `Poor 0.5 / Normal 1 / Uncommon 2 / Rare 5 / **Epic 3** / Legendary 2 / Artifact 1 / Referenced 1 / Quest 100 / Money 1`
+- **本地 `x64_Debug/mangosd.conf` 整块 `Rate.Drop.*` 都没有**（只写了 `Rate.Creature.Aggro = 1`）⇒ 本地全走 `World.cpp:412-416` 的默认 **1.0** ⇒ **本地复现不了线上掉率**（要用本地验证掉率，得先把这块补进本地 conf）。`src/mangosd/mangosd.conf.dist.in:1589` 起的默认值也是 1。
+
+- **机制（`Loot/LootMgr.cpp`）**：`LootStoreItem::Roll(rate)` 按条目类型分流 ——
+  引用行（`mincountOrRef < 0`）→ `Rate.Drop.Item.Referenced`；`needs_quest` → `Rate.Drop.Item.Quest`；其余 → **按物品品质** `Rate.Drop.Item.<Quality>`。
+  `rate` 这个开关来自**外层 store** 的 `IsRatesAllowed()`（`Loot::FillLoot` → `:975`，creature/gameobject/item/… = true），引用子模板在 `LootTemplate::Process:2682` **沿用同一开关** ⇒ **`Rate.Drop.Item.Epic` 同时放大"直接紫装行"和"引用组内部的紫装行"**（只有直接从 `reference_loot_template` store 取表时才不放大）。参考：`chance >= 100` 在 `:375` 直接短路为必掉，所以**任何 33.33%+ 的紫装行在 ×3 下都变成必掉**。
+
+- **数据侧第二次放大**：`dev/087`（2026-09-19，C 段）把 **53 个"全紫装"参考组**的外层几率**写死 ×5**（0.25→1.25、0.8→4、1→5 …；为的是让 AHBot 有紫装可卖），`dev/081`（09-18，A 段）同类分档抬升。⇒ 世界掉落紫装组实际 = **×5(库) × ×3(配置) = ×15**，这正是"紫装泛滥"的主因。
+  另：`creature_loot_template` 里紫装共 1,122 行，其中 **153 行几率 ≥ 33.33%** ⇒ ×3 时全部**必掉**（AQ 小怪项链 33.98%、Qiraji Hilt 40%、Sulfuron Ingot 37%、Mature Black Dragon Sinew 40% 等）；`reference_loot_template` 里紫装 1,996 行（1,951 行 <5%，均值 0.085%；T1 徽记那种 33% 只有 19 行）。
+
+- **本次改动（只动一行配置）**：云端 `Rate.Drop.Item.Epic = 3` → **`1`** ✓
+  - 备份：`/root/_confbak_mangosd_20261012_drops.conf`；`diff` 确认**只有这一行**变化 ✓
+  - 效果：153 行必掉回到 33~40% 原值；T1 徽记类 33% 回到 33%；世界紫装组保留 ×5（AHBot 供货目的不变）
+  - **生效**：配置文件在 mangosd 启动时读取 ⇒ **随下一次启动生效（今晚 04:06 夜间重启）**；想立刻生效可 `.reload config`（`Chat/Level3.cpp:349` → `sWorld.LoadConfigSettings(true)`，只重读配置、很轻），但按站长规矩默认**不做热载**。
+  - **回退**：把那一行改回 3（或 `cp -a` 备份文件覆盖）即可，同样随下次重启生效。
+
+- **未动但偏激进的项（等站长点）**：`Rare = 5`（蓝装 ×5 —— 引用组里 20% 的蓝装会变必掉）、`Uncommon = 2`、`Quest = 100`（任务物品必掉）、`Referenced = 1`（未放大，`dev/081` 也特意没用它，理由见该文件头部注释）。
