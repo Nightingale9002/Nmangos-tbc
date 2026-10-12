@@ -9104,7 +9104,7 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 
 ---
 
-## [数据] 副本进入等级总审计（全表 186 行）+ 破碎大厅/蒸汽地窟改 65（`dev/173`）—— 2026-10-10
+## [数据] 副本进入等级总审计（全表 186 行）+ 破碎大厅/蒸汽地窟改 65（`dev/173`）—— 2026-10-12
 
 - 起因：站长让查"这些副本的进入等级"，随后定了口径 ⇒ 全表逐行核对，不只用户点名的那几行。
 
@@ -9134,3 +9134,29 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 - **更正记录**：本轮我曾口头说"`heroic_key` 全表为 0"，**错误**（当时只看了差异表）。实际 18 行带英雄钥匙：地狱火 30637/30622（4151/4152/4150）、盘牙 30623（4364/4363/4365）、奥金顿 30633（4407/4406/4405/4404）、风暴要塞 30634（4468/4467/4469）、时光之穴 30635（4320/4321）。
 
 - **生效**：`areatrigger_teleport` 启动时载入 ⇒ 需重启；本地已应用并重启生效；**云端待同步**（`dev/173` 需随夜间重启）。
+
+
+---
+
+## [客户端兼容] 角色停在 map 13（客户端 `test` 图）时：2.4.3 能进、2.5.3 登录报错 —— 2026-10-12
+
+- 现象（站长）：账号 `nymph` 的角色 **Asggd（guid 5 / account 6）** 停在 **map 13**，**2.4.3 客户端登录正常，2.5.3 客户端在该位置登录报错** ✓
+
+- map 13 是什么：客户端 `x64_Debug/dbc/Map.dbc`（83 条记录）里 map=13 的内部名就是 **`test`**（对照：0=Azeroth / 1=Kalimdor / 530=Expansion01 / 532=Karazahn）。当时坐标 `(-0.310414, 0.107129, -100.538)`、`zone=3817`、`orientation=2.94612` —— 原点附近的空图，**无地形** ⇒ 客户端拿不到可用地图数据。
+
+- 服务端侧报错签名（`Server.log`，全部发生在 16:46–16:57 这段"停在 test 图"的时间窗内，换到 map 530 后消失）：
+  - `ERROR:HandleSetActiveMoverOpcode: incorrect mover guid: mover is Player Asggd (Counter: 5) DBGuid: 5 and should be None (Counter: 0)` ×**7**
+  - 反作弊 `Action: Inform` ×**22** `BadOrderAck`：`Received ACK CMSG_MOVE_SET_CAN_FLY_ACK (837) counter = N which was not pending`（另有 `CMSG_MOVE_KNOCK_BACK_ACK (240) but no orders are pending`）；`HeartbeatSkip`：`Time since last movement: 3041 / 9351`。**Inform 不踢人**，只是记录 ✓
+  - `[HOLDER-UAF] spell=33657 caster=Player Asggd … target=Creature (Entry: 14881 …)` ×1（16:53:39；该守卫对别的玩家/怪也在刷，属既有噪音，不是本问题的因）
+  - 断线痕迹：`Char.log` 里 17:01:09 那条登出记的是 **`IP: disconnected`**（非正常登出），之前 16:59:59 / 17:00:09 有两次秒重连
+
+- 2.5.3 侧的报错（站长提供，`sugar` 桥日志，工程在**另一台机器** `D:/heitu/workspace/sugar`，本机没有该目录）：
+  `CMSG_PLAYER_LOGIN.go:205` 起的 goroutine → `mchat.SendSugarTextMessage`（`chat.go:195`）→ `ModernConn.SendPacketToClient`（`modern.go:321`），
+  在 `modern.go:381/384` 抛 **`写入的字节数不正确 SMSG_CHAT`** ⇒ **包体长度与实际写入字节数不符**，包被丢弃、登录链断掉（服务端看到的就是上一条 `IP: disconnected`）✓
+  定位方向（待拿到代码确认）：长度前缀用**字符数/编码后长度**算错（多字节中文或空串两种边界之一）或 **2.5.3 vs 2.4.3 的 SMSG_CHAT 字段布局**不一致；触发点在"登录后主动给客户端发一条文本"这一步。
+
+- 处置：**不需要服务端干预** —— 把角色换到正常地图（map 530 Hellfire Peninsula，`-1816.96, 5302.99, 9.01`，zone 3703）后 17:04:22 登录即成功 ✓。**测试 2.5.3 时不要把角色停在 map 13/`test`。**
+
+- **运维口径（顺带定案）**：**在线角色不能靠 SQL 挪** —— `characters` 的位置会被服务端定期保存覆盖；本次给 `UPDATE … WHERE online=0` 守卫实测**静默 0 行**（改库时他还在线）。在线只能走游戏内命令（命令表见 `Chat.cpp`：`.tele name <角色> <命名点>` / `.recall` / `.summon` / `.goname`）或先踢下线再写库。**炉石点存在 `character_homebind`（map/zone/x/y/z），不是 `characters` 的列**；本例炉石 = map 0 / zone 12 / `-8949.95, -132.493, 83.5312`（北郡修道院）。另：`game_tele` 里最近的命名点是 `NorthshireValley`（map 0 / `-8921.09, -119.135, 82.195`，与炉石相距约 30 码）。
+
+- 顺带记录（未改）：该角色 `health = 1000003712`、`power1 = 100000000`、`extra_flags = 7` —— 人为改过的超上限数值。
