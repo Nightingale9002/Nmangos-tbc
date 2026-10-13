@@ -12867,12 +12867,22 @@ void Player::PrepareQuestMenu(ObjectGuid guid) const
 
         Quest const* pQuest = sObjectMgr.GetQuestTemplate(quest_id);
 
-        if (!pQuest || !pQuest->IsActive())
+        if (!pQuest)
             continue;
 
         QuestStatus status = GetQuestStatus(quest_id);
 
-        if (status == QUEST_STATUS_COMPLETE && !GetQuestRewardStatus(quest_id))
+        // [DAILY-STUCK 2026-10-13] 已完成的日常必须永远能交。
+        // 事件轮换会把该事件的任务置为非活跃（GameEventMgr.cpp:565 SetQuestActiveState(false)），
+        // 旧代码在这里直接 `continue`，于是"昨天做完没交的日常"在 NPC 头上再也不出现"?"，
+        // 任务永远卡在日志里（status=COMPLETE、rewarded=0），还会连带占住排他组
+        // （见 SatisfyQuestExclusiveGroup 的同类放宽）。这里只放宽"已在日志里完成未交付"的任务；
+        // 接新任务/未完成任务的活跃性要求不变（CanSeeStartQuest / CanTakeQuest 里仍查 IsActive）。
+        bool const completedInLog = (status == QUEST_STATUS_COMPLETE && !GetQuestRewardStatus(quest_id));
+        if (!pQuest->IsActive() && !completedInLog)
+            continue;
+
+        if (completedInLog)
             qm.AddMenuItem(quest_id, DIALOG_STATUS_REWARD_REP);
         else if (status == QUEST_STATUS_INCOMPLETE)
             qm.AddMenuItem(quest_id, DIALOG_STATUS_INCOMPLETE);
@@ -14070,6 +14080,10 @@ bool Player::SatisfyQuestExclusiveGroup(Quest const* qInfo, bool msg) const
         QuestStatusMap::const_iterator i_exstatus = mQuestStatus.find(exclude_Id);
 
         // alternative quest already started or completed
+        // [DAILY-STUCK 2026-10-13] 排他组语义**保持上游/原版不变**（COMPLETE 与 INCOMPLETE 都挡）。
+        // 站长口径：交掉昨天那条日常后它变成 REWARDED，本组自然释放 ⇒ 就能接当天的日常；
+        // 前提是"已完成的日常必须永远能交"，那一条由 Player::PrepareQuestMenu 的放宽保证
+        // （否则任务会永久卡在 COMPLETE 状态，把整组日常锁死 —— 这才是原始 bug）。
         if (i_exstatus != mQuestStatus.end() &&
                 (i_exstatus->second.m_status == QUEST_STATUS_COMPLETE || i_exstatus->second.m_status == QUEST_STATUS_INCOMPLETE))
         {
