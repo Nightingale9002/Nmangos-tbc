@@ -733,10 +733,32 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
         // corridor (they must walk the seabed).
         if (ownerInWater && !walkInWater && owner.CanSwim())
         {
-            path.clear();
-            path.push_back(this->i_path->getStartPosition());
-            path.push_back(G3D::Vector3(x, y, z));
-            this->i_path->setPathType(PATHFIND_NORMAL);
+            // [PATH-WATER 2026-10-13] 只有「能上岸的两栖怪 + 走廊可用 + 目标不在水里」
+            // 才保留上面 calculate() 已经算好的 navmesh 走廊；其余情况（纯水生 / 目标在水里 /
+            // 走廊 NOPATH·INCOMPLETE）保持原来的"直线游"行为，逐字不变。
+            //
+            // 为什么 usableCorridor 这一条不能省：原来这一支是无条件
+            // setPathType(PATHFIND_NORMAL) 的 —— 它顺手把 NOPATH 状态抹掉了。若让走廊留下却
+            // 仍是 NOPATH，流程会走到下面 `if (!gen || NOPATH|INCOMPLETE)` 再寻一次，然后在
+            // `if (getPathType() & PATHFIND_NOPATH) return false` 处直接放弃追击（怪脱战回家），
+            // 那比"穿岸"更糟。
+            //
+            // 触发实例（云端 Server.log 2026-10-13 11:19:56，map=269 Darkwater Crocolisk 17952，
+            // InhabitType=3 ⇒ CanWalk && CanSwim）：calculate 已经算出 26 点走廊（type=1 正常），
+            // 却被这一支 clear() 成 2 点直线 ⇒ 鳄鱼直穿岸边/地形。日志：[PFDBG] FINAL … npts=26
+            // 紧接 [PFDBG] SPLINE … npts=2，起终点坐标逐字相同。
+            bool const usableCorridor = !(this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE))
+                                        && path.size() >= 2;
+            bool const keepCorridor = owner.CanWalk() && usableCorridor && !targetInWater;
+            if (!keepCorridor)
+            {
+                path.clear();
+                path.push_back(this->i_path->getStartPosition());
+                path.push_back(G3D::Vector3(x, y, z));
+                this->i_path->setPathType(PATHFIND_NORMAL);
+            }
+            else
+                PFDBG_MSG(&owner, "ownerInWater 两栖保留走廊 npts=%zu targetInWater=%d", path.size(), targetInWater ? 1 : 0);
         }
         // The navmesh has no underwater route: fall back to a direct swim path.
         else if (ownerInWater && (this->i_path->getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)))
