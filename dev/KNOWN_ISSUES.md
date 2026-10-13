@@ -9210,3 +9210,179 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 - 连带确认：10457 这条哈卡台词在本库**没有任何 EventAI / dbscripts 引用**（祖尔格拉布那边根本没接它）⇒ 改这行不影响别处 ✓
 
 - 生效/验证：本地 Release 编译通过 + 本地 `deploy_local_halaa.ps1` 部署；游戏内请站长在旧希尔斯布莱德护送中确认（脱战台词应变成 17607/17608/17609 里随机一句，不再出现哈卡那句）；**云端待同步**（未游戏内验收前不 scp，按 P0）。
+
+
+---
+
+## [寻路] 黑色沼泽鳄鱼"直线穿岸" = 水下追击的直线捷径把刚算好的 navmesh 走廊丢掉 —— 2026-10-13
+
+- 现象（站长在**云端**抓到，用 aura 10909 标记了那只怪）：map=269 的 **`Darkwater Crocolisk (17952)`** 追击时直穿岸边/地形，不走 navmesh ✓
+
+- 日志证据（云端 `Server.log` 2026-10-13 11:19:56；`[PFDBG]` 只对带 aura **10909** 的生物打印，见 `MotionGenerators/PfDebug.h:18-24`）：
+  - `[PFDBG] FINAL map=269 start(-1919.14880371,7103.28222656,17.97760391) end(-2016.09997559,7131.47070312,22.66418648) type=1 npts=26`
+    ⇒ PathFinder **算出 26 点正常走廊**（type=1 = `PATHFIND_NORMAL`，不是没算出来）
+  - `[PFDBG] SPLINE type=1 npts=2` + `pt0/pt1` = 起点/终点（与 FINAL 的 start/end **逐字相同**）⇒ 实际下发的是**两点直线** ✗
+  - `MoveSplineInit water-rewrite pt(-1919.1488,7103.2822) … waterLevel=18.17689323 walkInWater=0 canSwim=1` ⇒ 它在水里（z 17.98 < 水面 18.18）、可游泳 ✓
+
+- 根因：`MotionGenerators/TargetedMovementGenerator.cpp:734`（旧码）水下追击分支
+  `if (ownerInWater && !walkInWater && owner.CanSwim())` **无条件** `path.clear()`，只塞回
+  `getStartPosition()` 与 `(x,y,z)` ⇒ 把上面 `:724` 刚算好的走廊**扔掉** ✗。
+  判据只排除了 `WALK_IN_WATER`，**漏掉"能上岸的两栖生物"**：`17952` 的 `InhabitType = 3`（GROUND|WATER）
+  ⇒ `CanWalk() && CanSwim()` 同时为真（定义见 `Entities/Creature.h:653-654`）✗
+  该分支本意（原注释 728-733）是给**纯游泳者**（鱼）用的：水下 navmesh 是海床，走廊会让它潜到水底、
+  停在目标下方、反复重寻 ⇒ 所以给直线 ✓ —— 两栖怪被误伤 ✓
+
+- 修法（`[PATH-WATER 2026-10-13]`，只改这一支）：
+  ```cpp
+  bool const usableCorridor = !(getPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE)) && path.size() >= 2;
+  bool const keepCorridor   = owner.CanWalk() && usableCorridor && !targetInWater;
+  if (!keepCorridor) { path = { start, (x,y,z) }; setPathType(PATHFIND_NORMAL); }   // ← 与旧行为逐字相同
+  ```
+  - **为什么 `usableCorridor` 不能省**：旧码这一支是无条件 `setPathType(PATHFIND_NORMAL)` 的，顺手把 NOPATH 抹掉了；
+    若保留走廊却仍是 NOPATH，流程会走到 `:805` 再寻一次、在 `:817`（`if (getPathType() & PATHFIND_NOPATH) return false`）
+    **直接放弃追击 ⇒ 怪脱战回家** ✗ 比"穿岸"更糟。带上它 ⇒ 走廊不可用时与旧码完全一致 ✓
+  - `targetInWater` 是 `:702` 现成变量（`i_target->IsInWater() || 泳动标志`）⇒ 无新逻辑、无接口/DB 改动 ✓
+  - 影响面（逐个组合核对过）：陆地生物 / 纯水生（全库 50 个模板）/ `WALK_IN_WATER` / 两栖追**水里**目标 —— **全都不变** ✓；
+    唯一变化 = **两栖怪在水里追岸上目标** ⇒ 改走 navmesh 走廊 ✓。非追击类移动（漫游/巡逻/回家）不受影响（这段只在 Chase 里）✓
+  - 注意别拿 `InhabitType=3` 的总数当影响面：库里 16,171 个模板 / 73,643 个刷点标着 3，但上游 DB 把大量陆地怪
+    （Talbuk、Dragonmaw Peon、各种 Trigger…）也标成 3 ✗；进入该分支还需 `owner.IsInWater()` 为真 ⇒ 只有真在水里的才算 ✓
+
+- 验证方式（探针自带，无需额外工具）：给鳄鱼挂 aura 10909 后看 `[PFDBG]`
+  ① 站**岸上**被追 → `SPLINE npts` 应从 2 变成 **20+**（走廊 ✓，另有一行 `ownerInWater 两栖保留走廊 npts=…` 可确认命中新分支）；
+  ② 你**游在水里**被追 → 仍应是 2 点（原意图保留 ✓）；③ 纯水生（鱼）→ 仍 2 点 ✓；④ 不挂 10909 = 零日志 ✓
+
+- 状态：本地 Release 编译 + 本地 `deploy_local_halaa.ps1` 部署 ✓（md5 `E20F5793A38AA9239C388D5E978F505A`）；
+  **云端待站长发话同步**（同步后随夜间重启生效）✓
+
+- 顺带发现（同一份日志，未改、与鳄鱼无关）：`[MOVETO-BELOWFLOOR] Entry 21114 DBGuid 74150 dest(1903.96,5551.51,258.17) floor=263.72 diff=-5.54 → z clamped to floor`
+  = **Station Technician（21114, map 530）** 的刷点 `creature.guid 74150` z 比地面低 **5.54 码** ✗（我们的 clamp 只兜住移动，刷点本身是错的）
+  ⇒ 建议单独一条数据修复；`[PFDBG]` 探针目前是 `ERROR:` 级 ✗（长期留痕按口径应改 `sLog.outString`），要不要顺手降级。
+
+
+---
+
+## [任务/机制] 日常"做完交不掉 + 卡住接不了当天日常"——事件轮换后的两个闸门（已修，本地已部署）—— 2026-10-13
+
+- 现象（站长）：① 组里的日常**轮换过期之后就交不了**；② **有一个完成的日常就没法接当天的日常**
+- 站长口径（2026-10-13 定）：**已完成的日常无论如何都能交**；**今天还没交接就不该挡着接当天的日常**
+
+- **闸门一：交不了 = 事件停掉后任务被置"非活跃"**
+  - 事件轮换：`World::ResetDailyQuests()`（`World.cpp:2485`）→ `GenerateEventGroupEvents()`（`:2413`）每天在 `event_group_chosen` 里给每个组随机选一个事件并 `StartEvent`，其余 `disabled`（日志那一片 `Event 1xxx ... disabled` 就是它 ✓）
+  - 事件停止时：`GameEventMgr.cpp:565` `SetQuestActiveState(false)` ⇒ 该事件绑定的任务变成 `!IsActive()`
+  - `Player::PrepareQuestMenu`（`Player.cpp:12870`）旧码 **`if (!pQuest || !pQuest->IsActive()) continue;`** ⇒ **NPC 头上不再出现可交的"?"** ✗ ⇒ 任务永远卡在日志（`status=COMPLETE`、`rewarded=0`）
+  - 实测：11372（事件 1019）今天没被选中 ⇒ 交不了；今天选中 组1=**1001**、组2=**1021**（`event_group_chosen` ✓）
+
+- **闸门二：接不了 = 排他组把"已完成"也当阻挡（本闸门保持原样，未改）**
+  - `Wanted:` 日常系列**共用排他组**（实测 `quest_template.ExclusiveGroup`）：**英雄系列 = 11354**（11362/11363/11368-11375/**11372**/11382-11385 …）、**普通系列 = 11364**（11364/11371/11376/11383/11385 …），接/交 NPC = 24369（Wind Trader Zhareem，英雄）/ 24370（普通）
+  - `Player::SatisfyQuestExclusiveGroup`（`Player.cpp:14042`）：同组内只要有任务处于 **COMPLETE 或 INCOMPLETE** 就拒绝接新 ⇒ 卡住的 11372（组 11354）**挡住当天的英雄日常** ✗（两症状互锁：交不掉 ⇒ 释放不了组 ⇒ 接不了新的）
+  - Asggd 实测：`11372` `status=1 / rewarded=0` ✓，另有 `10710/10094/10279/10983/11488` 也是"完成未交" ✓
+
+- **修法（最终只改一处；闸门二保持原版语义）**
+  1. `Player::PrepareQuestMenu`：日志里**已完成未交付**的任务不再要求 `IsActive()`（`CanSeeStartQuest:13069` / `CanTakeQuest:13089` 仍查活跃性 ⇒ 不能借此接新任务 ✓）—— 这一处同时解决"交不掉"与"组被永久锁死"
+  2. **闸门二不改** ✓：站长 2026-10-13 追加澄清 —— **需求是"交了昨天的日常之后（因为今天的还没做）就能继续接"**；交掉后那条变成 REWARDED ⇒ 排他组自然释放 ⇒ 就能接当天的 ✓。原先我试着放宽"已完成不再挡"，按此口径**已撤回**（它会让玩家同时持两条同组日常，削弱原版设计 ✗）
+- 预期效果：**完成未交的日常在 NPC 头上一直有"?"** ⇒ 交得掉 ✓ ⇒ 交掉即可接当天那条 ✓；若故意不交，仍按原版规则挡住当天的（此时只需把旧的那条交掉即可解锁 ✓，不会再出现"永久卡死"）✓
+
+- 状态：本地 Release 编译 + `deploy_local_halaa.ps1` 部署 ✓（md5 `7D097E9427199330AB07E38CCC6294E0`）；**云端待站长发话同步**（同步后随夜间重启生效）
+- 附：若不想等重启，可先跑**一次性解锁 SQL**（把卡住的日常从日志表删掉 ⇒ 排他组立刻释放；代价是该次奖励作废），要的话我按 `guid + quest` 逐条写死（静态幂等）✓
+
+
+---
+
+## [AI/脚本] 旧希尔斯布莱德「时空猎手」决战：**萨尔不下楼 ⇒ 123 路点的士兵不刷**（**定位中：只加日志，未改任何行为**）—— 2026-10-13
+
+- 现象（站长）：时空猎手出现并喊完台词（= 路点 113/114 已过），但**萨尔没有下楼** ⇒ 走不到路点 **123**（那里才召唤 3 只塔伦米尔士兵）⇒ 决战卡住
+- 路点几何（`script_waypoint` Entry **17876**、PathId 0、共 **126** 点，与 C++ case 编号一一对应）：
+  | 路点 | 坐标 | z | 备注 |
+  |---|---|---|---|
+  | 112/113/114 | (2660.48, 659.41) | **61.94** | 旅店**二楼**：SAY_TA_ESCAPED → 等玩家对话（113）→ `SAY_EPOCH_ENTER1` 召唤时空猎手 + `StartNextDialogueText(NPC_EPOCH)`（114） |
+  | 115 | (2650.62, 666.64) | 61.93 | 二楼 |
+  | 116 | (2652.37, 670.56) | **61.94** | 二楼（"没下楼"时他就停在这一带） |
+  | **117** | (2656.05, 676.76) | **57.17** | ← **一步下降 4.76 码 = 下楼** |
+  | 118-120 | … | 57.17 | 一楼 |
+  | 121 | (2634.79, 672.96) | 54.46 | outside inn |
+  | 122/123/124 | (2635.06, 673.89) | 54.47 | ENTER3 / **fight begins**（召唤 3 士兵）/ fight ends |
+- 代码链（**已核实是通的**）：`DialogueUpdate(uiDiff)` 确在萨尔的 `UpdateAI` 中调用（`:992`）⇒ 对话能自己走完；数组 `aThrallDialogue`（`:225-238`）最后一步 `{NPC_THRALL, 0, 0}` ⇒ `JustDidDialogueStep(17876)` ⇒ `case NPC_THRALL: SetRun(); SetEscortPaused(false);`（`:702-704`）⇒ 恢复护送；**114 → 122 之间没有任何代码暂停**（122 只是 `WaitTime=18000` 的自动等待 ✓）
+- 待分辨的两种可能：
+  - **A：恢复没发生** —— 对话链没走到最后一步；或 `m_pInstance` 为空时 `JustDidDialogueStep` 直接 return（`:653-654`）
+  - **B：恢复了但"下楼"这步走不动** —— 117 的目标点没下发/寻路失败；注意 `[MOVETO-BELOWFLOOR]` 的夹取阈值是 **-5 码**，这次落差 **-4.76** ⇒ 按理论**不该**被夹取（若日志里出现夹取行就是新线索）
+- 处置（站长 2026-10-13 指示：**"不要修改原来的行为"**）：
+  - **上一版对波次/免疫的行为改动已整体撤回**（`git revert` 原提交；`case 123` 回到上游原样：只 `SummonCreature` ×3 + `MoveWaypoint(1)` + `++m_uiEpochWaveId` + `SetEscortPaused(true)`）
+  - 改为**纯日志版**：文件顶部 `kEpochDebug` + `EPOCH_DBG(...)`（**上云前必须置 false 或整段删除**），覆盖环节：
+    `WaypointReached`（含 `!m_pInstance` 早退）/ `JustDidDialogueStep` 每步 / `JustSummoned`（含免疫标志、列表长度）/ `SummonedCreatureJustDied`（含是否还在列表里）/ **波次判定被触发的瞬间** / `UpdateEscortAI` 周期性状态（约 10 秒一条：pos + paused + wave + victim）
+  - 判定表：
+    | 日志表现 | 结论 |
+    |---|---|
+    | `STATE` 一直 `paused=1`，pos ≈ (2660.48, 659.41, 61.94) | **A 类**：114 的暂停没解除 ⇒ 查对话链 / `JustDidDialogueStep` 是否到过 iEntry=17876 |
+    | `STATE` 变 `paused=0`，但 pos 停在 ≈ (2652.37, 670.56, 61.94) | **B 类**：恢复成功但下楼走不动 ⇒ 查 117 目标点的 MovePoint/寻路日志 |
+    | 连 `WaypointReached` 都很少/没有 | 路点事件没跑（`m_pInstance` 为空或护送没启动） |
+- **直接跳到该阶段的调试入口（GM 专用，最终采用）**：
+  - **为什么 `.debug waypoint` 不够**：SD2 护送的回调有**双重门槛**（`AI/ScriptDevAI/base/escort_ai.cpp:182-185`）：
+    `if (!IsSD2EscortMovement(moveType) || !HasEscortState(STATE_ESCORT_ESCORTING)) return;`
+    ① 路点路径来源必须是 **`PATH_FROM_EXTERNAL`(=3)**（护送脚本用的是 `script_waypoint`，见 `escort_ai.cpp:254`；而 `.debug waypoint` 里硬编码的是 `PATH_FROM_ENTRY`(=2) ✗）
+    ② 必须已经 `npc_escortAI::Start()`（否则 `WaypointReached` 根本不会回调到脚本 ✗）
+    实测也印证：在萨尔身上执行时得到 `attempt to MoveWaypoint() but is already using waypoint`（他自带 `creature_movement` 路径）+ `SetNextWaypoint(114)` 失败（那条路径里没有 114）✗
+  - **脚本本来就有的"阶段跳转"**：`JustRespawned()`（`old_hillsbradScripts.cpp:365-430`）会按副本进度落点：`SetCurrentWaypoint(1)` 地窖 / `(39)` 要塞 / `(70)` 谷仓 / **`(114)` 决战** ✓ —— 但那是灭团复活才走的路径，玩家/GM 都无法主动触发 ✗
+  - ⇒ 本次给 **Thrall 的 gossip 加了 GM 专用调试项**（`[EPOCH-DEBUG 2026-10-13]`，两处 `IsGameMaster()` 判定 + `DebugJumpEscort()`：强制副本阶段 → `Start(true)` → `SetEscortPaused(true)` → `SetCurrentWaypoint(point)` → `SetEscortPaused(false)`）：
+    ```
+    .go xyz 2231.52 119.13 82.38 560    # 到萨尔(17876, guid 5600435)身边并创建/进入 Old Hillsbrad
+    （点萨尔开对话，GM 会看到两条调试项）
+    [DEBUG] Jump escort to WP 113 (inn, before finale)   → 落到决战前（该步会置 TYPE_ESCORT_INN=DONE）
+    [DEBUG] Jump escort to WP 114 (Epoch Hunter spawns)  → 直接触发"召唤时空猎手 + SAY_EPOCH_ENTER1 + 对话 + 暂停"
+    ```
+    普通玩家看不到这两条（`GossipHello` 里只有 GM 才 ADD，且 `GossipSelect` 里再挡一次）⇒ **正常流程零影响** ✓
+  - 另外 `Chat/debugcmds.cpp` 的 `.debug waypoint <pathId> [point] [origin]` 也做了扩展（可选跳点 + origin，默认 3=external；**不带第二参数时逐字保持原行为**），供其它脚本调试用 ✓
+    （踩坑：`debugcmds.cpp` 是**无 BOM 的 ASCII 文件**，往里写中文会 MSVC `error C2001`，该文件消息一律英文 ✓）
+- 本地：Release 编译 + 部署 ✓（md5 `852234C0138097D4915BE78394A1DE63`）；日志 `x64_Debug\logs\Server.log`，grep `EPOCH-DBG` ✓；**云端未动**（这版是纯日志+调试入口，定位清楚后再决定真正的修复）
+
+### 追加（2026-10-13 深夜）：真正的机制 = `GetResetPosition` 是**死代码**
+
+- 实测（本地带探针日志，GM 跳到 113 后全程）：
+  - 114 的对话链**完整走完**（`JustDidDialogueStep iEntry=17876` ✓）⇒ `SetEscortPaused(false)` 生效 ✓
+  - 接着 **115→116→117(z 61.94→57.40 下楼 ✓)→118→119→120→121→122** 全部正常 ✓
+  - 到 **122 等完 18 秒**（约 15 s 实际）后，他开始**朝副本门口跑**（`STATE` 每 5 秒 -25 码，~7.9 yd/s = 跑速 ✓），到 `(2230.91,118.77,82.29)`＝**副本门口/刷新点**后才触发 `WaypointReached point=123` ✓，士兵这才刷 ✗
+  - **全程没有 `EnterEvadeMode`**（脚本层 + 核心层两条日志都没出现 ✓）、`victim=none` 全程 ✓ ⇒ **不是战斗/脱战/被拉走** ✗
+- **根因**：`WaypointMovementGenerator.cpp:521-528`
+  ```cpp
+  bool WaypointMovementGenerator<Creature>::GetResetPosition(Creature&, float& x, float& y, float& z, float& o) const
+  {
+      x = m_resetPoint.x; ... o = m_resetPoint.o;
+      return true;                       // ← 无条件返回
+      // prevent a crash at empty waypoint path.   ← 作者注释（看起来是为了防崩加的）
+      if (!i_path || i_path->empty()) return false;
+      WaypointPath::const_iterator lastPoint = i_path->find(m_lastReachedWaypoint);   // ← 永远执行不到
+      ...  // 本意是"以最后到达的路点为重置点"（跟着护送进度走）
+  }
+  ```
+  `m_resetPoint` 只在**路点运动开始那一刻**记录（`.cpp:132/147/208`，`:207` 注释 "save position and orientation in case of GetResetPosition() call"）⇒ 之后无论走到哪，"家"永远回答**起点** ✓
+  护送从**副本门口**开始 ⇒ 任何"回位/回家"都把他送回门口 ✓✓ 与站长现象完全一致（"喊完往回跑、回到位置才刷第一波"）✓
+- 已部署的**下一轮定位日志**（纯日志 ✓ md5 `459520F916B3046CD5113A05EAEB29E7`）：
+  `MotionMaster::MoveTargetedHome`（只对 17876：caller 地址 + currGen + 位置/战斗态 ⇒ **谁发起的回位** ✓）、
+  `WP::GetResetPosition(entry 17876)`（打印返回的 `m_resetPoint` + `lastReachedWP` + `currNode` ⇒ 证明死代码 ✓）、
+  `STATE` 增加 `returning=`
+- 待定修法（**需站长点头**；都要注意作者那行 `return true;` 是为"防崩"加的，空路径/未达首点其实已在上面拦过）：
+  - **A（推荐）**：删掉那行 `return true;`，恢复"以最后到达的路点为重置点"；并把 `MANGOS_ASSERT` 改成软处理（`if (lastPoint == i_path->end()) return false;`）✓
+  - **B（保守）**：保留死代码，改在护送脚本里按进度更新 home/reset 位置（只在必要处）✓
+
+- **已按 A 修复**（2026-10-13 深夜，站长确认 A）✓：  - `WaypointMovementGenerator.cpp:521` `GetResetPosition` 删除开头无条件的 `x=m_resetPoint…; return true;`，恢复执行"以**最后到达路点**为重置点"的上游原意；`MANGOS_ASSERT(lastPoint != i_path->end())` 改为软失败 `return false;`（避免个别路径状态断言崩溃）✓
+  - **影响面（诚实说明）**：这是**通用修正** —— 所有"走路点"的生物，其"回位/回家目标"从**路径起点**改为**最后到达的路点**（= 上游那段代码的本意）✓；这不是只针对敦霍尔德的补丁 ✓
+  - 验证预期：跑到 122 等完 18 秒后，**他应留在决战场**（不再跑回门口 ✓），`WaypointReached point=123` 应在 `(2635.06,673.89)` 一带触发 ✓，3 只塔伦米尔士兵当场刷出（其坐标 `2629.45,716.27 / 2639.85,717.05 / 2655.72,698.56` 是脚本写死的教堂侧 ✓ 会走过来/开打 ✓），随后才是无限军团第 1/2 波 + 时空猎手解免疫 ✓
+  - 本地：Release 编译 + 部署 ✓（md5 `279E7B9B21A06D9703FCC1A4A6F26F08`）；**云端未动**（同步前需把这一批 `EPOCH-DBG` 探针日志摘掉 ✓）
+
+- **根因更正（读代码定案，之前两条推断都被日志否定）** ⚠️：
+  - 修复 A 后重跑：`MoveTargetedHome` 与 `GetResetPosition` **一次都没被调用** ✗ ⇒ 既不是"回家"也不是"重置点"
+  - **真正的根因** = `SendNextWayPointPath()` 的"路径平滑延长"循环（`WaypointMovementGenerator.cpp:383+`）+ `GetNodeAfter()` 的**死参数**：
+    ```cpp
+    :303 bool WaypointMovementGenerator<Creature>::GetNodeAfter(WaypointPath::const_iterator& nodeItr, bool /*looped*/)
+         { ++nodeItr; if (nodeItr == i_path->end()) nodeItr = i_path->begin(); return true; }  // looped 被忽略、永远 wrap
+    ```
+    延长循环会**一路 append 后续路点直到 travelTime ≥ MinimumPathTime(6000ms)**；而旧希尔斯布莱德决战区的路点
+    **123/124 同坐标**（125/126 也在附近）⇒ 距离≈0、travelTime 长时间为 0 ⇒ append 完 126 后**绕回 1 号点**
+    （副本门口，~690 码）⇒ travelTime 才达标 ⇒ **整条 spline 被延伸到副本门口** ⇒ 萨尔跑回门口，
+    而 `OnArrived` 通知脚本用的仍是 `i_currentNode(=123)` ⇒ 日志表现"报 123 却在门口、到门口才刷小怪" ✓
+  - **与 GM 跳转无关**：自然流程照样命中（尾部路点彼此极近即触发）⇒ 与站长在云端正常流程看到的一致 ✓
+  - **修复（站长"读代码"要求后采用的 A 版）**：延长循环**到路径末尾即 `break`**，不再跨圈回起点 ✓
+    非循环路径本来就该如此；循环巡逻仍会在下一次 `OnArrived→SwitchToNextNode`（带 wrap 的正常推进）接到 1 号点，
+    仅少一点预送平滑 ✓。本地 Release 编译 + 部署 ✓（md5 `BC6A5C1843901FEB97E1FA3E75815A74`）
+  - 连带保留：`GetResetPosition` 死代码修（A 版，`:534`）✓ —— 它不是本 bug 成因，但同属"死参数/死代码"类问题 ✓
+  - 验证预期（本轮）：122 等完 18 秒后**留在决战场** ✓、`WaypointReached point=123` 在 `(2635,673)` 一带触发 ✓、
+    3 只塔伦米尔士兵当场刷出 ✓ → 无限军团第 1/2 波 → 时空猎手解免疫开战 ✓
