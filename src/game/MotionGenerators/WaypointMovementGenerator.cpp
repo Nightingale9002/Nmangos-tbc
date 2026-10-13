@@ -369,19 +369,18 @@ void WaypointMovementGenerator<Creature>::SendNextWayPointPath(Creature& creatur
     // add more node until travel time is big enough
     while (!nextNode->delay && travelTime < MinimumPathTime)
     {
-        // we'll add path to node after this one too to make animation more smoother
+        // [WP-EXT-FIX 2026-10-13] 不再跨过路径末尾"绕回起点"追加节点。
+        // 原来这里调用 GetNodeAfter(..., false)，而它的 looped 参数被忽略、**无条件 wrap 回 begin()**，
+        // 于是当路径尾部若干路点彼此极近时（旧希尔斯布莱德决战：123/124 同坐标，125/126 也在附近），
+        // travelTime 长时间 < MinimumPathTime ⇒ 一路 append 到 126 后又 append **1 号点**
+        // （副本门口，~690 码）⇒ travelTime 才达标 ⇒ 整条 spline 被延伸到副本门口，
+        // 表现为"时空猎手喊完，萨尔一路跑回门口、到门口才触发 123/刷小怪"（站长报的 bug）。
+        // 到路径末尾即停止延长：非循环路径本该如此；循环巡逻也会在下一次
+        // OnArrived→SwitchToNextNode（那是带 wrap 的正常推进）时自然接到 1 号点，只是少一点预送平滑。
         auto nodeAfterItr = currPointItr;
-
-        if (!GetNodeAfter(nodeAfterItr, looped))
-        {
-            if (looped) //that should never happen. (Well can but with abnormally short path)
-                break;
-
-            // we reach the end of the path better is to retry in the opposite direction
-            looped = true;
-            if (!GetNodeAfter(nodeAfterItr, true))
-                break; // did all the path and not reached MinimumPathTime?
-        }
+        ++nodeAfterItr;
+        if (nodeAfterItr == i_path->end())
+            break;
 
         auto const nodeAfter = nodeAfterItr->second;
 
@@ -518,15 +517,15 @@ bool WaypointMovementGenerator<Creature>::CanMove(int32 diff, Creature& u)
     return i_nextMoveTime.Passed() && !u.hasUnitState(UNIT_STAT_WAYPOINT_PAUSED);
 }
 
-bool WaypointMovementGenerator<Creature>::GetResetPosition(Creature&, float& x, float& y, float& z, float& o) const
+bool WaypointMovementGenerator<Creature>::GetResetPosition(Creature& creature, float& x, float& y, float& z, float& o) const
 {
-    x = m_resetPoint.x;
-    y = m_resetPoint.y;
-    z = m_resetPoint.z;
-    o = m_resetPoint.o;
-
-    return true;
-    // prevent a crash at empty waypoint path.
+    // [WP-RESET-FIX 2026-10-13] 恢复"以最后到达的路点为重置点"（跟着路点进度走），并做软失败处理。
+    // 原来本函数一开头就无条件 `x=m_resetPoint…; return true;`，使下面这段永远执行不到（死代码），
+    // 结果是：任何"回位/回家"都会把生物送回**路点运动开始时的位置**（= 路径起点）。
+    // 实例：旧希尔斯布莱德(560)护送决战 —— 到 122 路点等完 18 秒后，萨尔被判"回位"，
+    // 一路跑回副本门口(2230.91,118.77,82.29) 才触发 123 路点、士兵才被刷出来（站长报的 bug）。
+    // m_resetPoint（原来唯一被返回的值）只记录路径起点（`.cpp:132/147/208`），本函数下方则是
+    // 上游原本的意图实现，这里把它恢复；MANGOS_ASSERT 改成软失败以免个别路径状态导致断言崩溃。
     if (!i_path || i_path->empty())
         return false;
 
@@ -535,7 +534,8 @@ bool WaypointMovementGenerator<Creature>::GetResetPosition(Creature&, float& x, 
     if (!m_lastReachedWaypoint && lastPoint == i_path->end())
         return false;
 
-    MANGOS_ASSERT(lastPoint != i_path->end());
+    if (lastPoint == i_path->end())                     // 原为 MANGOS_ASSERT(lastPoint != i_path->end())
+        return false;
 
     WaypointNode const* curWP = &(lastPoint->second);
 
