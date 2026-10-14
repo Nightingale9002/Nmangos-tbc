@@ -233,7 +233,7 @@ namespace VMAP
             {
                 NOTICE_LOG("VMAP: map %u had NO vmap tree in memory (it was unloaded while still in use) - "
                            "reloaded on demand for tile %u,%u; all line of sight / height queries for this map "
-                           "returned 'clear' until now", mapId, tileX, tileY)
+                           "returned 'clear' until now", mapId, tileX, tileY);   // ← 补上原本缺失的分号
                 return true;
             }
         }

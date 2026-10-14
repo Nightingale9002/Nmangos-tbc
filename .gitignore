@@ -103,3 +103,17 @@ src/modules/
 #
 __pycache__/
 *.pyc
+#
+# 卡布奇诺 fork 追加（2026-10-13）
+# 教训：原有 `*.bak` 只匹配以此结尾的名字，`foo.md.bak_20261010` 这种漏网，
+# 结果两个 852KB/78KB 的备份被提交进了公开仓库。用 *.bak_* 兜住。
+#
+*.bak_*
+.bak_*
+*.bak-*
+# 明文凭据 / 密钥，一律不进仓库
+*.cred
+.replica_cred
+*.pem
+*.key
+!src/game/Anticheat/module/warden_modules/*.key

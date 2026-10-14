@@ -9386,3 +9386,547 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
   - 连带保留：`GetResetPosition` 死代码修（A 版，`:534`）✓ —— 它不是本 bug 成因，但同属"死参数/死代码"类问题 ✓
   - 验证预期（本轮）：122 等完 18 秒后**留在决战场** ✓、`WaypointReached point=123` 在 `(2635,673)` 一带触发 ✓、
     3 只塔伦米尔士兵当场刷出 ✓ → 无限军团第 1/2 波 → 时空猎手解免疫开战 ✓
+
+---
+
+## [寻路/工具] 2026-10-14/15 导航网格参数审计：4 条覆盖是假的、2 条归因是错的、5 格静默丢失
+
+> **起因**：排查"怪物悬空"（`.gps` 实测 Z 比 FloorZ 高 0.62 码）时把 **体素高度 `ch` 从
+> `BASE_UNIT_DIM`(0.2667) 调到 `0.1778`**，过程中顺手把整套 mmap 参数审计了一遍。
+>
+> **关联**：`4ca129086`、`629a637a3`（mmap 生成器）、`dev/tools/config_prod.json`、
+> `_hf_dump/` 下的审计脚本（`climb_probe.py` / `spot_probe.py` / `poly_gap.py` /
+> `doorway_ab.py`；普查脚本在 `_hf_530/offmesh_census.py`）。
+>
+> ⚠️ **本章全部是只读审计 + 临时目录里的生成实验**，没有改过一行生产代码，
+> `x64_Debug\mmaps`、`_regen` 全程未动（除 556 那一格见 §6）。
+
+### 一、`config.json` 的四个数值字段是 `int`，写小数会被**静默截断**
+
+`MapBuilder.cpp:71-74`：
+
+```cpp
+config.walkableSlopeAngle = j["walkableSlopeAngle"].get<float>();   // 唯一的 float
+config.walkableHeight      = j["walkableHeight"].get<int>();
+config.walkableClimb       = j["walkableClimb"].get<int>();
+config.walkableRadius      = j["walkableRadius"].get<int>();
+```
+
+**13 条 per-map/tile 覆盖里有 4 条写的是小数，实际生效值是截断后的整数：**
+
+| map / tile | 配置里写的 | **实际** | 真实数值 | 后果 |
+|---|---|---|---|---|
+| **0 / 3653** | `walkableClimb: 7.9` | **7** | 1.8667 码 | 注释里"贴着 8 的临界值"**不存在** |
+| **545**（整图） | `walkableClimb: 4.5` | **4** | 1.0667 码 | **等于默认值 —— 纯空操作** |
+| **554**（整图） | `walkableClimb: 4.5` | **4** | 1.0667 码 | 同上 |
+| **562**（整图） | `walkableRadius: 0.99` | **0** | 0 | **完全无腐蚀**（作者本意是"约 1"，实际是 0，意外） |
+
+**证据**是盘上 `.mmtile` 头 `base+68` 记的实际值（配置值 × `BASE_UNIT_DIM`）：
+
+```
+0005336.mmtile  ->  walkableClimb 1.867 码   (7 × 0.2666666，不是 7.9 × 0.2666666 = 2.1067)
+5453131.mmtile  ->  walkableClimb 1.067 码   (4，不是 4.5)
+5621930.mmtile  ->  walkableRadius 0.000 码  (0，不是 0.99 × 0.2666666 = 0.264)
+```
+
+**⇒ 以后写 per-map 覆盖只能写整数。** 想要小数必须先把字段改成 `float`（`walkableSlopeAngle`
+是 float，可以写小数）。
+
+### 二、`map 0 / tile 3653` 那条的注释**归因是错的**
+
+配置注释原文：`walkableClimb <= 8 else .go c 1000403 goes over the edge`
+
+隔离实验（**各生成一遍 map 0 全图，512 格**，只用配置文件区分）：
+
+| 变体 | `0005336.mmtile` | 相对全默认 |
+|---|---|---|
+| `maxSimp 1.0` + `detailSampleDist 0.5` + `walkableClimb 7.9` | 2,652,036 B | +57.1% |
+| `maxSimp 1.0` + `detailSampleDist 0.5`（**只去掉 climb**） | 2,645,268 B | +56.7% |
+| 全默认 | 1,687,592 B | — |
+
+- `as_is` vs `noclimb`：差 **6,768 B = 0.26%**
+- `noclimb` vs `climb4`：差 **957,676 B**
+
+**⇒ `walkableClimb` 只贡献 0.26%；让那一格变化 57% 的是同一条里那**两个没有注释**的参数
+（`maxSimplificationError: 1.0`、`detailSampleDist: 0.5`）。注释把功劳记在了错误的旋钮上。**
+
+而且**只影响这一格**：512 格里 **511 格逐字节相同**。
+
+> 附带：`walkableClimb` 在管线里同时往**相反**方向使劲 ——
+> ② `rcFilterLowHangingWalkableObstacles` 让它更容易走 vs
+> ③ `rcFilterLedgeSpans` 让它更容易被判成"边缘、不能走"。
+> 这正是"<= 8 否则掉下边缘"这种双向约束的由来，也是它作为旋钮很"钝"的原因。
+
+### 三、556 门洞那条 A/B 结论**也是错的**
+
+`_ab_556/config_B.json` 的注释：`Sethekk Halls - 门洞被 walkableRadius 蚀断`。
+
+**用今天这套二进制、默认 `walkableRadius: 2`、`config_A`** 重新生成 556（tile 5563131），
+沿 `世界Y = 150.30` 扫 `世界X 40.00 → 48.00`：
+
+| 变体 | 门洞（X 43.25~45.00） |
+|---|---|
+| 现役生产 `5563131.mmtile`（09-30，120,376 B） | **........  全是空洞** |
+| 今天二进制 + `config_A`（**默认 radius 2**） | XXXXXXXX 有面 |
+| 今天 + `ch=0.2667` | XXXXXXXX 有面 |
+| 今天 + `preErosionMedianPasses: 0` | XXXXXXXX 有面 |
+| 今天 + `ch=0.1778` | XXXXXXXX 有面 |
+
+**并排除了全部其它变量**：`go_bake_all.txt` 里 **map 556 一条都没有**；`offmesh_530_all.txt`
+只有 530；`_regen\vmaps\556.vmtree` 与 `x64_Debug\vmaps\556.vmtree` **md5 完全相同**；
+`closeThinSeams` 在 556 只 `closed=1`。
+
+**⇒ 真正的变量是 09-30 那个二进制 / 那份数据，不是 `walkableRadius: 1`。**
+那条 A/B 同时改了两样东西（配置 + 换了生成器），把功劳记给了配置。
+
+### 四、`closeThinSeams` 在**静默**修补，默认不打日志
+
+生成器内置的填缝函数（`MapBuilder.cpp:1299-1445`，`4ca129086` 引入），在
+`rcBuildCompactHeightfield` **之前**跑：只处理"整根柱子一个可行走 span 都没有"的格子，
+要求有对面一对可行走邻居、高差 ≤ `walkableClimb`、且柱子里几何没高出邻居
+`walkableClimb + seamBridgeMaxRise`（默认 0），通过就把柱子截到邻居高度补一个 span。
+
+**map 530 全图实测**（`MMAP_SEAM_STATS=1`，496 tile）：
+
+```
+closed   196,371    其中 rise<=1: 188,701 (96%) / 2-4: 4,893 / 5-8: 2,767 / >8: 10
+wall     295,493    1.5%
+steep  11,012,499   54.2%
+noFlank 8,632,822   42.5%
+```
+
+**它补了 19.6 万根柱子 —— 而且默认一个字都不打。**
+⇒ 我们"看到的结果"和"参数表看起来的样子"之间已经隔了一层看不见的修补。
+**排查任何寻路问题时，先开 `MMAP_SEAM_STATS=1` 看一眼。**
+
+### 五、"空图，生成器永远不写"是**错的** —— 实际静默丢了 5 格
+
+旧说法（本章别处 / 前人记录）：`0004242.mmtile` 是空图，生成器永远不写，要从归档补回。
+
+**真相**：09-30 生成日志里的原话是
+
+```
+[Map 000] [42,42]:  No polygons to build on tile!
+```
+
+生成器**建了**这一格、喂了 `0004242.map`（**66,642 B 的实几何**）、跑完整个 Recast 管线，
+但 `rcBuildPolyMesh` 出来 **0 个面** → 不写盘（`MapBuilder.cpp:1199`）。
+而旧集里 `0004242.mmtile` 有 **628 个面 / 101,232 B**（2025-06-26，与 `.map` 同日）。
+
+**09-30 那次全量生成的 `No polygons to build on tile!` 共 54 条**，其中
+**只有 5 格在旧集（`mmaps_archive_20260929`）里是有面的**：
+
+| map | tile | 旧集面数 | 旧集大小 |
+|---|---|---|---|
+| 000 | [42,42] | 628 | 101,232 B |
+| 169 | [36,35] | 632 | 169,364 B |
+| 566 | [26,29] | 850 | 142,012 B |
+| **566** | **[27,29]** | **5,615** | **1,028,112 B** |
+| 566 | [28,30] | 9 | 2,012 B |
+
+其余 **49 格本来就是空的**（旧集里也没有对应文件），所以"空图"只对它们成立。
+
+⚠️ **一次干净目录的全量重生成会丢掉这 5 格**；09-30 那次没丢，是因为**手工从旧集取回**了。
+
+> **未查清**：这 5 格为什么在这次参数下产出 0 个面（是坡度刷掉了、腐蚀吃掉了、
+> 还是 region 建不出来）。**这是独立待办**，不能再用"空图"糊过去。
+
+### 六、体素高度 `ch` 的改动与残留问题
+
+**动机**：导航面比真实地面**永远偏高**（map 556 大厅 805 点采样：中位 +0.320 码 / P90 +0.490 /
+最大 +1.051），根因是**体素高度 `ch` 的量化**，与 Recast 参数无关（原始数据 +0.331、调过参数的 +0.320）。
+
+**改法**（`MapBuilder.h` / `MapBuilder.cpp`，**未提交**）：
+
+```cpp
+const static float CELL_SIZE   = BASE_UNIT_DIM;      // cs：水平格宽，**保持原值**
+const static float CELL_HEIGHT = 0.1777778f;         // ch：垂直格高 = BASE_UNIT_DIM * 2/3
+```
+
+⚠️ **`cs` 绝对不能跟着改**：本 fork 把一张 533 码的格子切成
+`TILES_PER_MAP(25) × VERTEX_PER_TILE(80)` 个子格，总覆盖 = `25*80*cs`。
+**`cs` 一变，格子就被截断**（实测 map 556 只出 2/4 格）。
+
+⚠️ **`walkableHeight` / `walkableClimb` 传进 Recast 的是**体素数**，配置值的单位是
+`BASE_UNIT_DIM`。** `ch` 一改这两者就错位 —— 裸改会让 `walkableClimb: 4` 从 1.07 码缩到
+0.71 码，可行走面积暴涨（map 530 从 416 MB 涨到 **546 MB，+31%**）。
+现在 `buildCommonTile` 开头做了折算：
+
+```cpp
+cfg.walkableHeight = (int)roundf(BASE_UNIT_DIM * float(tileCfg.walkableHeight) / CELL_HEIGHT);
+cfg.walkableClimb  = (int)roundf(BASE_UNIT_DIM * float(tileCfg.walkableClimb)  / CELL_HEIGHT);
+```
+
+**残留问题（未修）**：`round` 带来的量化偏差，只影响那几个小数覆盖：
+
+| map / tile | 配置 | 折算体素 | Recast 侧实际 | Detour 侧记录（`.mmtile` 头） | 差 |
+|---|---|---|---|---|---|
+| 0 / 3653 | 7.9 | 11.85 → **12** | 2.1333 码 | 2.1067 码 | +1.3% |
+| 553（整图） | 9.0 | 13.50 → **14** | 2.4889 码 | 2.4000 码 | +3.7% |
+
+⇒ Recast 侧的判定和 Detour 侧的记录**不一致**。修法是两边都按 `round` 后的体素值写。
+
+**另外两处改动**：
+- `dep/recastnavigation/.../RecastMeshDetail.cpp:1329`：删掉硬编码的 `+ chf.ch`
+  （`verts[j*3+1] += orig[1] + chf.ch;` → `verts[j*3+1] += orig[1];`）。
+  它让细节网格整体抬高一个 `ch`。**删掉后细节网格才贴地。**
+- `x64_Debug\mmaps` 里 556 的 4 个格子已换成 ch=0.1778 版
+  （旧的 C 变体备份在 `x64_Debug\mmaps\_bak_20261014_ch02667\`）。
+
+**收益**：556 大厅上浮量 中位 **+0.320 → +0.177**（↓45%），P90 +0.490 → +0.324，最大 +1.051 → +0.507。
+
+### 七、⚠️ 工具陷阱：两个 reach probe **不认 off-mesh link**
+
+`dev/tools/mmtile_reach_probe.py` 和 `mmtile_islands_probe.py` **只沿 `dtPoly::neis` 洪水填充**
+（两个文件里 `links` 出现 **0 次**）。而 off-mesh 连接**不在 `neis` 里** —— 生成器把 off-mesh
+多边形追加在 `offMeshBase` 之后，通过 tile 的 `dtLink` 数组
+（`dtPoly.firstLink` / `dtLink.next`）连到端点。
+
+**⇒ 用这两个工具查"补连有没有生效"，会全部报成没通。**
+
+认 link 的工具：`_agent_tmp/check_reach_offmesh.py`（单格点对点）、
+`_hf_530/offmesh_census.py`（整图分量，另带"不带 link"的对照组）。
+
+### 八、530 的 off-mesh 补连在 ch 改动下**完整保住**
+
+用当前二进制（ch=0.1778）+ **生产配置 + `offmesh_530_all.txt` + `go_bake_all.txt`**
+重新生成 map 530，与现役 `_regen\mmaps` 对照：
+
+| | 新 ch=0.1778 | 旧生产 |
+|---|---|---|
+| tile | 496 | 496 |
+| 体积 | **422.5 MB** | 423.3 MB（−0.2%） |
+| **off-mesh 多边形** | **33,838** | **33,838** ✅ 完全相同 |
+| link 边（遍历到的） | 5,106,276 | 5,129,940 |
+| 瓦片内分量（带 link） | 214,471 | 212,666 |
+| 补连消掉的分量（带 vs 不带 link） | 49,924 | 51,118（差 −2.34%） |
+
+点位验证（文档里那个"地狱火 3-poly 孤岛"，tile 5303026）：
+该点所在分量 **旧 166 面 / 新 172 面**（补连之前是 **3 面**）。
+
+> ⚠️ 口径：这是**瓦片内部**分量，**没有**合并跨 tile portal，
+> 所以绝对数不能和本章别处的"全图 74,285 个分量"直接比（那个数含跨格 portal）。
+
+### 九、547 门洞：**删腐蚀没用，挡路的是硬编码的 50° STEEP 带**
+
+站长指出奴役围栏（map 547）"官服有一条路可以走，我们走不了"。
+面 #671 是 **2 个面的孤岛**，水平缺口 1.708 码、但比下方主分量**高 2.933 码**（≈60°）。
+
+**实验：`walkableRadius: 0`（完全删掉腐蚀）重新生成 547**：
+
+| | 现役 radius=2 | 无腐蚀 radius=0 |
+|---|---|---|
+| poly | 5,293 | 7,850（**+48.3%**） |
+| 体积 | 943,036 B | 1,379,964 B（**+46%**） |
+| 分量 | 666 | 661 |
+| 最大分量 | 574 | **824（+43.6%）** |
+| ≤5 poly 小分量 | 542 | 463 |
+| **#671 所在分量** | **2 面** | **12 面** |
+| **连上主分量了吗** | **否** | **否** |
+
+**⇒ 删腐蚀整体有改善（主分量 +43.6%、小孤岛 −79），但救不了这一格。**
+挡路的是旁边那些 `GROUND_STEEP` 面，而 STEEP 是 `MapBuilder.cpp:35` 里
+**硬编码的 50°**：
+
+```cpp
+rcModAlmostUnwalkableTriangles(m_rcContext, 50.0f, tVerts, ...);   // 50° 写死
+```
+
+50~60° 的面被标成 `NAV_AREA_GROUND_STEEP`，而**运行期的过滤器不含 STEEP**
+（`PathFinder` 的 bitmask 只有 GROUND|WATER|MAGMA）⇒ **生物和玩家都永远走不上去**。
+
+**待决定**：把 50° 抬到 60~70（或做成 per-map 配置）。
+风险 —— STEEP 现在是故意做的"谁都走不了"的障碍，放开后会有本该是墙的 50~60° 面变成可走。
+
+### 十、审计脚本位置（**不提交 git**）
+
+| 脚本 | 用途 |
+|---|---|
+| `_hf_dump/climb_probe.py` | 读每个 `.mmtile` 头里实际记录的 `walkableHeight/Radius/Climb`，并按图统计 |
+| `_hf_dump/spot_probe.py <mmaps> <map> <世界X> <世界Y> [半径]` | 单点导航面诊断：最近若干面的面积类型/高度/分量大小 + 覆盖网格 + vmap 层与坡度 |
+| `_hf_dump/poly_gap.py <mmaps> <格文件> <面号>` | 某个面到最近其它分量的 `(dh, dv)`，并判定 offmesh 规则会不会连它 |
+| `_hf_dump/doorway_ab.py` | 556 门洞 A/B（沿 Y=150.30 扫 X 40→48 的覆盖） |
+| `_hf_530/offmesh_census.py <mmaps> [map]` | **认 off-mesh link** 的整图分量普查，带"不带 link"对照组 |
+
+---
+
+## [寻路] 2026-10-15 `[AUTOOFFMESH]` 把"补连"做进生成器（不再需要外部 offmesh 文件）
+
+> **关联**：`dev/tools/config_prod.json`、`_agent_tmp/gen_offmesh.py`、`_hf_530/` 下的验证脚本。
+> **紧接上一章**（导航网格参数审计）。
+
+### 一、动机
+
+530 的 off-mesh 补连一直是**外部文件 + 跑两遍**：`gen_offmesh.py` 扫一遍 mmaps 生成
+`offmesh_530_all.txt`（34,609 行），再用 `--offMeshInput` 喂回生成器。
+改了 `ch` 或任何生成参数就得**整份重算**，而且那份文件的**生成参数没有任何留档**
+（见 §5）。
+
+### 二、做法
+
+`MoveMapGen` 新增 **`--autoOffMesh`**（默认关）。在 `buildMoveMapTile()` 里、
+`dtCreateNavMeshData` **之前**，直接对 `rcPolyMesh` 算连通分量并追加 off-mesh 连接：
+**一次生成、不需要外部文件。**
+
+规则（**只做格内、不跨格**）：
+- 对每个面数 ≤ `autoOffMeshMaxComp` 的连通分量 C，遍历**所有**不在 C 里的面 o
+- 每对 (C, o) 取二者之间**最近的一对顶点**；`dh ≤ autoOffMeshMaxDH` 且 `|dv| ≤ autoOffMeshMaxDV`
+  就补一条**双向**连接
+- 每个小分量连**所有**近的面（**不是**只连最近一条）
+
+⚠️ **与 `gen_offmesh.py` 刻意不同**：它每个小分量只补**最近的一条**。同等阈值下本实现链接数明显更多。
+
+#### 三个踩过的坑（都在代码注释里）
+
+1. **`rcPolyMesh` 没有 `neis` 成员** —— 顶点和邻居同存在 `polys` 里，步长是 `nvp*2`：
+   `polys[i*nvp*2 + 0..nvp-1]` 是顶点（`RC_MESH_NULL_IDX` 结尾），
+   `polys[i*nvp*2 + nvp..2nvp-1]` 是邻居（本格面号 / `RC_MESH_NULL_IDX` / `0x8000|dir`）。
+   写成 `polys[i*nvp]` 会读到邻居半段，`vi` 拿到 `0x8000|dir` → `verts` 越界 →
+   **段错误 `0xC0000005`**（实测踩过，只在跑到第 75 格时才炸）。
+2. **`offMeshConVerts` 要绝对世界坐标、轴序 `(世界Y, 高度, 世界X)`**。
+   `dtCreateNavMeshData` 把 navVerts 用 `bmin + v*cs/ch` 展开成绝对坐标存盘，
+   而 off-mesh 端点是**原样存**的。所以要用 `polyMesh->bmin + v*cs/ch` 换算，**不要做轴交换**。
+3. **`generator.cpp` 无 BOM、纯 ASCII** —— 往里写中文**串字面量**会让 MSVC 按 GBK 解码而语法崩。
+   只加 ASCII 文本（中文注释可以，但那文件本来就没有）。
+
+### 三、三条必须记住的结论
+
+#### ① `|dv|` 不得超过 `walkableClimb`
+
+实测 `maxDV=1.5` 时：**12.8% 的连接 `|dv| > walkableClimb`（1.0667 码）**。
+`walkableClimb` 是"人走的"判定 —— 超过它的高差 Recast **故意**判成不连通；
+用 `|dv| ≤ 1.5` 把它连回来 = **生物能"爬"上原本走不上去的台阶/矮墙**。
+而 off-mesh 补连的本意是修**水平方向**被腐蚀掉的缝，不是补台阶。
+
+改成 `autoOffMeshMaxDV = 1.0` 后：**`|dv| > climb` 的比例 = 0.0%**，链接 536,581 → 472,296（−12%）。
+
+> 当年 `gen_offmesh.py` 的阈值扫描记录里，**`dh≤1.5 / dv≤1` 本来就是"能接通地狱火"的四组之一**；
+> 当时写"取最严的 `dh≤2.0 / dv≤1.5`"是**说反了** —— 最严的是 `dv≤1` 那组。
+
+#### ② ⚠️ 必须排除 `NAV_AREA_GROUND_STEEP`
+
+`PathFinder::createFilter()`（`PathFinder.cpp:1325`）是 **`#ifdef ENABLE_PLAYERBOTS`** 分叉的：
+
+```cpp
+#ifdef ENABLE_PLAYERBOTS
+    includeFlags |= (NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP);   // 生物 walk ← 含 STEEP
+#else
+    if (creature->CanWalk()) includeFlags |= NAV_GROUND;           // ← 我们的构建走这支
+#endif
+```
+
+`build1\CMakeCache.txt`：**`BUILD_PLAYERBOTS:BOOL=OFF`** ⇒ `ENABLE_PLAYERBOTS` 未定义
+⇒ **生物只拿 `NAV_GROUND`，STEEP 不可走**。
+
+**未过滤时的实测**（`maxDV=1.0`）：**53.4% 的连接端点在 STEEP 面上** ——
+全是**死连接**，而且会把生物放到过滤器不认的面上、下一次寻路直接失配。
+
+**过滤后**（只允许两端都在可走面上）：链接 **472,296 → 49,235（−90%）**，
+体积 **485.3 → 422.6 MB**，端点面变成 **GROUND 98.5% / WATER 1.5%**。
+
+⚠️ **生成器是独立工具、编不到 `ENABLE_PLAYERBOTS`，所以现在是无条件排除 STEEP。**
+**哪天开了 playerbots，这条要重新评估。**
+（顺带更正本章上文过去反复出现的说法"STEEP 运行期永远走不了" —— 那**只对本套构建成立**。
+`MoveMapSharedDefines.h:49` 的注释 `// unused in cmangos` 也已经过时。）
+
+#### ③ `maxComp` 定 3
+
+530 全图有 **230,151 个连通分量**（干净版）。`maxComp=3` + "所有近的" →
+49,235 条链接 / 422.6 MB，与部署版（33,838 条 / 423.3 MB）基本持平。
+
+### 四、效果与地基验证
+
+#### 效果对照（map 530，496 格）
+
+| | 链接 | 总 poly | 体积 | 用时 |
+|---|---|---|---|---|
+| 干净版（无补连） | 0 | 2,348,423 | 415.4 MB | 112 s |
+| 部署版（外部 offmesh 文件） | 33,838 | — | 423.3 MB | — |
+| **内置 `--autoOffMesh`** | **49,235** | **2,384,062** | **422.6 MB** | **109 s** |
+
+#### 地基验证：与 `gen_offmesh.py` 逐格对账
+
+先把内置版做成"只补最近一条"（与 `gen_offmesh.py` 同口径），在**同一份干净产物**上比：
+
+| tile | 内置版 | `gen_offmesh.py` | 差 |
+|---|---|---|---|
+| 5302920 | 2,731 | 2,707 | +0.9% |
+| 5302919 | 2,636 | 2,615 | +0.8% |
+| 5302520 | 2,364 | 2,344 | +0.9% |
+| 5302821 | 2,273 | 2,239 | +1.5% |
+| 5302619 | 2,227 | 2,201 | +1.2% |
+| 5302721 | 2,028 | 1,991 | +1.9% |
+
+**吻合 1~2%** ⇒ 分量分析和"最近面"搜索都对；残差来自 `rcPolyMesh`（Detour 之前）
+与最终 tile 的细微区别。
+
+> ⚠️ **对账前必须先确认输入是干净的。** 第一次比出"差 2 倍"是因为生成对照产物时
+> **忘了清空 `mmaps`**，`shouldSkipTile` 全部跳过，结果把**已经带 2,706 条 off-mesh 的产物**
+> 喂给了 `gen_offmesh.py` —— 它把 off-mesh 面也算成小分量，凭空多出 5,820 个。
+
+#### 穿墙抽检（线段-三角形 vs vmap 几何）
+
+`_hf_530/wall_check2.py`：把每条连接当线段，和该格 vmap 做线段-三角形求交（Möller–Trumbore）。
+
+抽 5 格共 203 条：**15 条（7.4%）与三角形有交点，但全部是 `交 1`** ——
+只碰到**一个**三角形，是"擦过"的特征（穿墙应该是"进+出"两个以上，即 `交 ≥ 2`）。
+**抽样里没有发现一条确认的穿墙。**
+
+> ⚠️ 同一脚本里那个"埋点"判别量**是错的，别用**：它取的是同一 XZ 上**最高**的几何层，
+> 会把屋顶 / 上层楼 / 远处山体全算进来（打印出来的"最严重"那几条全是 `埋 11/11、交 0`，
+> 线段根本没碰到任何三角形）。正确做法是取"线段**正上方最近**的那一层"。
+
+### 五、⚠️ 那份外部 offmesh 文件的生成参数**无从考据**
+
+`offmesh_530_all.txt`（34,609 行）生成于 09-30 02:26，**命令没留档、也不在任何日志里**
+（`stage3_mmaps.log` 是当晚 18:17 那次全量生成的）。
+
+用它的输入集（`mmaps_archive_20260929`，**干净的**，off-mesh = 0）反推 `max_comp`：
+
+| max_comp | ≤该值分量数 | 隐含命中率 |
+|---|---|---|
+| 2 | 28,153 | **1.23（>1，不可能）** |
+| 3 | 36,516 | 0.95 |
+| 4 | 43,741 | 0.79 |
+
+但**逐格对不上**：tile 5300744 部署 24 条、`mc=3` 只给 6、`mc=4` 只给 10；
+5300745 部署 87 条、`mc=3` 给 52、`mc=4` 给 57。
+
+⇒ 那份文件**不是从 `mmaps_archive_20260929` 生成的**，或当时阈值 / `max_comp` 不同。
+**结论：不要再考古，直接按"要什么效果"重定参数。**
+这和第①章的"13 条覆盖里 4 条没注释"是同一类问题：**最关键的一步没记。**
+
+### 六、代码与工具
+
+| 文件 | 改动 |
+|---|---|
+| `contrib/mmap/src/MapBuilder.h` | 构造函数参数 `bool autoOffMesh`、成员 `m_autoOffMesh` |
+| `contrib/mmap/src/MapBuilder.cpp` | `buildAutoOffMeshConnections()`（新增，约 190 行）、`walkable()` 面积过滤、默认配置 `autoOffMeshMaxDH 2.0 / MaxDV 1.0 / MaxComp 3` |
+| `contrib/mmap/src/generator.cpp` | `--autoOffMesh`（用法文本用 ASCII） |
+| `dev/tools/mmtile_vis.py` | 3D 叠加的 **off-mesh 图层**（`#ffc83c`，与单格视图图例同色）+ 状态栏报条数；payload 增加 `m`（面类型） |
+
+审计/验证脚本（**不提交 git**）：
+
+| 脚本 | 用途 |
+|---|---|
+| `_hf_530/validate_autooff.py` | 与 `gen_offmesh.py` 逐格对账 |
+| `_hf_530/wall_check.py` / `wall_check2.py` | 穿墙抽检（线段-三角形 vs vmap） |
+| `_hf_530/infer_maxcomp.py` | 反推 `max_comp` + 连接 `dh/dv` 分布 |
+| `_hf_530/offmesh_census.py` | **认 off-mesh link** 的整图分量普查 |
+
+---
+
+## [工具] 2026-10-15 viewer 模型旋转用错公式 —— **M2 岩石尖刺错位**的根因
+
+> **关联**：`dev/tools/mmtile_vis.py`、`contrib/mmap/src/TerrainBuilder.cpp:605`、
+> `src/game/vmap/ModelInstance.cpp:31`、`dep/g3dlite/G3D/Matrix3.h`。
+> **现象**：站长在 530（Bladesedge，格 28_18，世界 1905.65 / 7049.20 / 331.30）看到
+> "某些地形和寻路没有对齐"，进一步定位为 **M2 岩石尖刺错位**，而 WMO 小屋看着正常。
+
+### 一、根因
+
+**viewer 抄的是"运行期"的旋转，导航网格是用"生成器"的旋转烘出来的 —— 两者不是一个变换。**
+
+```cpp
+// 生成器（真正烘出导航网格的）contrib/mmap/src/TerrainBuilder.cpp:605
+G3D::Matrix3 rotation = G3D::Matrix3::fromEulerAnglesXYZ(
+        G3D::pi() * instance.iRot.z / -180.f,
+        G3D::pi() * instance.iRot.x / -180.f,
+        G3D::pi() * instance.iRot.y / -180.f);
+```
+
+```cpp
+// 运行期 vmap 查询 src/game/vmap/ModelInstance.cpp:31
+iInvRot = G3D::Matrix3::fromEulerAnglesZYX(
+        G3D::pi() * iRot.y / 180.f, G3D::pi() * iRot.x / 180.f, G3D::pi() * iRot.z / 180.f).inverse();
+```
+
+**为什么一直没被发现 —— 关键在于 G3D 的形参名：**
+
+```cpp
+// dep/g3dlite/G3D/Matrix3.h:289,294
+static Matrix3 fromEulerAnglesXYZ (float fYAngle, float fPAngle, float fRAngle);
+static Matrix3 fromEulerAnglesZYX (float fYAngle, float fPAngle, float fRAngle);
+```
+
+**参数名是 `(fYAngle, fPAngle, fRAngle)`，不是 `(z, y, x)`。**
+`mmtile_vis.py` 里原来那条注释（"`fromEulerAnglesZYX` 的形参是 (Z, Y, X)，所以传进去的是 (y, x, z)"）
+**建立在错误的签名假设上**，于是照着"运行期"抄了一个**和导航网格不一致**的变换。
+
+**为什么只有 M2 尖刺肉眼可见：** WMO 小屋只有绕垂直轴的旋转（`rot=(0,Y,0)`），此时
+
+```
+旧 ZYX(Y,0,0) = kZ(+Y)        新 XYZ(0,0,-Y) = kZ(-Y)      ← 只差一个符号
+```
+
+小屋是近似的轴对称体，"转 +Y 还是 -Y" 看上去差不多；而 M2 岩石尖刺三个轴都有旋转
+（`(47, 237, -37.5)` 这种），差异被放大到一眼可见。
+
+### 二、修法
+
+`mmtile_vis.py` 的 `vmap_geometry()` 改成用**生成器**的公式（照抄 G3D 的 `fromEulerAnglesXYZ`，
+见新增的 `_g3d_euler_xyz()`）：角度**带负号**、且映射到 `(rot.z, rot.x, rot.y)`。
+`MMAP_ROT_MODE=old` 可切回旧公式做对照。
+
+**其余部分逐行核对过，完全一致**（所以旋转矩阵是唯一差别）：
+
+| | 生成器 | viewer |
+|---|---|---|
+| 顶点应用 | `Vector3 v((*it) * rotation * scale + position)` | `q = vmul(v, R)`（`v*R`）→ `*s + ipos` ✓ |
+| 内部→世界 | `v.x *= -1; v.y *= -1` | `MID-iy, iz, MID-ix` ✓ |
+
+**回归验证**（WMO 建筑，导航网格当基准，12 格）：
+
+| | 命中 |
+|---|---|
+| 旧（ZYX） | 1,976 |
+| **新（生成器 XYZ）** | **2,012** |
+
+⇒ 换过去**不会**把原来"看着对"的 WMO 弄坏。站长实地确认新公式正确。
+
+### 三、⚠️ 顺带发现：**服务端自身**就是矛盾的（未修，独立待办）
+
+`TerrainBuilder.cpp:605`（烘导航网格）用 `fromEulerAnglesXYZ`，
+`ModelInstance.cpp:31`（运行期 vmap 射线查询 / 高度查询）用 `fromEulerAnglesZYX`。
+
+**同一个模型，烘进导航网格用一种变换、运行时查询另一种。** 实测在 WMO 上两者"接近"
+（因为 yaw 占主导、且地形几何近似轴对称），但在**多轴旋转**上不等价。
+
+**⇒ 如果运行期真的在用错的那一支，服务端的 vmap 查询和它自己的导航网格就是错开的。**
+这能解释一类"怪贴着建筑走 / 走不进建筑 / 卡在门口"的怪事。
+**这是上游代码的问题，未修**；要查的话：拿一个 M2/多轴旋转模型，比较
+`ModelInstance::getObjectHitPos` 的结果与导航网格在该处的面。
+
+### 四、过程中的两次事故（都要记住）
+
+#### ① 一条本地命令末尾误留 `Restart-Computer`
+
+在打包前的压缩率测试命令末尾误写了一句 `Restart-Computer -ErrorAction SilentlyContinue`。
+**未生效** —— `shutdown /a` 回"没有关机在进行中"，`LastBootUpTime` 仍是 2026-09-27 17:55。
+但这类命令**绝不能出现在任何调试命令里**。以后写一次性调试命令，末尾一律以明确的
+`echo`/退出码收尾，不要顺手写系统操作。
+
+#### ② 用 Python 脚本写 `mmtile_vis.py`，把文件**清空**
+
+```python
+s = io.open(p, encoding='utf-8').read()      # 读没问题
+s = s.replace(anchor, add + anchor)
+io.open(p, 'w', encoding='utf-8', newline='').write(s)   # ← 抛 UnicodeEncodeError
+```
+
+`io.open(p, 'w')` **先截断文件**，随后 `.write()` 抛了 `UnicodeEncodeError`
+（插入的文本里有 emoji 的代理对）—— 文件停在"已截断、未写入"，**0 字节**。
+
+**恢复**：`_hf_dump/mmtile_vis.py.bak_beforedetail`（当天 12:59，212,116 B / 4,854 行，
+比 git HEAD 还新 285 行）。丢的是当天 12:59 之后的三处改动：`_ROT_*` 开关、off-mesh 3D 图层、
+改好的新「细节网格」层。
+
+**⇒ 铁律：`mmtile_vis.py` / `MapBuilder.cpp` / `MapBuilder.h` / `generator.cpp` 这些文件
+一律只用 `edit`/`write` 工具改，绝不走"Python 读-改-写"或 PowerShell 文本往返。**
+（这是第三次同类事故了：`MapBuilder.cpp` 因 CRLF/GBK 被写坏过一次、`generator.cpp`
+因中文串字面量在无 BOM 文件里编不过、这次是 `io.open(...,'w')` 截断。）
+
+### 五、这次改动**不影响 mmaps 数据**
+
+错的只是 viewer；**生成器一直用的是正确公式**，所以 `_regen_full` 那套 mmaps（以及
+09-30 生产集）都是正常的。**上云不因这个 bug 受阻。**

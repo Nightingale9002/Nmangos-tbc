@@ -66,8 +66,8 @@ void from_json(const json& j, rcConfig& config)
 {
     config.tileSize = MMAP::VERTEX_PER_TILE;
     config.borderSize = j["borderSize"].get<int>();
-    config.cs = MMAP::BASE_UNIT_DIM;
-    config.ch = MMAP::BASE_UNIT_DIM;
+    config.cs = MMAP::CELL_SIZE;
+    config.ch = MMAP::CELL_HEIGHT;
     config.walkableSlopeAngle = j["walkableSlopeAngle"].get<float>();
     config.walkableHeight = j["walkableHeight"].get<int>();
     config.walkableClimb = j["walkableClimb"].get<int>();
@@ -105,7 +105,8 @@ namespace MMAP
 
     MapBuilder::MapBuilder(const char* configInputPath, int threads, bool skipLiquid, bool skipContinents, bool skipJunkMaps,
                            bool skipBattlegrounds, bool debug, const char* offMeshFilePath, const char* workdir,
-                           const char* gameObjectFilePath) :
+                           const char* gameObjectFilePath,
+                         bool autoOffMesh) :
         m_taskQueue(new TaskQueue(this, threads)),
         m_debug(debug),
         m_skipContinents(skipContinents),
@@ -113,7 +114,8 @@ namespace MMAP
         m_skipBattlegrounds(skipBattlegrounds),
         m_offMeshFilePath(offMeshFilePath),
         m_workdir(workdir),
-        m_gameObjectFilePath(gameObjectFilePath)
+        m_gameObjectFilePath(gameObjectFilePath),
+        m_autoOffMesh(autoOffMesh)
     {
         std::ifstream jsonConfig(configInputPath);
         if (jsonConfig)
@@ -531,7 +533,8 @@ namespace MMAP
         rcCalcGridSize(config.bmin, config.bmax, config.cs, &config.width, &config.height);
 
         Tile tile;
-        buildCommonTile(modelName.data(), tile, config, tVerts, tVertCount, tTris, tTriCount, nullptr, 0, nullptr, 0, 0,
+        DumpCtx noDump;
+        buildCommonTile(modelName.data(), noDump, tile, config, tVerts, tVertCount, tTris, tTriCount, nullptr, 0, nullptr, 0, 0,
                         goConfig.value("preErosionMedianPasses", 1), goConfig.value("seamBridgeMaxRise", 0), nullptr);
 
         IntermediateValues iv;
@@ -984,6 +987,234 @@ namespace MMAP
     }
 
     /**************************************************************************/
+    /**
+     * [AUTOOFFMESH] 自动为"小连通分量"补 **双向** off-mesh 连接。
+     *
+     * 为什么需要：`walkableRadius` 是按 agent 半径腐蚀可行走区域的，它会把高度场里
+     * 1 格宽（0.2667 码）的窄缝放大成 `1 + 2*radius` 格，把本该连成一片的地面切成
+     * 大量互不连通的小孤岛 —— map 530 全图 74,285 个连通分量、最大分量只占
+     * 37.17%、42,877 个 1~5 面的小孤岛（96.6% 对外 0 条 portal），其中 27,240 个
+     * 真实缺口 < 2 码（中位 1.338 码）。**任何 Recast 参数都修不好**（12 个变体实测）。
+     *
+     * 530 当年是在外面用 `dev/tools` 的 `gen_offmesh.py` 生成 offmesh 文件补的
+     * （34,609 条），但那要跑两遍、而且改了 ch 或生成参数就得整份重算。
+     * 这里把同一条规则做进生成器：**一次生成、不需要外部文件**。
+     *
+     * 规则（**只做格内、不跨格**）：
+     *   对每个面数 <= maxComp 的连通分量 C，遍历**所有**不在 C 里的面 o；
+     *   对每一对 (C, o) 取二者之间最近的一对顶点，只要 `dh <= maxDH` 且
+     *   `|高差| <= maxDV`，就给这一对补一条**双向** off-mesh（dir = 1）。
+     *
+     *   ⚠️ 与 `dev/tools` 的 `gen_offmesh.py` **刻意不同**：那个工具是每个小分量
+     *     只补**最近的一条**；这里是"所有近的都补"。所以同等阈值下链接数会明显更多。
+     *
+     * ⚠️ 坐标：本 fork 的 mesh 空间是 `(世界Y, 高度, 世界X)`；
+     *    `rcPolyMesh` 的 `x=世界Y / y=高度 / z=世界X`，单位是格（`cs`/`ch`），
+     *    相对 `polyMesh->bmin`。而 `dtNavMeshCreateParams::offMeshConVerts` 要的是
+     *    **绝对世界坐标、同样轴序** —— `dtCreateNavMeshData` 会把 navVerts 用
+     *    `bmin + v*cs` 展开成绝对坐标存盘，而 off-mesh 端点是**原样存**的。
+     *    所以这里做 `bmin + v*cs/ch` 换算，**绝对不要做轴交换**。
+     *
+     * ⚠️ 端点高度：Detour 会把 off-mesh 端点吸附到最近多边形的边界上，
+     *    这里给的是多边形**顶点**的原始高度。
+     *
+     * stats: [0]=补了几条 [1]=符合条件的小分量数 [2]=被阈值拒掉的顶点对次数 [3]=扫描过的面-面对数
+     */
+    static void buildAutoOffMeshConnections(const rcPolyMesh* pm, float maxDH, float maxDV,
+                                            int maxComp, float conRadius,
+                                            MeshData& meshData, int stats[4])
+    {
+        stats[0] = stats[1] = stats[2] = stats[3] = 0;
+        if (!pm || pm->npolys < 1)
+            return;
+        const int n = pm->npolys;
+        const int nvp = pm->nvp;
+        if (nvp < 3 || pm->nverts < 3)
+            return;
+
+        // ⚠️ 多边形 i 的两个半段都在 polys 里、步长是 **nvp*2**：
+        //      polys[i*nvp*2 + 0 .. nvp-1]      顶点索引（RC_MESH_NULL_IDX 结尾）
+        //      polys[i*nvp*2 + nvp .. 2*nvp-1]  邻居（本格面号 / RC_MESH_NULL_IDX / 0x8000|dir）
+        //    写成 polys[i*nvp + k] 会读到邻居半段，vi 拿到 0x8000|dir 就 verts 越界 → 段错误。
+        const int stride = nvp * 2;
+
+        // 多边形 k 号顶点的绝对世界坐标 (世界Y, 高度, 世界X)
+        auto wpos = [pm, stride](int poly, int k, float* out)
+        {
+            const unsigned short vi = pm->polys[poly * stride + k];
+            if (vi >= pm->nverts)
+            {
+                out[0] = out[1] = out[2] = 0.0f;
+                return;
+            }
+            out[0] = pm->bmin[0] + pm->verts[vi * 3 + 0] * pm->cs;   // 世界Y
+            out[1] = pm->bmin[1] + pm->verts[vi * 3 + 1] * pm->ch;   // 高度
+            out[2] = pm->bmin[2] + pm->verts[vi * 3 + 2] * pm->cs;   // 世界X
+        };
+        // 多边形实际顶点数（polys 前半段，RC_MESH_NULL_IDX 结尾）
+        auto vcount = [pm, stride](int poly)
+        {
+            int c = 0;
+            while (c < pm->nvp && pm->polys[poly * stride + c] != RC_MESH_NULL_IDX)
+                ++c;
+            return c;
+        };
+
+        // ⚠️ 只有**运行期真能走**的面才配参与补连。
+        //    NAV_AREA_GROUND_STEEP（50~60°）在 `PathFinder::createFilter()` 里：
+        //      没开 ENABLE_PLAYERBOTS（我们的构建 BUILD_PLAYERBOTS=OFF）时，
+        //        生物只拿到 NAV_GROUND —— STEEP **不可走**；
+        //      开了 playerbots 才会 include NAV_GROUND_STEEP。
+        //    所以补到 STEEP 上的连接在我们这儿是**死连接**：
+        //    实测过一次，53.4% 的端点落在 STEEP 上 —— 全部无效，还会把生物放到
+        //    过滤器不认的面上、下一次寻路直接失配。
+        auto walkable = [pm](int i)
+        {
+            const unsigned char a = pm->areas[i];
+            return a != RC_NULL_AREA && a != NAV_AREA_GROUND_STEEP;
+        };
+
+        // ---- 并查集：只沿格内邻居 ----
+        // ⚠️ rcPolyMesh **没有 neis 成员**：邻居和顶点同存在 polys 里（见上面的 stride 注释）。
+        //    Detour 那边会把面号 +1 写进 dtPoly::neis，所以这里用**原始值**。
+        std::vector<int> parent(n);
+        for (int i = 0; i < n; ++i)
+            parent[i] = i;
+        auto find = [&parent](int a)
+        {
+            while (parent[a] != a) { parent[a] = parent[parent[a]]; a = parent[a]; }
+            return a;
+        };
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < nvp; ++j)
+            {
+                const unsigned short nb = pm->polys[i * stride + nvp + j];
+                if (nb == RC_MESH_NULL_IDX || (nb & 0x8000) || nb >= n)
+                    continue;
+                if (!walkable(i) || !walkable(nb))
+                    continue;
+                const int ra = find(i), rb = find(nb);
+                if (ra != rb)
+                    parent[rb] = ra;
+            }
+
+        // 只把"可走的面"放进分量表 —— 这样 STEEP 面既不会成为补连的起点，
+        // 也不会成为终点（它自成一堆、根本不进 members）。
+        std::map<int, std::vector<int>> members;
+        for (int i = 0; i < n; ++i)
+            if (walkable(i))
+                members[find(i)].push_back(i);
+
+        // ---- 每个面的水平包围盒（只用于早退，不参与判定）----
+        std::vector<float> bbox(n * 4);   // [世界Ymin, 世界Ymax, 世界Xmin, 世界Xmax]
+        for (int i = 0; i < n; ++i)
+        {
+            float* b = &bbox[i * 4];
+            b[0] = b[2] = 1e30f;
+            b[1] = b[3] = -1e30f;
+            const int vc = vcount(i);
+            for (int k = 0; k < vc; ++k)
+            {
+                float p[3];
+                wpos(i, k, p);
+                if (p[0] < b[0]) b[0] = p[0];
+                if (p[0] > b[1]) b[1] = p[0];
+                if (p[2] < b[2]) b[2] = p[2];
+                if (p[2] > b[3]) b[3] = p[2];
+            }
+        }
+
+        for (std::map<int, std::vector<int>>::const_iterator it = members.begin();
+             it != members.end(); ++it)
+        {
+            if ((int)it->second.size() > maxComp)
+                continue;
+            const int comp = it->first;
+            const std::vector<int>& mine = it->second;
+
+            float cy0 = 1e30f, cy1 = -1e30f, cx0 = 1e30f, cx1 = -1e30f;
+            for (size_t m = 0; m < mine.size(); ++m)
+            {
+                const float* b = &bbox[mine[m] * 4];
+                if (b[0] < cy0) cy0 = b[0];
+                if (b[1] > cy1) cy1 = b[1];
+                if (b[2] < cx0) cx0 = b[2];
+                if (b[3] > cx1) cx1 = b[3];
+            }
+
+            // ⚠️ 规则是「**所有**近的非本分量面各补一条」，不是只补最近的一条。
+            //    对分量 C 与每个不在 C 里的面 o，各自取二者之间最近的一对顶点；
+            //    只要 dh <= maxDH 且 |dv| <= maxDV，就给这一对 (C, o) 补一条双向连接。
+            //    （gen_offmesh.py 是整分量只补最近的一条 —— 这里刻意不同。）
+            int added = 0;
+            for (int o = 0; o < n; ++o)
+            {
+                if (find(o) == comp)
+                    continue;
+                if (!walkable(o))          // 不往 STEEP 上补（见上面的 walkable 注释）
+                    continue;
+                const float* b = &bbox[o * 4];
+                if (b[0] > cy1 + maxDH || b[1] < cy0 - maxDH)
+                    continue;
+                if (b[2] > cx1 + maxDH || b[3] < cx0 - maxDH)
+                    continue;
+                const int vb = vcount(o);
+                float bestDH = -1.0f, bestA[3], bestB[3];
+                for (size_t m = 0; m < mine.size(); ++m)
+                {
+                    const int va = vcount(mine[m]);
+                    for (int a = 0; a < va; ++a)
+                    {
+                        float pa[3];
+                        wpos(mine[m], a, pa);
+                        for (int c = 0; c < vb; ++c)
+                        {
+                            float pb[3];
+                            wpos(o, c, pb);
+                            const float dx = pa[0] - pb[0], dz = pa[2] - pb[2];
+                            const float dh = sqrtf(dx * dx + dz * dz);
+                            stats[3]++;
+                            if (bestDH >= 0.0f && dh >= bestDH)
+                                continue;
+                            const float dv = pb[1] - pa[1];
+                            if (dh > maxDH || fabsf(dv) > maxDV)
+                            {
+                                stats[2]++;
+                                continue;
+                            }
+                            bestDH = dh;
+                            bestA[0] = pa[0]; bestA[1] = pa[1]; bestA[2] = pa[2];
+                            bestB[0] = pb[0]; bestB[1] = pb[1]; bestB[2] = pb[2];
+                        }
+                    }
+                }
+
+                if (bestDH < 0.0f)
+                    continue;
+
+                // 双向 off-mesh：Detour 的连接点 = 6 个 float，绝对世界坐标、同轴序
+                meshData.offMeshConnections.append(bestA[0]);
+                meshData.offMeshConnections.append(bestA[1]);
+                meshData.offMeshConnections.append(bestA[2]);
+                meshData.offMeshConnections.append(bestB[0]);
+                meshData.offMeshConnections.append(bestB[1]);
+                meshData.offMeshConnections.append(bestB[2]);
+                meshData.offMeshConnectionDirs.append(1);              // 1 = 双向
+                meshData.offMeshConnectionRads.append(conRadius);      // agent 半径（码）
+                meshData.offMeshConnectionsAreas.append((unsigned char)0xFF);
+                meshData.offMeshConnectionsFlags.append((unsigned short)0xFF);
+                added++;
+            }
+
+            if (added > 0)
+            {
+                stats[0] += added;
+                stats[1]++;        // 记"有补过连接的小分量"个数，不是链接数
+            }
+        }
+    }
+
+    /**************************************************************************/
     void MapBuilder::buildMoveMapTile(uint32 mapID, uint32 tileX, uint32 tileY,
                                       MeshData& meshData, float bmin[3], float bmax[3],
                                       dtNavMesh* navMesh)
@@ -1054,7 +1285,10 @@ namespace MMAP
                 tileCfg.bmax[0] += tileCfg.borderSize * tileCfg.cs;
                 tileCfg.bmax[2] += tileCfg.borderSize * tileCfg.cs;
 
-                buildCommonTile(tileString, tile, tileCfg, tVerts, tVertCount, tTris, tTriCount, lVerts, lVertCount, lTris, lTriCount, lTriFlags,
+                DumpCtx dbg;
+                dbg.map = mapID; dbg.tileX = tileX; dbg.tileY = tileY;
+                dbg.subX = x; dbg.subY = y; dbg.enabled = true;
+                buildCommonTile(tileString, dbg, tile, tileCfg, tVerts, tVertCount, tTris, tTriCount, lVerts, lVertCount, lTris, lTriCount, lTriFlags,
                                 preErosionMedianPasses, seamBridgeMaxRise, &seamStats);
             }
         }
@@ -1138,6 +1372,25 @@ namespace MMAP
         params.detailVertsCount = iv.polyMeshDetail->nverts;
         params.detailTris = iv.polyMeshDetail->tris;
         params.detailTriCount = iv.polyMeshDetail->ntris;
+
+        // [AUTOOFFMESH] 自动补连：必须在 dtCreateNavMeshData **之前** 追加进
+        // meshData.offMeshConnections（下面 params.offMeshCon* 直接取这个数组）。
+        // 与外部 offmesh 文件是**叠加**关系：文件里的那些仍然生效。
+        if (m_autoOffMesh && iv.polyMesh && iv.polyMesh->npolys > 1)
+        {
+            json offCfg = getTileConfig(mapID, tileX, tileY);
+            int st[4];
+            buildAutoOffMeshConnections(iv.polyMesh,
+                                        offCfg.value("autoOffMeshMaxDH", 2.0f),
+                                        offCfg.value("autoOffMeshMaxDV", 1.0f),
+                                        offCfg.value("autoOffMeshMaxComp", 3),
+                                        BASE_UNIT_DIM * offCfg.value("walkableRadius", 2),
+                                        meshData, st);
+            if (st[0] > 0 || st[1] > 0)
+                printf("%s [AUTOOFFMESH] closed %d comp(s) -> +%d bidirectional link(s)"
+                       "   (candidates %d, rejected %d)\n",
+                       tileString, st[1], st[0], st[3], st[2]);
+        }
 
         params.offMeshConVerts = meshData.offMeshConnections.getCArray();
         params.offMeshConCount = meshData.offMeshConnections.size() / 6;
@@ -1440,9 +1693,160 @@ namespace MMAP
         }
     }
 
-    bool MapBuilder::buildCommonTile(const char* tileString, Tile& tile, rcConfig& tileCfg, float* tVerts, int tVertCount, int* tTris, int tTriCount, float* lVerts, int lVertCount,
+    /* =======================================================================
+     * [DEBUG] Dump the intermediate Recast data to disk.
+     *
+     * Enable with the environment variable MMAP_DEBUG_DUMP=<existing dir>.
+     * Three files are written per sub-tile:
+     *   <map>_<tx>_<ty>_s<sx><sy>.tri    triangles handed to rcRasterizeTriangles + area flags
+     *   <map>_<tx>_<ty>_s<sx><sy>.rawhf  raw heightfield after the 3 filters + closeThinSeams
+     *   <map>_<tx>_<ty>_s<sx><sy>.chf    compact heightfield after rcBuildCompactHeightfield
+     *
+     * Why: the navmesh surface sits above the real floor. Two places can cause
+     * that and neither is visible with the existing tools:
+     *   1) rasterization: rasterizeTri sets the span smax to ceilf(maxY/ch) - it
+     *      always rounds up, at most +1 ch;
+     *   2) span merging: addSpan merges by [smin,smax] overlap, so a taller
+     *      surface in the same column (pillar / ceiling / wall) lifts smax.
+     * Recast.cpp:473 shows chf.spans[i].y is *exactly* the raw span smax, so
+     * comparing .rawhf smax against the triangle heights in .tri settles which.
+     *
+     * All coordinates are Recast internal: world (X,Y) -> Recast (z,x), height on axis 1.
+     * Absolute height = bmin[1] + y * ch.
+     * ======================================================================= */
+    static FILE* dumpOpen(const DumpCtx& d, const char* suffix)
+    {
+        const char* dir = std::getenv("MMAP_DEBUG_DUMP");
+        if (!dir || !*dir || !d.enabled)
+            return NULL;
+        char name[1024];
+        snprintf(name, sizeof(name), "%s/%03u_%02u_%02u_s%02i%02i.%s",
+                 dir, d.map, d.tileX, d.tileY, d.subX, d.subY, suffix);
+        FILE* f = fopen(name, "wb");
+        if (!f)
+            printf("[dump] cannot open %s\n", name);
+        return f;
+    }
+
+    static void dumpHeader(const DumpCtx& d, FILE* f, const char* magic)
+    {
+        const uint32 version = 1;
+        fwrite(magic, 1, 4, f);
+        fwrite(&version, 4, 1, f);
+        fwrite(&d.map, 4, 1, f);
+        fwrite(&d.tileX, 4, 1, f);
+        fwrite(&d.tileY, 4, 1, f);
+        int sub[2] = { d.subX, d.subY };
+        fwrite(sub, 4, 2, f);
+    }
+
+    static void dumpTriangles(const DumpCtx& d, const rcConfig& cfg, const float* verts, int vertCount, const int* tris, int triCount, const unsigned char* flags)
+    {
+        FILE* f = dumpOpen(d, "tri");
+        if (!f)
+            return;
+        dumpHeader(d, f, "MTRI");
+        fwrite(&vertCount, 4, 1, f);
+        fwrite(&triCount, 4, 1, f);
+        fwrite(cfg.bmin, 4, 3, f);
+        fwrite(cfg.bmax, 4, 3, f);
+        fwrite(&cfg.cs, 4, 1, f);
+        fwrite(&cfg.ch, 4, 1, f);
+        fwrite(&cfg.walkableHeight, 4, 1, f);
+        fwrite(&cfg.walkableClimb, 4, 1, f);
+        fwrite(&cfg.walkableRadius, 4, 1, f);
+        fwrite(&cfg.walkableSlopeAngle, 4, 1, f);
+        fwrite(verts, 4, (size_t)vertCount * 3, f);
+        fwrite(tris, 4, (size_t)triCount * 3, f);
+        fwrite(flags, 1, (size_t)triCount, f);
+        fclose(f);
+    }
+
+    // rcSpan heights are bitfields, taking their address is illegal, copy first
+    static void dumpRawHeightfield(const DumpCtx& d, const rcHeightfield& hf)
+    {
+        FILE* f = dumpOpen(d, "rawhf");
+        if (!f)
+            return;
+        dumpHeader(d, f, "MRHF");
+        fwrite(&hf.width, 4, 1, f);
+        fwrite(&hf.height, 4, 1, f);
+        fwrite(hf.bmin, 4, 3, f);
+        fwrite(hf.bmax, 4, 3, f);
+        fwrite(&hf.cs, 4, 1, f);
+        fwrite(&hf.ch, 4, 1, f);
+        for (int i = 0; i < hf.width * hf.height; ++i)
+        {
+            unsigned short n = 0;
+            for (const rcSpan* s = hf.spans[i]; s; s = s->next)
+                ++n;
+            fwrite(&n, 2, 1, f);
+            for (const rcSpan* s = hf.spans[i]; s; s = s->next)
+            {
+                unsigned short a = (unsigned short)s->smin;
+                unsigned short b = (unsigned short)s->smax;
+                fwrite(&a, 2, 1, f);
+                fwrite(&b, 2, 1, f);
+                fwrite(&s->area, 1, 1, f);
+            }
+        }
+        fclose(f);
+    }
+
+    static void dumpCompactHeightfield(const DumpCtx& d, const rcCompactHeightfield& chf)
+    {
+        FILE* f = dumpOpen(d, "chf");
+        if (!f)
+            return;
+        dumpHeader(d, f, "MCHF");
+        fwrite(&chf.width, 4, 1, f);
+        fwrite(&chf.height, 4, 1, f);
+        fwrite(&chf.spanCount, 4, 1, f);
+        fwrite(chf.bmin, 4, 3, f);
+        fwrite(chf.bmax, 4, 3, f);
+        fwrite(&chf.cs, 4, 1, f);
+        fwrite(&chf.ch, 4, 1, f);
+        fwrite(&chf.walkableHeight, 4, 1, f);
+        fwrite(&chf.walkableClimb, 4, 1, f);
+        const int cells = chf.width * chf.height;
+        for (int i = 0; i < cells; ++i)
+        {
+            unsigned int idx = (unsigned int)chf.cells[i].index;
+            unsigned char cnt = (unsigned char)chf.cells[i].count;
+            fwrite(&idx, 4, 1, f);
+            fwrite(&cnt, 1, 1, f);
+        }
+        for (int i = 0; i < (int)chf.spanCount; ++i)
+        {
+            unsigned short y = (unsigned short)chf.spans[i].y;
+            unsigned char h = (unsigned char)chf.spans[i].h;
+            fwrite(&y, 2, 1, f);
+            fwrite(&h, 1, 1, f);
+            fwrite(&chf.areas[i], 1, 1, f);
+        }
+        fclose(f);
+    }
+
+    bool MapBuilder::buildCommonTile(const char* tileString, const DumpCtx& dbg, Tile& tile, rcConfig& tileCfg, float* tVerts, int tVertCount, int* tTris, int tTriCount, float* lVerts, int lVertCount,
                                      int* lTris, int lTriCount, uint8* lTriFlags, int preErosionMedianPasses, int seamBridgeMaxRise, SeamFixStats* seamStats)
     {
+        // ⚠️ Recast 的 walkableHeight / walkableClimb 是**体素数**（以 ch 为单位），
+        //    而 config.json 里的值是以 BASE_UNIT_DIM 为单位的物理量。
+        //    cs = ch = BASE_UNIT_DIM 的年代两者恰好数值相等，所以直接传；
+        //    ch 一改就悄悄错位 —— walkableClimb=4 会从 1.07 码缩到 0.71 码，
+        //    等于把怪物能迈的台阶砍掉 1/3，地图还会因此多出大量可行走面（体积暴涨）。
+        //    这里按 ch 折算成体素数再交给 Recast。
+        //
+        //    Detour 侧（params.walkableHeight/Radius/Climb）**不动**，仍然是
+        //    BASE_UNIT_DIM * 原值，所以导航数据里那几个物理量保持与线上完全一致。
+        //
+        //    注意用局部副本：tileCfg 是 625 个子格共用的，就地改会累乘。
+        rcConfig cfg = tileCfg;
+        cfg.walkableHeight = (int)roundf(BASE_UNIT_DIM * float(tileCfg.walkableHeight) / CELL_HEIGHT);
+        cfg.walkableClimb  = (int)roundf(BASE_UNIT_DIM * float(tileCfg.walkableClimb) / CELL_HEIGHT);
+        if (cfg.walkableHeight < 1) cfg.walkableHeight = 1;
+        if (cfg.walkableClimb < 0) cfg.walkableClimb = 0;
+
         // Build heightfield for walkable area
         tile.solid = rcAllocHeightfield();
         if (!tile.solid || !rcCreateHeightfield(m_rcContext, *tile.solid, tileCfg.width, tileCfg.height, tileCfg.bmin, tileCfg.bmax, tileCfg.cs, tileCfg.ch))
@@ -1459,18 +1863,20 @@ namespace MMAP
         // mark almost unwalkable triangles with steep flag
         rcModAlmostUnwalkableTriangles(m_rcContext, 50.0f, tVerts, tVertCount, tTris, tTriCount, triFlags);
 
-        rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, tTris, triFlags, tTriCount, *tile.solid, tileCfg.walkableClimb);
+        rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, tTris, triFlags, tTriCount, *tile.solid, cfg.walkableClimb);
+        dumpTriangles(dbg, cfg, tVerts, tVertCount, tTris, tTriCount, triFlags);
         delete[] triFlags;
 
-        rcFilterLowHangingWalkableObstacles(m_rcContext, tileCfg.walkableClimb, *tile.solid);
-        rcFilterLedgeSpans(m_rcContext, tileCfg.walkableHeight, tileCfg.walkableClimb, *tile.solid);
-        rcFilterWalkableLowHeightSpans(m_rcContext, tileCfg.walkableHeight, *tile.solid);
+        rcFilterLowHangingWalkableObstacles(m_rcContext, cfg.walkableClimb, *tile.solid);
+        rcFilterLedgeSpans(m_rcContext, cfg.walkableHeight, cfg.walkableClimb, *tile.solid);
+        rcFilterWalkableLowHeightSpans(m_rcContext, cfg.walkableHeight, *tile.solid);
         if (lVerts)
-            rcRasterizeTriangles(m_rcContext, lVerts, lVertCount, lTris, lTriFlags, lTriCount, *tile.solid, tileCfg.walkableClimb);
+            rcRasterizeTriangles(m_rcContext, lVerts, lVertCount, lTris, lTriFlags, lTriCount, *tile.solid, cfg.walkableClimb);
 
         // close one cell wide unwalkable seams before they get widened by the erosion below
         SeamFixStats localSeamStats;
-        closeThinSeams(m_rcContext, *tile.solid, tileCfg, seamBridgeMaxRise, localSeamStats);
+        closeThinSeams(m_rcContext, *tile.solid, cfg, seamBridgeMaxRise, localSeamStats);
+        dumpRawHeightfield(dbg, *tile.solid);
         if (seamStats)
         {
             seamStats->closed += localSeamStats.closed;
@@ -1486,11 +1892,12 @@ namespace MMAP
 
         // compact heightfield spans
         tile.chf = rcAllocCompactHeightfield();
-        if (!tile.chf || !rcBuildCompactHeightfield(m_rcContext, tileCfg.walkableHeight, tileCfg.walkableClimb, *tile.solid, *tile.chf))
+        if (!tile.chf || !rcBuildCompactHeightfield(m_rcContext, cfg.walkableHeight, cfg.walkableClimb, *tile.solid, *tile.chf))
         {
             printf("%s Failed compacting heightfield!                     \n", tileString);
             return false;
         }
+        dumpCompactHeightfield(dbg, *tile.chf);
 
         // Optional median filter passes before the erosion. The median filter
         // removes area ids that have no majority in their 3x3 neighbourhood, so
@@ -1691,6 +2098,22 @@ namespace MMAP
             {"walkableSlopeAngle", 60.0f},
             {"liquidFlagMergeThreshold", 0.0f},
             {"preErosionMedianPasses", 1},
+
+            // [AUTOOFFMESH] 自动补连（只在 --autoOffMesh 时生效）
+            {"autoOffMeshMaxDH", 2.0f},      // 水平缺口上限（码）
+            {"autoOffMeshMaxDV", 1.0f},      // 高差上限（码）。**不得超过 walkableClimb**
+                                             // （默认 4 × BASE_UNIT_DIM = 1.0667），
+                                             // 否则会把 Recast 故意判成不连通的台阶又连回来，
+                                             // 变成"生物能爬上原本走不上去的台阶/矮墙"。
+                                             // 实测 1.5 时有 12.8% 的连接超过 climb。
+            {"autoOffMeshMaxComp", 3},       // 只给面数 <= 这个值的"小分量"补（实测定 3）
+                                             // 2026-10-15 曾试改 5，**已回退**：实测该格
+                                             // off-mesh 236 -> 327（+91 条，全局受益），
+                                             // 但救不了 5302918（刀锋山 铸魔营地 3784，
+                                             // 世界 1383.2/7392.8）那个点 —— 它被 dh/dv
+                                             // 判据挡住，不是被 maxComp 挡住的。
+                                             // 站长的处置：**参数一律保持原样，这个点
+                                             // 单独用人工连接补**（offmesh 输入表）。
         };
     }
 
