@@ -117,3 +117,7 @@ __pycache__/
 *.pem
 *.key
 !src/game/Anticheat/module/warden_modules/*.key
+
+# dev/tools 有自己的独立仓库（dev/tools/.git），外层不要再跟踪它，
+# 否则 git add -A 会把内层仓库管的文件重复入库（2026-10-15）。
+dev/tools/
