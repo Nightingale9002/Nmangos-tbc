@@ -10,12 +10,18 @@
 # Normal rules
 #
 .*
+!.gitmodules
+!.gitattributes
 *.o
 *.o.*
 *.so
 *.so.dbg
 *.bin
 *.gz
+
+# [PATCH-ARCHIVE 2026-10-15] 允许归档"我们对上游模块的补丁"（默认 *.patch 被下面第 44 行忽略）
+!dev/patches/*
+!dev/patches/*.patch
 
 #
 # Top-level generic files
@@ -96,7 +102,13 @@ cmake_install.cmake
 #
 # Module files
 #
-src/modules/
+# [SUBMODULE 2026-10-15] 原来这里是 `src/modules/`（整目录忽略），于是 PlayerBots 的本地修复
+# 完全不被外层仓库跟踪，重 clone/reset 就会静默丢失。改为子模块跟踪：
+#   .gitmodules 记录 https://github.com/Nightingale9002/playerbots.git
+#   gitlink 记录我们分支 kabu-2026.10 的确切 commit
+# 忽略只保留模块自身的构建产物（不忽略源码）。
+src/modules/*/CMakeFiles/
+src/modules/*/build/
 
 #
 # Python 探针运行产物（dev/tools/*.py 被 import 时生成的字节码缓存）
@@ -121,3 +133,6 @@ __pycache__/
 # dev/tools 有自己的独立仓库（dev/tools/.git），外层不要再跟踪它，
 # 否则 git add -A 会把内层仓库管的文件重复入库（2026-10-15）。
 dev/tools/
+
+# [SUBMODULE 2026-10-15] 本地裸仓库镜像（模块的兜底备份，不进外层仓库）
+dev/hold/playerbots-bare.git/
