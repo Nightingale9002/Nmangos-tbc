@@ -1,0 +1,103 @@
+From 2c8ed9638a050e1047e567996092b7f5ac1edbd0 Mon Sep 17 00:00:00 2001
+From: Nightingale9002 <143975831+Nightingale9002@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 02:33:39 +0800
+Subject: [PATCH 1/2] fix(vmap/gear): bot loadVMap missing vmaps/ permanently
+ blacklists whole map; GearProgression treated 0 as an item
+
+WorldPosition::loadVMap() passed sWorld.GetDataPath() (which is ./) as the vmap base path, missing the
+vmaps/ level. VMapManager2::_loadMap then cannot open .vmtree, inserts mapId into iNoVmapDataMaps and
+that map stays blacklisted for the whole process; the core path (GridMap.cpp uses GetDataPath() + vmaps)
+can no longer load it afterwards. Result: .los always reports tree=NO, vmap height/liquid queries fall back
+to the .map height (dungeons have no .map => -95), the water/land criteria go wrong and creatures appear to
+swim on land. Only bots call WorldPosition::getAreaFlag() often (it calls loadVMap() first), which is why it
+only happens with playerbots enabled.
+
+UpdateGearAction used itemId >= 0, so the 0 values in aiplayerbot.conf that mean this slot stays empty
+(0.9.0.3 body/shirt, 0.9.0.16 offhand) were equipped as item entry 0; that failed and spammed the chat with
+TellError alerts. Now only >0 is equipped, <=0 just clears the old item, and a real -1 missing config is
+reported once per phase/class/spec/slot.
+---
+ playerbot/WorldPosition.cpp                   | 13 +++++++++-
+ .../strategy/actions/UpdateGearAction.cpp     | 25 ++++++++++++++++---
+ 2 files changed, 34 insertions(+), 4 deletions(-)
+
+diff --git a/playerbot/WorldPosition.cpp b/playerbot/WorldPosition.cpp
+index d4384344..da89efff 100644
+--- a/playerbot/WorldPosition.cpp
++++ b/playerbot/WorldPosition.cpp
+@@ -945,7 +945,18 @@ bool WorldPosition::loadVMap(uint32 mapId, int x, int y)
+     if (isVmapLoaded(mapId, x, y))
+         return true;
+ 
+-    return VMAP::VMapFactory::createOrGetVMapManager()->loadMap(sWorld.GetDataPath().c_str(), mapId, x, y);
++    // [VMAP-PATH-BOT 2026-10-15] 这里原来传的是 sWorld.GetDataPath().c_str()，**少了 "vmaps/" 这一层**：
++    //   base = "./"（DataDir） ⇒ VMapManager2::_loadMap() 里 basePath + "530.vmtree" = "./530.vmtree"
++    //   ⇒ fopen 失败 ⇒ InitMap 返回 false ⇒ VMapManager2::iNoVmapDataMaps.insert(mapId)
++    //   ⇒ **整张图在这一进程内被永久拉黑**（此后任何 loadMap 都直接 return false），
++    //     核心侧 TerrainInfo::LoadMapAndVMap() 传的虽然是对的路径也救不回来。
++    // 表现：`.los` 永远 tree=NO；vmap 高度/水位查询落回 .map（副本没有 .map ⇒ -95）
++    //      ⇒ 水/陆判据全乱 ⇒ "陆地上游泳"。
++    // 为什么"关 bot 就正常"：只有 bot 会频繁走 WorldPosition::getAreaFlag()（WorldPosition.h:299
++    // 第一步就是 loadVMap()），于是只有 bot 在跑时才会用这个错路径去 loadMap、才会把图拉黑。
++    // 核心侧 GridMap.cpp 一直是 GetDataPath() + "vmaps"，这里对齐即可（末尾补 '/' 防止拼接粘连）。
++    static std::string const vmapBasePath = sWorld.GetDataPath() + "vmaps/";
++    return VMAP::VMapFactory::createOrGetVMapManager()->loadMap(vmapBasePath.c_str(), mapId, x, y);
+ }
+ 
+ std::vector<WorldPosition> WorldPosition::fromPointsArray(const std::vector<G3D::Vector3>& path) const
+diff --git a/playerbot/strategy/actions/UpdateGearAction.cpp b/playerbot/strategy/actions/UpdateGearAction.cpp
+index f3524645..eff9c2cf 100644
+--- a/playerbot/strategy/actions/UpdateGearAction.cpp
++++ b/playerbot/strategy/actions/UpdateGearAction.cpp
+@@ -4,6 +4,8 @@
+ #include "playerbot/RandomPlayerbotMgr.h"
+ #include "playerbot/AiFactory.h"
+ 
++#include <set>          // [GEARPROG-EMPTY-SLOT 2026-10-15] 用于"同一个缺失组合只提示一次"
++
+ using namespace ai;
+ 
+ UpdateGearAction::UpdateGearAction(PlayerbotAI* ai): Action(ai, "update gear")
+@@ -74,6 +76,15 @@ bool UpdateGearAction::Execute(Event& event)
+ 
+         // Retrieve the desired item from the progression levels
+         const int32 itemId = sPlayerbotAIConfig.gearProgressionSystemItems[itemProgressionLevel][cls][spec][slot];
++
++        // [GEARPROG-EMPTY-SLOT 2026-10-15] 约定：itemId <= 0 表示"这个槽位按阶段不配装备"，
++        // 不是物品编号。实测 aiplayerbot.conf 里 0.9.0.3 = 0（槽位 3 = EQUIPMENT_SLOT_BODY 衬衫，
++        // 装饰件）与 0.9.0.16 = 0（槽位 16 = EQUIPMENT_SLOT_OFFHAND，术士用法杖时为空）。
++        // 旧代码用 `itemId >= 0` 判断，于是 0 被当成物品 entry 去 equip：
++        //   CanEquipUnseenItem(bot, slot, eDest, 0) 找不到物品原型 ⇒ 失败 ⇒
++        //   TellError("Failed to equip item 0 specified in AiPlayerbot.GearProgressionSystem.0.9.0.3")
++        // 这就是聊天框里那一串告警的来源（并非"缺配置"）。
++        // 现在：>0 才装备；<=0 只清理旧件；== -1（矩阵没这一项）才提示"缺配置"，且每个组合只提示一次。
+         if (itemId >= 0)
+         {
+             const uint32 pItemId = (uint32)itemId;
+@@ -110,12 +121,20 @@ bool UpdateGearAction::Execute(Event& event)
+                     ai->TellError(requester, ss.str());
+                 }
+             }
++            // pItemId == 0：该槽位按阶段留空，旧件已清理，无需装备也不再告警。
+         }
+         else
+         {
+-            std::ostringstream ss;
+-            ss << "Missing configuration for AiPlayerbot.GearProgressionSystem." << std::to_string(itemProgressionLevel) << "." << std::to_string(cls) << "." << std::to_string(spec) << "." << std::to_string(slot);
+-            ai->TellError(requester, ss.str());
++            // -1（矩阵里没有这一项）才提示"缺配置"；同一个 phase/class/spec/slot 只提示一次，
++            // 避免每个 bot 每次换装都刷同一串告警（原实现会让聊天框刷满）。
++            static std::set<uint32> reportedMissing;
++            uint32 const key = ((((uint32)itemProgressionLevel * MAX_CLASSES + (uint32)cls) * 4 + (uint32)spec) * SLOT_EMPTY) + (uint32)slot;
++            if (reportedMissing.insert(key).second)
++            {
++                std::ostringstream ss;
++                ss << "Missing configuration for AiPlayerbot.GearProgressionSystem." << std::to_string(itemProgressionLevel) << "." << std::to_string(cls) << "." << std::to_string(spec) << "." << std::to_string(slot);
++                ai->TellError(requester, ss.str());
++            }
+         }
+ 
+     }
+-- 
+2.53.0.windows.1
+

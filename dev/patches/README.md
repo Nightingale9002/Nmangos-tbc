@@ -1,46 +1,69 @@
-# PlayerBots 模块补丁（相对上游）
+# PlayerBots 模块补丁与子模块（相对上游）
 
-## 为什么有这个目录
+## 现状（2026-10-15 起）
 
-`src/modules/PlayerBots` 是**独立的 git 仓库**（上游 `https://github.com/cmangos/playerbots.git`），
-而外层 `Nmangos-tbc` 的 `.gitignore:99` 有 `src/modules/`，所以**模块代码不被外层仓库跟踪**。
-我们对模块做的修复因此不在任何 git 历史里，一旦重新 clone / reset / 换机器就会静默丢失。
-这里存放"我们相对上游的补丁"，作为外层仓库里的凭据与重放手段。
+`src/modules/PlayerBots` 现在是**外层仓库的子模块**（`.gitmodules` + gitlink），指向我们自己的 fork：
 
-## 当前补丁
+| 项 | 值 |
+|---|---|
+| 子模块路径 | `src/modules/PlayerBots` |
+| 我们的仓库 | `https://github.com/Nightingale9002/playerbots.git`（fork 自 `cmangos/playerbots`） |
+| 上游 | `https://github.com/cmangos/playerbots.git` |
+| 我们的分支 | `kabu-2026.10` |
+| 分支基点（上游） | `2f5ace00` |
+| 我们的提交 | `2c8ed963`（vmap 修复 + GearProgression 告警）→ `c54ecb01`（装备阶段/不抢装备/缓存等级） |
+| 本地兜底镜像 | `dev/hold/playerbots-bare.git`（裸仓库，已 ignore；模块内 remote 名 `mirror`） |
+| 云端备份 | `/root/Nmangos-tbc/src/modules/PlayerBots` 的分支 `kabu-2026.10`（**只备份分支，云端工作分支仍是 master**） |
 
-| 文件 | base（上游 commit） | 我们的提交 | 内容 |
-|---|---|---|---|
-| `playerbots_2026-10-15_vmap_and_gearslot.patch` | `2f5ace00` | `79d8b5c2`（分支 `kabu-2026.10`） | ① `WorldPosition::loadVMap()` 的 vmap basePath 少了 `vmaps/`，会让 `VMapManager2` 把整张图写进 `iNoVmapDataMaps` **永久拉黑**（表现为 `.los` 永远 `tree=NO`、vmap 高度落回 `.map`、副本 -95、水陆判据错乱＝"陆地上游泳"；只有开 bot 才会触发）② `UpdateGearAction` 把配置里表示"该槽位留空"的 `0` 当物品 entry 装备，失败后刷聊天框告警 |
+外层的 `.gitignore` 已做两处调整：
+- 删除原来的 `src/modules/`（整目录忽略 ⇒ 模块改动不被跟踪）；
+- 加白名单 `!.gitmodules`、`!dev/patches/*.patch`（否则被 `.*` 与 `*.patch` 规则挡掉）。
 
-## 怎么重放（在模块仓库里）
+## 换机器 / 重新 clone
+
+```bash
+git clone --recursive <外层仓库>
+# 已 clone 过的：git submodule update --init --recursive
+```
+
+## 重放补丁（不依赖子模块时）
 
 ```bash
 cd src/modules/PlayerBots
-git fetch origin
-git checkout -b kabu-2026.10 origin/master      # 或先把分支 fast-forward 到新的上游 master
-git am /path/to/dev/patches/playerbots_2026-10-15_vmap_and_gearslot.patch
+git fetch upstream
+git checkout -b kabu-2026.10 upstream/master
+git am /path/to/dev/patches/0001-*.patch /path/to/dev/patches/0002-*.patch
 ```
-有冲突就手工合，然后把新提交继续放在 `kabu-2026.10` 上，并更新本文件的表格。
 
-## 上游升级流程（目标形态）
+补丁文件（`dev/patches/`，与分支内容一致，作为外层仓库里的可审查凭据）：
 
-1. `cd src/modules/PlayerBots && git fetch origin && git checkout master && git merge --ff-only origin/master`
-2. `git checkout kabu-2026.10 && git rebase master`（把我们的补丁挪到新上游之上）
-3. 重新导出补丁：`git format-patch -1 kabu-2026.10 --stdout > dev/patches/<新文件>.patch`
-4. 本地 Release 编译 + 验证（见 HANDOFF 的 P0：**未验证不得同步云端**）
+| 文件 | 内容 |
+|---|---|
+| `0001-fix-vmap-gear-*.patch` | ① `WorldPosition::loadVMap()` 的 vmap basePath 少了 `vmaps/` ⇒ `VMapManager2::_loadMap` 打不开 `.vmtree` 就把 mapId 写进 `iNoVmapDataMaps` **永久拉黑**，此后核心侧传对路径也无效；表现 `.los` 永远 `tree=NO`、vmap 高度/水位落回 `.map`（副本 -95）、水陆判据错乱＝**陆地上游泳**；只有 bot 会高频走 `getAreaFlag()` → `loadVMap()`，所以只有开 bot 才触发 ② `UpdateGearAction` 把配置里表示"该槽位留空"的 `0` 当物品 entry 装备，失败后刷聊天框告警 |
+| `0002-feat-gear-*.patch` | 按副本换装备阶段（`GearProgressionSystem.InstancePhases`）、组里有真人时不抢装备（`PassRollsWithRealPlayer`）、装备缓存只建配置等级（`CacheLevels`）、随机装备默认阶段（`DefaultPhase`） |
 
-## 计划：改成 git submodule
+## 上游升级流程
 
-既然模块是独立仓库，长期方案是把它作为**子模块**挂到外层仓库，让外层记录确切 commit：
+```bash
+cd src/modules/PlayerBots
+git fetch upstream
+git checkout kabu-2026.10
+git rebase upstream/master          # 把我们的两个提交挪到新上游之上
+# 解冲突 → 本地 Release 编译 + 游戏内验证
+git push origin kabu-2026.10
+git push mirror kabu-2026.10
+git format-patch upstream/master..kabu-2026.10 --output-directory ../../../dev/patches
+```
 
-1. 在 GitHub 建 fork：`cmangos/playerbots` → `Nightingale9002/playerbots`
-2. 模块仓库：`git remote add kabu https://github.com/Nightingale9002/playerbots.git`
-   `git push kabu kabu-2026.10:kabu-2026.10`（可再把 `kabu-2026.10` 设为该 fork 的默认分支）
-3. 外层仓库：删掉 `.gitignore:99` 的 `src/modules/`，然后
-   `git submodule add https://github.com/Nightingale9002/playerbots.git src/modules/PlayerBots`
-   （若目录已存在：先备份 `.git`，再 `git submodule add --force <url> <path>`）
-4. 外层提交 `.gitmodules` 与 gitlink；之后 clone 用 `git submodule update --init --recursive`
-5. 云端源码树同步时，模块部分改为记录 fork 的 commit（**仍按 P0**：验证过才同步）
+> 注意（P0 铁律）：**未本地编译验证的模块改动不得同步到云端源码树**；云端分支只是备份，
+> 要把改动真正上线，必须由站长明确下令后再切换/合并云端工作分支。
 
-> 注意：改成子模块后，本目录的补丁文件**保留**，作为"外层的可审查凭据"；权威版本以子模块仓库的 `kabu-2026.10` 分支为准。
+## 网络提示
+
+本机访问 GitHub 需要走系统代理（`127.0.0.1:10792`）。模块仓库已就地配置 `http(s).proxy`；
+临时命令可用：
+
+```bash
+GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0=http://127.0.0.1:10792 \
+GIT_CONFIG_KEY_1=https.proxy GIT_CONFIG_VALUE_1=http://127.0.0.1:10792 git push ...
+```
