@@ -9950,3 +9950,34 @@ io.open(p, 'w', encoding='utf-8', newline='').write(s)   # ← 抛 UnicodeEncode
   - 全部语句**静态幂等** ✓；已在本地做 **apply → 回滚 → 再 apply** 往返验证 ✓（回滚后与原始行逐字段一致：`auras=NULL`、`1997301` 回到 `ev=0/flags=1025/a1=37633/p=0,5000,18000,28000`、22204 恢复 2 行 ✓）
   - 本地重启加载正常 ✓：`Loaded 19353 CreatureEventAI scripts` ✓ + `CMANGOS: World initialized` ✓（无 EventAI 报错 ✓）
 - 待办：**云端同步等站长发话** ✓（`dev/*.sql` 由 nightly 的 `apply_dev_sql.sh` 按 marker 应用 ✓，**不需要编译** ✓）
+
+
+---
+
+## [配置] 奎岛（阳湾收复）阶段推进几乎不可能：`Sunsreach.CounterMax` 默认 10000（按站长指令 ×0.1 → 1000）—— 2026-10-14
+
+- 现象（站长）："奎岛任务进度有没有正常推进？"
+- **机制（读代码）**：交任务 → `WorldState::AddSunsReachProgress(questId)`
+  （`AI/ScriptDevAI/scripts/world/suns_reach_reclamation.cpp:23` → `World/WorldState.cpp:2095`）
+  给对应计数器 +1（**捐赠任务 `11514 A Magnanimous Benefactor` 为 +150** ✓）；达标判定在
+  `WorldState.cpp:2141`：`counterValue >= getConfig(CONFIG_UINT32_SUNSREACH_COUNTER) * modifier`
+  （两个候选任务互补时 `modifier = 2`）⇒ 才 `HandleSunsReachPhaseTransition` 推进阶段/解锁子阶段 ✓
+- **根因**：该配置定义在 `World.cpp:881` —— `setConfig(CONFIG_UINT32_SUNSREACH_COUNTER, "Sunsreach.CounterMax", 10000)`，
+  而 **`conf.dist` 里根本没有这一项**（隐藏配置 ✗）⇒ 本地与云端 conf 都没写 ⇒ 用的是**默认 10000** ✗
+  ⇒ 私服玩家交任务**不可能推到阶段** ✓（差三四个数量级 ✓）
+- **云端实测**：`world_state` 里 **Id=20 = `SAVE_ID_QUEL_DANAS`**（`WorldState.h:141` ✓）的 Data 为
+  `2 7 0 0 0 0 0 33 32 0 0 1 3 0 0 0` ⇒ 按 `WorldState.cpp:194-199` 的装载顺序 = `phase=2`、`subphaseMask=7`
+  （4 个子阶段完成 3 个 ✓），其余各计数器只有**个位数** ✗；启动日志里 Phase 2 与 Portal/Anvil/Alchemy-Lab
+  的 "Permanent" 事件被 started ⇒ 说明这份状态是**手动/初始化**设的
+  （GM 命令 `.sunsreachreclamation phase`，`Chat.cpp:888-890` ✓），**不是**玩家打出来的 ✓
+- **处置（站长口径："阈值改小 10 倍，别的不变"）**：
+  - 云端 `/opt/mangos/bin/mangosd.conf` **只追加 4 行**（diff 已验证只此一处 ✓）：`Sunsreach.CounterMax = 1000` ✓
+    备份 `/root/_confbak_mangosd_20261014_sunsreach.conf`（md5 `0cb98067cd584a24de2c9efdf5d625e7` ✓）；
+    改后 conf md5 `625395d9ee5fb0b229164debce8ce642` ✓
+  - 本地 `x64_Debug\mangosd.conf` 同值 ✓（备份 `mangosd.conf.bak_20261014_sunsreach` ✓）；重启后
+    `CMANGOS: World initialized` ✓ + 无配置报错 ✓
+  - ⚠️ **未重启云端** ✓（P0）；该项**只在启动时读取** ⇒ 生效需要一次 mangosd 重启
+    （**今晚 04:06 的 nightly 会自动重启** ✓，无需手动）
+  - 语义提醒：配对任务（如 11513/11514 那一类）判定为 `counter + otherCounter >= 1000 × 2` ✓；
+    捐赠任务一次 **+150** ✓ ⇒ 阈值 1000 时约 7 次捐赠可推一阶段 ✓；**已有计数器不会丢** ✓，
+    改完后**下一次**符合条件交付即按新门槛判定 ✓
