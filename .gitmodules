@@ -1,0 +1,4 @@
+[submodule "src/modules/PlayerBots"]
+	path = src/modules/PlayerBots
+	url = https://github.com/Nightingale9002/playerbots.git
+	branch = kabu-2026.10
