@@ -9930,3 +9930,23 @@ io.open(p, 'w', encoding='utf-8', newline='').write(s)   # ← 抛 UnicodeEncode
 
 错的只是 viewer；**生成器一直用的是正确公式**，所以 `_regen_full` 那套 mmaps（以及
 09-30 生产集）都是正常的。**上云不因这个 bug 受阻。**
+
+
+---
+
+## [DB/EventAI] 恐惧魔(22204) 缺恐惧 + 邪能烈焰伤害过高；深渊烈焰行者(19973) 技能伤害过低 —— `dev/174` —— 2026-10-14
+
+- 现象（站长）：① 22204 **Fear Fiend 缺少恐惧技能** ✗；② 22204 的**邪能烈焰伤害过高** ✗（且网上数据库的该怪技能表里没有这条 ✗）；③ 19973 **Abyssal Flamebringer 的 "Abyssal Meteor Fall" 伤害过低** ✗
+- 数据核查（本库实测）：
+  - **22204**：`creature_template_addon.auras = NULL` ✗（无任何常驻光环）；EventAI 只有两条**定时**施放：`2220401` = `36248`（对目标，6-12s / 13-27s）、`2220402` = `34259 恐惧`（15-23s / 35-47s）
+  - **官方机制** = `35408 "Fear Proc"`：`EffectApplyAuraName1 = 42 (PROC_TRIGGER_SPELL)` → `EffectTriggerSpell1 = 34259 (Fear)`，`ProcChance = 10`，`DurationIndex = 21`（常驻）✓ 法术**库里就有** ✓ 只是没挂上 ✓；对照 AzerothCore 同款修复 `fix(DB/Creature): Add Fear proc aura to Fear Fiend (#17735)`
+  - **`36248 Fel Flames` 的真实结构**（这也是"伤害过高"的原因）：`Effect1 = 142 Trigger Spell with Value → 36820` **且** `Effect2 = 6 Apply Aura(23 = 周期性触发, EffectAmplitude2 = 1000ms) → 36820`，引导 2 秒、5 码（Combat Range）、火焰 ⇒ 它是"**给自己挂光环 + 周期性打面前锥形火焰**"的引导型自我增益 ✗ ⇒ 用 EventAI"对目标定时施放"会变成"直伤 + 每秒跳伤"叠加 ⇒ 伤害过高 ✓（`36820` 基础 `EffectBasePoints1 = 139` ≈ 140/次）
+  - **19973**：`auras = '12743 献祭'` ✓（`Aura 23 周期触发 → 12744` 火焰 15）且 EventAI `1997302` 死亡移除该光环 ✓；但主动技能只有 `37633 Abyssal Strike`（`Effect1 = 32 Trigger Missile` → `45015`，`EffectBasePoints1 = 89` ≈ **90 伤害** ✗ 对 70-71 级怪明显过低 ✓）
+  - **对照同名怪 25001 Abyssal Flamewalker**（同一族的官方新版本 ✓）：官方行 `2500101` = **spawn 时** `action1 = 11 12743(献祭)` + `action2 = 11 45227(Abyssal Meteor Fall)` ✓；`45227 → 45033 Abyssal Transformation` ✓
+- 修法（`dev/174_恐惧魔补恐惧触发光环_深渊烈焰行者改官方技能.sql`，站长口径"**按官方来**"；回滚 `dev/rollback/174_回滚_恐惧魔与深渊烈焰行者技能.sql` ✓）：
+  1. `UPDATE creature_template_addon SET auras='35408' WHERE entry=22204` ✓ 补上 Fear proc 光环（核心修复）
+  2. `DELETE FROM creature_ai_scripts WHERE id IN (2220401, 2220402)` ✓ 移除"不属于该怪的邪能烈焰"与"被 proc 取代的定时恐惧"
+  3. 把 `1997301` 改为 spawn 形态：`event_type=11`、`action1 = 11 12743`、`action2 = 11 45227`，字段组合**照抄官方行 2500101** ✓；保留 `1997302`（死亡移除献祭 ✓，与 addon 光环配套）
+  - 全部语句**静态幂等** ✓；已在本地做 **apply → 回滚 → 再 apply** 往返验证 ✓（回滚后与原始行逐字段一致：`auras=NULL`、`1997301` 回到 `ev=0/flags=1025/a1=37633/p=0,5000,18000,28000`、22204 恢复 2 行 ✓）
+  - 本地重启加载正常 ✓：`Loaded 19353 CreatureEventAI scripts` ✓ + `CMANGOS: World initialized` ✓（无 EventAI 报错 ✓）
+- 待办：**云端同步等站长发话** ✓（`dev/*.sql` 由 nightly 的 `apply_dev_sql.sh` 按 marker 应用 ✓，**不需要编译** ✓）
