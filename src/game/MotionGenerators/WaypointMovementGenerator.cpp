@@ -287,11 +287,19 @@ uint32 WaypointMovementGenerator<Creature>::BuildIntPath(PointsArray& path, Crea
 }
 
 
-bool WaypointMovementGenerator<Creature>::GetNodeAfter(WaypointPath::const_iterator& nodeItr, bool)
+bool WaypointMovementGenerator<Creature>::GetNodeAfter(WaypointPath::const_iterator& nodeItr, bool looped)
 {
+    // [WP-GNA-FIX 2026-10-13] looped 原来是死参数（无条件 wrap 回 begin）。它的语义本来由
+    // LinearWPMovementGenerator 的覆写（.cpp:672）表达：looped=false 表示"只按当前方向取下一个，
+    // 到头就返回 false"；looped=true 表示"可以换一个方向/绕圈再试"。基类照此实现。
     ++nodeItr;
     if (nodeItr == i_path->end())
+    {
+        if (!looped)
+            return false;
+
         nodeItr = i_path->begin();
+    }
 
     return true;
 }
@@ -369,18 +377,28 @@ void WaypointMovementGenerator<Creature>::SendNextWayPointPath(Creature& creatur
     // add more node until travel time is big enough
     while (!nextNode->delay && travelTime < MinimumPathTime)
     {
-        // [WP-EXT-FIX 2026-10-13] 不再跨过路径末尾"绕回起点"追加节点。
-        // 原来这里调用 GetNodeAfter(..., false)，而它的 looped 参数被忽略、**无条件 wrap 回 begin()**，
-        // 于是当路径尾部若干路点彼此极近时（旧希尔斯布莱德决战：123/124 同坐标，125/126 也在附近），
-        // travelTime 长时间 < MinimumPathTime ⇒ 一路 append 到 126 后又 append **1 号点**
-        // （副本门口，~690 码）⇒ travelTime 才达标 ⇒ 整条 spline 被延伸到副本门口，
-        // 表现为"时空猎手喊完，萨尔一路跑回门口、到门口才触发 123/刷小怪"（站长报的 bug）。
-        // 到路径末尾即停止延长：非循环路径本该如此；循环巡逻也会在下一次
-        // OnArrived→SwitchToNextNode（那是带 wrap 的正常推进）时自然接到 1 号点，只是少一点预送平滑。
+        // we'll add path to node after this one too to make animation more smoother
         auto nodeAfterItr = currPointItr;
-        ++nodeAfterItr;
-        if (nodeAfterItr == i_path->end())
-            break;
+
+        if (!GetNodeAfter(nodeAfterItr, looped))
+        {
+            if (looped) //that should never happen. (Well can but with abnormally short path)
+                break;
+
+            // [WP-EXT-FIX 2026-10-13] "另换方向重试"只适用于**自身循环**的路径；对外部脚本路径
+            // （PATH_FROM_EXTERNAL = script_waypoint，如护送）不适用 —— 那类路径的收尾由脚本负责
+            // （专门的 EXTERNAL_WAYPOINT_FINISHED_LAST 钩子），绕回起点是错的。
+            // 实例：旧希尔斯布莱德护送决战，123/124 同坐标 ⇒ travelTime 长时间为 0 ⇒ 延长循环一路
+            // append 到 126 后 wrap 到 1 号点（副本门口 ~690 码）⇒ 萨尔"喊完往回跑、到门口才刷小怪"。
+            // 判据用路径来源本身表达，不用距离阈值（站长口径：距离阈值不能作为依据）。
+            if (m_PathOrigin == PATH_FROM_EXTERNAL)
+                break;
+
+            // we reach the end of the path better is to retry in the opposite direction
+            looped = true;
+            if (!GetNodeAfter(nodeAfterItr, true))
+                break; // did all the path and not reached MinimumPathTime?
+        }
 
         auto const nodeAfter = nodeAfterItr->second;
 
