@@ -94,7 +94,10 @@ std::deque<uint32> WorldSocket::GetIncOpcodeHistory()
 }
 
 WorldSocket::WorldSocket(boost::asio::io_context& context) : AsyncSocket(context), m_lastPingTime(std::chrono::system_clock::time_point::min()), m_overSpeedPings(0),
-    m_session(nullptr), m_seed(urand()), m_loggingPackets(false)
+    // [PKTLOG-ALL 2026-10-15] 站长口径：只要服务端开了收发包日志（mangosd.conf 里 PacketLogFile 非空、
+    // 文件已打开），**每个角色/每个会话都默认记录**，不需要在游戏里手动执行 .packetlog 1。
+    // 保留 .packetlog 0/1 作为会话级临时开关（它依然能覆盖这里的默认值）。
+    m_session(nullptr), m_seed(urand()), m_loggingPackets(sPacketLog->CanLogPacket())
 {
 }
 
