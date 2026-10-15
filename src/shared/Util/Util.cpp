@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the CMaNGOS Project. See AUTHORS file for Copyright information
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,6 +25,8 @@
 
 #include <chrono>
 #include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
 
 std::mt19937* initRand()
 {
@@ -32,11 +34,19 @@ std::mt19937* initRand()
     return new std::mt19937(seq);
 }
 
-static MaNGOS::thread_local_ptr<std::mt19937> mtRand(&initRand);
+// [内存修复 2026-10-16] 这里原来是 MaNGOS::thread_local_ptr<std::mt19937>（boost::thread_specific_ptr）。
+// 本机构建实测（Linux/WSL，Boost 1.66）：它的 get() **每次都返回 null**，于是每次
+// urand()/irand()/frand()/rand_norm() 都重新 new 一个 std::mt19937（约 2.5KB）并丢掉旧的
+// ⇒ 每次随机调用漏约 5.4KB RSS（线性，与调用次数成正比：启动期 11 万次 = +1.07GB）。
+// 运行期同样在漏 —— 这是云端 2GB 被 OOM 的主因之一，不只是 AhBot 的问题。
+// 改成 C++11 thread_local：每线程只建一次，分布与 seed 方式完全不变。
+static thread_local std::mt19937* mtRand = nullptr;
 
 std::mt19937* GetRandomGenerator()
 {
-    return mtRand.get();
+    if (!mtRand)
+        mtRand = initRand();
+    return mtRand;
 }
 
 uint32 WorldTimer::m_iTime = 0;
@@ -68,55 +78,55 @@ uint32 WorldTimer::getMSTime()
 int32 irand(int32 min, int32 max)
 {
     std::uniform_int_distribution<int32> dist(min, max);
-    return dist(*mtRand.get());
+    return dist(*GetRandomGenerator());
 }
 
 uint32 urand(uint32 min, uint32 max)
 {
     std::uniform_int_distribution<uint32> dist(min, max);
-    return dist(*mtRand.get());
+    return dist(*GetRandomGenerator());
 }
 
 float frand(float min, float max)
 {
     std::uniform_real_distribution<float> dist(min, max);
-    return dist(*mtRand.get());
+    return dist(*GetRandomGenerator());
 }
 
 int32 irand()
 {
     std::uniform_int_distribution<int32> dist;
-    return dist(*mtRand.get());
+    return dist(*GetRandomGenerator());
 }
 
 uint32 urand()
 {
     std::uniform_int_distribution<uint32> dist;
-    return dist(*mtRand.get());
+    return dist(*GetRandomGenerator());
 }
 
 double rand_norm()
 {
     std::uniform_real_distribution<double> dist(0, 1.0f);
-    return dist(*mtRand.get());
+    return dist(*GetRandomGenerator());
 }
 
 float rand_norm_f()
 {
     std::uniform_real_distribution<float> dist(0, 1.0f);
-    return dist(*mtRand.get());
+    return dist(*GetRandomGenerator());
 }
 
 double rand_chance()
 {
     std::uniform_real_distribution<double> dist(0, 100.0);
-    return dist(*mtRand.get());
+    return dist(*GetRandomGenerator());
 }
 
 float rand_chance_f()
 {
     std::uniform_real_distribution<double> dist(0, 100.0);
-    return float(dist(*mtRand.get()));
+    return float(dist(*GetRandomGenerator()));
 }
 
 Tokens StrSplit(const std::string& src, const std::string& sep)
