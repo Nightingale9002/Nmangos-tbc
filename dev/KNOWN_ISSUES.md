@@ -2139,7 +2139,7 @@ speeds    = walk 2.5 / run 7.0 / run_back 4.5 / swim 4.722 / ...
 
 #### 游戏内验收口径
 入水/出水**不再猛沉**（跨水线 z 不再一步掉 3~4 码）；浅水区的游泳生物**有游泳动作**（不再"走水面"）；深水区的表现与改动前一致（仍用设定深度）。相关背景见上文"水移动系统"章（`GetSwimStartDepth` 一节）。
-## [内存] mangosd 内存增长与泄漏总账 — 2026-08-17 ~ 2026-10-16（本章合并自 4 章：[内存] mangosd 内存持续增长（active 怪网格永不卸载）— 2026-08-20 已修、[内存] 2026-10-02 定案：日增 ~600MB ＝ **active 怪的「出生网格锁」把网格永久钉住**（8-20 只修了一半）— 本地已修，待云端、[PlayerBots/内存] 20 bot 配置：内存分解、对应代码改动、WSL 编译台与诊断开关 —— 2026-10-15、[内存/上游bug] `urand()` 每次调用泄漏约 5.4KB：Boost 1.66 的 `thread_specific_ptr::get()` 恒返回 null —— 2026-10-16）
+## [内存] mangosd 内存增长与泄漏总账 — 2026-08-17 ~ 2026-10-16（本章合并自 5 章：[内存] mangosd 内存持续增长（active 怪网格永不卸载）— 2026-08-20 已修、[内存] 2026-10-02 定案：日增 ~600MB ＝ **active 怪的「出生网格锁」把网格永久钉住**（8-20 只修了一半）— 本地已修，待云端、[PlayerBots/内存] 20 bot 配置：内存分解、对应代码改动、WSL 编译台与诊断开关 —— 2026-10-15、[内存/上游bug] `urand()` 每次调用泄漏约 5.4KB：Boost 1.66 的 `thread_specific_ptr::get()` 恒返回 null —— 2026-10-16、[内存/懒加载] 0 玩家时"补刷/生成"仍会整格载入 terrain+vmap —— 启动 +470MB（已修，本地实测 −487MB）—— 2026-10-16）
 
 > **合章说明（2026-10-16）**：本章由 4 个旧章合并；旧结论一律保留，被后续推翻/取代的已就地标注。
 > **两类泄漏必须分列，不能互相否定**：①**网格常驻型**（active 怪的「出生网格锁」，7609 定案）＝"不是每 tick 泄漏，而是当天加载的东西不再释放"；②**启动期线程 RNG 每次重建型**（`urand()` 每次调用漏约 5.4KB，10225 定案）＝每次随机调用都漏。两者类型不同，见对应小节。
@@ -2560,6 +2560,84 @@ std::mt19937* GetRandomGenerator()
 **相关文件**：`src/shared/Util/Util.cpp` → 线程本地 RNG 定义处（原 :31-50，行号可能已漂移）、`src/shared/Util/TSS.h` → 该模板与 `get()`（原 :30-55，行号可能已漂移）、
 `src/modules/PlayerBots/ahbot/ItemBag.h`（`Shuffle`，启动期最大调用者）、
 `src/modules/PlayerBots/ahbot/AhBot.cpp` + `ahbot/ItemBag.cpp`（`AHBOT_RSS_LOG` 打点，env 门控、可保留）。
+### [内存/懒加载] 0 玩家时"补刷/生成"仍会整格载入 terrain+vmap —— 启动 +470MB（2026-10-16，已修，本地实测 −487MB）
+
+#### 现象
+
+- 启动后（**0 玩家**、20 bot、`AutoDoQuests=0`）RSS 从约 840MB 涨到约 1,310MB（**+470MB**），之后进入平台不再涨。
+- `server memstat`（控制台命令）平台期读数：`heap_inuse=643MB / heap_arena=648MB`，而 **RSS=1,310MB**
+  ⇒ 约 660MB 不在 glibc 主 arena 账上（多线程/大块 `mmap` 分配，`mallinfo` 看不见）。
+- **反证**：把拍卖行挂单从 12,095 条降到 4,022 条，这段增长几乎不变 ⇒
+  此前"拍卖行挂单 ≈ 450MB"的归因**被证伪**（那是相关性归因，不是因果）。
+
+#### 排除项（全部实测，均无变化）
+
+| 实验 | 峰值 |
+|---|---|
+| 基线 | 1,327 MB |
+| `MALLOC_ARENA_MAX=1` | 1,321 MB |
+| `MapUpdate.Threads=1` | 1,314 MB |
+| `mmap.enabled=0`（导航网格） | 1,300 MB |
+| **`vmap.enableLOS/Height/IndoorCheck=0`** | **698 MB** ⇒ 增长整段消失 |
+
+⇒ 这 +470MB **全在 terrain/vmap 这条链上**；与 arena、map 线程数、导航网格（mmap）都无关。
+
+#### 根因链（massif + `addr2line` 调用栈 + `[GRIDLOAD]`/`[VMAP#]` 计数）
+
+- 前 150 次"按格加载"（`TerrainInfo::LoadMapAndVMap()`，`mapOnly=false`）的调用栈：
+  **101 次** `Creature::InitEntry() → IsSwimmable() → GetHeightStatic()`（刷生物时判定"是否在水中"，上游逻辑）、
+  **16 次** `Creature::IsAirbornePosition()`（本 fork 的重力 flag 补丁）、
+  **13 次** `PlayerbotFactory::Init() → WorldPosition::getAreaLevel()`、**3 次** `GameObject::Create()`。
+- 网格加载（`Map::ReportGridLoad()`，`GRIDLOAD_TRACE=1`）：0 玩家时全程只有 **6 次**，且全部是
+  `src=AddToActive by=Creature` —— `SpawnManager::Update()` 的**补刷队列不检查网格是否已载**就调
+  `SpawnInfo::ConstructForMap()` ⇒ `WorldObject::SpawnCreature()` ⇒ `Map::AddToActive()` ⇒
+  `Map::EnsureGridLoaded()`：整格对象连同该格 terrain(`.map`) + vmap 一起被拉进内存。
+- 量级：`WorldModel::readFile()`（`VMAP_TRACE=1`）计数 **4,351 个 vmap 瓦片 / 文件总量 130MB**，
+  同期 RSS 涨约 700MB（≈ **5.4 倍**文件体积 —— 解析成 mesh/BIH 结构），
+  且 **vmap 数据不随网格卸载释放**（所以 `grids=2` 时 RSS 仍然高）。
+
+#### 修复（懒加载口径：**逻辑不改，只挡"按需加载"**）
+
+- `TerrainInfo::VmapLazyScope`（`GridMap.h` / `GridMap.cpp`）：作用域内 vmap **只使用已加载数据**，
+  不再因为一次高度/游泳判定载入新瓦片（已加载瓦片仍照常登记，保持 `VMAP-KEEPALIVE` 记账）。
+  用于 `WorldObject::SpawnCreature()` / `SpawnGameObject()`（`Entities/Object.cpp`）与
+  `ObjectGridLoader::LoadHelper()`（`Grids/ObjectGridLoader.cpp`，网格加载创建整格对象那条路）。
+- `SpawnGroup::Spawn()`：`Active` 组不再"隔空刷新"——开放世界与副本统一要求 `Map::IsLoaded()`，
+  仅显式 `forced`（例如脚本 `Spawn(true, ...)`）例外；网格加载时 `SpawnGroup::Update()` 会照常刷。
+- `SpawnManager::Update()` + 新增 `SpawnManager::IsSpawnGridLoaded()`：补刷对象所在网格未加载则**不刷**，
+  等网格真被加载后再刷。
+
+#### 实测（WSL 本机测试台，20 bot，同负载）
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 启动峰值 | 1,327 MB | **840 MB** |
+| vmap 瓦片 / 字节 | 4,351 个 / 130 MB | 0 玩家时 **网格加载 0 次** |
+| `[GRIDLOAD]` 次数 | 6（全部 `by=Creature`） | **0** |
+
+启动曲线（修复后）：`15s:690MB → 30s:836 → 45s:840(峰值) → 60s:786 → 75s:786`。
+
+#### 诊断开关（env 门控、默认静默，保留）
+
+`GRIDLOAD_TRACE=1`（`Map.cpp` → `Map::ReportGridLoad()`，逐次网格加载 + 调用栈）、
+`VMAP_TRACE=1`（`vmap/WorldModel.cpp` → `WorldModel::readFile()`，瓦片计数/字节/RSS）、
+`TERRAIN_TRACE=1`（`GridMap.cpp` → `TerrainInfo::LoadMapAndVMap()`，按格加载 + 调用栈；
+输出已减去可执行文件加载基址，可直接 `addr2line -f -C -e mangosd <addr>` 解析）。
+
+#### 教训
+
+1. **相关性归因必须做反证实验**：挂单 12k→4k 而增长不变，一句话就推翻了"挂单 450MB"。
+2. **消融要挑"最贵且可一键关掉"的那一层**（`vmap.*=0`），比读代码猜快得多。
+3. `mallinfo` 只报主 arena ⇒ 多线程/大块 `mmap` 会"隐身"；**`RSS − heap_inuse` 的差值本身就是线索**。
+4. 懒加载服务器上，**任何"补刷/生成"都要先问网格载了没有**：否则一个 0 玩家的启动过程
+   就能把整张图的地形/导航拉进内存。
+
+**相关文件**：`src/game/Maps/SpawnManager.cpp`（`SpawnManager::Update()` / `SpawnManager::IsSpawnGridLoaded()`）、
+`src/game/Maps/SpawnGroup.cpp`（`SpawnGroup::Spawn()`）、`src/game/Maps/GridMap.cpp` + `GridMap.h`
+（`TerrainInfo::LoadMapAndVMap()` / `TerrainInfo::VmapLazyScope`）、`src/game/Entities/Object.cpp`
+（`WorldObject::SpawnCreature()` / `SpawnGameObject()`）、`src/game/Grids/ObjectGridLoader.cpp`（`LoadHelper()`）、
+`src/game/Maps/Map.cpp`（`Map::ReportGridLoad()`）。
+
 ## [崩溃] 服务端崩溃/段错误总账 — 2026-08-23 ~ 2026-10-03（本章合并自 5 章：[部署] mmap 热替换导致 mangosd 崩溃循环（2026-08-25 排查）、[稳定性] 服务器宕机根因：Map::Update 活动对象列表 use-after-free — 2026-08-23 已修复并验证（云端已部署）、[崩溃] 换格崩溃根因定案：MEMFIX 懒卸载 × Pet 驻留"世界容器" —— 2026-09-26、[崩溃] Oronok 链第二次崩溃：召唤物回调里的未初始化指针（`0cb0058d0`）—— 2026-09-29（本地已验证通过，云端未部署）、[崩溃] 2026-10-03 00:01:51 云端 mangosd 段错误（异步写回调里析构 shared_ptr，`WorldSocket::SendPacket` 的 lambda）—— **未定案；宕机约 110 秒，watchdog 已自动拉起**）
 
 > **合章说明（2026-10-16）**：本章由 5 个旧章合并；旧结论一律保留，被后续推翻/取代的已就地标注。
