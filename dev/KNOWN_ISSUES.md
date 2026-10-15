@@ -10292,3 +10292,33 @@ std::mt19937* GetRandomGenerator()
 **相关文件**：`src/shared/Util/Util.cpp:31-50`、`src/shared/Util/TSS.h:30-55`、
 `src/modules/PlayerBots/ahbot/ItemBag.h`（`Shuffle`，启动期最大调用者）、
 `src/modules/PlayerBots/ahbot/AhBot.cpp` + `ahbot/ItemBag.cpp`（`AHBOT_RSS_LOG` 打点，env 门控、可保留）。
+
+
+---
+
+## [取证方法] 客户端行为取证：抓包 / PKT 解码 / 已知格式坑 —— 2026-10-03（2026-10-16 由 HANDOFF 迁入）
+
+> 判断"客户端为什么这么表现"时，**唯一可靠的办法是看客户端实际收到的包**，不要靠读服务端日志加推测。
+
+**抓包步骤**
+
+1. 游戏内输入 `.debug packetlog 1`。
+2. 复现现象。
+3. 输入 `.debug packetlog 0`，然后**立刻**把文件复制走。
+4. 解析：`_agent_tmp` 下的 `parse_sniff.py`（拆 PKT）、`sniff_report.py`（create / monster-move 概览）、
+   `decode_creates.py`（create 块逐字段解码）。
+
+**几个已知的坑**
+
+- 服务端 conf 里 `PacketLogFile` 为空时**不会**抓包；填了名字后，服务器**每次启动都以写模式重开该文件，内容被清空**
+  ⇒ 抓完先复制，**重启前也先复制**。
+- 这个 fork 的 update 包结构是 `blockCount(4) + hasTransport(1)`，create 块内是
+  `updateType(1) + packed guid + objectTypeId(1) + updateFlags(1) + 移动块 + 掩码 + 字段`。
+- 2.4.3 的移动块在带 `MOVEFLAG_SWIMMING` 时会多一个 `s_pitch` 浮点，后面还有 `fallTime`；按 3.3.5 的格式解会**错位**。
+- 掩码前还有一个属于 `UPDATEFLAG_ALL` 的 uint32，漏掉它会解不出字段（表现为 `UNIT_FIELD_FLAGS` 不在 create 里）。
+
+**同一件事的教训**：2026-10-03 那只"在水面走路"的纳迦，服务端日志一切正常（字段位、移动标志、位置全对），
+最后是解码客户端 create 包才发现包里**多带了一条内嵌 spline**，把客户端的游泳判定顶掉了。
+
+> 服务端侧的开关与落盘（`PacketLogFile` / `LogsDir` ⇒ `/opt/mangos/logs/packets.pkt`、PKT 格式、
+> 以及 2026-10-15 起的"每个会话默认打开"）见本文件「[PlayerBots/内存] 20 bot 配置…」第四节。
