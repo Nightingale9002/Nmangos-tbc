@@ -22405,6 +22405,12 @@ AreaLockStatus Player::GetAreaTriggerLockStatus(AreaTrigger const* at, uint32& m
     if (IsGameMaster())
         return AREA_LOCKSTATUS_OK;
 
+    // [bot 2026-10-16] 站长口径：副本进门条件（等级 / 钥匙 / 英雄钥匙 / 开门任务 / 条件系统）
+    // 对 bot 一律不生效 —— bot 由玩家带进本，不要求它自己做前置任务。
+    // 判据用核心自带的 isRealPlayer()（session remote address == "disconnected/bot"），不依赖 playerbot 模块。
+    if (!isRealPlayer())
+        return AREA_LOCKSTATUS_OK;
+
     // Level Requirements
     if (GetLevel() < at->requiredLevel && !sWorld.getConfig(CONFIG_BOOL_INSTANCE_IGNORE_LEVEL))
     {

@@ -779,7 +779,8 @@ void WorldSession::HandleAreaTriggerOpcode(WorldPacket& recv_data)
 			at = data.second;
     }
 
-    if (at->conditionId && !sObjectMgr.IsConditionSatisfied(at->conditionId, player, player->GetMap(), nullptr, CONDITION_FROM_AREATRIGGER_TELEPORT))
+    // [bot 2026-10-16] 站长口径：bot 不做开门任务，areatrigger 条件对 bot 同样不生效
+    if (player->isRealPlayer() && at->conditionId && !sObjectMgr.IsConditionSatisfied(at->conditionId, player, player->GetMap(), nullptr, CONDITION_FROM_AREATRIGGER_TELEPORT))
     {
         if (!at->status_failed_text.empty())
         {
