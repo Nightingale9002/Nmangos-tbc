@@ -114,6 +114,10 @@ template<> void addUnitState(Creature* obj, CellPair const& cell_pair)
 template <class T>
 void LoadHelper(CellGuidSet const& guid_set, CellPair& cell, GridRefManager<T>& /*m*/, uint32& count, Map* map, GridType& grid)
 {
+    // [懒加载 2026-10-16] 网格加载一次性创建整格生物/物件，每个对象 InitEntry 的
+    // "是否在水中/离地高度"判定以前会按需把该格 vmap 拉进内存（实测启动 +470MB）。
+    // 与 WorldObject::SpawnCreature/SpawnGameObject 一致：生成期间只吃已加载数据。
+    TerrainInfo::VmapLazyScope lazyVmap;
     BattleGround* bg = map->GetBG();
 
     for (uint32 guid : guid_set)

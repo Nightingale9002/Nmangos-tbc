@@ -171,7 +171,20 @@ class TerrainInfo : public Referencable<std::atomic_long>
         // to cleanup unreferenced GridMap objects - they are too heavy
         // to destroy them dynamically, especially on highly populated servers
         // THIS METHOD IS NOT THREAD-SAFE!!!! AND IT SHOULDN'T BE THREAD-SAFE!!!!
-        void CleanUpGrids(const uint32 diff);
+        // [懒加载 2026-10-16] 生成对象（刷怪/刷物件、建 bot）期间的地形查询是"软查询"：
+    // 只使用已加载的数据，绝不因为一次高度/可游泳判定就把该格 vmap 拉进内存。
+    // 实测（massif + addr2line 调用栈）：首轮 Map::Update 里 1,000+ 个 spawn 的判定
+    // 把整格 vmap 拖进来，启动峰值 +470MB。玩家/bot 真正走到那里时照常按需加载。
+    static bool IsVmapOnDemandLoadAllowed() { return m_vmapOnDemandLoad; }
+    static void SetVmapOnDemandLoadAllowed(bool allow) { m_vmapOnDemandLoad = allow; }
+    struct VmapLazyScope
+    {
+        VmapLazyScope() : prev(m_vmapOnDemandLoad) { m_vmapOnDemandLoad = false; }
+        ~VmapLazyScope() { m_vmapOnDemandLoad = prev; }
+        bool prev;
+    };
+
+    void CleanUpGrids(const uint32 diff);
 
         bool CanCheckLiquidLevel(float x, float y) const;
 
@@ -195,6 +208,7 @@ class TerrainInfo : public Referencable<std::atomic_long>
         const uint32 m_mapId;
 
         GridMap* m_GridMaps[MAX_NUMBER_OF_GRIDS][MAX_NUMBER_OF_GRIDS];
+        static bool m_vmapOnDemandLoad;   // [懒加载 2026-10-16] false = 生成期间不许按需载 vmap
         bool m_GridMapsLoadAttempted[MAX_NUMBER_OF_GRIDS][MAX_NUMBER_OF_GRIDS];
         int16 m_GridRef[MAX_NUMBER_OF_GRIDS][MAX_NUMBER_OF_GRIDS];
 

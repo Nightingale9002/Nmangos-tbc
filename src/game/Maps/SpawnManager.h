@@ -72,6 +72,8 @@ class SpawnManager
         void RespawnAll();
 
         void Update();
+    // [懒加载 2026-10-16] 补刷前检查该对象所在网格是否已加载（未加载就不刷，避免强制载格）
+    bool IsSpawnGridLoaded(SpawnInfo const& spawnInfo) const;
 
         std::string GetRespawnList();
 

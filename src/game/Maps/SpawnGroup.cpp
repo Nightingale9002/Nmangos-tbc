@@ -438,7 +438,14 @@ void SpawnGroup::Spawn(bool forced, bool ignoreRespawntime)
             m_map.GetPersistentState()->AddGameobjectToGrid(dbGuid, data);
         }
         AddObject(dbGuid, entry);
-        if (forced || m_entry.Active || m_map.IsLoaded(x, y))
+        // [懒加载 2026-10-16] 站长口径：本服一律懒加载 —— `Active` 组**不再"隔空刷新"**：
+        // 只有该网格已加载（或显式 forced，例如脚本 `Spawn(true, ...)`）才生成成员。
+        // 原因（dev/KNOWN_ISSUES.md）：Active 组散布整张图，首轮 Map::Update 里 SpawnManager
+        // 逐个 spawn 会触发 TerrainInfo::GetHeightStatic/IsSwimmable ⇒ TerrainInfo::LoadMapAndVMap
+        // 把每格的 terrain+vmap+mmap 全拖进内存（massif 实测：mmap +335MB / vmap +132MB /
+        // 高度查询 +404MB）⇒ 启动峰值 +470MB（其中约 660MB 是 mallinfo 看不见的大块匿名分配）。
+        // 开放世界与副本同样处理：网格加载时 Map::Update → SpawnGroup::Update() 会照常把成员刷出来。
+        if (forced || m_map.IsLoaded(x, y))
         {
             WorldObject* spawned = nullptr;
             if (GetObjectTypeId() == TYPEID_UNIT)

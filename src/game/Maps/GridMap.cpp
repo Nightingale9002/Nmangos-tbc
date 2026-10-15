@@ -1297,8 +1297,60 @@ GridMap* TerrainInfo::GetGrid(const float x, const float y, bool loadOnlyMap /*=
     return pMap;
 }
 
+// [TERRAIN-DIAG 2026-10-16] 这是 terrain+vmap 进内存的唯一入口：谁在按格加载、加载了多少格。
+// env TERRAIN_TRACE=1 输出前 200 次（含调用栈，Linux 用 addr2line -f -C -e <bin> <addr> 解析）。
+// PIE 二进制的运行时地址要先减去可执行文件加载基址，addr2line 才能解析
+static uintptr_t TerrainDiagImageBase()
+{
+    static uintptr_t base = 0;
+    if (!base)
+    {
+        if (FILE* f = fopen("/proc/self/maps", "r"))
+        {
+            char line[512];
+            if (fgets(line, sizeof(line), f))
+            {
+                unsigned long long start = 0;
+                if (sscanf(line, "%llx", &start) == 1)
+                    base = (uintptr_t)start;
+            }
+            fclose(f);
+        }
+    }
+    return base;
+}
+
+static std::string TerrainDiagBacktrace()
+{
+    void* frames[12];
+    size_t const n = MaNGOS::CaptureStack(frames, 12);
+    uintptr_t const base = TerrainDiagImageBase();
+    std::string out;
+    for (size_t i = 2; i < n; ++i)
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%s0x%llX", out.empty() ? "" : ",",
+                 static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i]) - base));
+        out += buf;
+    }
+    return out.empty() ? std::string("-") : out;
+}
+
+bool TerrainInfo::m_vmapOnDemandLoad = true;   // [懒加载 2026-10-16]
+
 GridMap* TerrainInfo::LoadMapAndVMap(const uint32 x, const uint32 y, bool mapOnly /*= false*/)
 {
+    static bool const terrainTrace = (std::getenv("TERRAIN_TRACE") != nullptr);
+    static uint32 terrainCalls = 0;
+    if (terrainTrace && !mapOnly)   // 只有 mapOnly=false 这一支才会去载 vmap
+    {
+        ++terrainCalls;
+        if (terrainCalls <= 150)
+            sLog.outString("[TERRAIN#%u] map=%u cell=(%u,%u) bt=%s",
+                terrainCalls, m_mapId, x, y, TerrainDiagBacktrace().c_str());
+        else if (terrainCalls == 151)
+            sLog.outString("[TERRAIN] trace truncated after 150 vmap-cell loads");
+    }
     if (m_GridMaps[x][y] && mapOnly)
         return m_GridMaps[x][y];
 
@@ -1351,6 +1403,9 @@ GridMap* TerrainInfo::LoadMapAndVMap(const uint32 x, const uint32 y, bool mapOnl
     // （副本）IsTileLoaded() 只要树在就恒为 true ⇒ 网格没登记也不补，记账只减不增（见上面注释）。
     // 现在无条件调用：loadMap() 幂等（已登记的 tile 立刻返回），未登记的就补上登记，
     // 于是"网格在用 ⇒ 一定有记录"，VMapManager2 的整树删除就不会再发生在还有网格活着的时候。
+    // [懒加载 2026-10-16] 生成对象期间只使用**已加载**的 vmap：不再因为一次高度/游泳判定
+    // 就把新瓦片拉进来（已加载的仍然登记，保持 VMAP-KEEPALIVE 记账不变）。
+    if (m_vmapOnDemandLoad || vmgr->IsTileLoaded(m_mapId, x, y))
     {
         // load VMAPs for current map/grid...
         const MapEntry* i_mapEntry = sMapStore.LookupEntry(m_mapId);

@@ -449,6 +449,30 @@ static std::string FormatDriverBacktrace()
 // (the ~10 grids that stay loaded with 0 players: we want to know which path loads them).
 void Map::ReportGridLoad(char const* tag, WorldObject const* obj, uint32 x, uint32 y)
 {
+    // [GRIDLOAD-DIAG 2026-10-16] 逐次计数 + 调用栈（env GRIDLOAD_TRACE=1 时输出前 N 次，
+    // 用于回答"没人在地图里，谁把网格/vmap 拉进来"。Linux 解析：addr2line -f -C -e <bin> <addr>
+    static bool const traceAll = (std::getenv("GRIDLOAD_TRACE") != nullptr);
+    static uint32 loadCount = 0;
+    ++loadCount;
+
+    if (traceAll)
+    {
+        if (loadCount <= 300)
+        {
+            if (obj)
+                sLog.outString("[GRIDLOAD#%u] map=%u grid=(%u,%u) players=%u src=%s by=%s entry=%u bt=%s",
+                               loadCount, i_id, x, y, (uint32)GetPlayers().getSize(), tag,
+                               obj->GetGuidStr().c_str(), obj->GetEntry(), FormatDriverBacktrace().c_str());
+            else
+                sLog.outString("[GRIDLOAD#%u] map=%u grid=(%u,%u) players=%u src=%s bt=%s",
+                               loadCount, i_id, x, y, (uint32)GetPlayers().getSize(), tag,
+                               FormatDriverBacktrace().c_str());
+        }
+        else if (loadCount == 301)
+            sLog.outString("[GRIDLOAD] trace truncated after 300 loads");
+        return;
+    }
+
     if (GetPlayers().getSize() != 0)
         return;                                  // normal case: players are around, nothing to report
 
