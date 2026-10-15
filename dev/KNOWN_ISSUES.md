@@ -10140,3 +10140,75 @@ max_comp = int(sys.argv[7])   if len(sys.argv) > 7 else 50
 7. **`gen_offmesh.py` 的 `neis` 用的是 `raw - 1`**（`nb = raw - 1`，即文件里存的是
    "面号 + 1"），而且把 `raw == 0` 当"无邻居"。写自己的解析器时要跟它对齐，
    否则和它的分量划分对不上（我在这次排查里正是因为这点反复算错分量大小）。
+
+
+---
+
+## [PlayerBots/内存] 20 bot 配置：内存分解、对应代码改动、WSL 编译台与诊断开关 —— 2026-10-15
+
+### 一、这轮新确立的编译/验证模式（已同步写进 `HANDOFF_卡布魔兽运维.md` §七）
+
+- **Linux 编译改到 WSL 做**（不再占云端 2 核）：源码 `/root/Nmangos-tbc`，构建树 `/root/nb-build`，
+  命令 **`make -j16 mangosd`**；产物拷成 **`/root/mangosd_pbN`**（`strip` 后约 **45 MB**，**每次记 md5**）。
+  脚本：`_agent_tmp/wsl_sync_build_pb8.sh`。
+- **本机 Linux 运行/剖析台**：`/root/run_local`（`dbc/maps/vmaps/mmaps` 软链到 `D:\Game\cmangos\x64_Debug`；
+  四个库指向 Windows MySQL **`172.19.224.1:3306`**，用户 **`wslbot/wslbotpass`**）。
+  两个**必踩的坑**：① 模块 conf 按 **`../etc/`** 找 ⇒ 必须放 `/root/etc/`；
+  ② **stdin 必须保持打开**：`tail -f /dev/null | ./mangosd -c mangosd.conf`，
+  否则控制台线程立刻 `Halting process`。
+- **编码铁律**：`.h` **不要带 UTF-8 BOM** —— 带 BOM + PCH 会让 gcc 的 `#pragma once` 失效，
+  报 `redefinition of _D_AIPLAYERBOT_CONFIG`（去掉 BOM 后 0 error）；`.cpp` 保留 BOM。
+  `edit` 工具会丢 BOM、并把 CRLF 改成 LF ⇒ **每次改完先跑**
+  `_agent_tmp/strip_header_bom.ps1` + `_agent_tmp/normalize_src.ps1` **再编译**。
+- **诊断开关（env 门控，不设 = 空操作）**：`PB_RSS_LOG=1`（模块阶段 RSS）、`AHBOT_RSS_LOG=1`（AhBot 阶段 RSS）、
+  `PB_NO_FETCH_AREA=1`（跳过 vmap 预载）、`PB_NO_TALENT_FILTER=1`、`PB_SKIP_ENTRY_GUIDPS=1`。
+
+### 二、代码改动
+
+**模块仓库 `src/modules/PlayerBots`（19 文件，+573 / −70）**
+
+| 文件 | 改了什么 |
+|---|---|
+| `playerbot/PlayerbotAIConfig.cpp/.h` | 新增 `PlayerbotLogRss()`（12 处里程碑打点）；新增配置 `AiPlayerbot.EnableFishLocations`（默认 `false`）|
+| `playerbot/TravelMgr.cpp` | 鱼点默认关闭 + 查询只收 `RandomBotMaps` + 生成路径同样限定；`GetFishSpot()` 空表返回 `nullptr`；`FetchArea()` 加 `PB_NO_FETCH_AREA` 开关（guidps + 探索点）；`LoadQuestTravelTable` 改用引用不再整表拷贝 + `[SZ]` 规模日志 |
+| `playerbot/strategy/Value.h` | 新增 `Value<T>::GetRef()`（`CalculatedValue`/`ManualSetValue` 各实现一个）|
+| `playerbot/strategy/AiObjectContext.h` | 新增 `GAI_VALUE_REF` 宏（不拷贝取共享值）|
+| `playerbot/strategy/values/TravelValues.cpp` | `EntryGuidpsValue` 加 `PB_NO_FETCH_AREA`；`EntryTravelPurposeMapValue` 两个大表改引用；`guidpMap[entry]` → `find()` |
+| `playerbot/strategy/actions/FishAction.cpp` | `GetFishSpot()` 空指针防护（2 处；鱼点关掉后本来会崩）|
+| `playerbot/RandomPlayerbotMgr.cpp` | 打点：`PrepareTeleportCache` 里程碑 + 每 5 个 bot 登录 RSS |
+| `playerbot/RandomItemMgr.cpp` | `Init()` 每个子步骤打点 |
+| `ahbot/AhBot.cpp`、`ahbot/ItemBag.cpp` | AhBot 打点（`AHBOT_RSS_LOG`）+ `AvailableItemsBag::Load` 每 2000 物品打点 |
+
+**外层仓库**
+
+- `src/game/AuctionHouseBot/AuctionHouseBot.cpp`（+49）：AhBot 打点 —— ⚠️ **这份是死代码**（真正跑的是**模块版** AhBot），
+  **建议整体回滚** ✓。
+- `src/game/DBScripts/ScriptMgr.cpp`、`src/game/Server/WorldSocket.cpp` 的改动**不是本会话的**（之前留下的）。
+  ⇒ 其中 `WorldSocket.cpp` 另含 **2026-10-15 的"收发包日志默认对每个会话打开"**改动，见下面第四节。
+
+### 三、本会话实测结论（是事实，不是代码）
+
+- **AhBot（模块版）`availableItems.Init()` = +508 MB** ✓；把模块键 **`AhBot.Enabled = 0`** ⇒ 峰值 **1569 MB vs 2075 MB** ✓。
+  核心里那些键（`AuctionHouseBot.Enabled` / `Chance.Sell` / `MarketMaker.CatalogEnabled`）对本构建**全部无效（死代码）** ✓。
+- `ClearValue("entry guidps")` **只值 24 MB** ✓；之前看到的 **−590 MB 是 `sTerrainMgr.Update(24h)` 释放 `FetchArea()` 预载的 vmap** ✓。
+- **地图 530 没有整图载入** ✓：`grids=5 / creatures=1631 / gameobjects=1841 / players=0`
+  （`LoadAllGridsOnMaps=""`、`Autoload.Active=0`）✓。
+- **鱼点 = +0 MB** ✓（原 +20 MB）—— 88,141 行世界鱼点不再进内存 ✓。
+- **glibc `MALLOC_ARENA_MAX` / `TRIM` / `MMAP_THRESHOLD` 调参对 AhBot 无效果** ✓ ⇒ **不是分配器滞留** ✓。
+- **Linux 分解（20 bot 配置）**：核心 **761** + tele **13** + `CreateRandomBots` **28** + `PlayerbotFactory::Init` **177** +
+  物品 **33** + 文本/Talent **6** + **AhBot(Init) 508** + 启动后 **535** ≈ **2.1 GB** ✓。
+
+### 四、服务端收发包日志（PacketLog，2026-10-15 打开）
+
+- 机制：`src/game/Server/PacketLog.cpp` —— 开关 = 配置项 **`PacketLogFile`**（配 `LogsDir` 前缀）⇒
+  落盘 **`/opt/mangos/logs/packets.pkt`** ✓；格式 = **PKT 二进制**（`Signature 'PKT'`、`FormatVersion 0x0301`）✓，
+  **收发双向**（`:125` CMSG/SMSG）✓，可用 WoWPacketParser/嗅探器直接打开 ✓；`fopen(..., "wb")` ⇒ **每次 reload/重启都会截断重写** ✓。
+- **两道闸**（`WorldSocket.cpp:106/205`）：① `CanLogPacket()` = 文件已打开 ✓；
+  ② **`IsLoggingPackets()` = 每会话开关** ✓，默认 `m_loggingPackets(false)`（`:97`）✗，
+  由 GM 命令 **`.packetlog 1`** 打开 ✓。
+- **已改为"每个会话默认打开"**：`WorldSocket.cpp` 把 `m_loggingPackets(false)`
+  改成 **`m_loggingPackets(sPacketLog->CanLogPacket())`** ✓ ⇒ 只要 conf 里 `PacketLogFile` 非空，
+  **所有角色自动落盘**，不需要在游戏里手动执行 `.packetlog 1` ✓（`.packetlog 0/1` 仍可做会话级临时覆盖 ✓）。
+- 生效方式：改配置后 **`.reload config`** 即可让 `PacketLog::Reinitialize()` 重新开文件 ✓
+  （`Level3.cpp:357`）；但**代码改动需要重新编译安装一次 mangosd** ✓。
+- 运维提醒：packet log **增长很快**且**每次重启被截断** ✓ ⇒ 需要按大小轮转/看护 ✓。
