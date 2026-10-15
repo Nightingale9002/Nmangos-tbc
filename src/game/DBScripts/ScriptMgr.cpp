@@ -1431,8 +1431,12 @@ std::pair<bool, bool> ScriptAction::GetScriptProcessTargets(WorldObject* origina
         else if (m_script->data_flags & SCRIPT_FLAG_BUDDY_BY_SPAWN_GROUP) // Buddy by group
         {
             WorldObject* origin = originalSource ? originalSource : originalTarget;
+            // [崩溃修复 2026-10-15] 源与目标都为空时 origin 会是 nullptr，后面 origin->GetDistance() 直接踩空
+            // （线上实测 SIGSEGV at 0x38c，栈：GetScriptProcessTargets ← HandleScriptStep ← Map::ScriptsProcess）。
+            if (!origin)
+                return { false, false };
             if (origin->GetTypeId() == TYPEID_PLAYER && originalSource && originalSource->GetTypeId() != TYPEID_PLAYER)
-                origin = originalTarget;
+                origin = originalTarget ? originalTarget : originalSource;
 
             SpawnGroupEntry* entry = m_map->GetMapDataContainer().GetSpawnGroup(m_script->buddyEntry);
             WorldObject* closest = nullptr;
@@ -1482,8 +1486,12 @@ std::pair<bool, bool> ScriptAction::GetScriptProcessTargets(WorldObject* origina
         else if (m_script->data_flags & SCRIPT_FLAG_BUDDY_BY_STRING_ID)
         {
             WorldObject* origin = originalSource ? originalSource : originalTarget;
+            // [崩溃修复 2026-10-15] 源与目标都为空时 origin 会是 nullptr，后面 origin->GetDistance() 直接踩空
+            // （线上实测 SIGSEGV at 0x38c，栈：GetScriptProcessTargets ← HandleScriptStep ← Map::ScriptsProcess）。
+            if (!origin)
+                return { false, false };
             if (origin->GetTypeId() == TYPEID_PLAYER && originalSource && originalSource->GetTypeId() != TYPEID_PLAYER)
-                origin = originalTarget;
+                origin = originalTarget ? originalTarget : originalSource;
             auto worldObjects = m_map->GetWorldObjects(m_script->buddyEntry);
             if (worldObjects == nullptr)
                 return { false, false };
@@ -1531,8 +1539,12 @@ std::pair<bool, bool> ScriptAction::GetScriptProcessTargets(WorldObject* origina
 
             // Prefer non-players as searcher
             WorldObject* origin = originalSource ? originalSource : originalTarget;
+            // [崩溃修复 2026-10-15] 源与目标都为空时 origin 会是 nullptr，后面 origin->GetDistance() 直接踩空
+            // （线上实测 SIGSEGV at 0x38c，栈：GetScriptProcessTargets ← HandleScriptStep ← Map::ScriptsProcess）。
+            if (!origin)
+                return { false, false };
             if (origin->GetTypeId() == TYPEID_PLAYER && originalSource && originalSource->GetTypeId() != TYPEID_PLAYER)
-                origin = originalTarget;
+                origin = originalTarget ? originalTarget : originalSource;
 
             if (m_script->IsCreatureBuddy())
             {
