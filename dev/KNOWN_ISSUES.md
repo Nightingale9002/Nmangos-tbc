@@ -4,6 +4,12 @@
 > 功能性更新见同目录《功能更新手册_卡布魔兽.md》；运维内容见本地《HANDOFF_卡布魔兽运维.md》（不提交）。
 > 技术性笔记一律写入本文件（不再另开 md），仓库根/根目录散落的旧技术 md 已陆续归并。
 > 更新时间: 2026-09-01
+>
+> ⚠️ **引用约定（2026-10-16 定）**：本文件的 `文件:行号` 引用会随代码改动**漂移**。2026-10-16 全篇审计实测：
+> 前 2400 行的 66 处引用里**约 3/5 行号已错**（漂移 10~400 行），4801–7200 行的 85 处里**约 47% 已错**，
+> 另有若干处点名的**符号/配置键在源码里根本不存在**（如 `LoadMarketState`、`MarketMaker.Spread`、`triSource`）。
+> ⇒ **定位一律以符号名 grep 为准**（例：搜 `GetHeightInRange` 找 `Map.cpp` 那一段），行号只当"大概在哪一段"的提示。
+> ⇒ 新增/修订章节时：优先写 `文件 → 符号名()` 这类**不会漂**的引用；确需给行号时**必须同时给出符号名**。
 
 ---
 
@@ -111,7 +117,7 @@ LoadMapAndVMap(gx, gy)
 - 该 tile 三种数据（.map/.vmtile/.mmtile）**全部存在**。
 - **结论：不是数据缺失**。出生点旁就是一个地下墓穴/洞穴（其内生物 Z≈0~16，地表 ~34，差值 20~30 码），即**多层地形**。
 - 可能的根因方向：`GetHeightInRange`(Map.cpp:2796) 在洞穴/洞口多层处取层/取值错误（见其 2822 行注释），或随机游走路径点 Z 在该处不被正确修正。
-- 已在 `RandomMovementGenerator.cpp::_setLocation` 的反掉落修正里加诊断日志（`[WANDERDBG]`，entry 3/948 触发），待重编译部署后观察 `GetHeightInRange` 返回值。
+- 已在 `RandomMovementGenerator.cpp::_setLocation` 的反掉落修正里加诊断日志（`[WANDERDBG]`，entry 3/948 触发），待重编译部署后观察 `GetHeightInRange` 返回值。（2026-10-16 更正：该调试日志已不在源码中——grep 全仓无 `[WANDERDBG]` 匹配，属历史记录）
 
 ---
 
@@ -128,6 +134,8 @@ git status:  M dev/KNOWN_ISSUES.md
              M src/game/MotionGenerators/PathFinder.cpp             <- [RANDDBG] 调试日志
              M src/game/MotionGenerators/RandomMovementGenerator.cpp <- [WANDERDBG] 调试日志（含 FAR 距离过滤）
 ```
+
+（2026-10-16 更正：上方 `HEIGHTDBG`/`[RANDDBG]`/`[WANDERDBG]` 调试日志已不在源码中——grep 全仓无匹配，属历史记录）
 
 **（A）`GridMap.cpp::TerrainInfo::GetHeightStatic`（828~933 行）— 多层地形取层修复（核心）**
 
@@ -153,7 +161,7 @@ git status:  M dev/KNOWN_ISSUES.md
   - 洞内怪不受影响：比较对象是 vmap 与 **z**（单位自己的 z），洞深不设上限。
 
 - **[HEIGHTDBG] 防刷屏日志**（912~932 行）：仅 map 0 + Raven Hill 区域（x∈[-10500,-10100], y∈[50,450]）；
-  只打"危险决策"（`|z-mapH|<=5 && vmapH < mapH-20`，即地表单位却收到地下层）；每秒最多 1 条 + 每 10 码 1 条。
+  只打"危险决策"（`|z-mapH|<=5 && vmapH < mapH-20`，即地表单位却收到地下层）；每秒最多 1 条 + 每 10 码 1 条。（2026-10-16 更正：该调试日志已不在源码中——grep 全仓无 `[HEIGHTDBG]` 匹配，属历史记录）
 
 验证（本地部署后 Server.log，23:33 起）：
 - 地表单位：`z=59.71 mapH=59.69 vmapH=16.03 -> 59.69 (closeZ=0 closeMap=0)` —— 拒绝地下层，站回地表 ✓
@@ -161,12 +169,12 @@ git status:  M dev/KNOWN_ISSUES.md
 - 荒弃鬼屋地表：`z=61.69 mapH=59.77 vmapH=15.69 -> 59.77` —— 云端 `.go name` 传送到 15.68 场景的本地复现被修复 ✓
 - 用户实测：荒弃鬼屋放宠物跟随，**不再跑地下**；观察无怪掉下来 ✓
 
-**（B）`PathFinder.cpp::ComputePathToRandomPoint` — [RANDDBG] 调试日志（1433~1524 行）**
+**（B）`PathFinder.cpp::ComputePathToRandomPoint` — [RANDDBG] 调试日志（1433~1524 行）**（2026-10-16 更正：该调试日志已不在源码中——grep 全仓无 `[RANDDBG]` 匹配，属历史记录）
 - 目标：追踪随机漫步随机点生成异常（此前观察到 path 里出现数千码外的垃圾点）。
 - 只对 entry 3/210/948 打印：起点/当前点/终点/range/centerPoly/distToPoly；`getPolyHeight` 后终点若距起点 >100 码再打一条。
 - 距离过滤（>100 码才打）避免刷屏；结论：本地触发时无输出，垃圾点生成与 mmap 数据无关，非本修改引入。
 
-**（C）`RandomMovementGenerator.cpp::_setLocation` — [WANDERDBG] 调试日志（119~159 行）**
+**（C）`RandomMovementGenerator.cpp::_setLocation` — [WANDERDBG] 调试日志（119~159 行）**（2026-10-16 更正：该调试日志已不在源码中——grep 全仓无 `[WANDERDBG]` 匹配，属历史记录）
 - 对每条路径点做 `GetHeightInRange` Z 修正（来自 commit b82434357，见下），并加日志：
   只在距锚点 >100 码的点打印（FAR pt + z:before→after + GetHeightInRange 成功与否），防刷屏。
 - 结论：此前完整日志 95,917 行刷屏；距离过滤后 0 行——垃圾点/掉地不发生在随机漫步取点处。
@@ -233,7 +241,7 @@ TargetedMovementGenerator.cpp +87  Chase 水下：跳过距离/LOS/z 检查直�
 
 - **掉地根因链**：`GetHeightStatic`（.go name/宠物/UpdateAllowedPositionZ 共用）在多层地形无限向下搜索
   + 无接近性判断 → 选到地下层。已修（0-A）。
-- **随机漫步垃圾点**（数千码外）：`[WANDERDBG]`/`[RANDDBG]` 距离过滤后本地 0 输出，与 mmap 数据无关；
+- **随机漫步垃圾点**（数千码外）：`[WANDERDBG]`/`[RANDDBG]` 距离过滤后本地 0 输出，与 mmap 数据无关（2026-10-16 更正：这两个调试日志已不在源码中——grep 全仓无匹配，属历史记录）；
   若再出现，从 `ComputePathToRandomPoint` 的 `getPolyByLocation`/`getPolyHeight` 返回值方向排查（日志已就位）。
 - **待办**：本次工作区改动（0-A/B/C）尚未 commit；确认本地验证充分后建议提交，再同步到云服（Linux 需重新编译）。
 
@@ -280,7 +288,7 @@ TargetedMovementGenerator.cpp +87  Chase 水下：跳过距离/LOS/z 检查直�
   （玩家离开区域 → 网格卸载 → 事件怪消失，回到懒加载语义）。用户确认接受此权衡。
 
 ### 遗留/注意
-- `[GRIDDBG]` 日志（Map.cpp LoadN/Unload、ObjectGridLoader LoadN）**保留**，便于云端检查网格加载/卸载。
+- `[GRIDDBG]` 日志（Map.cpp LoadN/Unload、ObjectGridLoader LoadN）**保留**，便于云端检查网格加载/卸载。（2026-10-16 更正：该调试日志已不在源码中——grep 全仓无 `[GRIDDBG]` 匹配；文档此前记为"保留"，实际已清理）
 - 云端需等凌晨脚本编译部署新二进制 + `Autoload.Active=0` 配置（已改 `/opt/mangos/bin/mangosd.conf`，
   备份 `mangosd.conf.bak_autoload_20260820_022208`）。
 - 若未来需要 active 怪无玩家推进事件（如跨服事件），需重新评估此改动。
@@ -534,7 +542,7 @@ DB 指向 Windows 上的 MySQL（`wow@%` 用户），用 `screen` 起进程（**
   占领时仍由原版 `dbscripts_on_event` **11503（部落）/ 11504（联盟）** 在**原版真实坐标**召唤商人/卫兵；
   只保留 `d540af8b7` 的空队列宕机保护（7 行），其余自制逻辑（`m_teamGuards`/`GetGuardTeam`/预置刷点切换）全部撤回。
 - **本次唯一的新代码 = 修掉原版毛病"走开再回来 NPC 消失"**：`OutdoorPvPNA::RespawnFactionNpcs(go)`
-  —— 仅当"记下的 NPC 一个都不在图里"时才重跑原版脚本 11503/11504（幂等；不动归属、不动坐标、不动触发条件）。
+  —— 仅当"记下的 NPC 一个都不在图里"时才重跑原版脚本 11503/11504（幂等；不动归属、不动坐标、不动触发条件）。（2026-10-16 更正：`OutdoorPvPNA::RespawnFactionNpcs` 在仓库中已不存在——grep 全仓无匹配；该函数已被最终方案删除，见本章下方 ✅ 最终方案段）
   调用点在 `OutdoorPvPNA.cpp:238`（捕获事件后）。
 - **数据**：`dev/082` 删除 `dev/076` 插的 40 行估值坐标刷点（guid `9000001-9000040`）；`dev/076` 已改成纯注释留档（作废）。
 - **云端已生效（2026-09-18）**：`OutdoorPvPNA.cpp` 02:56 同步 → 二进制 `/opt/mangos/bin/mangosd` **03:12** 编译（含改动，
@@ -1048,6 +1056,8 @@ speeds    = walk 2.5 / run 7.0 / run_back 4.5 / swim 4.722 / ...
 
 **排查工具（下次直接用）**
 - 抓包：游戏内 `.debug packetlog 1` → 复现 → `.debug packetlog 0`，文件在 `logs/<PacketLogFile>`（PKT 3.1）。
+  （**2026-10-16 更新**：`PacketLogFile` 非空即**每个会话默认记录**，不再需要手动开 —— 见「[PlayerBots/内存] 20 bot 配置…」第四节；
+  `.debug packetlog 0` 仍可关掉单个会话。）
   **注意：重启服务器会以 `wb` 重开该文件（内容被清空），抓完先复制走。**
 - 解析：`_agent_tmp/parse_sniff.py`（PKT 3.1 拆包）、`_agent_tmp/sniff_report.py`（create/monster-move 概览）、
   `_agent_tmp/decode_creates.py`（create 块逐字段解码：注意 2.4.3 的 movement info 在 SWIMMING 时多一个
@@ -1621,7 +1631,7 @@ navmesh 无路径(真高空/水面等)        -> 目标点 = 直线终点
   上限 20%（SpreadMax）。
 - **mid（报价中枢）**：玩家上架单价中位数的 EMA 平滑（Smoothing=50%，首帧用中位数播种），
   持久化到 ahbot_price（数据库为价格源，改库 + .ahbot reload 生效）。
-- **价差自适应**：波动大（|中位数−mid|/mid 高）或市场薄（上架数 < ThinListings=3）→ 拉宽价差。
+- **价差自适应**：波动大（|中位数−mid|/mid 高）或市场薄（上架数 < ThinListings=3）→ 拉宽价差。（2026-10-16 更正：`MarketMaker.Spread`/`SpreadMax`/`ThinListings` 这三个键在 `src/modules/PlayerBots`（ahbot）源码与 `ahbot.conf.dist.in` 里不存在；原记录已失效）
 - **买侧**：只收价格 ≤ bid 的挂单（不再按静态价无限接盘）；BuyPerCycle（默认 0=不限）
   每物品每扫描周期买入配额。
 - **卖侧**：按 ask 上架（封顶静态价），不挂死价。
@@ -1736,13 +1746,13 @@ navmesh 无路径(真高空/水面等)        -> 目标点 = 直线终点
 > 规则的改动需要**重新生成 mmtile**。本地已全量生成 v8（2764 tile + 72 个 .mmap，云端已部署）。`MoveMapGen` 部署注意：复制到 `x64_Debug/Extractors/MoveMapGen.exe`。
 
 #### 1. 三角形来源标记（TerrainBuilder + MapBuilder）
-- `MeshData` 新增 `triSource`（每个三角形 0=ADT / 1=WMO / 2=矮M2 / 3=高M2），随 solidTris 同步生成。
+- `MeshData` 新增 `triSource`（每个三角形 0=ADT / 1=WMO / 2=矮M2 / 3=高M2），随 solidTris 同步生成。（2026-10-16 更正：`MeshData::triSource` 在当前源码中已不存在，属历史漂移；详见本章下方"文档漂移"段（原审计约 :5785））
 - 按来源分别光栅化：**先 WMO（室内真地板）→ 再 ADT（洞/入口真表面）→ 最后 M2**（矮装饰需下方有实地面，否则 STEEP）。
 
 #### 2. 坡度规则（确定稿，v8）
 - **ADT 地形**：保持上游 `rcClearUnwalkableTriangles` 60° 清除（曾试 89° 全可走 → 虚空 tile 顶点超 0xffff → 改回 60°）。
-- **WMO 建筑**：`MarkSteepTrianglesAsSteep`——≥60° 标 `NAV_AREA_GROUND_STEEP`（障碍）而非清除；**向下朝的面（天花板底面，n.y<0）也必须 STEEP**（2026-08-24 修，fabsf 会让天花板变可走地板）。
-- **M2 装饰**：高模型（> 4×walkableClimb×0.2667 ≈ 1.07码）全 STEEP（柱子/墙/大石不可爬）；矮模型默认待定，经 `HasSpanInWindow`（下方 0.5~4.5 码内有 span）判为可踩地面（箱子/车/桶）或 STEEP（悬空台阶）。
+- **WMO 建筑**：`MarkSteepTrianglesAsSteep`——≥60° 标 `NAV_AREA_GROUND_STEEP`（障碍）而非清除；**向下朝的面（天花板底面，n.y<0）也必须 STEEP**（2026-08-24 修，fabsf 会让天花板变可走地板）。（2026-10-16 更正：`MarkSteepTrianglesAsSteep` 在当前源码中已不存在，属历史漂移；详见本章下方"文档漂移"段（原审计约 :5785））
+- **M2 装饰**：高模型（> 4×walkableClimb×0.2667 ≈ 1.07码）全 STEEP（柱子/墙/大石不可爬）；矮模型默认待定，经 `HasSpanInWindow`（下方 0.5~4.5 码内有 span）判为可踩地面（箱子/车/桶）或 STEEP（悬空台阶）。（2026-10-16 更正：`HasSpanInWindow` 在当前源码中已不存在，属历史漂移；详见本章下方"文档漂移"段（原审计约 :5785））
 - **移除 WMO 覆盖 ADT 检查**（曾加 cy-15..cy-0.5 窗口判断，误删洞口 ADT → 门口缝隙 → 卡闪避）。
 - **移除 `rcMedianFilterWalkableArea`**（中值滤波）。
 
@@ -1897,7 +1907,7 @@ navmesh 无路径(真高空/水面等)        -> 目标点 = 直线终点
 
 1. **多层地形穿模（Duskwood 洞穴案）**：GCC vs MSVC 浮点差异导致 findSmoothPath 插值判层不同，本地平滑/云端跳变；已接受现状，拒绝 z 斜率限制（会引入卡闪避/新穿模）。仅多层地形区偶发。
 2. **湿地维尔加挖掘场桥**：宠物绕桥下的 vmap 多层未命中问题，待办中（见 KNOWN_ISSUES [地图]）。
-3. **PFDBG 日志保留**（aura 10909 门控，无 GM 操作不刷屏），供后续排障；GRIDDBG/HEIGHTDBG 等亦保留但限区域/防刷屏。
+3. **PFDBG 日志保留**（aura 10909 门控，无 GM 操作不刷屏），供后续排障；GRIDDBG/HEIGHTDBG 等亦保留但限区域/防刷屏。（2026-10-16 更正：`[GRIDDBG]`/`[HEIGHTDBG]` 已不在源码中——grep 全仓无匹配；文档此前记为"保留"，实际已清理）
 4. **mmap v8**：云端已部署（2764 .mmtile + 72 .mmap）；`MMAP_VERSION=8` 与云端一致，改规则必须升版本或手动删旧 tile。
 5. 大原则：**服务端逻辑向客户端靠拢**，导航网格（navmesh poly 高度）是移动可走性的唯一权威，vmap/.map 高度只做接近性兜底。
 
@@ -2403,7 +2413,7 @@ if (m_respawnTime > time(nullptr) && m_respawnTime - time(nullptr) < 366LL * 24 
   然后按"**自己的买卖流水**"做长周期结算（`FlowSettleHours`）移动报价锚：
   `flow_bought`（bot 从玩家手里买进）≫ `flow_sold`（玩家从 bot 买走）→ 报价下跌 `FlowMoveDownPct`；
   反向 → 上涨 `FlowMoveUpPct`；需要 `flow_total ≥ FlowMinUnits` 且一边 ≥ `FlowRatio%` 才动。
-- ⚠️ **致命限制（本次实测确认）**：`ahbot_market_state.price_ref > 0` 的行是**操作员钉价行**，
+- ⚠️ **致命限制（本次实测确认）**：`ahbot_market_state.price_ref > 0` 的行是**操作员钉价行**（2026-10-16 更正：原写「`price_ref > 0` 的行是操作员钉价行」，实为钉价判据是 **`enabled && price > 0 && (category == 1 || 2)`**；`price_ref` 只是持久化的"上一日收盘价"，本身不构成钉价。证据：`src/game/AuctionHouseBot/AuctionHouseBot.cpp` → `UpdateMarketPrices()` 的启动钳制 ~301 行 `bool opPinned = op.enabled && op.price > 0 && (op.category == 1 || op.category == 2);` 与运行钳制 ~1125 行 `if (op.enabled && op.category == 1 && op.price > 0)`，以及 ~280 行注释 "load persisted quotes (the previous day's closing price)"。本文件后文「材料钉价去掉（`dev/090`）」一节（审计行号 2556）写的是 `price > 0` = 操作员定价，口径正确；**两处口径以后者为准**），
   代码在钉价分支直接 `continue` → **整套价格发现对它们完全旁路**。云端共 **134 行**是这种状态，
   包含全部附魔材料、源生、绝大多数材料。
 - 站长实测案例：卖出 1,218 个大块棱光碎片 → `flow_bought = 1218`、`spent = 11,394 金`
@@ -3027,7 +3037,7 @@ AHBot 结构性上不了架的，才用掉落补。实测（云端角色库 bot 
 
 | 核心 | 表 | 每个 (level,class) 的伤害从哪来 |
 |---|---|---|
-| **本端** cmangos TBC | `creature_template_classlevelstats`；固定列 Class/Level/BaseMana/AP/RAP/BaseArmor/五维 + **每组扩张三列 `(BaseHealthExp{i}, BaseDamageExp{i}, BaseDamageExp{i}OLD)`**，`MAX_EXPANSION = 1` → 只有经典(0)/TBC(1) | 直接查表：按 `creature_template.Expansion` 选组，取 `BaseDamage` |
+| **本端** cmangos TBC | `creature_template_classlevelstats`；固定列 Class/Level/BaseMana/AP/RAP/BaseArmor/五维 + **每组扩张两列 `(BaseHealthExp{i}, BaseDamageExp{i})`，另各有 `BaseDamageExp{i}OLD`**（2026-10-16 更正：原写「每组扩张三列 `(BaseHealthExp{i}, BaseDamageExp{i}, BaseDamageExp{i}OLD)`」，实为 `SHOW COLUMNS` 的真实列 = `Level, Class, BaseHealthExp0/1, BaseMana, BaseDamageExp0/1, BaseMeleeAttackPower, BaseRangedAttackPower, BaseArmor, Strength/Agility/Stamina/Intellect/Spirit, BaseDamageExp0OLD, BaseDamageExp1OLD` —— **没有 `BaseDamage` 列**（那只是代码字段名）、**Health 组没有 OLD 列**；证据：`tbcmangos` → `creature_template_classlevelstats` 的 `SHOW COLUMNS`），`MAX_EXPANSION = 1` → 只有经典(0)/TBC(1) | 直接查表：按 `creature_template.Expansion` 选组，取 `BaseDamage` |
 | cmangos WotLK | 同名同布局，多一组 Exp2（`MAX_EXPANSION = 2`） | 同上 |
 | TC 3.3.5a / AC 3.3.5a | `creature_classlevelstats(level, class, basehp0/1/2, basemana, basearmor, attackpower, rangedattackpower, damage_base, damage_exp1, damage_exp2, Str/Agi/Sta/Int/Spi)`；后 5 列是 **2013-12-28 TDB52→53 才 ALTER 加的**（3.2.2a 时代只有 `exp, class, level, basehp, basemana`） | `CreatureBaseStats::BaseDamage[MAX_EXPANSIONS]`，`GenerateBaseDamage(info) = BaseDamage[info->expansion]`；然后 `weaponBaseMinDamage = basedamage; weaponBaseMaxDamage = basedamage * 1.5`（AC `Creature.cpp:1555-1570`） |
 | TC master（11.x） | `creature_classlevelstats` 只剩 `level, class, basemana, attackpower, rangedattackpower, comment` —— **没有生命/伤害曲线** | `sDB2Manager.EvaluateExpectedStat(CreatureHealth / CreatureAutoAttackDps / CreatureArmor, level, expansion, contentTuning, class)` × `HealthModifier/DamageModifier`（宠物再 × `GetHealthMod(classification)`）；曲线交给客户端 DB2 |
@@ -3053,11 +3063,13 @@ AHBot 结构性上不了架的，才用掉落补。实测（云端角色库 bot 
 |---|---|---|---|---|
 | 1 战士 | 66.84 / 56.49 = **1.18×** | 132.17 / 80.42 = **1.64×** | 261.32 / 104.35 = **2.50×** | 412.31 / 164.92 = **2.50×** |
 | 2 圣骑 | 1.18× | 1.64× | 261.32 / 96.74 = **2.70×** | 2.50× |
-| 4 盗贼 | 1.18× | 1.64× | 104.53 / 104.35 = **1.00×** | 1.00× |
+| 4 盗贼（⚠️ 本行已作废，见下注） | 1.18× | 1.64× | 104.53 / 104.35 = **1.00×** | 1.00× |
 | 8 法师 | 1.21× | 1.80× | 241.72 / 87.75 = **2.75×** | 2.51× |
 
 即：**TBC 段 61-70 级的曲线是条指数曲线**（战士 60→70：66.84 → 76.61 → 87.80 → … → 261.32，约 ×1.146/级），
 而 OLD/TC/AC 那条是近似线性（53.48 → 104.53）。盗贼（class 4）两列完全相同，所以盗贼怪不受影响。
+
+> ⚠️ **该结论已作废（2026-10-16 更正：原写「盗贼（class 4）两列完全相同，所以盗贼怪不受影响」）**：本库 `creature_template_classlevelstats` **根本没有 `Class=4` 的任何行**（`SELECT DISTINCT Class` = **1, 2, 8**；`COUNT(*) WHERE Class=4` = **0**）⇒ "class 4 两列完全相同 / 盗贼怪不受影响"**无数据支撑，作废**。上表"4 盗贼"行里的 **104.53 实为 Class1 70 级的 OLD 值**（`BaseDamageExp1OLD = 104.527`），并非盗贼数据。证据：`tbcmangos.creature_template_classlevelstats` → `SHOW COLUMNS` + 上述两条 SELECT。
 
 ### 4. 换算成每击伤害（示例）
 
@@ -3838,7 +3850,7 @@ UPDATE `spawn_group` SET `MaxCount` = 13 WHERE `Id` = 21032 AND `MaxCount` <> 13
 ### 7. 附：一条顺手发现的代码笔误（只记录，不改）
 
 `GameEvents/GameEventMgr.cpp:880`：事件 GO 注册成了 **`AddEventGuid(goDbGuid, HIGHGUID_UNIT)`**
-（同函数的移除用 `RemoveEventGuid(goDbGuid, HIGHGUID_GAMEOBJECT)`，981 行才是 creature 的正确写法）。
+（同函数的移除用 `RemoveEventGuid(goDbGuid, HIGHGUID_GAMEOBJECT)`，981 行才是 creature 的正确写法）（2026-10-16 更正：原写「981 行才是 creature 的正确写法」，实为 **981 行是 `creature->AddObjectToRemoveList();`**；creature 的 EventGuid 正解是 **`AddEventGuid(creatureDbGuid, HIGHGUID_UNIT)` 约 870 行 / `RemoveEventGuid(creatureDbGuid, HIGHGUID_UNIT)` 约 978 行**。证据：`src/game/GameEvents/GameEventMgr.cpp`）。
 后果：事件 GO 的 dbGuid 进的是**生物**的事件 guid 集合（`IsEventGuid(go, GAMEOBJECT)` 恒 false），
 网格加载时不会给它动态 guid；而移除时从 GO 集合删、删了个不存在的东西 ⇒ **生物集合里会残留**。
 生物与 GO 的 dbGuid 是两个独立编号空间（都从 1 开始）⇒ 理论上存在"编号撞车"的隐患。
@@ -4242,7 +4254,7 @@ if (!GetGOInfo()->GetDespawnPossibility() && !GetGOInfo()->IsDespawnAtAction() &
 ### 残留风险
 - 门/按钮的**自动关闭**走 `autoCloseTime`（`UseDoorOrButton` → `GameObject.cpp:1391`，`Update` GO_ACTIVATED 分支 `:529`），与本改动无关，不受影响。
 - 我们 fork 在 `Use()` 里保留了「非消耗型箱子/goober 用掉后不 despawn」的早退（`GameObject.cpp:653/685`，上游同款语义）⇒ **"用掉后留在原地可再点"的那类 goober 行为不变**；本次变的是"需要消失、并按 DB 时间重生"的那部分。
-- 受影响的门/按钮共 743 个刷点，量不小；若站长实测发现某扇门/按钮"该一直开着却关了"或反之，请回报具体 entry + 坐标，可单独把这一个 entry 的 `spawntimesecs` 调整或回滚本提交。
+- 受影响的门/按钮共 743 个刷点（2026-10-16 更正：原写「受影响的门/按钮共 743 个刷点」与本页上文「全库受影响面」表格（审计行号 4232–4236）自相矛盾，需区分两个口径 —— **719 = 按"重生时间非 0"计**（DOOR 548 + BUTTON 171，即行为真正被本改动改变的刷点）；**743 = 按总命中计**（DOOR 556 + BUTTON 187）；**本句当前采用 719 这一口径**，743 仅作总命中量参考。证据：本文「全库受影响面」表格（审计行号 4232–4236）），量不小；若站长实测发现某扇门/按钮"该一直开着却关了"或反之，请回报具体 entry + 坐标，可单独把这一个 entry 的 `spawntimesecs` 调整或回滚本提交。
 
 ---
 
@@ -4766,6 +4778,9 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
   `AddRoutes FAILED at Clear(): tracker busy` ⇒ 飞行中重复请求；`no DBC taxi path for pair (X -> Y)` ⇒ 客户端给的节点对服务端不存在（客户端/代理数据问题）；`no taxi mount display for source node X` ⇒ 该节点缺坐骑外观（数据问题，可按节点补）。
 
 ### 改成**常开**：所有飞行都自动记录（站长 2026-09-24："我没法预测哪一次会出 bug"）
+
+> ⚠️ **本节"常开"结论已作废（2026-10-16 更正：原写「改成常开：`Entities/Taxi.cpp:62`、`Maps/TaxiHandler.cpp:45`、`Entities/Player.cpp:18393` 三处 `inline bool TaxiDiagEnabled() { return true; }`」）**：符号 **`TaxiDiagEnabled` 在 `src` 全树已不存在**。现状是**按玩家**由 GM 命令 `.debug taxi` 开启（**默认关**），依据 `src/game/Entities/Taxi.cpp:52`（审计行号 62）与 `src/game/Maps/TaxiHandler.cpp:41`（审计行号 45）的注释 "Enabled per player by the GM command \".debug taxi\" (default off => zero cost)."，读取点为 `Player::IsTaxiDebug()`（`src/game/Entities/Player.h`，返回 `m_taxiTracker.m_debug`）。⇒ 本节以下的"常开""自动记录""`.debug taxi` 只控制采样精度"等描述均不成立：`[TAXI-DIAG]` 行只在 `.debug taxi` 打开后才产生；本节其余内容仅为历史记录，不代表当前代码。
+
 - 三个文件里各放了一个**常开开关**，事件日志与 `.debug taxi` 解耦：
   - `Entities/Taxi.cpp:62`、`Maps/TaxiHandler.cpp:45`：`inline bool TaxiDiagEnabled() { return true; }`
   - `Entities/Player.cpp:18393`：`static bool TaxiDiagEnabled() { return true; }`
@@ -5142,7 +5157,7 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
 
 - **判定依据（只读核对源码）**：ahbot_market_state 的 qty / avg_cost 是当年"虚拟库存"体系的列；源码里**只剩注释提到它们**
   （AuctionHouseBot.h:97/100、AuctionHouseBot.cpp:1321 "inventory is abandoned: no qty init-to-target, no reconciliation"），
-  现实读写只用 spent / earned / flow_bought / flow_sold / day_price / day_start / last_settle_time（AuctionHouseBot.cpp:965/1030/1326/1415/1434）。
+  现实读写只用 spent / earned / flow_bought / flow_sold / day_price / day_start / last_settle_time（AuctionHouseBot.cpp:965/1030/1326/1415/1434）。读写点见 `AuctionHouseBot.cpp` 的 `LoadInventory()`/`SettleVirtualPrices()`/`UpdateMarketPrices()`/`DeductInventory()`/`RecordBotPurchase()` 等函数（约 744/806/1351/1405/1673/1761/1782 行）。（2026-10-16 更正：原写读写点 AuctionHouseBot.cpp:965/1030/1326/1415/1434，实为约 744/806/1351/1405/1673/1761/1782；证据：`AuctionHouseBot.cpp` → `LoadInventory()`）
   ⇒ **确认废弃，可删**。
 - **执行方式**：DROP COLUMN 不是幂等语句，按项目约定**不走 dev SQL**（否则会让 applier 队列卡在该文件），而是在两个库上手工静态执行：
   ALTER TABLE tbccharacters.ahbot_market_state DROP COLUMN qty, DROP COLUMN avg_cost;
@@ -5156,7 +5171,7 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
 #### AH 改造剩余待办（本项已完成，剩下两条）
 
 1. **成对/共同定价机制**（比例**可配置**，默认按站长口径 3:1）：每周期只重算一次基准价、派生件按比例推得，**已挂单价格不动**；同时把"锭 ← 矿石成本"的周期同步挂进来；
-2. **价格发现参数化**：每买/卖 1 组 ±0.1%、小时上限 1%、天上限 10%。现状（AuctionHouseBot.cpp:932-947）：一个结算周期（FlowSettleHours=1h）里只要 flowTotal >= FlowMinUnits(100) 就**一次性**按 FlowMoveDownPct/FlowMoveUpPct(=1%) 调价，**与成交组数无关**；日上限已有（MaxDailyMovePct=10，1023-1035 行按 day_price 窗口判定）。
+2. **价格发现参数化**：每买/卖 1 组 ±0.1%、小时上限 1%、天上限 10%。现状（AuctionHouseBot.cpp:932-947）：一个结算周期（FlowSettleHours=1h）里只要 flowTotal >= FlowMinUnits(100)（2026-10-16 更正：原写 100，实为代码默认 20；证据：`AuctionHouseBot.cpp` → `AuctionHouseBot::Initialize()`（约 261 行））就**一次性**按 FlowMoveDownPct/FlowMoveUpPct(=1%) 调价，**与成交组数无关**；日上限已有（MaxDailyMovePct=10，1023-1035 行按 day_price 窗口判定）。
    ⇒ 需要新增两个 conf（建议以万分比为单位，避免 0.1% 无法用整数百分比表达）：MoveBpPerStack = 10（0.1% = 10bp/组）、MaxHourlyMoveBp = 100（1%/小时），并改成"按净成交组数成比例调价 + 小时/日两级封顶"。
 
 ## [经济] AH 市场商人：成对材料「共同定价」—— 数据层已建（ahbot_price_pair）—— 2026-09-25（本地 + 云端已建表）
@@ -5175,7 +5190,7 @@ GAMEEVENT-DIAG: unspawn event -307 -> 29 creatures (map 530), first guids: 53003
 - ⚠️ 比例来源冲突已按站长口径处理：**站长口径 3:1 为准**；库内精华转化配方（spell 13361/13632/13739/20039/32977）是 2:1，只作留档；棱光碎片配方 28022 为 3:1 ✓ 与口径一致。
 
 **代码层实现清单（下一轮做，锚点已找好）**：
-1. AuctionHouseBot.h/.cpp 加 struct PricePair { uint32 baseItem, derivedItem, ratio, lastBasePrice, lastSyncTime; } + std::vector<PricePair> m_pricePairs;，在 LoadMarketState()（AuctionHouseBot.cpp:1326 一带同处）里 SELECT auction_house, base_item, derived_item, ratio, last_base_price, last_sync_time FROM ahbot_price_pair WHERE enabled=1 载入；.ahbot reload 走同一入口。
+1. AuctionHouseBot.h/.cpp 加 struct PricePair { uint32 baseItem, derivedItem, ratio, lastBasePrice, lastSyncTime; } + std::vector<PricePair> m_pricePairs;，在 LoadMarketState()（AuctionHouseBot.cpp:1326 一带同处）（2026-10-16 更正：原写 LoadMarketState()（AuctionHouseBot.cpp:1326 一带同处），实为 `LoadInventory()`（`AuctionHouseBot.cpp` 约 1668 行；行情对的 SELECT 见 `LoadVpPairs()` 约 711 行）；证据：`AuctionHouseBot.cpp` → `LoadInventory()`）里 SELECT auction_house, base_item, derived_item, ratio, last_base_price, last_sync_time FROM ahbot_price_pair WHERE enabled=1 载入；.ahbot reload 走同一入口。
 2. 在**每周期价格更新之后**（现有 flow 调价在 :932-947、写回在 :1030/:1055 一带）调用新的 ReconcilePricePairs()：
    - 对每一对：读双方当前 price_ref；与 last_base_price（及记录的另一侧值）比较，**判断本周期哪一件先动了**；
    - **双向传播**：base 动了 ⇒ derived = base × ratio；derived 动了 ⇒ base = derived / ratio；两件都动 ⇒ 以"相对变化更大的一侧"为准（并记录一条日志说明取了哪一侧）；
@@ -5308,7 +5323,7 @@ framework 两个新 API 用独立小测试逐条验过（`_agent_tmp/ref_detache
   只有被整数取整抹平时才补最小步进（低价品的 1 铜就是最小可表示变化）；
   ② 逐件流水结算（`[AHBOT] SETTLE`）里 `down` / `up` 两条分支带方向调用（`balanced` 与 `up-blocked-1buyer` 不动价）。
 - 新 conf 键 **`AuctionHouseBot.MarketMaker.MinMoveCopper`（默认 1，0 = 关闭）**：已写入本地
-  `x64_Debug/ahbot.conf` 与仓库模板 `src/game/AuctionHouseBot/ahbot.conf.dist.in`。
+  `x64_Debug/ahbot.conf` 与仓库模板 `src/game/AuctionHouseBot/ahbot.conf.dist.in`。（2026-10-16 更正：原写模板中 MinMoveCopper 默认为 1 已写入，实为模板里是 0（关闭），代码默认值才是 1；证据：`ahbot.conf.dist.in` → `AuctionHouseBot.MarketMaker.MinMoveCopper`（约 346 行 = 0），`AuctionHouseBot.cpp` → `UpdateMarketPrices()` 约 997 行）
   ⚠️ **云端 conf 未动**（不加该键时代码按默认 1 走，行为一致；下次部署时可顺手补上这一行）。
 
 **本地实测（13:51–13:52，本地服 + 本地库）**
@@ -5367,7 +5382,7 @@ Wowhead 的掉率是"所有开箱记录"里的出现率，**不含 QuestRequired
 | 待办（原文摘要） | 状态（本次核查结论） | 证据 |
 |---|---|---|
 | ① 成对/共同定价（比例可配置，每周期只重算一次基准价） | ✅ 已做 | `SettleVirtualPrices()` `AuctionHouseBot.cpp:760`，由 `ahbot_virtual_price` + `ahbot_price_pair` + `ahbot_price_recipe` 驱动 |
-| ② 价格发现参数化（每买卖 1 组 ±0.1%、小时 ±1%、日 ±10%） | ✅ 已做 | `MoveBpPerStack`(10) / `MaxHourlyMoveBp`(100) / `MaxDailyMovePct`(10) 三个 conf 键 + 小时/日两级封顶 |
+| ② 价格发现参数化（每买卖 1 组 ±0.1%、小时 ±1%、日 ±10%） | ✅ 已做 | `MoveBpPerStack`(10) / `MaxHourlyMoveBp`(100) / `MaxDailyMovePct`(10) 三个 conf 键 + 小时/日两级封顶（2026-10-16 更正：原写三个 conf 键 + 小时/日两级封顶，实为 `MaxHourlyMoveBp` 已于 2026-09-29 取消（不存在小时封顶），现存只有 `MoveBpPerStack`(默认 10) + `MaxDailyMovePct`(默认 10) 的一级封顶；证据：`ahbot.conf.dist.in` → `AuctionHouseBot.MarketMaker.MaxHourlyMoveBp`（约 345 行"本键不再读取"），`AuctionHouseBot.cpp` → `UpdateMarketPrices()`（约 997-999 行）） |
 | ③ **清理 `ahbot_market_state` 废弃列 / 曝光量与库存管理老机制** | ❌ **一直没做** | 当时只删了 `qty`/`avg_cost`；`target`/`capacity` + 曝光切片 + 挂单快照整套原封不动 |
 
 ⇒ 站长判断正确：**③ 就是那条一直挂着的尾巴，而 2026-09-26「cat1/cat2 一件都不上架」正是它造成的。**
@@ -6636,7 +6651,7 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
   `if (m_creature->IsMounted()) { m_creature->Unmount(); m_bHadMount = true; }`，
   而 `Unit::IsMounted()`（`Unit.h:1487`）判的是 **`UNIT_FLAG_MOUNT`** —— 注释自己都写着
   *"not used with creature non-aura mounts"*；这个 flag **只有光环坐骑**（`Mount(displayid, aura)`）才置位。
-  脚本用的是 `Creature::Mount(displayid)`（`Unit.cpp:8294-8314`，无 aura）⇒ 只写 `UNIT_FIELD_MOUNTDISPLAYID`
+  脚本用的是 `Creature::Mount(displayid)`（`Unit.cpp:8294-8314`，无 aura）（2026-10-16 更正：原写 `Creature::Mount(displayid)`（`Unit.cpp:8294-8314`），实为 `Unit::Mount`（`Unit.cpp` 约 8344；`Unit::Unmount` 约 8367）；证据：`Unit.cpp` → `Unit::Mount()`）⇒ 只写 `UNIT_FIELD_MOUNTDISPLAYID`
   ⇒ `IsMounted()` 恒为 **false** ⇒ `m_bHadMount` 永远不会变 true ⇒ `Reset()` 的再上马被跳过。
   补一刀：`m_dismountOnAggro`（`CreatureAI.cpp:33`：无 `ALLOW_MOUNTED_COMBAT` 标志即为 true）让
   `UnitAI::HandleMovementOnAttackStart()`（`UnitAI.cpp:353`）在进入战斗时已经先把他拽下马了，
@@ -7051,7 +7066,7 @@ DB-SCRIPTS 找不到 buddy 等）判得准。
 ### 六、顺带结掉一条旧技术债：`[PFDBG]/[ZCORR-DEBUG]` 并不刷屏
 它们**全部**由 `PFDBG_MSG` / `IsPfDbg()` 守门 —— 只有**带光环 10909（Mind Vision）的单位**才输出
 （`src/game/MotionGenerators/PfDebug.h:18-24`），包括那些看起来"裸调用"的
-`PathFinder.cpp:159/218/223/228/482/975`、`TargetedMovementGenerator.cpp:829/831`（都在 `if (IsPfDbg(...))` 里）。
+`PathFinder.cpp:159/218/223/228/482/975`、`TargetedMovementGenerator.cpp:829/831`（都在 `if (IsPfDbg(...))` 里）（2026-10-16 更正：原写 829/831 都在 `if (IsPfDbg(...))` 守卫里，实为该文件 `IsPfDbg` 只在约 874 行，829 是 `i_path->calculate`、831 是注释；证据：`TargetedMovementGenerator.cpp` → `IsPfDbg()`）。
 云端日志普查里 **0 条** `[PFDBG]` ⇒ 不需要再动它们。
 
 ### 七、降级之后 `Server.log` 里剩下什么（下一次清理的候选）
@@ -7439,7 +7454,7 @@ Jaguero Stalker(2522, map0 guid 631)、Witchwing Ambusher(3279, map1 guid 20686)
   - NPC 的潜行法术（`22766 Sneak` / `6408 Faded` / `5916`）`rpl = 0`、**恒定只有 1**
     （原版 Spell.dbc 就是这样，`tbcmangos_orig` / `classicmangos_ref` 逐字段一致 ⇒ 数据不用动、也动不得）；
   - 于是公式里潜行方**完全没有等级项**：70 级观察者原始值 = 30 + 345 − 1 = 374 ⇒ ×0.3 = 112 码 ⇒
-    全部被上限截断 ⇒ 全库 298 个潜行刷怪点里 299/269 个可见距离一模一样。
+    全部被上限截断 ⇒ 全库 298 个潜行刷怪点里 269/298 个可见距离一模一样（2026-10-16 更正：原写 299/269，实为 269/298；原 299 系笔误，与同章「全库 298 个潜行刷怪点里 269 个（90%）恰好等于 45.0 码」节一致）。
 - **改法**（`VisibilityData::GetStealthVisibilityDistance`，`ObjectVisibility.cpp`）：
   ```cpp
   int32 stealthStrength = GetStealthStrength(STEALTH_UNIT);
@@ -9196,7 +9211,7 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 
 - 定位：
   - `broadcast_text` Id **10457** = `Blood and souls for Hakkar!  HAHAHAH!`（**祖尔格拉布哈卡**的台词，zh = "鲜血和灵魂，为了哈卡而战！哈哈哈！"）✓
-  - 全源码里**唯一**引用 10457 的地方 = `old_hillsbradScripts.cpp:150` 的 `SAY_TH_LEAVE_COMBAT3 = 10457`；使用点在同文件 `:432-434`（脱战随机在 LEAVE_COMBAT1/2/3 里挑一句）⇒ 就是它 ✓
+  - 全源码里**唯一**引用 10457 的地方 = `old_hillsbradScripts.cpp` 的 `SAY_TH_LEAVE_COMBAT3`，其值现已改为 **17609**（使用点在同文件 `SAY_TH_LEAVE_COMBAT3` 的 `DoBroadcastText()` 调用处，脱战随机在 LEAVE_COMBAT1/2/3 里挑一句）⇒ 就是它 ✓（2026-10-16 更正：原写"`SAY_TH_LEAVE_COMBAT3 = 10457`、值=10457、引用处 :432-434"，实为该处值已改为 **17609**；`10457` 在 `src/game` 只剩一行修复注释（位于该枚举定义上方约 :150）；使用点已从约 :432-434 变为约 :439-441；证据：`old_hillsbradScripts.cpp` → `SAY_TH_LEAVE_COMBAT3`）
 
 - **正确值 = 17609**，三条独立证据：
   1. 同组 `SAY_TH_LEAVE_COMBAT1 = 17607`（"I am truly in your debt, strangers."）、`= 17608`（"Thank you, strangers. You have given me hope."），而 **17609 = "I will not waste this chance. I will seek out my destiny."**（"我不会浪费这个机会的。我要找到自己真正的命运。"）正是同批第三句；
@@ -9380,7 +9395,7 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
     （副本门口，~690 码）⇒ travelTime 才达标 ⇒ **整条 spline 被延伸到副本门口** ⇒ 萨尔跑回门口，
     而 `OnArrived` 通知脚本用的仍是 `i_currentNode(=123)` ⇒ 日志表现"报 123 却在门口、到门口才刷小怪" ✓
   - **与 GM 跳转无关**：自然流程照样命中（尾部路点彼此极近即触发）⇒ 与站长在云端正常流程看到的一致 ✓
-  - **修复（站长"读代码"要求后采用的 A 版）**：延长循环**到路径末尾即 `break`**，不再跨圈回起点 ✓
+  - **修复（站长"读代码"要求后采用的 A 版）**：延长循环**到路径末尾即 `break`**，不再跨圈回起点 ✓（2026-10-16 更正：原写"到路径末尾即 break、不再跨圈回起点"，与代码不符，实为只有 `PATH_FROM_EXTERNAL` 会 `break`，其它路径仍按 `looped` 反向 wrap；证据：`src/game/MotionGenerators/WaypointMovementGenerator.cpp` → `GetNodeAfter()`，约 388-401 行）
     非循环路径本来就该如此；循环巡逻仍会在下一次 `OnArrived→SwitchToNextNode`（带 wrap 的正常推进）接到 1 号点，
     仅少一点预送平滑 ✓。本地 Release 编译 + 部署 ✓（md5 `BC6A5C1843901FEB97E1FA3E75815A74`）
   - 连带保留：`GetResetPosition` 死代码修（A 版，`:534`）✓ —— 它不是本 bug 成因，但同属"死参数/死代码"类问题 ✓
@@ -9481,7 +9496,7 @@ config.walkableRadius      = j["walkableRadius"].get<int>();
 
 ### 四、`closeThinSeams` 在**静默**修补，默认不打日志
 
-生成器内置的填缝函数（`MapBuilder.cpp:1299-1445`，`4ca129086` 引入），在
+生成器内置的填缝函数（`MapBuilder.cpp` → `closeThinSeams()`（`contrib/mmap/src/MapBuilder.cpp:1548-1694`，调用点 :1878），`4ca129086` 引入；2026-10-16 更正：原写 `MapBuilder.cpp:1299-1445`，实为该符号 1548-1694），在
 `rcBuildCompactHeightfield` **之前**跑：只处理"整根柱子一个可行走 span 都没有"的格子，
 要求有对面一对可行走邻居、高差 ≤ `walkableClimb`、且柱子里几何没高出邻居
 `walkableClimb + seamBridgeMaxRise`（默认 0），通过就把柱子截到邻居高度补一个 span。
@@ -9510,7 +9525,7 @@ noFlank 8,632,822   42.5%
 ```
 
 生成器**建了**这一格、喂了 `0004242.map`（**66,642 B 的实几何**）、跑完整个 Recast 管线，
-但 `rcBuildPolyMesh` 出来 **0 个面** → 不写盘（`MapBuilder.cpp:1199`）。
+但 `rcBuildPolyMesh` 出来 **0 个面** → 不写盘（`MapBuilder.cpp:1442-1449`，printf 在 :1448；2026-10-16 更正：原写 `MapBuilder.cpp:1199`，实为 1442-1449 判断 / 1448 printf；:1199 是 `offMeshConnections.append`）。
 而旧集里 `0004242.mmtile` 有 **628 个面 / 101,232 B**（2025-06-26，与 `.map` 同日）。
 
 **09-30 那次全量生成的 `No polygons to build on tile!` 共 54 条**，其中
@@ -9536,7 +9551,7 @@ noFlank 8,632,822   42.5%
 **动机**：导航面比真实地面**永远偏高**（map 556 大厅 805 点采样：中位 +0.320 码 / P90 +0.490 /
 最大 +1.051），根因是**体素高度 `ch` 的量化**，与 Recast 参数无关（原始数据 +0.331、调过参数的 +0.320）。
 
-**改法**（`MapBuilder.h` / `MapBuilder.cpp`，**未提交**）：
+**改法**（`MapBuilder.h` / `MapBuilder.cpp`，**已于 `962939d7c` 提交**（2026-10-14 21:07，与 `--autoOffMesh` 同一提交）；2026-10-16 更正：原写"未提交"）：
 
 ```cpp
 const static float CELL_SIZE   = BASE_UNIT_DIM;      // cs：水平格宽，**保持原值**
@@ -9578,7 +9593,7 @@ cfg.walkableClimb  = (int)roundf(BASE_UNIT_DIM * float(tileCfg.walkableClimb)  /
 ### 七、⚠️ 工具陷阱：两个 reach probe **不认 off-mesh link**
 
 `dev/tools/mmtile_reach_probe.py` 和 `mmtile_islands_probe.py` **只沿 `dtPoly::neis` 洪水填充**
-（两个文件里 `links` 出现 **0 次**）。而 off-mesh 连接**不在 `neis` 里** —— 生成器把 off-mesh
+（`dev/tools/mmtile_reach_probe.py` 里 `links` 出现 **0 次**；`dev/tools/mmtile_islands_probe.py` 里出现 **5 次**——`n_int_links`/`n_ext_links`，行 332/337/341/378/379；2026-10-16 更正：原写"两个文件里 `links` 出现 0 次"）。而 off-mesh 连接**不在 `neis` 里** —— 生成器把 off-mesh
 多边形追加在 `offMeshBase` 之后，通过 tile 的 `dtLink` 数组
 （`dtPoly.firstLink` / `dtLink.next`）连到端点。
 
@@ -9625,15 +9640,15 @@ cfg.walkableClimb  = (int)roundf(BASE_UNIT_DIM * float(tileCfg.walkableClimb)  /
 | **连上主分量了吗** | **否** | **否** |
 
 **⇒ 删腐蚀整体有改善（主分量 +43.6%、小孤岛 −79），但救不了这一格。**
-挡路的是旁边那些 `GROUND_STEEP` 面，而 STEEP 是 `MapBuilder.cpp:35` 里
-**硬编码的 50°**：
+挡路的是旁边那些 `GROUND_STEEP` 面，而 STEEP 是**硬编码的 50°**，来自调用点 **`MapBuilder.cpp:1864`**
+（`rcModAlmostUnwalkableTriangles(m_rcContext, 50.0f, ...)`；2026-10-16 更正：原写"STEEP 是 `MapBuilder.cpp:35` 里硬编码的 50°"，实为调用点 :1864；:35 是函数定义）：
 
 ```cpp
 rcModAlmostUnwalkableTriangles(m_rcContext, 50.0f, tVerts, ...);   // 50° 写死
 ```
 
-50~60° 的面被标成 `NAV_AREA_GROUND_STEEP`，而**运行期的过滤器不含 STEEP**
-（`PathFinder` 的 bitmask 只有 GROUND|WATER|MAGMA）⇒ **生物和玩家都永远走不上去**。
+50~60° 的面被标成 `NAV_AREA_GROUND_STEEP`，而**过滤器不含 STEEP**——⚠️ **该"不含"只适用于不含 `ENABLE_PLAYERBOTS` 宏的构建**（`build_nobot` / `build2`）
+（本段原写"`PathFinder` 的 bitmask 只有 GROUND|WATER|MAGMA"⇒**生物和玩家都永远走不上去**；2026-10-16 更正：在 `BUILD_PLAYERBOTS=ON` 的构建 `build1` 里**生物含 STEEP**（`PathFinder.cpp:1353`）——本段的"不含/永远走不上去"只对不含该宏的构建成立；另见下文 9706 起的更正）。
 
 **待决定**：把 50° 抬到 60~70（或做成 per-map 配置）。
 风险 —— STEEP 现在是故意做的"谁都走不了"的障碍，放开后会有本该是墙的 50~60° 面变成可走。
@@ -9709,14 +9724,17 @@ rcModAlmostUnwalkableTriangles(m_rcContext, 50.0f, tVerts, ...);   // 50° 写�
 
 ```cpp
 #ifdef ENABLE_PLAYERBOTS
-    includeFlags |= (NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP);   // 生物 walk ← 含 STEEP
+    includeFlags |= (NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP);   // 玩家（非 bot）分支 ← 含 STEEP
 #else
     if (creature->CanWalk()) includeFlags |= NAV_GROUND;           // ← 我们的构建走这支
 #endif
 ```
 
-`build1\CMakeCache.txt`：**`BUILD_PLAYERBOTS:BOOL=OFF`** ⇒ `ENABLE_PLAYERBOTS` 未定义
-⇒ **生物只拿 `NAV_GROUND`，STEEP 不可走**。
+（2026-10-16 更正：原把上面代码块里本行标成"生物 walk ← 含 STEEP"，错。本行在 `#ifdef ENABLE_PLAYERBOTS` 内的**玩家（非 bot）**分支，实际位于 `PathFinder.cpp:1345`；**生物** walk 是 `PathFinder.cpp:1353`（`includeFlags |= (NAV_GROUND | NAV_GROUND_STEEP)`，**不含** WATER）。）
+`build1\CMakeCache.txt:42`：**`BUILD_PLAYERBOTS:BOOL=ON`** ⇒ `ENABLE_PLAYERBOTS` **已定义**
+⇒ **生物 walk = `NAV_GROUND | NAV_GROUND_STEEP`**（`PathFinder.cpp:1353`），**STEEP 可走**。
+（2026-10-16 更正：原写 `build1\CMakeCache.txt`：**`BUILD_PLAYERBOTS:BOOL=OFF`** ⇒ `ENABLE_PLAYERBOTS` 未定义、⇒ **生物只拿 `NAV_GROUND`，STEEP 不可走**；实为 `build1` 的 `BUILD_PLAYERBOTS=ON`（`build1\CMakeCache.txt:42`）⇒ 宏已定义 ⇒ 生物含 STEEP；写 OFF 的是 `build_nobot\CMakeCache.txt:45` / `build2\CMakeCache.txt:42`。）
+⚠️ **前提不成立**：本节下文"未过滤时的实测"与"过滤后"两段的前提（生物过滤器不含 STEEP）在本构建里不成立；"STEEP 不可走"只对**不含该宏**的构建成立（同一代码块 `#else` 支的"我们的构建走这支"标注同样作废）。
 
 **未过滤时的实测**（`maxDV=1.0`）：**53.4% 的连接端点在 STEEP 面上** ——
 全是**死连接**，而且会把生物放到过滤器不认的面上、下一次寻路直接失配。
@@ -9959,7 +9977,7 @@ io.open(p, 'w', encoding='utf-8', newline='').write(s)   # ← 抛 UnicodeEncode
 - 现象（站长）："奎岛任务进度有没有正常推进？"
 - **机制（读代码）**：交任务 → `WorldState::AddSunsReachProgress(questId)`
   （`AI/ScriptDevAI/scripts/world/suns_reach_reclamation.cpp:23` → `World/WorldState.cpp:2095`）
-  给对应计数器 +1（**捐赠任务 `11514 A Magnanimous Benefactor` 为 +150** ✓）；达标判定在
+  给对应计数器 +1（**捐赠任务 `11549 A Magnanimous Benefactor` 为 +150** ✓；2026-10-16 更正：原写 `11514`，实为 `QUEST_A_MAGNANIMOUS_BENEFACTOR` = 11549；证据：`WorldState.cpp:2085` / `:2114`）；达标判定在
   `WorldState.cpp:2141`：`counterValue >= getConfig(CONFIG_UINT32_SUNSREACH_COUNTER) * modifier`
   （两个候选任务互补时 `modifier = 2`）⇒ 才 `HandleSunsReachPhaseTransition` 推进阶段/解锁子阶段 ✓
 - **根因**：该配置定义在 `World.cpp:881` —— `setConfig(CONFIG_UINT32_SUNSREACH_COUNTER, "Sunsreach.CounterMax", 10000)`，
@@ -9978,7 +9996,7 @@ io.open(p, 'w', encoding='utf-8', newline='').write(s)   # ← 抛 UnicodeEncode
     `CMANGOS: World initialized` ✓ + 无配置报错 ✓
   - ⚠️ **未重启云端** ✓（P0）；该项**只在启动时读取** ⇒ 生效需要一次 mangosd 重启
     （**今晚 04:06 的 nightly 会自动重启** ✓，无需手动）
-  - 语义提醒：配对任务（如 11513/11514 那一类）判定为 `counter + otherCounter >= 1000 × 2` ✓；
+  - 语义提醒：配对任务（如 **11538/11532**（Battle for the Suns Reach Armory / Distraction at the Dead Scar）或 **11542/11539**（Intercept the Reinforcements / Taking the Harbor）；另 11524、11496 各自与自身配对）判定为 `counter + otherCounter >= 1000 × 2` ✓；2026-10-16 更正：原写"11513/11514 那一类"，错——11513 只有 `subPhaseMask`、无 `otherCounter`，11514 根本不在该表里（证据：`WorldState.cpp:2079`、`:2106-2110`）
     捐赠任务一次 **+150** ✓ ⇒ 阈值 1000 时约 7 次捐赠可推一阶段 ✓；**已有计数器不会丢** ✓，
     改完后**下一次**符合条件交付即按新门槛判定 ✓
 
@@ -10010,12 +10028,12 @@ findPath dtResult=0x40000040 polyLength=1 type=8 polyPath: #9955(z=367.6855)
 | 1 | `findPath` 只返回起点面自己（`polyLength=1`） | 上引日志 |
 | 2 | `BuildPointPath` 于是只生成 1 个点（`pointCount=1`） | 日志 `[ZCORR-DEBUG] BuildPointPath pointCount=1` |
 | 3 | `pointCount < 2` ⇒ `BuildShortcut(); m_type = PATHFIND_NOPATH;` | `PathFinder.cpp:1230` |
-| 4 | 生物拿到一条**假的直线 "捷径"**（`FINAL npts=2 type=8`）⇒ 走不了 ⇒ 原地卡住，闪避也回不去 | `type=8` = `PATHFIND_NOPATH`（`PathFinder.h:62`） |
+| 4 | 生物拿到一条**假的直线 "捷径"**（`FINAL npts=2 type=8`）⇒ 走不了 ⇒ 原地卡住，闪避也回不去 | `type=8` = `PATHFIND_NOPATH`（`PathFinder.h:68`；2026-10-16 更正：原写 `PathFinder.h:62`，实为 :68；:62 是 `enum PathType`） |
 
 ### 二、真正的原因：**丢了一张 off-mesh 表**（它是**脚本生成的**，不是手工挑的）
 
 > ⚠️ **先纠正一个说法**：`offmesh_530_all.txt` 一开始被记成"人工维护的表"。
-> 它是 **`dev/tools/gen_offmesh.py` 脚本生成的**（见下方"参数复原"）。
+> 它是 **`_agent_tmp/gen_offmesh.py` 脚本生成的**（见下方"参数复原"；2026-10-16 更正：原写 `dev/tools/gen_offmesh.py`，该路径不存在，实际在 `D:\Game\cmangos\_agent_tmp\gen_offmesh.py`，与本章上文 `_agent_tmp/` 的写法一致）。
 > 之所以像"手工"，是因为它的生成命令没有留档。**别把它当成人工资产** ——
 > 它完全可复现，参数已经找回来了。
 
@@ -10040,7 +10058,7 @@ D:\Game\cmangos\_regen_full\offmesh.txt   0 字节      ← 表没了
 
 ### 二·补、参数复原（2026-10-15，**逐字节复现成功**）
 
-`dev/tools/gen_offmesh.py` 的参数走 `sys.argv[5..7]`，**默认值就是答案**：
+`_agent_tmp/gen_offmesh.py` 的参数走 `sys.argv[5..7]`，**默认值就是答案**（2026-10-16 更正：原写 `dev/tools/gen_offmesh.py`，该路径不存在）：
 
 ```python
 max_dh   = float(sys.argv[5]) if len(sys.argv) > 5 else 2.0
@@ -10211,8 +10229,8 @@ max_comp = int(sys.argv[7])   if len(sys.argv) > 7 else 50
 - 机制：`src/game/Server/PacketLog.cpp` —— 开关 = 配置项 **`PacketLogFile`**（配 `LogsDir` 前缀）⇒
   落盘 **`/opt/mangos/logs/packets.pkt`** ✓；格式 = **PKT 二进制**（`Signature 'PKT'`、`FormatVersion 0x0301`）✓，
   **收发双向**（`:125` CMSG/SMSG）✓，可用 WoWPacketParser/嗅探器直接打开 ✓；`fopen(..., "wb")` ⇒ **每次 reload/重启都会截断重写** ✓。
-- **两道闸**（`WorldSocket.cpp:106/205`）：① `CanLogPacket()` = 文件已打开 ✓；
-  ② **`IsLoggingPackets()` = 每会话开关** ✓，默认 `m_loggingPackets(false)`（`:97`）✗，
+- **两道闸**（`WorldSocket.cpp:109/208`，2026-10-16 核对）：① `CanLogPacket()` = 文件已打开 ✓；
+  ② **`IsLoggingPackets()` = 每会话开关** ✓，原来默认 `m_loggingPackets(false)`（原 `:97`，现 `:100`）✗，
   由 GM 命令 **`.packetlog 1`** 打开 ✓。
 - **已改为"每个会话默认打开"**：`WorldSocket.cpp` 把 `m_loggingPackets(false)`
   改成 **`m_loggingPackets(sPacketLog->CanLogPacket())`** ✓ ⇒ 只要 conf 里 `PacketLogFile` 非空，
