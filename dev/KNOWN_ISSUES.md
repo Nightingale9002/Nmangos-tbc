@@ -10146,11 +10146,19 @@ max_comp = int(sys.argv[7])   if len(sys.argv) > 7 else 50
 
 ## [PlayerBots/内存] 20 bot 配置：内存分解、对应代码改动、WSL 编译台与诊断开关 —— 2026-10-15
 
-### 一、这轮新确立的编译/验证模式（已同步写进 `HANDOFF_卡布魔兽运维.md` §七）
+### 一、这轮新确立的编译/验证模式（已同步写进 `HANDOFF_卡布魔兽运维.md` §六）
 
-- **Linux 编译改到 WSL 做**（不再占云端 2 核）：源码 `/root/Nmangos-tbc`，构建树 `/root/nb-build`，
+> **站长口径（2026-10-16）：不带模块的二进制 ⇒ 在云端手动编（或留作备份）；带模块的二进制 ⇒ 本地（WSL）编好上传。**
+> `nightly_build_restart.sh` 已是 `PB_LOCAL_BUILD_ONLY`（不再自动编译，只做 dev SQL 应用 / 安装 / 起服）。
+> 安装源固定是云端 `/root/Nmangos-tbc-build/src/mangosd/mangosd`——手工编的或 WSL 传来的都放这里，再跑 nightly 安装+起服。
+
+- **带模块 ⇒ WSL 编**（本机 WSL **只用 `Ubuntu-20.04`**；另一个 `Ubuntu` 是空壳：gcc 15.2、无 `/opt/openssl3`、无 `/root/nb-build` ✗）：
+  源码 `/root/Nmangos-tbc`，构建树 `/root/nb-build`（`BUILD_PLAYERBOTS=ON`），
   命令 **`make -j16 mangosd`**；产物拷成 **`/root/mangosd_pbN`**（`strip` 后约 **45 MB**，**每次记 md5**）。
   脚本：`_agent_tmp/wsl_sync_build_pb8.sh`。
+- **不带模块 ⇒ 云端手动编**：云端构建树 `/root/Nmangos-tbc-build`（`BUILD_PLAYERBOTS=OFF` + 云端的省内存 flags
+  `-O2 -DNDEBUG --param ggc-min-expand=5 --param ggc-min-heapsize=4096`），配置脚本 `/root/pb_cmake_configure.sh`
+  （2026-10-16 已由 ON 改为 OFF 并备份）；编译时按 P0 先停 mangosd/mysqld。
 - **本机 Linux 运行/剖析台**：`/root/run_local`（`dbc/maps/vmaps/mmaps` 软链到 `D:\Game\cmangos\x64_Debug`；
   四个库指向 Windows MySQL **`172.19.224.1:3306`**，用户 **`wslbot/wslbotpass`**）。
   两个**必踩的坑**：① 模块 conf 按 **`../etc/`** 找 ⇒ 必须放 `/root/etc/`；
