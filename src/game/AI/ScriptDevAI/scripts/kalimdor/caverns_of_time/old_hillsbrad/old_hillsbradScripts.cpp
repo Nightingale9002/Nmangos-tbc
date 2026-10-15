@@ -246,6 +246,7 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
         InitializeDialogueHelper(m_pInstance);
         pCreature->SetActiveObjectState(true);              // required for proper relocation
         m_bHadMount = false;
+        m_bRemountPending = false;
         Reset();
     }
 
@@ -253,6 +254,12 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
 
     bool m_bIsLowHp;
     bool m_bHadMount;
+    // Fork fix v2 (2026-10-16, 站长口径): 上马时机 = 「脱战 **并且已回到路线**」，不是一脱战就上马。
+    // 旧实现把 Mount 放在 Reset() 里 —— 核心一脱战就调 Reset()，于是萨尔站在原地（打架的位置）就上马。
+    // 现在改为**状态判断**：Aggro 只置 pending；真正 Mount 发生在 WaypointReached —— 也就是 escort
+    // 脱战后恢复走点、重新踏回路线的那一刻。不用距离阈值、也不加任何超时兜底（贴不回路线是状态机的问题，
+    // 兜底只会把同一个 bug 放回来并掩盖它）。
+    bool m_bRemountPending;
     bool m_bHasChurchYelled;
     bool m_bHasInnYelled;
     bool m_bHasEpochYelled;
@@ -273,7 +280,7 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
         m_uiStrikeTimer      = urand(3000, 7000);
         m_uiShieldBlockTimer = urand(6000, 11000);
 
-        if (m_bHadMount)
+        if (m_bHadMount && !m_bRemountPending)
             m_creature->Mount(MODEL_SKARLOC_MOUNT);
 
         if (!HasEscortState(STATE_ESCORT_ESCORTING))
@@ -308,7 +315,12 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
         // HandleMovementOnAttackStart (m_dismountOnAggro) before this handler runs - so Reset()
         // skipped its Mount(MODEL_SKARLOC_MOUNT) and Thrall stayed on foot after every fight.
         if (m_bHadMount)
+        {
             m_creature->Unmount();
+            // 站长口径（2026-10-16）：脱战不等于可以上马，要等他重新踏回路线 —— 只置 pending，
+            // 真正的 Mount 在 WaypointReached（状态驱动，无距离阈值、无超时）。
+            m_bRemountPending = true;
+        }
     }
 
     void KilledUnit(Unit* /*pVictim*/) override
@@ -697,6 +709,14 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
     {
         if (!m_pInstance)
             return;
+
+        // Fork fix v2 (2026-10-16, 站长口径)：上马时机由**状态**决定 —— 只有「脱战 + 已重新踏回路线」
+        // （escort 恢复后到达下一个路点）才上马；这是"回到原位"的定义，不用距离阈值、也没有超时兜底。
+        if (m_bRemountPending && m_bHadMount && !m_creature->IsInCombat())
+        {
+            m_creature->Mount(MODEL_SKARLOC_MOUNT);
+            m_bRemountPending = false;
+        }
 
         switch (uiPoint)
         {
