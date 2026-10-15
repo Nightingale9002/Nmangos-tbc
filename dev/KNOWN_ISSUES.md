@@ -10212,3 +10212,83 @@ max_comp = int(sys.argv[7])   if len(sys.argv) > 7 else 50
 - 生效方式：改配置后 **`.reload config`** 即可让 `PacketLog::Reinitialize()` 重新开文件 ✓
   （`Level3.cpp:357`）；但**代码改动需要重新编译安装一次 mangosd** ✓。
 - 运维提醒：packet log **增长很快**且**每次重启被截断** ✓ ⇒ 需要按大小轮转/看护 ✓。
+---
+
+## [内存/上游bug] `urand()` 每次调用泄漏约 5.4KB：Boost 1.66 的 `thread_specific_ptr::get()` 恒返回 null —— 2026-10-16
+
+**症状**：云端 2GB 两次被 OOM（anon-rss 1.43~1.51GB）；本机 WSL 跑同一份 Linux 二进制，
+启动峰值 **2.1GB**，且内存**与随机调用次数成正比线性增长**（不是某个业务模块的数据）。
+
+**定位链（每一步都是打点实测，不是推测）**
+
+1. A/B：模块键 **`AhBot.Enabled = 0`** ⇒ 峰值 **2075 → 1569 MB**。当时以为"AhBot 吃 510MB"，
+   其实是因为 `AhBot::Init()` 里 `if (!sAhBotConfig.Initialize()) return;`（`Initialize()` 返回 `enabled`）
+   ⇒ **`availableItems.Init()` 整个被跳过**，连带跳过了它的 ~10 万次 `urand()`。
+2. `AHBOT_RSS_LOG=1` 打点：`AvailableItemsBag::Load()` 每 2000 个物品打一行，**全程 1018 MB 不变**；
+   **+508 MB 只出现在 `Load()` 返回之后的 shuffle/日志那一段**。
+3. 那一段只有 `Shuffle(content[category])`（170 个分类，向量都极小：n = 0~930）+ 170 行 `outDetail`
+   ⇒ 唯一可疑的就是 `Shuffle` 里的 **`urand()`**（`Shuffle` 每个分类做 `size*5` 轮、每轮 2 次 `urand`）。
+4. `URAND_RSS_LOG=1` 打点（直接打在 `urand()` 里）：**每 5000 次调用 +27 MB** = **5.4 KB/次**（完美线性）；
+   启动期约 11 万次调用 = **+1.07 GB**。
+5. 再加一个 `initRand()` 计数打点 ⇒ **`initRand` 的调用次数 == `urand` 的调用次数**
+   （5000/5000、10000/10000、…）⇒ 线程本地 RNG **每次调用都在重建**。
+
+**根因**（`src/shared/Util/Util.cpp:35`，旧代码）：
+
+```cpp
+static MaNGOS::thread_local_ptr<std::mt19937> mtRand(&initRand);
+std::mt19937* GetRandomGenerator() { return mtRand.get(); }
+```
+
+`MaNGOS::thread_local_ptr` 继承 `boost::thread_specific_ptr<T>`（`src/shared/Util/TSS.h:30`），
+其 `get()`（`TSS.h:46-55`）逻辑是"`get_value()` 为空 ⇒ `m_generator()` + `reset()`"。
+**本构建（Linux/WSL + Boost 1.66）里 `get_value()` 恒为 null** ⇒ 每次 `urand()/irand()/frand()/rand_norm()`
+都 **`new std::mt19937`（2,496 B + `std::seed_seq` 开销）并把上一个丢掉** ⇒ **每次随机调用漏约 5.4 KB RSS**
+（不报错、不崩、只是慢漏）。
+
+**影响面（关键：不只是 AhBot）**：所有 `urand/irand/frand/rand_norm` 调用点都在漏，**运行期持续增长**
+⇒ 这是云端 2GB 被 OOM 的**主因**。AhBot 的 `Shuffle`（`ItemBag.h`）只是**启动期最大的调用者**
+（170 分类 × `size*5` × 2 次），所以内存账看起来记在 AhBot 头上。
+Windows/MSVC 侧尚未复测（同一份 Boost 族代码，同样可疑）。
+
+**修复**（`src/shared/Util/Util.cpp:31-50`）——改用 C++11 `thread_local`，每线程只建一次；
+9 处 `mtRand.get()` 全部换成 `GetRandomGenerator()`：
+
+```cpp
+static thread_local std::mt19937* mtRand = nullptr;
+
+std::mt19937* GetRandomGenerator()
+{
+    if (!mtRand)
+        mtRand = initRand();
+    return mtRand;
+}
+```
+
+`initRand()` 内容未动 ⇒ **分布与 seed 方式完全不变**（纯内存修复）。
+
+**验证（WSL 本机 Linux 测试台，AhBot 开、AutoDoQuests=0、MaxRandomBots=20）**：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| `AvailableItemsBag::Load()` 期间 | 1018 MB（平坦） | 931 MB（平坦） |
+| `ItemBag::Init done` | **1526 MB（+508）** | **931 MB（+0）** |
+| 启动峰值 | **2086 ~ 2139 MB** | **1369 MB** |
+| `initRand` 调用次数 | 与 `urand` 同步（11 万+） | **1** |
+
+⇒ **单这一处 = 峰值 −700 MB**，并且**消除了运行期的持续泄漏**（重启后不再随时间爬升）。
+
+**教训**
+
+1. **线性泄漏先做"调用次数 × 单次成本"分解**：`5000 次 = +27MB` 一句话就把范围缩到 5.4 KB/次，
+   比读实现猜快得多。
+2. **"构造函数调用次数 == 业务调用次数"是判定"对象被反复重建"的硬断言** —— 加上这一条打点后立刻定案，
+   不需要先看懂 `thread_specific_ptr` 的实现。
+3. **别把内存账记在"最显眼的业务模块"上**：AhBot 看起来吃 508MB，实际是它**恰好是启动期最大的 `urand` 调用者**；
+   同一条泄漏在 pool/spawn/bot 等所有随机点上也在漏。
+4. **上游第三方抽象（boost TSS）可能整段失效且无声**（不报错、不崩、只是慢漏）⇒
+   关键路径（RNG、线程本地缓存）值得用自己的 `thread_local` 实现，而不是依赖 `thread_specific_ptr`。
+
+**相关文件**：`src/shared/Util/Util.cpp:31-50`、`src/shared/Util/TSS.h:30-55`、
+`src/modules/PlayerBots/ahbot/ItemBag.h`（`Shuffle`，启动期最大调用者）、
+`src/modules/PlayerBots/ahbot/AhBot.cpp` + `ahbot/ItemBag.cpp`（`AHBOT_RSS_LOG` 打点，env 门控、可保留）。
