@@ -3148,6 +3148,65 @@ if (!stillOwned) { /* [HOLDER-UAF] 一行日志 + m_spellAuraHolder = nullptr; *
 | 其他 | watchdog 标志已自动清除；磁盘 65%（14G 空闲）；起服后 RSS 1222MB（ASan 无关，属正常加载后水位） |
 
 **云端后续观察点**：`[HOLDER-UAF]` 是否出现（出现即说明线上也在触发这条路径，且已被拦住而不是写坏内存）；`[PATHCORRUPT]` 是否出现（说明还有第二处坏写源）；`/tmp/mangosd_run.log` 里的 glibc `malloc(): …/free(): …` 自检行；`Server.log.prev` 是否按预期每轮滚动。
+
+---
+
+### [崩溃/启动] `specSayCn` 越界写坏堆 ⇒ 启动期必崩在 `LoadTalentSpecs()` 的 `std::string::_M_assign`（2026-10-16，已修；合章后新增本节）
+
+#### 现象
+
+- 云端 **10:13–10:24 崩溃循环**：每约 1 分钟崩一次，`coredumpctl` 共 **15 条记录**（每个 core 约 298 MB ⇒ 峰值吃掉 **4.2 GB** 磁盘）；
+  watchdog 每分钟重启一次，**服务始终起不来**（8086 长时间不监听）。
+- `dmesg`：`mangosd[...]: segfault at 0 … error 6`（`error 6` = 对**不可写页写**），且**每次崩溃在二进制内的偏移完全相同**
+  ⇒ **确定性崩溃**，不是偶发/数据相关。
+
+#### 定位/根因（core 栈 + 源码对照）
+
+core 的主线程栈逐帧：
+
+```
+#0  std::string::_M_assign(std::string const&)      ← 崩在这里（对一个已被写坏的 string 对象赋值）
+#1  PlayerbotAIConfig::LoadTalentSpecs()
+#2  PlayerbotAIConfig::Initialize()
+#3  World::SetInitialWorldSettings()
+#4  Master::Run() → main
+```
+
+根因在 `src/modules/PlayerBots/playerbot/PlayerbotAIConfig.cpp` → `PlayerbotAIConfig::LoadTalentSpecs()`：
+外层 `spec` 循环上界是 `MAX_LEVEL`（**100**），而成员数组 `specSayCn` 只有 **10** 列 ⇒
+`specSayCn[cls][spec] = …` **越界写**，把相邻堆块（正好是 `std::string`）的元数据写坏；
+**下一次**对该 string 的赋值（`_M_assign`）就踩到空指针 ⇒ SIGSEGV。
+**证据**：`dmesg` 的 `error 6` + core 栈 #0/#1 的组合 + 本地源码里就地写下的同一份诊断注释（`[fix 2026-10-16]`，栈描述与云端 core 完全一致）。
+
+#### 修复
+
+```cpp
+// PlayerbotAIConfig::LoadTalentSpecs() 内（数组只有 10 列，必须夹住索引）
+if (spec < 10)
+    specSayCn[cls][spec] = config.GetStringDefault(osk.str().c_str(), "");
+```
+
+修复版二进制：`/opt/mangos/bin/mangosd` md5 **`dc6cf209b016ff2f8718b51f2e7a23b7`**（44,989,408 B，含模块），
+另归档一份 `/root/mangosd_stable_20261016`（同 md5）。
+
+#### 验证
+
+| 项 | 结果 |
+|---|---|
+| 修复前 | 10:13–10:24 每分钟崩一次，15 个 core |
+| 修复版上线 | **10:25** 换上 `dc6cf209…` |
+| 启动验证 | `12:07:20` 与 `12:14:18` 两次 `CMANGOS: World initialized`（启动 45 s / 30 s）⇒ **已越过 `LoadTalentSpecs`** |
+| 复查 | 8086 在听（pid 35678）、`coredumpctl` **无新 core** ✓ |
+| 清理 | 4.2 GB / 15 个 core ⇒ 保留最新 1 个作证据（`core.mangosd.…30338…lz4`），根分区 **69% → 57%** |
+
+#### 残留与教训
+
+- ⚠️ **同类风险**：凡"按 `MAX_LEVEL` / `MAX_CLASSES` 循环、而配置数组列数更少"的写法都可能同构 ——
+  复查 `PlayerbotAIConfig::LoadTalentSpecs()` 附近的同族索引（`specSayCn`、`PremadeSpec*` 系列）。
+- ⚠️ **崩溃循环极耗磁盘**：11 分钟就吃掉 4.2 GB；本次是靠 `/opt/mangos/logs/watchdog.nomangosd` 暂停标志才止住
+  ⇒ **崩溃循环时的正确顺序**：先放暂停标志止血 → 取 core 栈 → 再排障。
+- ✅ **不要用"兜底"掩盖**：这是确定性越界，正确做法是修**索引上界**（已在做），不是加 try/catch 或超时跳过 ——
+  兜底只会把同一类 bug 换个形式放回来，并破坏现场。
 ## [稳定性][安全] 登录/握手与断线总账 — 2026-09-18 ~ 2026-09-30（本章合并自 3 章：[修复] 登录握手：mangosd 掉线后再上线"卡在读取角色列表"（2026-09-18）、[稳定性][安全] realmd 登录包堆溢出：认证前可远程触发的崩溃 — 2026-09-19、[机制] 使用物品 31678（精神干扰棒）导致角色掉线：possess 时的速度 ACK 被误判成作弊）
 
 > **合章说明（2026-10-16）**：本章由 3 个旧章合并；旧结论一律保留，被后续推翻/取代的已就地标注。
