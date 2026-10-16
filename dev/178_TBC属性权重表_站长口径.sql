@@ -15,7 +15,7 @@
 --   以及武器 DPS(mledps) —— 站长框架里没提，保持上游值。
 
 DELETE FROM ai_playerbot_weightscale_data WHERE id IN
- (1,2, 4, 7,8,9, 10,11,12, 13,14, 15, 20, 22, 23,24,25, 26,27,28, 29, 31, 32);
+ (1,2, 4, 7,8,9, 10,11,12, 13,14, 15, 20, 22, 23,24,25, 26,27,28, 29, 30, 31, 32);
 
 -- ===== 武器战 1 / 狂暴战 2（站长 P3 BIS：1%暴击=1.3%DPS、1%急速=1.1%、满命中后1%=0.8%、336破甲=5.37%、20力量=40AP=2.4%）=====
 -- 以"1 暴击等级 = 100"为基准；str=2×atkpwr；命中/精准达标前最高（降权见 dev/177）
@@ -120,8 +120,23 @@ INSERT INTO ai_playerbot_weightscale_data (id, field, val) VALUES
 INSERT INTO ai_playerbot_weightscale_data (id, field, val) VALUES
 (31,'splheal',110),(31,'spi',90),(31,'spellhastertng',80),(31,'manargn',60),(31,'int',30),(31,'spellcritstrkrtng',10);
 
--- ===== 熊德 32（站长：免暴(156 防御等级/103 韧性) → 护甲上限 35880 → 耐力核心 → 敏捷；
+-- ===== 熊德坦 30（站长 2026-10-17：**护甲与耐力最高**；2026-10-16 口径：
+--        免暴(156 防御等级/103 韧性) → 护甲上限 35880 → 耐力核心 → 敏捷；
 --        1 耐=15.45HP、1 敏=2 护甲/14.7 敏=1% 躲闪/25 敏=1% 暴击；敏捷转化的护甲不吃熊形态 400%）=====
+-- ⚠️ 2026-10-17 修正：这段权重原先被误挂在 **32（feraldps）** 上，而 30（feraltank）一直用旧导入数据
+--    （缺 armor、sta 仅 62）⇒ 表现为"熊 T 的护甲/耐力权重不对"。现按站长口径归位到 30：
+--    **armor 150 / sta 150 并列最高**，其余（敏捷、免暴、精准/命中、闪避、力量）依次递减。
+DELETE FROM ai_playerbot_weightscale_data WHERE id = 30;
 INSERT INTO ai_playerbot_weightscale_data (id, field, val) VALUES
-(32,'sta',150),(32,'defrtng',120),(32,'agi',100),(32,'exprtng',100),(32,'hitrtng',100),
-(32,'armor',80),(32,'dodgertng',60),(32,'str',60),(32,'critstrkrtng',40),(32,'feratkpwr',40),(32,'atkpwr',30),(32,'hastertng',20);
+(30,'armor',150),(30,'sta',150),(30,'agi',100),(30,'exprtng',100),(30,'hitrtng',90),
+(30,'defrtng',80),(30,'dodgertng',70),(30,'str',60),(30,'critstrkrtng',40),(30,'feratkpwr',40),
+(30,'atkpwr',30),(30,'hastertng',20);
+
+-- ===== 野性 DPS 32（2026-10-17：承接原先误挂在 32 上的"熊坦"权重后，32 改为正常的猫/野性 DPS 口径）=====
+-- 猫德 DPS：力量(2AP/点 + 野性之心) ≥ 敏捷(1AP+暴击) > 命中/精准(达标前最高) > 暴击 > 急速；
+--   护甲/耐力只作为生存兜底，远低于输出属性（与坦的分工不同）。
+DELETE FROM ai_playerbot_weightscale_data WHERE id = 32;
+INSERT INTO ai_playerbot_weightscale_data (id, field, val) VALUES
+(32,'str',200),(32,'agi',180),(32,'exprtng',150),(32,'hitrtng',150),(32,'critstrkrtng',120),
+(32,'hastertng',90),(32,'atkpwr',60),(32,'feratkpwr',60),(32,'armorpenrtng',40),
+(32,'sta',30),(32,'armor',20);
