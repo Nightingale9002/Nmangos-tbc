@@ -5951,6 +5951,43 @@ if (data && existingData && (data->mask & existingData->mask) != 0)            /
   - 验证预期（本轮）：122 等完 18 秒后**留在决战场** ✓、`WaypointReached point=123` 在 `(2635,673)` 一带触发 ✓、
     3 只塔伦米尔士兵当场刷出 ✓ → 无限军团第 1/2 波 → 时空猎手解免疫开战 ✓
 
+### [数据/脚本] 布洛戈克毒云（30916 → 17662）"无光环也无伤害"是**误判** —— 机制在 boss 脚本、不在 DB（2026-10-16，分析，待实测；合章后新增本节）
+
+#### 现象 / 初始判断
+
+站长的静态检查：`spell 30916`（Poison Cloud）只 `SUMMON` 生物 **17662**，而 17662 的 `creature_template.SpellList = 0`、
+`creature_template_spells` **无行**、无 EventAI，且全库**没有任何生物**引用 `30915` ⇒ 结论"毒云在本地库既无光环也无伤害"，
+建议"补 17662 的 30915 或改成 DynamicObject"。
+
+#### 定位：光环与伤害由 boss 脚本施加，DB 本来就该是空的
+
+- `creature_template` **17380「Broggok」→ `ScriptName = boss_broggok`** ✓（脚本确实挂着）。
+- `boss_broggok.cpp → boss_broggokAI::JustSummoned()` 对**每个召唤物**施加三件套（普通/英雄分别取 30914 / 38462）：
+  `SPELL_STUN_SELF`(25900) + `SPELL_PACIFY_SELF`(19951) + **`SPELL_POISON`(30914)**，均带 `CAST_TRIGGERED | CAST_AURA_NOT_PRESENT`。
+- **不是我们缺数据**：17662 的 `creature_template` / `creature_template_spells` 在**上游 `tbcdb_ref` 与 `tbcmangos_orig` 里同样为空** ✓ —— 上游就是靠脚本实现的。
+- 法术数据（本地库，与上游同源）：
+
+| 法术 | 关键字段 | 作用 |
+|---|---|---|
+| **30914**「Poison」（英雄 **38462**）| `Effect1=6`(APPLY_AURA)、`EffectApplyAuraName1=23`(**PERIODIC_TRIGGER_SPELL**)、`EffectAmplitude1=**1000 ms**`、`EffectTriggerSpell1=**30915**`（英雄 38463）、`EffectImplicitTargetA1=1`（自身）| **毒云身上那层光环**：每秒触发 30915 |
+| **30915**「Poison」| `Effect1=2`(SCHOOL_DAMAGE)、`EffectBasePoints1=**601**`（⇒ 602 伤害）、`EffectRadiusIndex1=32` | **直接伤害**；核心 `Spell.cpp` 的 `case 30915 // Poison - Broggok` **只负责算半径**（按触发它的光环剩余时间）|
+| **30916**「Poison Cloud」| `Effect1=28`(SUMMON)、`EffectMiscValue1=**17662**` | boss 用它召唤云（视觉载体）|
+
+#### 结论（因此两条建议都不采纳）
+
+- ✗ **不要给 17662 补 `30915`**：它是**直接伤害**（602 点、一次性），不是光环 ⇒ 写进技能表只会变成"打一发"，
+  既不是持续毒云，还会与脚本施加的 `30914` 重复。（若真要在 DB 侧补，该补的是 **`30914`** 这层光环 —— 但脚本已在上，**不必补**。）
+- ✗ **不必改 DynamicObject**：现成链路（召唤物 + 周期触发光环）就是标准实现，重写没有收益、还会丢掉 `case 30915` 的半径逻辑。
+
+#### 待实测（这里才可能是真 bug）
+
+- ⚠️ **光环到期后不会重上**：脚本只在 `JustSummoned` 时施放**一次** `30914`（`CAST_AURA_NOT_PRESENT` 只保证"没有才上"）。
+  若云的存活时长 > 光环时长 ⇒ **后半段云就没有伤害**。
+  `30914` 与 `30916` 的 `DurationIndex` 都是 **3**，实际秒数需查 `spell_duration.dbc` ⇒ **必须进本实测**才能定论。
+- 次要点：`STUN_SELF`/`PACIFY_SELF` 是否影响光环；云是否被其它脚本接管。
+- 验证方法：进本打一次布洛戈克，记录云身上 `30914` 的消失时刻与伤害停止时刻是否一致；
+  或用 GM 直接 `.aura 30914` 对照伤害应为 **602**（普通难度）。
+
 ---
 ## [机制] 生物战斗行为（仇恨/Tap/潜行侦测/激怒/宠物）— 2026-09-16 ~ 2026-10-07（本章合并自 10 章：[战术] 拜龙教徒 NPC 21382 停在远程距离却不攻击 — 2026-09-16 已修（本地，待推云）、[机制] Tap 规则补齐：NPC 伤害 >50% 抢走拾取权 —— 2026-09-22（源码改动，本地编译通过）、[机制] 34700「过敏反应」只应对玩家控制单位生效（上游 46d9a78d7）—— 2026-09-22（源码改动 + `dev/107`）、[上游bug] 2026-10-01 旧希尔斯布莱德「萨尔进战斗下马后不再上马」——`IsMounted()` 对脚本坐骑恒为 false（`e379374d8`）、[上游bug] 2026-10-01 宠物技能「尖啸」(Screech) **开着自动释放也不自动释放 ＝ AoE 分支传空目标被 `SPELL_FAILED_BAD_TARGETS` 拒掉**（已修，站长实测通过）、[机制] 2026-10-01 玩家"太远就能看到潜行 NPC"＝**唯一杠杆是那个 45 码上限**（cmangos 值；Trinity 用 30），外加 cmangos 独有的"粘住"缺陷、[机制] 2026-10-01 「怪物一进入隐身就发现旁边潜行的我」＝**隐身/潜行状态切换会额外排一次全场仇恨扫描**（`Unit.cpp`（原 :8917，行号可能已漂移，请按上下文符号名 grep 定位））、[自研bug] 2026-10-01 定案：「怪一进隐身就无视潜行抓我」＝**相位隐身法术挂的 SD2 脚本每秒扫一圈就 `AttackStart`**（`spell_detect_through_invisibility_mob`）、[机制] 2026-10-02 云端 guid 5300482「Unleashed Hellion」死后仍在近战+放技能 —— **已定案（四条链）并修复，2026-10-03**、[机制] 泥沼巨人「HP 0–30% 激怒 + 喊话」在英雄难度不触发 ＝ `event_flags` 只写了 `EFLAG_NORMAL`（`dev/166` 对齐官方清单）—— 2026-10-07）
 
