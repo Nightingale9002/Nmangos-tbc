@@ -103,7 +103,7 @@
 | `0xx_*.sql` | 各项改动的**可重复执行 SQL**（当前 **001–172**；编号即大致时序，**同一项工作只写一个文件** —— 同类改动必须合并进同一份，当年那次 103/104/106 拆成三份已合并回 `103` 一份；云端由 `/root/apply_dev_sql.sh` 按 marker 顺序应用后重启，**marker 现为 172**（`113` 是被搁置的 GO 刷新组回调、已移入 `dev/hold/`，applier 不扫；`114`–`172` 之间未用的号：`115`/`117`/`120`/`125`/`134`/`138`/`139`/`144`/`159`–`161`/`168`/`169`））。⛔ **全静态**：不写 JOIN/子查询/聚合/计算，值在本地算好、文件里只写字面量；回滚件放 **`dev/rollback/`**（marker 扫描不递归，不会被自动执行），但 **站长验收通过后一律删掉该回滚件、保持工作区干净**（2026-09-22 定） |
 | `部署注意事项_conf文件的坑.md` | **conf 文件的坑**：换行/BOM/转义等会让 mangosd 读不到配置的实际案例（2026-10-02 起） |
 | `dbc_自定义补丁清单.md` | **DBC 自定义补丁的存废台账**：本服曾改过的 5 处（云端 3 + 本地 2）与 2026-09-30「全部换回客户端原版」的对照记录 |
-| `dev/tools/` | **离线排查工具**（Python）：`spawn_sim.py` 刷怪模拟、`spawn_audit.py` 刷点体检、`vmap_los_probe.py` 视线探针、`wp_scan.py` 路径点扫描、`log_noise_census.py` 日志噪音普查等 |
+| `dev/tools/` | **离线排查工具**（Python，⚠️ 被 `.gitignore` 忽略、不进 git）：`spawn_sim.py` 刷怪模拟、`spawn_audit.py` 刷点体检、`vmap_los_probe.py` 视线探针、`wp_scan.py` 路径点扫描、`log_noise_census.py` 日志噪音普查等；**BOSS/团本 AI 工具（2026-10-16 加）**：`boss_ability_scan.py`（技能栏/EventAI/ScriptDevAI/spell 词条一次取证）、`export_context_words.py`（导出自定义策略词表）、`boss_rule_check.py`（规则行校验 + `dev/179` SQL 生成）、`list_bool_values.py`（`val::` 可用的布尔值）、`list_unused_triggers.py`（还没被任何策略接线的触发器 = 通用钩子候选） |
 | `dev/rollback/` | **回滚件**（`apply_dev_sql.sh` 不递归扫描，不会被执行）；站长验收通过后一律删除、保持工作区干净 |
 | `dev/hold/` | **搁置件**：文件名带 `.hold` 后缀，永不进入夜间流程（如 `113_GO刷新组回调50%.sql.hold`） |
 | `dev/deprecated/` | **已废弃件**：留档用，不参与任何流程 |

@@ -2318,7 +2318,7 @@ Creature* WorldObject::SummonCreature(uint32 id, float x, float y, float z, floa
 
 GameObject* WorldObject::SpawnGameObject(uint32 dbGuid, Map* map, uint32 forcedEntry)
 {
-    TerrainInfo::VmapLazyScope lazyVmap;   // [懒加载 2026-10-16] 生成期间不许按需载 vmap
+    // [vmap 2026-10-16 站长口径] 生成对象时也按网格正常加载 vmap（去掉了 VmapLazyScope）
     GameObjectData const* data = sObjectMgr.GetGOData(dbGuid);
     if (!data)
         return nullptr;
@@ -2337,7 +2337,7 @@ GameObject* WorldObject::SpawnGameObject(uint32 dbGuid, Map* map, uint32 forcedE
 
 Creature* WorldObject::SpawnCreature(uint32 dbGuid, Map* map, uint32 forcedEntry)
 {
-    TerrainInfo::VmapLazyScope lazyVmap;   // [懒加载 2026-10-16] 生成期间不许按需载 vmap
+    // [vmap 2026-10-16 站长口径] 生成对象时也按网格正常加载 vmap（去掉了 VmapLazyScope）
     CreatureData const* data = sObjectMgr.GetCreatureData(dbGuid);
     if (!data)
     {

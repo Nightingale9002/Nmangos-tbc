@@ -114,10 +114,9 @@ template<> void addUnitState(Creature* obj, CellPair const& cell_pair)
 template <class T>
 void LoadHelper(CellGuidSet const& guid_set, CellPair& cell, GridRefManager<T>& /*m*/, uint32& count, Map* map, GridType& grid)
 {
-    // [懒加载 2026-10-16] 网格加载一次性创建整格生物/物件，每个对象 InitEntry 的
-    // "是否在水中/离地高度"判定以前会按需把该格 vmap 拉进内存（实测启动 +470MB）。
-    // 与 WorldObject::SpawnCreature/SpawnGameObject 一致：生成期间只吃已加载数据。
-    TerrainInfo::VmapLazyScope lazyVmap;
+    // [vmap 2026-10-16 站长口径] 这里**不再**用 VmapLazyScope：
+    // bot 必须与正常玩家一样，按网格把 vmap 正常加载进内存（否则 tile=NO ⇒ 陆地游泳/寻路差）。
+    // 内存控制改由"不因刷怪/补刷去强制载格"那两处闸负责（SpawnGroup / SpawnManager）。
     BattleGround* bg = map->GetBG();
 
     for (uint32 guid : guid_set)
