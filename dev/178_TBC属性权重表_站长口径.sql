@@ -120,17 +120,19 @@ INSERT INTO ai_playerbot_weightscale_data (id, field, val) VALUES
 INSERT INTO ai_playerbot_weightscale_data (id, field, val) VALUES
 (31,'splheal',110),(31,'spi',90),(31,'spellhastertng',80),(31,'manargn',60),(31,'int',30),(31,'spellcritstrkrtng',10);
 
--- ===== 熊德坦 30（站长 2026-10-17：**护甲与耐力最高**；2026-10-16 口径：
---        免暴(156 防御等级/103 韧性) → 护甲上限 35880 → 耐力核心 → 敏捷；
---        1 耐=15.45HP、1 敏=2 护甲/14.7 敏=1% 躲闪/25 敏=1% 暴击；敏捷转化的护甲不吃熊形态 400%）=====
+-- ===== 熊德坦 30（站长 2026-10-17：**护甲与耐力最高**；2026-10-16/17 攻略口径：
+--        免暴第一优先（**推荐韧性流**：102 韧性 ≈ 156 防御等级，韧性流还白送约 3.67% 躲闪）
+--        → 耐力（熊形态 1 耐 = 15.45 HP，牛头人 16.22，远超其他坦的 10）
+--        → 护甲（熊形态 +400%，上限 35880 → 达标后归零，见 dev/177）
+--        → 敏捷（暴击/躲闪/护甲三收益）→ 最后由命中(≈127 等级)与精准(≈60 等级)收仇恨）=====
 -- ⚠️ 2026-10-17 修正：这段权重原先被误挂在 **32（feraldps）** 上，而 30（feraltank）一直用旧导入数据
---    （缺 armor、sta 仅 62）⇒ 表现为"熊 T 的护甲/耐力权重不对"。现按站长口径归位到 30：
---    **armor 150 / sta 150 并列最高**，其余（敏捷、免暴、精准/命中、闪避、力量）依次递减。
+--    （缺 armor、缺 resirtng、sta 仅 62）⇒ 表现为"熊 T 的护甲/耐力/免暴权重不对"。
+--   现按站长口径归位到 30：**armor 150 / sta 150 并列最高**，免暴两件套（resirtng 120 / defrtng 90）紧随其后。
 DELETE FROM ai_playerbot_weightscale_data WHERE id = 30;
 INSERT INTO ai_playerbot_weightscale_data (id, field, val) VALUES
-(30,'armor',150),(30,'sta',150),(30,'agi',100),(30,'exprtng',100),(30,'hitrtng',90),
-(30,'defrtng',80),(30,'dodgertng',70),(30,'str',60),(30,'critstrkrtng',40),(30,'feratkpwr',40),
-(30,'atkpwr',30),(30,'hastertng',20);
+(30,'armor',150),(30,'sta',150),(30,'resirtng',120),(30,'agi',100),(30,'exprtng',100),
+(30,'defrtng',90),(30,'hitrtng',90),(30,'dodgertng',70),(30,'str',60),(30,'critstrkrtng',40),
+(30,'feratkpwr',40),(30,'atkpwr',30),(30,'hastertng',20);
 
 -- ===== 野性 DPS 32（2026-10-17：承接原先误挂在 32 上的"熊坦"权重后，32 改为正常的猫/野性 DPS 口径）=====
 -- 猫德 DPS：力量(2AP/点 + 野性之心) ≥ 敏捷(1AP+暴击) > 命中/精准(达标前最高) > 暴击 > 急速；
