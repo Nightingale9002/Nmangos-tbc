@@ -473,7 +473,22 @@ void AuctionHouseMgr::LoadAuctions()
 void AuctionHouseMgr::AddAItem(Item* it)
 {
     MANGOS_ASSERT(it);
-    MANGOS_ASSERT(mAitems.find(it->GetGUIDLow()) == mAitems.end());
+
+    // [AH-DUP 2026-10-17] 以前这里是 MANGOS_ASSERT(mAitems.find(...) == mAitems.end())：
+    //   DB 里只要有两条拍卖行指向同一个 itemguid（实测本地库 tbcmangos.auction 就有重复），
+    //   服务端就会 "Critical Error: A condition which must never be false..." 直接自杀，
+    //   表现是起服卡在 "Loading Auctions..."。
+    //   改成：保留先加载的那份，重复的后加载者记录一条错误并丢弃 —— 服务能起，
+    //   重复的那条拍卖在后续 GetAItem 校验里会自己失败并被跳过。
+    ItemMap::iterator existing = mAitems.find(it->GetGUIDLow());
+    if (existing != mAitems.end())
+    {
+        sLog.outError("[AH-DUP] duplicate auction item guid=%u — keep the first instance, drop this one",
+                      it->GetGUIDLow());
+        delete it;
+        return;
+    }
+
     mAitems[it->GetGUIDLow()] = it;
 }
 
@@ -874,6 +889,18 @@ void WorldSession::BuildListAuctionItems(std::vector<AuctionEntry*> const& aucti
 
 AuctionEntry* AuctionHouseObject::AddAuction(AuctionHouseEntry const* auctionHouseEntry, Item* newItem, uint32 etime, uint32 bid, uint32 buyout, uint32 deposit, Player* pl /*= nullptr*/)
 {
+    // [AH-DUP 2026-10-17 站长口径] 挂单前先校验：这个 item guid 已经在拍卖行里了 ⇒ 拒绝重复挂单。
+    //   来源是 AHBot 的"重新定价/重新挂出"路径会拿同一个 item 再挂一次（AuctionHouseBot.cpp:509/530 等），
+    //   加上 DB 里历史遗留的重复行 ⇒ AuctionHouseMgr::AddAItem 的断言会把服务端打成 Critical Error。
+    //   ⚠️ 只拦【非玩家】挂单（pl == nullptr，即 AHBot / GM 命令）：玩家挂单走 HandleAuctionSellItem，
+    //     那里 deposit 已扣、物品已从背包取出，拦下会丢失物品 ⇒ 玩家路径保持原样。
+    if (newItem && !pl && sAuctionMgr.GetAItem(newItem->GetGUIDLow()))
+    {
+        sLog.outError("[AH-DUP] refuse to list item guid=%u entry=%u: already in auction house",
+                      newItem->GetGUIDLow(), newItem->GetEntry());
+        return nullptr;
+    }
+
     uint32 auction_time = uint32(etime * sWorld.getConfig(CONFIG_FLOAT_RATE_AUCTION_TIME));
 
     AuctionEntry* AH = new AuctionEntry;
