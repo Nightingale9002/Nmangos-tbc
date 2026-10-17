@@ -183,12 +183,43 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
 #endif    
         !HaveTile(start) || !HaveTile(dest))
     {
-        // No navigation tile at start or destination: fall back to a straight
-        // shortcut for everyone (upstream behaviour). Marking ground units
-        // NOPATH here froze them in ungenerated tiles (stuck evading).
+        // [PATH-MMAP 2026-10-17 站长口径] 正常陆地寻路必须走 mmap：
+        //   同格 ⇒ 保持旧行为（下面的直连）；跨格 ⇒ 先把 start/dest 的格载进来再重算一次。
+        //   加载后仍没有 mmap（真的没提取）⇒ 不再退回直连，直接给空路径（走到哪算哪）。
+        bool const ignorePf = m_sourceUnit && m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING);
+        Cell const startCell(MaNGOS::ComputeCellPair(start.x, start.y));
+        Cell const destCell(MaNGOS::ComputeCellPair(dest.x, dest.y));
+        if (m_sourceUnit && !ignorePf && !m_sourceUnit->IsFlying() && !m_sourceUnit->IsSwimming())
+        {
+            if (!(startCell == destCell))
+            {
+                if (Map* map = m_sourceUnit->GetMap())
+                {
+                    map->EnsureGridLoadedForPath(startCell);
+                    map->EnsureGridLoadedForPath(destCell);
+                }
+                SetCurrentNavMesh();
+            }
+        }
+
+        if (!m_navMesh || !m_navMeshQuery || !HaveTile(start) || !HaveTile(dest))
+        {
+            // 没有 mmap 且不是同格 ⇒ 不直连（站长口径），只报错并给空路径
+            if (startCell != destCell)
+            {
+                PFDBG_MSG(m_sourceUnit, "NO tile after load: navMesh=%d query=%d haveStartTile=%d haveEndTile=%d -> EMPTY PATH (no straight shortcut)",
+                          m_navMesh ? 1 : 0, m_navMeshQuery ? 1 : 0, HaveTile(start) ? 1 : 0, HaveTile(dest) ? 1 : 0);
+                sLog.outError("[PATH-NOMMAP] map=%u start=(%.1f,%.1f) dest=(%.1f,%.1f) ignorePF=%d -> no mmap, refusing straight shortcut",
+                              m_sourceMapId, start.x, start.y, dest.x, dest.y, ignorePf ? 1 : 0);
+                m_pathPoints.clear();
+                m_type = PathType(PATHFIND_NOPATH);
+                return true;
+            }
+        }
+
+        // 同格 / 非陆地（飞/游）/ ignorePF ⇒ 保留上游的直连行为
         PFDBG_MSG(m_sourceUnit, "NO tile: navMesh=%d query=%d ignorePF=%d haveStartTile=%d haveEndTile=%d -> BuildShortcut NORMAL|NOT_USING",
-                  m_navMesh ? 1 : 0, m_navMeshQuery ? 1 : 0,
-                  m_sourceUnit ? (m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING) ? 1 : 0) : 0,
+                  m_navMesh ? 1 : 0, m_navMeshQuery ? 1 : 0, ignorePf ? 1 : 0,
                   HaveTile(start) ? 1 : 0, HaveTile(dest) ? 1 : 0);
         PfProbe::PfProbeAt(m_sourceUnit, dest.x, dest.y, dest.z, "pf-no-tile-dest");
         BuildShortcut();

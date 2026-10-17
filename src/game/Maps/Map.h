@@ -471,6 +471,10 @@ class Map : public GridRefManager<NGridType>
         bool HasActiveZone(uint32 zoneId) { return find(m_activeZones.begin(), m_activeZones.end(), zoneId) != m_activeZones.end(); }
 #endif
 
+        // [PATH-MMAP 2026-10-17] 给寻路用的最小入口：把某一格的地形/vmap/mmap 拉进来。
+        //   限频由调用方负责（PathFinder 只在"跨格且缺 tile"时调用），不改变既有加载策略。
+        void EnsureGridLoadedForPath(Cell const& cell) { EnsureGridLoaded(cell); }
+
     private:
         void LoadMapAndVMap(int gx, int gy);
 
