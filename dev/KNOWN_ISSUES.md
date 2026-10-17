@@ -11269,3 +11269,180 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 - **云端**：**尚未部署**。已核对：云端 `Spell.cpp` 与本地**只差这一处钓鱼改动**（其余 66 行上游合并在云端已有；之前 md5 不同只是 CRLF/LF 差异）⇒ 上云只带这一处。
 
 ---
+
+## [PlayerBots] 机器人行为、在线名单与轮换（always / add / 躲技能 / 跑尸 / 专精权重）— 2026-10-16 ~ 2026-10-17
+
+（本章合并自 1 批新增条目：站长 2026-10-17 明确「HANDOFF 只放铁律+索引，细节进 KNOWN_ISSUES」，故把当天写在 HANDOFF 里的 7 段细节全部搬到这里，HANDOFF 只留指针。）
+
+### 一、核心机制：`add` 事件是"轮换门票"，`always` 只是名单标记
+
+**判据（代码事实）**：`RandomPlayerbotMgr::GetBots()` 的候选池口径是
+`SELECT bot FROM ai_playerbot_random_bots WHERE owner=0 AND event='add'`
+⇒ **只有 `add` 行才进候选池**；只打了 `always=1`、没有 `add` 的角色**根本不会被尝试登录**
+（实测日志里连名字都不出现）。
+
+**`add` 会被有意删掉**：`RandomPlayerbotMgr::SetEventValue()` **先 DELETE 该 bot 该 event 的所有行，
+`value != 0` 才 INSERT** ⇒ **`value = 0` 等于把整行彻底删掉**。
+
+**掉人链条（2026-10-17 实锤，方案A 要修的就是这个）**：
+1. `add` 的 `validIn`（`AiPlayerbot.Min/MaxRandomBotInWorldTime`）到期；
+2. `GetEventValue(bot,"add")` 的过期判定返回 0 —— 该判定的豁免名单里有 `"always"`/`"selfbot"`/`"specNo"` 等字面量，
+   **却没有豁免"always 角色身上的 `add`"**；
+3. `ProcessBot()` 里 `randomBotTimedLogout && !GetEventValue(bot,"add")` ⇒ `isValid = false`；
+4. 走登出分支：`currentBots.remove(bot)` + `SetEventValue(bot,"add",0,0)` ⇒ **`add` 行被删除**；
+5. 该 bot **永久退出候选池**（重启也不会回来，除非补数据）。
+
+**实测表现**：云端 12 只 `always=1` 会随运行时间慢慢掉到 **10/12、7/12**；
+`205 Lorineri`、`211 Elyndria` 就是这样掉的（`add_rows=0`、日志里 0 次登录尝试）。
+
+### 二、修法（方案A，站长 2026-10-17 拍板"最小改动"）
+
+三处，全部在 `RandomPlayerbotMgr`：
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `GetEventValue()` | `event=="add"` 且 `always==ACTIVE` ⇒ **不按过期清零**（与旁边 `"always"` 字面量同一语义） |
+| 2 | `ProcessBot()` | `randomBotTimedLogout` / `botsAllowedInWorld` 两条 `isValid` 判定各加 `&& !isAlwaysActive` |
+| 3 | `ProcessBot()` 登出分支 | `currentBots.remove(bot)` + `SetEventValue(bot,"add",0,0)` 用 `if (!isAlwaysActive)` 包住（第二道防线） |
+
+提交：子模块 `7a2f5962`（父仓库 pin `78f857a7a`）。
+
+**登录侧配套**：`UpdateAIInternal()` 改为**两遍式**——先只读 `always` 名单把位子占掉，再读其余 bot 填剩余位子；
+并清掉 `always` 角色身上**陈旧的 `login` 事件**（否则循环只计数、不真的登录它）。
+（提交：子模块 `c7ca2d97`。）
+
+### 三、⚠️ 代码修复只防"再掉"，不重建已删的 `add` 行
+
+历史缺口必须**补数据**：`dev/182_常在线角色补add事件.sql`（幂等，做两件事）
+
+1. 清掉 `event='add'` 的**重复行**（该表**没有 `(bot,event)` 唯一键**，只有 `id` 主键 ⇒
+   **`INSERT IGNORE` 不会去重、会插出重复行**；重复行会让同一只 bot 在 `availableBots` 里出现多次）；
+2. 给 `always=1` 且**没有 `add` 行**的角色补一条。
+
+**补完必须重启**：`GetBots()` 的结果缓存在 `currentBots`（启动时加载），不重启看不到新补的行。
+
+**排查口径**（`add_rows` 必须是 1，0 = 不会上线）：
+```sql
+SELECT c.guid, c.name, c.online,
+       (SELECT COUNT(*) FROM ai_playerbot_random_bots a WHERE a.bot=c.guid AND a.event='add') AS add_rows
+FROM ai_playerbot_random_bots r JOIN characters c ON c.guid=r.bot
+WHERE r.event='always' AND r.value=1;
+```
+
+### 四、验证判据
+
+- `always_online == always_total`（12/12）且 `missing_add == 0`；
+- `add_rows` 总量**保持恒定**（本次实测恒为 65）；
+- **连续观察 ≥10 分钟不下降**（本次 12 分钟 × 7 次采样全部 12/12、零崩溃）。
+
+### 五、副本通用「躲地板技」（方案A，站长 2026-10-17 拍板）
+
+**为什么原来躲不掉（根因）**：`HazardsValue::Calculate()` **只读 `stored hazards`、自己不做任何检测**；
+而 `stored hazards` 原先只有 `DungeonTriggers.cpp → CloseToHazardTrigger::IsActive()` 会写，
+那是**按预置 BOSS 危险物 GUID** 的（只有熔火之心那类在用）⇒ 通用五人本里 hazards **恒为空**
+⇒ `MoveAwayFromHazard` 永远没东西可躲。
+
+**链路（全用既有零件，不新造动作）**：
+`hostile aoe incoming`（触发器）→ 把敌方地面 AOE 登记进 `stored hazards`
+→ `hazards` → `move away from hazard`（`DungeonActions.h → MoveAwayFromHazard`，成熟寻路）把 bot 挪出圈。
+
+**改动**：
+
+| 文件 | 改动 |
+|---|---|
+| `AoeValues.{h,cpp}` | 抽出 `CollectHostileAoeCircles()`（枚举所有敌方地板 AOE 圆环，判据与 `GetHostileAoeCenter` 一致：排除正面效果 / 非敌对施法者 / 29946 火焰花环）；`GetHostileAoeCenter` 改为复用它；新增 `HostileAoeValue::RegisterHostileAoeHazards()`（只登记真的罩住我方某人的圆环） |
+| `GenericTriggers.cpp` | `HostileAoeIncomingTrigger::IsActive()` 命中时调用登记（触发器只被策略引用时才求值，不引用 = 零行为变化） |
+| `DungeonStrategy.{h,cpp}` | 新增 `InitReactionTriggers()`，挂 `hostile aoe incoming → move away from hazard`（`ACTION_EMERGENCY + 5`，与 `AvoidAoeStrategy` 同基准）。放 reaction 引擎：`AiFactory` 已给 `reactionEngine` 挂 `"dungeon"`，且那是"每 tick 一个紧急动作"的语义 |
+
+**两个编译坑**：① `WorldLocation` 是被继承的裸坐标结构，**没有 `distance()`、也没有 `x/y/z`** ⇒ 用 `WorldPosition` 包一层再算距离；
+② **static 成员函数里不能直接用 `SET_AI_VALUE`**（宏依赖类内 `context`）⇒ 显式 `::AiSetValue<Hazard>(ai->GetAiObjectContext(), ...)`。
+
+提交：子模块 `c7ca2d97`。
+
+### 六、副本躺尸 → 没有复活职业就跑尸（站长 2026-10-17 口径）
+
+**上游原版行为**（`ReleaseSpiritAction.h`，来自上游 `de538e09`）：副本/团本里只要"主人（真人）同地图"就**不释放灵魂**、原地等复活。
+**问题**：四条自救路径在副本里**全被堵死** ⇒ 真人同地图又不给复活时，bot **无限躺尸**：
+
+| 路径 | 副本里的结果 |
+|---|---|
+| `AutoReleaseSpiritAction`（跑尸） | 被上面那条守卫挡掉 ⇒ 不释放灵魂 |
+| `SpiritHealerAction`（灵魂奶妈） | 要求 `PLAYER_FLAGS_GHOST` ⇒ 没释放灵魂就永远不满足 |
+| `ShouldSpiritHealerValue` | `HasActivePlayerMaster()` 直接 `return false` |
+| `RepopAction`（兜底召回） | `HasActivePlayerMaster()` ⇒ `return false` |
+
+**修法**：新增 `GroupHasLivingRezzer()`（队伍里有没有**活着的、能复活的职业** = 牧师/骑士/萨满，**且同地图**）；
+那条副本守卫改为「**队里没有活着的复活职业 ⇒ 放行释放灵魂**」（→ 跑尸 → 复生）。
+
+### 七、专精权重：熊德坦（`weightscale` id=30）
+
+**根因**：`dev/178` 把注释里那段「熊德坦」权重**误挂到了 32（feraldps）**上，
+而 **30（feraltank）一直停留在旧导入数据**（缺 `armor`、`sta` 仅 62）；且 `dev/178` 的 `DELETE ... WHERE id IN (...)`
+**列表原本不含 30** ⇒ 重跑也不会被修正。
+
+**站长口径（2026-10-17）**：**护甲与耐力最高**；攻略补充"免暴第一优先，**推荐韧性流**（102 韧性 ≈ 156 防御等级）"。
+
+**改后（`dev/178`）**：
+`armor 150 / sta 150`（并列最高）、`resirtng 120`、`agi 100`、`exprtng 100`、`defrtng 90`、`hitrtng 90`、
+`dodgertng 70`、`str 60`、`critstrkrtng 40`、`feratkpwr 40`、`atkpwr 30`、`hastertng 20`。
+32（feraldps）改为正常猫德 DPS 口径。
+
+**caps（`dev/177`，新增 feraltank 五条）**：
+
+| field | cap | capped | alt_field | alt_cap | 含义 |
+|---|---|---|---|---|---|
+| `resirtng` | 102 | 8 | `defrtng` | 156 | 免暴（韧性流优先，备选防御等级） |
+| `defrtng` | 156 | 8 | `resirtng` | 102 | 反向备选 |
+| `armor` | 35880 | **0** | — | — | 熊形态 +400% 后的 75% 物免硬上限 ⇒ 达标收益归零 |
+| `hitrtng` | 127 | 6 | — | — | 命中达标后降权 |
+| `exprtng` | 60 | 6 | — | — | 精准（26 精准值）达标后降权 |
+
+`caps` 总量 36 → **41**、`data` 276 → **277**。两个脚本都是整表重建 / 幂等，**已在云端 `tbcmangos` 执行**
+（执行前备份 `_bak_wscale_caps_20261017b`、`_bak_wscale_data_20261017b`）。
+
+### 八、压力测试实测：加 bot 到内存上限（2026-10-17 04:1x，云端 1870MB + 2047MB swap）
+
+手法照 `/root/cloud_apply_botcount.sh`：改 `Min/MaxRandomBots` → `touch /opt/mangos/logs/watchdog.nomangosd`
+暂停 watchdog → `bash /root/restart_now.sh` → 每 30 秒采样 → 删掉 watchdog 标记。
+
+| bot 数 | mangosd RSS | available | swap 用量 | 结论 |
+|---|---|---|---|---|
+| 12（生产） | ~900MB | 580MB | 229MB | 轻 |
+| 24 | ~1280MB | 180-250MB | 120MB | 稳定（load 从 2.5 回落到 0.6） |
+| 30 | ~1060MB | 465-495MB | 219MB | 稳定 |
+| 48 | ~1120MB | 380-410MB | 212MB | 稳定（always 仍 12/12） |
+| 60 | ~1500MB | **106MB（瞬时峰值）** → 稳定后 228MB | 257MB | **触线但撑住**（load 1.0-1.3） |
+
+**两条结论**：
+1. **RSS 不随 bot 数线性增长**（12→900、24→1280、30→1060、48→1120、60→1500），
+   真正的瓶颈是**批量登录的瞬时峰值**（60 只同时登入时 `available` 一度掉到 106MB）；
+2. **判停线取 `available < 130MB` 或 `swap > 500MB`**；本次 12→60 全程**无 OOM-kill、无崩溃**。
+
+**测完必须把 `Min/MaxRandomBots` 改回生产值（12）并重启**（本次已回滚，见 §九）。
+
+### 九、一次完整"部署 + 验证"的执行记录（2026-10-17 01:30 ~ 05:00）
+
+顺序（可复用）：
+1. WSL 编 `mangosd`（`make -j16`，`errors=0`，记 md5）→ `gzip -9`（53MB → 17MB）→ scp 到云端 `/root`；
+2. 云端 `gunzip -c > /root/mangosd_x && chmod +x`，**两侧对 md5**；`install -m 755` 到**两处**
+   （安装源 `/root/Nmangos-tbc-build/src/mangosd/mangosd` + 运行位置 `/opt/mangos/bin/mangosd`）；
+3. 停服 → 起服（`/root/restart_now.sh`，先暂停 watchdog）→ 验收：`8086` 监听 + `World initialized` + `N/N Bot ... logged in`；
+4. 应用数据（`dev/177/178/182`，先备份表）→ 需要重启才生效的再重启一次。
+
+**04:06 nightly 的行为（实测）**：`crontab` 是 `6 4 * * * … /root/nightly_build_restart.sh`（**不是 04:00**）；
+git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起服 → 重启并验证 realmd"。
+**若安装源里的二进制 md5 与它要装的一致，会打印 `[info] no update, skip install` 直接起服**
+⇒ 想让它"重启后就生效"，**在 04:06 前把新二进制装进两处**即可。
+
+### 十、⚠️ 与本章相关的两条待办
+
+1. **躲技能 / 跑尸 只做了代码与编译验证，未做游戏内实战验证**（需要在副本里实际观察 bot 是否走出 AOE 圈、是否真的跑尸回来）。
+2. **换嘲按具体 BOSS 做**（站长 2026-10-17 定调）。全量扫过动作/触发器词表（**2627 个名字**，含各职业文件里的 `creators[...]`，注意只扫 `ActionContext.h` 会得出"全都没有"的错误结论）：
+   嘲讽 **9 个**（`taunt`/`growl`/`mocking blow`/`challenging shout`/`challenging roar`/`distracting shot`/`taunt on snare target`…）、
+   减伤 **21 个**（`shield wall`/`last stand`/`barskin`/`survival instincts`/`icebound fortitude`/`shield block`/`divine shield`/`evasion`/`cloak of shadows`/`deterrence`/`dispersion`/`ice block`/`frenzied regeneration`/`pain suppression`…）、
+   仇恨重置 **10 个**（`feign death`/`vanish`/`fade`/`invisibility`/`soulshatter`/`cower`/`shadowmeld`…）、
+   驱散 **93 个**（`cleanse magic/disease/poison/curse`、`abolish disease/poison`、`cure`、`cleanse spirit …`，含 `on party`/`party member` 变体）。
+   ⇒ **零件齐全，缺的是"条件与优先级"**，按 BOSS 攻略逐条落。
+
+---
+
