@@ -1497,6 +1497,148 @@ max_comp = int(sys.argv[7])   if len(sys.argv) > 7 else 50
 7. **`gen_offmesh.py` 的 `neis` 用的是 `raw - 1`**（`nb = raw - 1`，即文件里存的是
    "面号 + 1"），而且把 `raw == 0` 当"无邻居"。写自己的解析器时要跟它对齐，
    否则和它的分量划分对不上（我在这次排查里正是因为这点反复算错分量大小）。
+
+#### 六、2026-10-18 追加：两个生成器 bug + 「530 那片 ADT 为什么碎」+ 555 悬空面结案
+
+##### 6.1 两个**真** bug（已报上游 → `cmangos/issues#4303`）
+
+**① `--tile` 模式下 `maxTiles = 0`，整格被丢**
+
+`MapBuilder::buildNavMesh()` 里 `int maxTiles = tiles.size();` —— 但 `--tile X,Y` 走到这里时
+`tiles` **还没被填**（它是在后面 `buildMoveMapTile` 的循环里才填的），于是：
+
+```
+maxTiles = 0 ⇒ dtNavMesh 一个 tile 槽都没有 ⇒ 每次 addTile 返回 DT_OUT_OF_MEMORY ⇒ 整格丢弃
+而地图级最后仍打印 "Movemap build is complete!"
+```
+
+修复：`if (maxTiles < 1) maxTiles = 1;` —— 实测 `--tile` 从 **0 格** 变 **1 格**。
+
+**② `1 << DT_POLY_BITS` 溢出，负值被写进每一份 `.mmap`**
+
+上游 `083d78c6f` 把 `DT_POLY_BITS` 从 12 改成 **31**，而 `MapBuilder` 还写
+`int maxPolysPerTile = 1 << polyBits;` ⇒ `1 << 31 = -2147483648 (0x80000000)`，
+这个值经 `navMeshParams.maxPolys` **原样写进 `<map>.mmap` 的第 24..27 字节**。
+
+实测线上（改动前）：
+
+```
+map 555 : maxTiles=9    maxPolys=-2147483648 (0x80000000)
+map 543 : maxTiles=72   maxPolys=-2147483648
+map 530 : maxTiles=800  maxPolys=-2147483648
+```
+
+运行期 `dtNavMesh::init(&params)` 会算出 `m_polyBits=31`、`m_saltBits ≤ 1` —— 在带
+`if (m_saltBits < 10) return DT_FAILURE|DT_INVALID_PARAM;` 的 Detour 版本上**直接初始化失败**，
+不带的版本上则是**多边形引用只剩 ≤1 个 salt 位**，tile 重载后 ref 极易撞车。
+
+修复：`MMAP_POLY_BITS = 16`（一个 533 码 tile 实测最大 2887 面，16 位足够）。
+**注意：改这个值等于改 `.mmap` 内容，`.mmap` 与 `.mmtile` 必须一起重生成。**
+
+##### 6.2 三个「静默失败」的坑（这才是排查卡这么久的原因）
+
+| 坑 | 表现 | 修法 |
+|---|---|---|
+| `m_rcContext = new rcContext(false);` | **Recast 自己的错误日志被整个关掉** ⇒ 数组溢出/region 超限/分配失败全无声 | 改 `true` |
+| `if (!solidVerts.size() && !liquidVerts.size()) return;` | 地形和 vmap 都读不到时**静默 return**，整格消失 | 加 `[TILE-EMPTY]` 打印 |
+| `addTile` 失败只 `continue` | 整格不写盘，地图级仍报 complete | 加 `[TILE-FAILED]` 打印 |
+
+批量烘焙后扫一遍即可：
+
+```
+findstr /C:"[TILE-EMPTY]" /C:"[TILE-FAILED]" build.log
+```
+
+##### 6.3 `config.json` 的两个坑（我为此白跑了 4 轮，**站长当场指出"改坡度不可能面数不变"**）
+
+```cpp
+// generator.cpp
+const char* configInputPath = "config.json";        // ① 相对**当前工作目录**，不是 --workdir
+// MapBuilder.cpp → getMapIdConfig()
+std::string key = std::to_string(mapId);            // ② 必须按地图 ID **嵌套**
+if (m_config.find(key) != m_config.end())           //    平铺的配置**根本不会被读到**
+    config.merge_patch(m_config.at(key));
+```
+
+**正确写法**（放在启动时的 CWD 里）：
+
+```json
+{ "530": { "terrainSlopeAngle": 90.0, "walkableClimb": 5, "minRegionArea": 10 } }
+```
+
+**教训：改配置做对照实验时，先证明配置真的生效**（比如把某个能反映到 `.mmtile` 头里的值改一下看变不变），
+否则"数值一模一样"只说明**参数没进去**，不说明"参数没用"。
+
+##### 6.4 `--tile` 的参数顺序
+
+`MoveMapGen --tile X,Y` 收的是 **`gy,gx`**，而内部 `loadMap(mapID, tileX, tileY)` 要 **`(x,y)`**。
+所以 530 的 `5302619`（gy=26 gx=19）必须写 `--tile 19,26`；写反了会去加载另一个 tile，
+走到"无几何"分支**静默退出**。
+
+##### 6.5 「530 那片 ADT 为什么没有 navmesh」（站长：官服 ADT 完全可走）
+
+**现象**：`530` 的 `(3024.3, 6793.5)` 是**纯 ADT 地形**（垂直射线在 377→368 打空 0 次，无任何 WMO/M2），
+但整片 406×292 码、起伏 118 码的区域只生成 **854 个面**（覆盖率约 0.7%）。
+
+**三项参数的作用**（同一格 `5302619` 单格对照）：
+
+| 配置 | 该格面数 | 目标连通块 |
+|---|---|---|
+| 基线（全 60°、climb 4、minRegion 60） | 12,401 | **856** |
+| 全域 90°（含 WMO）、climb 5、minRegion 10 | 15,599 | 3,402 |
+| **仅地形 90°**、climb 5、minRegion 10 | 13,452 | **2,653** |
+
+**结论**：
+
+- `minRegionArea = 60` 经 `rcSqr()` 变成 **3600 cell ≈ 256 ㎡** —— Recast 会
+  **整块删除**小于它且不接触边界的区域（`RecastRegion.cpp` 的 `mergeAndFilterRegions`）。
+  崎岖地形被切成大量小块 ⇒ 一块块被删 ⇒ 这就是"几乎没有 navmesh"的直接原因。改 **10**（=100 cell）。
+- **`walkableClimb` 4 → 5**（1.0667 → 1.3333 码）：实测有一处台沿高 **1.18 码**，只比旧阈值高 0.11 码，
+  被判定"爬不上去"⇒ 那个平台成了 5 面孤岛（`530` 的 `X1387.0 Y7392.7`）；改 5 后同一位置 **1758 面**。
+- **地形坡度单独放宽**：官服能走的缓坡我们 60° 烘出来是碎的。但 90° 对 **建筑模型**不合适
+  （WMO 垂直面会被当成可行走、怪物贴墙走）⇒ 只对 **ADT 三角**放宽，模型仍守 60°。
+
+**实现方式**（`MeshData::terrainTriCount` + `MapBuilder::buildCommonTile()`）：
+地形先加载（`loadMap`）、模型后加载（`loadVMap`）⇒ `solidTris` 前段是地形。
+`rcClearUnwalkableTriangles(60°)` 之后，只对前 `terrainTriCount` 个三角按 `terrainSlopeAngle`（默认 90）
+重新放行；`rcModAlmostUnwalkableTriangles` 跑完后，再把地形段里的 `STEEP` 还原成 `GROUND`。
+新配置项：`terrainSlopeAngle`（默认 90）。
+
+**遗留**：全量重烘后 `5303252` / `5304255` 两格报
+`No polygons to build on tile!`（线上有 102.7 / 123.8 KB），地形放宽后 region 过滤结果变了，**待查**。
+
+##### 6.6 555 的「悬空面」结案：不是几何问题，是 offmesh 补连的产物
+
+线上 `5553232` 的 `#1935` / `#1936` 是**同一 footprint、只差 11.3777 码**（= **64 × ch**，ch=0.1777778）
+的两个面，上面那个（28.51）垂直射线打空 ⇒ 看着像"飘着的面"。
+
+**结论**：用**不补 offmesh** 的方式重烘后，那个位置 **3 码内 0 个面**（地面仍在，5.5 码外）。
+⇒ 它是**旧烘焙补连（`--autoOffMesh` / `offmesh_*.txt`）的产物**，不是网格或几何的 bug。
+另：`5553231` 的 2 个面在旧/新里**高度完全相同**，也印证那些面是 Recast 的确定性输出。
+
+##### 6.7 `spawn_link.py` 补缝改量「硬边界顶点」
+
+原来把岛的顶点连到主网格的**面中心**（`centers`）⇒ `dh` 天然多出半个面的距离 ⇒ 1.5/2 码这种阈值
+几乎把所有岛都判成"太远"。改为量到主网格的**硬边界顶点**（`neis == 0` 的那条边的端点），
+`dh` 才是真正的缝宽。
+
+改完后仍然 **0 条** —— 因为那几个岛不是"缝"：最近的主网格面在 **4.26 码**外、**高差 1.18 码**，
+而 `/conn` 报的 0.377 码缺口其实是个 **≈80° 的垂直台沿**。⇒ **这类孤岛不该用 off-mesh 连，该调参数。**
+
+##### 6.8 本轮改动清单（提交）
+
+| 提交 | 内容 |
+|---|---|
+| `eef5f4c11` | `1 << DT_POLY_BITS` 溢出修复（`MMAP_POLY_BITS = 16`） |
+| `afe144a82` | `maxTiles = 0` 修复 + `[TILE-FAILED]` |
+| `72434f9c6` | `[TILE-FAILED]` 标记（单独提交，便于回溯） |
+| `39f9d0a0f` / `f10ccd7fd` | `.contour` / `.pmesh` / 合并图转储（`MMAP_DEBUG_DUMP`） |
+| `5be1c50` / `aa5fc2d` | `dev/tools/mmap_dump_probe.py`（按世界坐标定点查任意转储） |
+| `d58598d07` | 地形单独放宽坡度 + `minRegionArea` 10 + `rcContext(true)` + `[TILE-EMPTY]` |
+| — | `walkableClimb` 4 → 5；`spawn_link` 硬边界顶点 |
+
+**上游 issue**：<https://github.com/cmangos/issues/issues/4303>
+
 ## [寻路] 移动/追击与碰撞个案（Blink、水下追击、召唤物吸附、拴绳、悬空点）— 2026-08-19 ~ 2026-10-13（本章合并自 9 章：[地图] 湿地·维尔加挖掘场桥 — 宠物/服务端单位站到桥下、[机制] 法师闪现 Blink 落点修复 — 2026-08-30 完成（先 navmesh 有路径 / 无路径才碰撞）、[机制] 法师闪现 Blink：WMO 斜坡穿模修复 + 落点方案重做 — 2026-09-04（navmesh 目标点 + 通用碰撞 + 不钻底）、[机制] 召唤物被吸附到 vmap 地板 → 全局改为"只向上兜底"（不再向下吸）— 2026-09-16 已改（本地，待推云）、[机制] 不稳定邪能小鬼（22474）出生成后卡闪避：拴绳半径 30 码 < 门到炮 40~50 码 — 2026-09-16 已修（本地，待推云）、[机制] 标记"禁止战斗移动"的单位仍会追击：HandleMovementOnAttackStart 未查 IsCombatMovement — 2026-09-16 已改（本地，待推云）、[数据] 2026-09-30 能源舰「guid 5540055 会走上天上」＝路径点 z 悬空 9.65 码（`dev/147`）、[工具/数据] 2026-10-01 路径点悬空扫描的**口径大修**：上一版"3 万可疑点"里绝大多数是工具假阳性（真可疑 438 条 / 103 个生物）、[寻路] 黑色沼泽鳄鱼"直线穿岸" = 水下追击的直线捷径把刚算好的 navmesh 走廊丢掉 —— 2026-10-13）
 
 > **合章说明（2026-10-16）**：本章由 9 个旧章合并；旧结论一律保留，被后续推翻/取代的已就地标注。
@@ -3207,6 +3349,50 @@ if (spec < 10)
   ⇒ **崩溃循环时的正确顺序**：先放暂停标志止血 → 取 core 栈 → 再排障。
 - ✅ **不要用"兜底"掩盖**：这是确定性越界，正确做法是修**索引上界**（已在做），不是加 try/catch 或超时跳过 ——
   兜底只会把同一类 bug 换个形式放回来，并破坏现场。
+---
+
+### [崩溃/启动] AHBot 拍卖行重复 `itemguid` ⇒ 启动期 `Critical Error` 自杀（2026-10-18，已修；合章后新增本节）
+
+#### 现象
+
+- 服务端起不来，卡在 `Loading Auctions...` 之后立刻退出：
+```
+Loading Auctions...
+Critical Error: A condition which must never be false was found to be false. Server was shut down to protect data integrity.
+AddAItem(): mAitems.find(it->GetGUIDLow()) == mAitems.end()
+```
+- **不是段错误** ✗（无 `SIG 11`），而是 `MANGOS_ASSERT` 触发的**主动关服** ✓ ⇒ watchdog 每分钟拉起 ⇒ **重启循环** ✗（本地与云端都实测到 ✓）。
+- 触发条件：`tbccharacters.auction` 里有**两条记录指向同一个 `itemguid`** ✓（本地库 11,068 行里就有几处 ✓）。
+
+#### 根因
+
+`AuctionHouseMgr::AddAItem()`（`src/game/AuctionHouse/AuctionHouseMgr.cpp` → `AddAItem`）里：
+```cpp
+MANGOS_ASSERT(mAitems.find(it->GetGUIDLow()) == mAitems.end());
+```
+两条调用链都会撞上：
+1. `AuctionHouseMgr::LoadAuctionItems()` —— 逐行加载 `auction` 表 ✓；第二行同 guid ⇒ 断言 ✓（**启动期**）。
+2. `AuctionHouseObject::AddAuction()` → `sAuctionMgr.AddAItem(newItem)` —— AHBot 的**重新定价/重复挂出**会拿同一个 `Item*` 再挂一次 ✓（**运行期**）。
+
+**上游同样如此** ✓（`mangos-tbc` master `4e329ff72` 的同一函数逐字相同 ✓）⇒ 已按上游 issue 流程提交 ✓。
+
+#### 修法（已实现，双保险）
+
+1. **加载容错**（`AddAItem`）：重复时**保留第一个** ✓、`sLog.outError("[AH-DUP] duplicate auction item guid=… — keep the first instance, drop this one")` ✓、`delete` 掉后加载的那份 ✓ ⇒ 服务能起 ✓；重复的那条拍卖在 `LoadAuctions()` 的 `GetAItem()` 校验里自己失败并被跳过 ✓。
+2. **挂单校验**（`AuctionHouseObject::AddAuction`）：`sAuctionMgr.GetAItem(itemGuid)` 已存在 ⇒ 拒绝并记 `[AH-DUP]` ✓ —— **只对 `pl == nullptr`（AHBot/GM）** ✓；**玩家挂单保持原样** ✗（那里押金已扣、物品已出包，拦下会吞物品 ✓）。
+3. 配套数据清理（可选 ✓）：
+```sql
+SELECT itemguid, COUNT(*) c FROM auction GROUP BY itemguid HAVING c > 1;
+DELETE a FROM auction a JOIN auction b ON a.itemguid=b.itemguid AND a.auction_id>b.auction_id;
+```
+
+#### 验证
+
+- 本地：清掉重复行后能起服 ✓；修复版二进制起服**不再出现 Critical Error** ✓
+- 云端：`2026-10-18 04:21:56 CMANGOS: World initialized` ✓（新二进制 `af645698732a2ad9995c196ba2e100fb` ✓），日志里**无** `Critical Error` / `[AH-DUP]` ✓
+
+---
+
 ## [稳定性][安全] 登录/握手与断线总账 — 2026-09-18 ~ 2026-09-30（本章合并自 3 章：[修复] 登录握手：mangosd 掉线后再上线"卡在读取角色列表"（2026-09-18）、[稳定性][安全] realmd 登录包堆溢出：认证前可远程触发的崩溃 — 2026-09-19、[机制] 使用物品 31678（精神干扰棒）导致角色掉线：possess 时的速度 ACK 被误判成作弊）
 
 > **合章说明（2026-10-16）**：本章由 3 个旧章合并；旧结论一律保留，被后续推翻/取代的已就地标注。
@@ -10307,6 +10493,39 @@ $ python dev/tools/vmap_los_probe.py ray 556 34.11 302.45 26.92 5.36 316.72 31.3
 
 
 ---
+### [核心/寻路] 正常陆地寻路改为**必走 mmap**（同格 / 飞行 / 游泳保留旧行为）（2026-10-18；合章后新增本节）
+
+#### 背景 / 站长口径
+
+- **上游行为**：`PathFinder::calculate()` 在 `!HaveTile(start) || !HaveTile(dest)` 时走 **`BuildShortcut()`**（直线连过去 ✓，源码注释里明写 "upstream behaviour" ✓）。
+- **问题**：**没 mmap / mmap 不连通** 时会**穿墙直连** ✗ ⇒ 表现为"隔沟打人"、"贴墙磨" ✓。
+- **站长口径**：**同格保持旧行为** ✓；**正常陆地必须走 mmap** ✓；**没 mmap / 不连通都不退回直连** ✓（走到哪算哪 ✓）。
+
+#### 改动
+
+1. `Map.h` 新增最小入口 ✓（`EnsureGridLoaded` 原本是 private ✗）：
+```cpp
+void EnsureGridLoadedForPath(Cell const& cell) { EnsureGridLoaded(cell); }
+```
+2. `PathFinder::calculate()` 的 `!HaveTile` 分支 ✓：
+   - **跨格 + 正常陆地** ⇒ 先 `EnsureGridLoadedForPath(startCell/destCell)` ✓ → `SetCurrentNavMesh()` ✓ → 重判 ✓
+   - 仍无 tile ⇒ **不直连** ✗ ⇒ `sLog.outError("[PATH-NOMMAP] map=… start=(…) dest=(…)")` ✓ + `m_pathPoints.clear()` + `m_type = PATHFIND_NOPATH` ✓（怪不动 ✓）
+   - **同格 / 飞行（`IsFlying()`）/ 游泳（`IsSwimming()`）/ `UNIT_STAT_IGNORE_PATHFINDING`** ⇒ 保留 `BuildShortcut()` ✓
+3. `BuildPolyPath()` 的 `INVALID_POLY` 分支**本轮未改** ✗（后面紧跟"飞行/游泳合法直连"判断 ✓，需单独处理 ✓）。
+
+#### 已知影响（有意为之）
+
+- mmap **没提取/不连通** 的地图 ⇒ 怪**原地不动** ✗ + `[PATH-NOMMAP]` 日志 ✓ ⇒ 这是**故意的** ✓：让 mmap 缺失**暴露**出来 ✓，而不是用直连掩盖 ✓。
+- **飞行/游泳**单位不受影响 ✓（仍走直连 ✓）。
+
+#### 验证
+
+- 编译：`rc=0 / errors=0` ✓
+- 云端：`2026-10-18 04:21:56 World initialized` ✓（新二进制 `af645698732a2ad9995c196ba2e100fb` ✓）
+- **待观察**：副本内怪追人是否按 mmap 绕路 ✓；`[PATH-NOMMAP]` 是否出现（出现即说明该地图缺 mmap ✓）
+
+---
+
 ## [运维] 云端运维、部署与流程铁律 — 2026-09-18 ~ 2026-10-02（本章合并自 9 章：[运维] 教训：常驻进程会继承 `flock` 锁，导致锁永不释放（2026-09-18）、[运维] 云端 CPU 打满：一条遗留的临时表分析查询跑了 1h54m — 2026-09-19 已处置、[部署] 源码分发从 scp 改为 git（**夜间 git sync 仍然保持关闭**）—— 2026-09-24、云端同步记录：dev/114/116/117/118（+ dev/119 修补）—— 2026-09-24 21:23、[运维] P0 铁律：无站长明确指令，严禁重启/部署云端 —— 2026-09-25、[运维] 2026-09-30 本地 MySQL 从库复制中断 3 天（1062 主键冲突）→ 按「全量重建」修复、[运维] 2026-10-01 日志噪音普查：**我们自己有一半的 ERROR 行其实是正常业务记录** —— 8 处从 `outError` 降级为 `outString`、[运维] 2026-10-01 ⚠️ 教训：**不要在 mangosd 运行时在云端跑 gcc** —— 我的只读语法检查触发了内核 OOM，内核杀掉了 cc1plus、[运维] 2026-10-02 夜间构建失败复盘：**手工同步清单漏了 `Unit.h`** ⇒ 改为"全树比对"（P0 流程））
 
 > **合章说明（2026-10-16）**：本章由 9 个旧章合并；旧结论一律保留，被后续推翻/取代的已就地标注。
