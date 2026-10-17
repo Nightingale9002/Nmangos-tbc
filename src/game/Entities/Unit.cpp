@@ -1037,6 +1037,12 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
 
     if (dealer)
     {
+        // [BOT-ML 2026-10-17] bot 输出统计（核心数据）：dealer 是 bot 玩家 ⇒ 累计真实伤害。
+        //   仅 playerbot 构建有 isRealPlayer()；不开模块时这段不编译。
+#ifdef ENABLE_PLAYERBOTS
+        if (dealer->IsPlayer() && !static_cast<Player*>(dealer)->isRealPlayer())
+            static_cast<Player*>(dealer)->botDamageDealt += damage;
+#endif
         // Rage from Damage made (only from direct weapon damage)
         if (cleanDamage && damagetype == DIRECT_DAMAGE && dealer != victim && dealer->GetTypeId() == TYPEID_PLAYER && (dealer->GetPowerType() == POWER_RAGE))
         {
@@ -7463,6 +7469,11 @@ int32 Unit::DealHeal(Unit* pVictim, uint32 addhealth, SpellEntry const* spellPro
 
     if (unit->IsPlayer())
     {
+        // [BOT-ML 2026-10-17] bot 治疗统计（核心数据）：只计**有效治疗**（gain，过量治疗不算）。
+#ifdef ENABLE_PLAYERBOTS
+        if (!static_cast<Player*>(unit)->isRealPlayer())
+            static_cast<Player*>(unit)->botHealingDone += gain;
+#endif
         if (BattleGround* bg = static_cast<Player*>(unit)->GetBattleGround())
             bg->UpdatePlayerScore(static_cast<Player*>(unit), SCORE_HEALING_DONE, gain);
     }

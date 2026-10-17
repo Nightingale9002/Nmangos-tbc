@@ -2240,6 +2240,10 @@ class Player : public Unit
         PlayerbotMgr* GetPlayerbotMgr() { return m_playerbotMgr.get(); }
         void SetBotDeathTimer() { m_deathTimer = 0; }
         bool isRealPlayer() { return m_session && (m_session->GetRemoteAddress() != "disconnected/bot"); }
+        // [BOT-ML 2026-10-17] 核心侧统计：bot 的累计伤害/治疗。由模块每 5 秒取增量写进 bot_events.csv
+        //   （站长口径"用核心数据"）。判据 isRealPlayer() 来自 session 远端地址，不依赖 playerbot 模块实现。
+        uint64 botDamageDealt = 0;
+        uint64 botHealingDone = 0;
 #endif
 
         virtual UnitAI* AI() override { if (m_charmInfo) return m_charmInfo->GetAI(); return nullptr; }
