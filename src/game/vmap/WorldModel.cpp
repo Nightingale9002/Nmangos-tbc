@@ -17,7 +17,11 @@
  */
 
 #include "WorldModel.h"
+// [2026-10-17] <unistd.h>/sysconf 只有 POSIX 有 —— MSVC（本地 Windows 构建）不提供，
+// 因此诊断打点里这唯一的两处 Linux 依赖必须显式守卫；Linux 行为逐字不变。
+#if defined(__linux__)
 #include <unistd.h>
+#endif
 #include "Log/Log.h"
 #include <cstdio>
 #include <cstdlib>
@@ -621,6 +625,7 @@ namespace VMAP
             if ((g_vmapTraceCount % 25) == 1 || g_vmapTraceCount <= 3)
             {
                 uint32 rssMb = 0;
+#if defined(__linux__)
                 if (FILE* f = fopen("/proc/self/statm", "r"))
                 {
                     unsigned long total = 0, resident = 0;
@@ -628,6 +633,7 @@ namespace VMAP
                         rssMb = (uint32)((resident * (unsigned long)sysconf(_SC_PAGESIZE)) / (1024 * 1024));
                     fclose(f);
                 }
+#endif
                 sLog.outString("[VMAP#%u] rss=%uMB this=%.2fMB total=%.1fMB file=%s",
                     g_vmapTraceCount, rssMb, double(sz) / 1048576.0, double(g_vmapTraceBytes) / 1048576.0, filename.c_str());
             }
