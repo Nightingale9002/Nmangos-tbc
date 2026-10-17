@@ -67,6 +67,12 @@ namespace MMAP
         G3D::Array<float> solidVerts;
         G3D::Array<int> solidTris;
 
+        // solidTris 里**前面这一段**是 ADT 地形三角（loadMap 先跑，loadVMap 后跑）。
+        // 生成器用它区分"地形"和"WMO/M2"：地形的坡度限制可以放宽/取消（官服能走的
+        // 坡我们 60° 烘出来是碎的），而建筑模型必须继续守 60°。
+        // ⚠️ cleanVertices 只压缩顶点、不改三角形顺序，所以这个计数仍然有效。
+        int terrainTriCount = 0;
+
         G3D::Array<float> liquidVerts;
         G3D::Array<int> liquidTris;
         G3D::Array<uint8> liquidType;

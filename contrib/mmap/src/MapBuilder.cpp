@@ -32,6 +32,14 @@
 
 using namespace VMAP;
 
+// [DEBUG] 前向声明：转储函数的实现在文件后面（见 dumpOpen 那一组）。
+// ⚠️ 必须放在 `namespace MMAP` **里面** —— DumpCtx 和 dumpPolyMesh 的实现都在
+//    MMAP 里；放在外面会变成第二个同名重载，报"对重载函数的调用不明确"。
+namespace MMAP
+{
+    static void dumpPolyMesh(const DumpCtx& d, const rcPolyMesh& pm);
+}
+
 void rcModAlmostUnwalkableTriangles(rcContext* ctx, const float walkableSlopeAngle,
     const float* verts, int /*nv*/,
     const int* tris, int nt,
@@ -122,7 +130,12 @@ namespace MMAP
             m_config = json::parse(jsonConfig);
 
         m_terrainBuilder = new TerrainBuilder(skipLiquid, workdir);
-        m_rcContext = new rcContext(false);
+        // ⚠️ 原来这里是 `new rcContext(false)` —— 把 Recast 的日志**整个关掉**了。
+        //    后果：任何 Recast 内部失败（数组溢出、region 超限、分配失败）都是**静默**的，
+        //    整格直接消失而地图级只打印 "Movemap build is complete!"。
+        //    实测 530 的 5302520 / 5302619 / 5302919 / 5302920 就是这样没的。
+        //    改成 true 让 Recast 自己把错误原因打出来。
+        m_rcContext = new rcContext(true);
 
         printf("Using %d thread(s) for processing.\n", threads);
         loadGameObjects();
@@ -865,12 +878,28 @@ namespace MMAP
         // get heightmap data
         m_terrainBuilder->loadMap(mapID, tileX, tileY, meshData);
 
+        // 记下"地形三角"的数量（loadVMap 之后三角是地形在前、模型在后）。
+        // 生成器用它只对地形放宽坡度限制，建筑模型仍守 60°。
+        meshData.terrainTriCount = meshData.solidTris.size() / 3;
+
         // get model data
         m_terrainBuilder->loadVMap(mapID, tileY, tileX, meshData);
 
         // if there is no data, give up now
+        //
+        // ⚠️ 这里原来是个**完全静默**的 return —— 不打任何日志，整格直接消失，
+        //    地图级最后只打印 "Movemap build is complete!"。
+        //    实测 530 的 [26,19] 用 `--tile 26,19` 烘时就是走到这里无声退出的：
+        //        [Map 530] Building tile [26,19] (01 / 01)
+        //        Movemap build is complete!
+        //    加一行打印，以后一眼能看出是"没几何"而不是"烘失败了"。
         if (!meshData.solidVerts.size() && !meshData.liquidVerts.size())
+        {
+            // 注意：这个函数里没有 tileString（那个在 buildMoveMapTile 里），直接打。
+            printf("[Map %03u] [%02u,%02u]: [TILE-EMPTY] no terrain and no vmap geometry "
+                   "(loadMap/loadVMap returned nothing)\n", mapID, tileX, tileY);
             return;
+        }
 
         // remove unused vertices
         TerrainBuilder::cleanVertices(meshData.solidVerts, meshData.solidTris);
@@ -920,9 +949,37 @@ namespace MMAP
         //if (tileBits < 1) tileBits = 1;                                     // need at least one bit!
         //int polyBits = sizeof(dtPolyRef)*8 - SALT_MIN_BITS - tileBits;
 
-        int polyBits = DT_POLY_BITS;
+        // ⚠️ 不要用 `1 << DT_POLY_BITS`。
+        // 上游 2023 年把 DT_POLY_BITS 从 12 改成 31（提交 083d78c6f
+        // "[Core/MMAP]Change default bit size."），于是这一行在有符号 int 上
+        // **溢出成 -2147483648 (0x80000000)**，并且这个值会被原样写进
+        // 每个 `<map>.mmap` 的 `dtNavMeshParams.maxPolys`。
+        //
+        // 实测线上三张图的 .mmap（这个字段是第 24..27 字节）：
+        //     map 555 : maxTiles=9    maxPolys=-2147483648 (0x80000000)
+        //     map 543 : maxTiles=72   maxPolys=-2147483648
+        //     map 530 : maxTiles=800  maxPolys=-2147483648
+        //
+        // 运行期 `dtNavMesh::init(&params)` 会用它算
+        //     m_polyBits = dtIlog2(dtNextPow2((unsigned)maxPolys))  → 31
+        //     m_saltBits = min(31, 32 - m_tileBits - m_polyBits)    → ≤ 1
+        // 在有 `if (m_saltBits < 10) return DT_FAILURE|DT_INVALID_PARAM;` 的
+        // Detour 版本上会**直接初始化失败**；没有那个检查的版本上则是
+        // 多边形引用只剩 ≤1 个 salt 位，tile 重载后 ref 极易撞车。
+        //
+        // 这里改用实际够用的位数：一个 533 码 tile 的多边形数远小于 65536
+        // （实测 555 最大的格 2887 个面），16 位足够，salt/tile 位数都留得下。
+        static const int MMAP_POLY_BITS = 16;
+        int polyBits = MMAP_POLY_BITS;
 
-        int maxTiles = tiles.size();
+        // ⚠️ **另一个独立的 bug**：`--tile` 单格模式下走到这里时 `tiles` 还是空的
+        //    （它是在下面 buildMoveMapTile 的循环里才被填的），于是 maxTiles = 0，
+        //    dtNavMesh 一个 tile 槽都没有，之后**每一次 addTile 都返回
+        //    DT_OUT_OF_MEMORY**，整格被丢弃 —— 而地图级仍打印 "complete"。
+        //    实测：`--tile 32,32` 必失败；不带 --tile 跑全图则正常。
+        int maxTiles = (int)tiles.size();
+        if (maxTiles < 1)
+            maxTiles = 1;
         int maxPolysPerTile = 1 << polyBits;
 
         /***          calculate bounds of map         ***/
@@ -960,7 +1017,15 @@ namespace MMAP
 
         navMesh = dtAllocNavMesh();
         printf("[Map %03i] Creating navMesh...                        \r", mapID);
+        // [DEBUG] 澄清 "addTile 报 OOM" 到底是不是预算问题：
+        //   maxPolysPerTile 如果是有符号溢出出来的负数，(unsigned) 会看到 0x80000000。
+        printf("[DEBUG] map=%u tiles=%zu maxTiles=%d maxPolysPerTile=%d (0x%08X) polyBits=%d\n",
+               mapID, tiles.size(), maxTiles, maxPolysPerTile,
+               (unsigned int)maxPolysPerTile, polyBits);
         dtStatus dtResult = navMesh->init(&navMeshParams);
+        printf("[DEBUG] map=%u navMesh->init -> 0x%08X%s\n",
+               mapID, (unsigned int)dtResult,
+               dtStatusFailed(dtResult) ? "  (FAILED)" : "  (ok)");
         if (dtStatusFailed(dtResult))
         {
             printf("[Map %03i] Failed creating navmesh!                   \n", mapID);
@@ -1251,6 +1316,11 @@ namespace MMAP
         // be treated as a seam that has to be closed (see closeThinSeams)
         const int seamBridgeMaxRise = tileConfig.value("seamBridgeMaxRise", 0);
 
+        // 【地形专用坡度】只作用于 ADT 地形三角（见 buildCommonTile 里 terrainTriLimit 的说明）。
+        // 建筑模型（WMO/M2）仍然用 tileCfg.walkableSlopeAngle（默认 60°）。
+        const int terrainTriCount = meshData.terrainTriCount;
+        const float terrainSlopeAngle = tileConfig.value("terrainSlopeAngle", 90.0f);
+
         rcVcopy(config.bmin, bmin);
         rcVcopy(config.bmax, bmax);
 
@@ -1289,7 +1359,9 @@ namespace MMAP
                 dbg.map = mapID; dbg.tileX = tileX; dbg.tileY = tileY;
                 dbg.subX = x; dbg.subY = y; dbg.enabled = true;
                 buildCommonTile(tileString, dbg, tile, tileCfg, tVerts, tVertCount, tTris, tTriCount, lVerts, lVertCount, lTris, lTriCount, lTriFlags,
-                                preErosionMedianPasses, seamBridgeMaxRise, &seamStats);
+                                preErosionMedianPasses, seamBridgeMaxRise, &seamStats,
+                                terrainTriCount, terrainSlopeAngle,
+                                tileConfig.value("splitTerrain", false));
             }
         }
 
@@ -1372,6 +1444,21 @@ namespace MMAP
         params.detailVertsCount = iv.polyMeshDetail->nverts;
         params.detailTris = iv.polyMeshDetail->tris;
         params.detailTriCount = iv.polyMeshDetail->ntris;
+
+        // [DEBUG] 合并后的整块 polyMesh —— 用来夹死"幽灵面"到底是在
+        //   rcMergePolyMeshes 里产生的，还是在 dtCreateNavMeshData 里产生的。
+        //   实测 555 的 625 个子格 .pmesh 里都没有那个幽灵面，所以看这份就行。
+        //   这里没有现成的 DumpCtx（那个在更内层的作用域），单独造一个：
+        //   subX/subY 用 -1 标识"整块 tile"。
+        {
+            DumpCtx tdbg;
+            tdbg.map = mapID;
+            tdbg.tileX = tileX;
+            tdbg.tileY = tileY;
+            tdbg.enabled = true;
+            if (iv.polyMesh)
+                dumpPolyMesh(tdbg, *iv.polyMesh);
+        }
 
         // [AUTOOFFMESH] 自动补连：必须在 dtCreateNavMeshData **之前** 追加进
         // meshData.offMeshConnections（下面 params.offMeshCon* 直接取这个数组）。
@@ -1468,8 +1555,15 @@ namespace MMAP
             dtStatus dtResult = navMesh->addTile(navData, navDataSize, DT_TILE_FREE_DATA, 0, &tileRef);
             if (!tileRef || dtStatusFailed(dtResult))
             {
-                printf("%s Failed adding tile to navmesh!                     \n", tileString);
-                printf("%s\n", GetDTErrorReason(dtResult));
+                // ⚠️ 这里失败意味着**这一格不会被写出去** —— 下面直接 continue。
+                //    但地图级最后只会打印 "Movemap build is complete!"，
+                //    所以"静默丢格"是可能的：实测 555 的 [32,32] 曾因
+                //    DT_OUT_OF_MEMORY（maxPolys/maxTiles 用尽或真没内存）失败，
+                //    整张图仍然报 complete。
+                //    加一个**可 grep 的标记**，方便批量检查有没有漏格的图：
+                //        findstr /C:"[TILE-FAILED]" build.log
+                printf("[TILE-FAILED] map=%u tile=%u,%u reasons=addTile failed: %s\n",
+                       mapID, tileX, tileY, GetDTErrorReason(dtResult));
                 continue;
             }
 
@@ -1714,6 +1808,7 @@ namespace MMAP
      * All coordinates are Recast internal: world (X,Y) -> Recast (z,x), height on axis 1.
      * Absolute height = bmin[1] + y * ch.
      * ======================================================================= */
+    // [DEBUG] 前向声明（已在文件顶部给出，这里保留注释说明原因）。
     static FILE* dumpOpen(const DumpCtx& d, const char* suffix)
     {
         const char* dir = std::getenv("MMAP_DEBUG_DUMP");
@@ -1827,8 +1922,108 @@ namespace MMAP
         fclose(f);
     }
 
+    // [DEBUG] 轮廓集（rcBuildContours 的输出）。
+    // ⚠️ 存在的理由：实测发现有些导航面在"输入三角形里根本没有几何"的位置也存在
+    //    （555 的 #1935/#1936，4 码内 .tri 里 0 个三角，.rawhf 里 0 个 span，
+    //     但 .mmtile 里有两个 0.8x13.6 码的细长面，其中一个整体高出 64*ch）。
+    //    要定位只能看轮廓是从哪来的 —— 这个转储就是给那一步用的。
+    static void dumpContourSet(const DumpCtx& d, const rcContourSet& cs)
+    {
+        FILE* f = dumpOpen(d, "contour");
+        if (!f)
+            return;
+        dumpHeader(d, f, "MCTS");
+        fwrite(&cs.nconts, 4, 1, f);
+        fwrite(cs.bmin, 4, 3, f);
+        fwrite(cs.bmax, 4, 3, f);
+        fwrite(&cs.cs, 4, 1, f);
+        fwrite(&cs.ch, 4, 1, f);
+        fwrite(&cs.width, 4, 1, f);
+        fwrite(&cs.height, 4, 1, f);
+        fwrite(&cs.borderSize, 4, 1, f);
+        for (int i = 0; i < cs.nconts; ++i)
+        {
+            const rcContour& c = cs.conts[i];
+            fwrite(&c.nverts, 4, 1, f);
+            fwrite(&c.nrverts, 4, 1, f);
+            fwrite(&c.reg, 4, 1, f);
+            fwrite(&c.area, 4, 1, f);
+            for (int k = 0; k < c.nverts * 4; ++k)
+            {
+                unsigned short v = (unsigned short)c.verts[k];
+                fwrite(&v, 2, 1, f);
+            }
+        }
+        fclose(f);
+    }
+
+    // [DEBUG] 多边形网格（rcBuildPolyMesh 的输出）—— 最终 .mmtile 的面就是从这来的。
+    static void dumpPolyMesh(const DumpCtx& d, const rcPolyMesh& pm)
+    {
+        FILE* f = dumpOpen(d, "pmesh");
+        if (!f)
+            return;
+        dumpHeader(d, f, "MPMS");
+        fwrite(&pm.nverts, 4, 1, f);
+        fwrite(&pm.npolys, 4, 1, f);
+        fwrite(&pm.nvp, 4, 1, f);
+        fwrite(&pm.cs, 4, 1, f);
+        fwrite(&pm.ch, 4, 1, f);
+        fwrite(pm.bmin, 4, 3, f);
+        fwrite(pm.bmax, 4, 3, f);
+        for (int i = 0; i < pm.nverts * 3; ++i)
+        {
+            unsigned short v = (unsigned short)pm.verts[i];
+            fwrite(&v, 2, 1, f);
+        }
+        const int stride = pm.nvp * 2;
+        for (int i = 0; i < pm.npolys; ++i)
+        {
+            for (int k = 0; k < stride; ++k)
+            {
+                unsigned short v = (unsigned short)pm.polys[i * stride + k];
+                fwrite(&v, 2, 1, f);
+            }
+            fwrite(&pm.regs[i], 2, 1, f);
+            fwrite(&pm.areas[i], 1, 1, f);
+        }
+        fclose(f);
+    }
+
+    /**
+     * 把一个高度场里的 span 链**并入**另一个（两个高度场必须网格一致）。
+     *
+     * 为什么要拆两个高度场：站长口径（2026-10-18）——
+     *   **ADT 地面什么校验都不做、永远可通行；WMO/M2 的行为与之前完全一致。**
+     * 而 Recast 的 rcFilterLedgeSpans / rcFilterLowHangingWalkableObstacles /
+     * rcFilterWalkableLowHeightSpans 都作用在**整个高度场**上，没有"地形 / 模型"标记，
+     * 所以只能：地形光栅化到 hfA（不过滤）、模型光栅化到 hfB（跑原来的三条过滤），
+     * 再把 hfA 的 span 并回 hfB 继续走后面的 compact heightfield / region / polyMesh。
+     *
+     * 用 Recast 自带的 rcAddSpan 追加：它会保持 smin 有序、并把重叠的 span 合并，
+     * 属于"加面"不是"删面"，正合本意。
+     */
+    static bool mergeHeightfields(rcContext* ctx, rcHeightfield& dst, const rcHeightfield& src)
+    {
+        if (dst.width != src.width || dst.height != src.height)
+            return false;
+        for (int y = 0; y < dst.height; ++y)
+        {
+            for (int x = 0; x < dst.width; ++x)
+            {
+                for (const rcSpan* s = src.spans[x + y * src.width]; s; s = s->next)
+                {
+                    if (!rcAddSpan(ctx, dst, x, y, s->smin, s->smax, s->area, 0))
+                        return false;
+                }
+            }
+        }
+        return true;
+    }
+
     bool MapBuilder::buildCommonTile(const char* tileString, const DumpCtx& dbg, Tile& tile, rcConfig& tileCfg, float* tVerts, int tVertCount, int* tTris, int tTriCount, float* lVerts, int lVertCount,
-                                     int* lTris, int lTriCount, uint8* lTriFlags, int preErosionMedianPasses, int seamBridgeMaxRise, SeamFixStats* seamStats)
+                                     int* lTris, int lTriCount, uint8* lTriFlags, int preErosionMedianPasses, int seamBridgeMaxRise, SeamFixStats* seamStats,
+                                     int terrainTriCount, float terrainSlopeAngle, bool splitTerrain)
     {
         // ⚠️ Recast 的 walkableHeight / walkableClimb 是**体素数**（以 ch 为单位），
         //    而 config.json 里的值是以 BASE_UNIT_DIM 为单位的物理量。
@@ -1860,16 +2055,127 @@ namespace MMAP
         memset(triFlags, NAV_AREA_GROUND, tTriCount * sizeof(unsigned char));
         rcClearUnwalkableTriangles(m_rcContext, tileCfg.walkableSlopeAngle, tVerts, tVertCount, tTris, tTriCount, triFlags);
 
-        // mark almost unwalkable triangles with steep flag
-        rcModAlmostUnwalkableTriangles(m_rcContext, 50.0f, tVerts, tVertCount, tTris, tTriCount, triFlags);
+        // 【地形 vs 模型】只对 **ADT 地形**放宽坡度限制。
+        //
+        // 为什么：官服能走的缓坡，我们用 60° 烘出来是碎的 —— 530 的 26_19 那片区
+        // （406x292 码、起伏 118 码）目标连通块只有 1724 面，而把角度放到 90 后涨到
+        // 3402 面。但 90 度对 **建筑模型** 是不合适的：WMO 的垂直面会被当成可行走，
+        // 怪物会贴墙走。
+        //
+        // solidTris 的顺序是"地形在前、模型在后"（loadMap 先跑、loadVMap 后跑），
+        // 所以前 terrainTriCount 个三角是地形，只放宽这一段。
+        const int terrainTriLimit = (terrainTriCount > 0 && terrainTriCount < tTriCount)
+                                    ? terrainTriCount : 0;
+        const float terrainSlope = terrainSlopeAngle;
+        if (terrainTriLimit > 0 && terrainSlope > tileCfg.walkableSlopeAngle)
+        {
+            const float terrainThr = cosf(terrainSlope / 180.0f * RC_PI);
+            int restored = 0;
+            for (int ti = 0; ti < terrainTriLimit; ++ti)
+            {
+                if (triFlags[ti] & RC_WALKABLE_AREA)
+                    continue;                       // 本来就判定可走
+                const int* tri = &tTris[ti * 3];
+                float e0[3], e1[3], nrm[3];
+                rcVsub(e0, &tVerts[tri[1] * 3], &tVerts[tri[0] * 3]);
+                rcVsub(e1, &tVerts[tri[2] * 3], &tVerts[tri[0] * 3]);
+                rcVcross(nrm, e0, e1);
+                rcVnormalize(nrm);
+                if (nrm[1] > terrainThr)            // 按放宽后的角度算，可走
+                {
+                    triFlags[ti] = NAV_AREA_GROUND;
+                    ++restored;
+                }
+            }
+            // ⚠️ buildCommonTile 是**每个子格**调用一次（一个 tile 625 个），
+            //    所以这条日志只在 sub-tile (0,0) 打，否则会刷 625 行。
+            if (dbg.enabled && dbg.subX == 0 && dbg.subY == 0)
+                printf("%s [TERRAIN-SLOPE] relaxed %d/%d terrain tris (< %.0f deg)\n",
+                       tileString, restored, terrainTriLimit, terrainSlope);
+        }
 
-        rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, tTris, triFlags, tTriCount, *tile.solid, cfg.walkableClimb);
+        // mark almost unwalkable triangles with steep flag
+        // 标"接近不可走"的三角。⚠️ 只对**模型段**标 STEEP —— 地形段已经按 terrainSlopeAngle
+        // 放过了，再标成 STEEP 会把它重新排除在怪物可走范围之外。
+        rcModAlmostUnwalkableTriangles(m_rcContext, tileCfg.walkableSlopeAngle,
+                                       tVerts, tVertCount, tTris, tTriCount, triFlags);
+        if (terrainTriLimit > 0)
+        {
+            // 地形段里被判成 STEEP 的，恢复成普通 GROUND
+            for (int ti = 0; ti < terrainTriLimit; ++ti)
+                if ((triFlags[ti] & 0x3F) == NAV_AREA_GROUND_STEEP)
+                    triFlags[ti] = NAV_AREA_GROUND;
+        }
+
+        // ── 【地形 / 模型分开烘】 ──────────────────────────────────────────
+        //
+        // 站长口径（2026-10-18）：**ADT 地面什么校验都不做、永远可通行；
+        // WMO/M2 的行为与之前完全一致。**
+        //
+        // tTris 的顺序是"地形在前、模型在后"（loadMap 先跑、loadVMap 后跑），
+        // terrainTriLimit 就是分界点（0 表示这块没有地形）。
+        //   · 地形段 → 单独的高度场，**一条过滤器都不跑**
+        //   · 模型段 → tile.solid，跑原来的三条过滤
+        // 最后把地形高度场的 span 并用 rcAddSpan 追加进 tile.solid。
+        //
+        // ⚠️⚠️ 默认**关闭**（splitTerrain = false）—— 这一段在 2026-10-18 的全量烘焙里
+        //     让 map 001 崩了：退出码 0xC0000005（访问违规），跑到第 477/1018 格、
+        //     打完 `[TERRAIN-RAW] ... rasterized` 之后立刻死，没有 Recast 报错。
+        //     单格/小图（530、547）验证是好的（530 的目标连通块 856 → 7,165 面），
+        //     但**大图会崩**，所以先关掉，等把合并那一步查清楚再开。
+        // splitTerrain 由调用方传入（这个函数拿不到 json）。
+        rcHeightfield* hfTerrain = nullptr;
+        const int modelTriOff = splitTerrain ? terrainTriLimit * 3 : 0;
+        const int modelTriN   = splitTerrain ? (tTriCount - terrainTriLimit) : tTriCount;
+
+        if (splitTerrain && terrainTriLimit > 0)
+        {
+            hfTerrain = rcAllocHeightfield();
+            if (!hfTerrain || !rcCreateHeightfield(m_rcContext, *hfTerrain, tileCfg.width, tileCfg.height,
+                                                   tileCfg.bmin, tileCfg.bmax, tileCfg.cs, tileCfg.ch))
+            {
+                printf("%s Failed building terrain heightfield!               \n", tileString);
+                rcFreeHeightField(hfTerrain);
+                delete[] triFlags;
+                return false;
+            }
+            rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, tTris, triFlags, terrainTriLimit,
+                                 *hfTerrain, cfg.walkableClimb);
+            if (dbg.enabled && dbg.subX == 0 && dbg.subY == 0)
+                printf("%s [TERRAIN-RAW] %d terrain tris rasterized, no span filters applied\n",
+                       tileString, terrainTriLimit);
+        }
+
+        if (splitTerrain && modelTriN > 0)
+        {
+            rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, tTris + modelTriOff,
+                                 triFlags + terrainTriLimit, modelTriN, *tile.solid, cfg.walkableClimb);
+            rcFilterLowHangingWalkableObstacles(m_rcContext, cfg.walkableClimb, *tile.solid);
+            rcFilterLedgeSpans(m_rcContext, cfg.walkableHeight, cfg.walkableClimb, *tile.solid);
+            rcFilterWalkableLowHeightSpans(m_rcContext, cfg.walkableHeight, *tile.solid);
+        }
+        else if (!splitTerrain)
+        {
+            // 老路径：整体光栅化 + 三条过滤器（splitTerrain 关闭时的默认行为）
+            rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, tTris, triFlags, tTriCount,
+                                 *tile.solid, cfg.walkableClimb);
+            rcFilterLowHangingWalkableObstacles(m_rcContext, cfg.walkableClimb, *tile.solid);
+            rcFilterLedgeSpans(m_rcContext, cfg.walkableHeight, cfg.walkableClimb, *tile.solid);
+            rcFilterWalkableLowHeightSpans(m_rcContext, cfg.walkableHeight, *tile.solid);
+        }
+
+        // 把"不过滤"的地形 span 并回来
+        if (hfTerrain)
+        {
+            if (!mergeHeightfields(m_rcContext, *tile.solid, *hfTerrain))
+                printf("%s mergeHeightfields(terrain) FAILED                   \n", tileString);
+            rcFreeHeightField(hfTerrain);
+            hfTerrain = nullptr;
+        }
+
         dumpTriangles(dbg, cfg, tVerts, tVertCount, tTris, tTriCount, triFlags);
         delete[] triFlags;
 
-        rcFilterLowHangingWalkableObstacles(m_rcContext, cfg.walkableClimb, *tile.solid);
-        rcFilterLedgeSpans(m_rcContext, cfg.walkableHeight, cfg.walkableClimb, *tile.solid);
-        rcFilterWalkableLowHeightSpans(m_rcContext, cfg.walkableHeight, *tile.solid);
         if (lVerts)
             rcRasterizeTriangles(m_rcContext, lVerts, lVertCount, lTris, lTriFlags, lTriCount, *tile.solid, cfg.walkableClimb);
 
@@ -1944,6 +2250,7 @@ namespace MMAP
             printf("%s Failed building contours!                          \n", tileString);
             return false;
         }
+        dumpContourSet(dbg, *tile.cset);
 
         // build polymesh
         tile.pmesh = rcAllocPolyMesh();
@@ -1952,6 +2259,7 @@ namespace MMAP
             printf("%s Failed building polymesh!                          \n", tileString);
             return false;
         }
+        dumpPolyMesh(dbg, *tile.pmesh);
 
         tile.dmesh = rcAllocPolyMeshDetail();
         if (!tile.dmesh || !rcBuildPolyMeshDetail(m_rcContext, *tile.pmesh, *tile.chf, tileCfg.detailSampleDist, tileCfg.detailSampleMaxError, *tile.dmesh))
@@ -2091,11 +2399,38 @@ namespace MMAP
             {"maxEdgeLen", VERTEX_PER_TILE + 1},
             {"maxSimplificationError", 1.8f},
             {"mergeRegionArea", 50},
-            {"minRegionArea", 60},
-            {"walkableClimb", 4},
+            // ⚠️ minRegionArea = 0：**任何可走区域都不删除**。
+            //
+            // 站长口径（2026-10-18）：**ADT 地面总是能通行的，不应该被删掉。**
+            // Recast 的 mergeAndFilterRegions() 里有一句
+            //     if (spanCount < minRegionArea && !connectsToBorder) 丢弃整个区域
+            // 原来配 60 ⇒ 经 rcSqr() 变 3600 cell ≈ 256 ㎡ ⇒ **小于 16×16 码的片被整块删**。
+            // 实测 530 全图：minRegionArea=60 时有 **60 个格**报 "No polygons to build on tile!"
+            // （线上这些格都有 navmesh），改成 0 之后只剩 **4 个** —— 即 56 个格是被这条删掉的。
+            // 0 ⇒ 该条件恒假；小碎块仍会被 mergeRegionArea 并进邻居。
+            {"minRegionArea", 0},
+            // ⚠️ walkableClimb 从 4 提到 5（= 1.3333 码，原来是 1.0667 码）。
+            //    原因：实测有一处台沿高 1.18 码，只比旧阈值高 0.11 码，被判定
+            //    "爬不上去"⇒ 那个平台成了 5 面孤岛，怪物刷在上面就走不下来
+            //    （530 的 X1387.0 Y7392.7 高365.8）。这类"刚好卡在门槛外一点"
+            //    的台沿在整张图里不会很多，但每一个都会变成卡怪点。
+            //    5 × BASE_UNIT_DIM = 1.3333 码，对 WoW 生物是完全合理的台阶高度。
+            {"walkableClimb", 5},
             {"walkableHeight", 6},
-            {"walkableRadius", 2},
+            // ⚠️ walkableRadius = 0：**不做侵蚀**（站长口径 2026-10-18："擦墙走是对的"）。
+            //
+            // 2（= 0.5333 码）时 rcErodeWalkableArea 会把每个可走区域**向内缩 0.53 码**：
+            // 实测 547 关掉侵蚀后面数 +48%~66%（5473232：2,960 → 4,639）。
+            // 0 ⇒ 侵蚀是空操作，边缘全部保住。
+            // 注意：这个值同时会写进 `.mmtile` 头的 agent 半径，运行期 Detour 用它做
+            // 寻路走廊约束 —— 0 意味着允许贴墙走，这是站长确认想要的行为。
+            {"walkableRadius", 0},
+            // 【模型】坡度上限：WMO / M2 仍然守 60°（官方值）。
             {"walkableSlopeAngle", 60.0f},
+            // 【地形】坡度上限：只作用于 ADT 地形三角，默认不限制。
+            // 官服能走的缓坡，我们用 60° 烘出来是碎的（实测 530 的 26_19 那片区
+            // 目标连通块只有 1724 面，放到 90° 后 3402 面）。
+            {"terrainSlopeAngle", 90.0f},
             {"liquidFlagMergeThreshold", 0.0f},
             {"preErosionMedianPasses", 1},
 
