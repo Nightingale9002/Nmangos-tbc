@@ -80,6 +80,18 @@ class SpawnManager
         SpawnGroup* GetSpawnGroup(uint32 Id);
         SpawnGroup* GetSpawnGroup(std::string const& stringId);
 
+        // [2026-10-19] 运行时 guid -> spawn_group.Id（动态生成的 guid 也能归组；拉怪日志用）
+        void RegisterGroupMember(ObjectGuid const& guid, uint32 groupId)
+        {
+            if (guid)
+                m_objectGroups[guid] = groupId;
+        }
+        uint32 GetGroupIdForObject(ObjectGuid const& guid) const
+        {
+            auto it = m_objectGroups.find(guid);
+            return it == m_objectGroups.end() ? 0 : it->second;
+        }
+
         void RespawnSpawnGroupsInVicinity(Position pos, float range);
     private:
         Map& m_map;
@@ -88,6 +100,7 @@ class SpawnManager
         std::vector<SpawnInfo> m_spawns; // must only be erased from in Update
         std::map<uint32, SpawnGroup*> m_spawnGroups;
         std::map<uint32, SpawnGroup*> m_spawnGroupsPerStringId;
+        std::map<ObjectGuid, uint32> m_objectGroups;
         bool m_updated;
 
         std::set<uint32> m_eventCreatureDbGuids;

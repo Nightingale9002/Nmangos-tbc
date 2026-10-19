@@ -453,6 +453,10 @@ void SpawnGroup::Spawn(bool forced, bool ignoreRespawntime)
             else
                 spawned = WorldObject::SpawnGameObject(dbGuid, &m_map, entry);
 
+            // [2026-10-19] 记录运行时 guid -> spawn_group.Id（拉怪日志/静态分析用）
+            if (spawned && m_map.IsDungeon())
+                m_map.GetSpawnManager().RegisterGroupMember(spawned->GetObjectGuid(), m_entry.Id);
+
             // Fork addition: an entry that resolved to 0 cannot be created - and that used to happen
             // without any log at all (see the Arcatraz case in dev/KNOWN_ISSUES.md).
             if (!entry && m_zeroEntryReported.insert(dbGuid).second)

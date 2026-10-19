@@ -75,13 +75,18 @@ namespace
         bool   hasRealPlayer;
         uint32 firstMobGuid;
         uint32 firstMobEntry;
+        float  firstMobX;
+        float  firstMobY;
+        float  firstMobZ;
+        uint32 firstMobGroupId;
         std::set<uint32> memberGuids;
         std::set<uint32> aliveGuids;
         std::set<uint32> mobs;          // 正在打这支队伍的怪（guid low，已过滤存活）
 
         GroupSnapshot()
             : leaderGuid(0), groupId(0), members(0), alive(0),
-              inCombat(false), hasRealPlayer(false), firstMobGuid(0), firstMobEntry(0) {}
+              inCombat(false), hasRealPlayer(false), firstMobGuid(0), firstMobEntry(0),
+              firstMobX(0), firstMobY(0), firstMobZ(0), firstMobGroupId(0) {}
     };
 
     std::mutex stateMutex;
@@ -145,6 +150,26 @@ namespace
         return hasNewColumns;
     }
 
+    // [2026-10-19] target_x/y/z + spawn_group_id 是否已加：没加就退回旧列，不影响记录
+    bool PullLogHasPosColumns()
+    {
+        static std::mutex m;
+        static bool checked = false;
+        static bool has = false;
+        static time_t checkedAt = 0;
+        std::lock_guard<std::mutex> lock(m);
+        const time_t now = time(nullptr);
+        if (checked && now - checkedAt < kRecheckSec)
+            return has;
+        checked = true;
+        checkedAt = now;
+        std::unique_ptr<QueryResult> res = WorldDatabase.Query(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() "
+            "AND table_name = 'ai_playerbot_pull_log' AND column_name = 'spawn_group_id'");
+        has = (res != nullptr);
+        return has;
+    }
+
     // 调用方必须持 stateMutex（PQuery 只在"该队伍本场第一次拉怪"时发生，量很小）
     uint32 NextSeqLocked(InstanceState& inst, OpenPull const& pull)
     {
@@ -179,7 +204,7 @@ namespace
     }
 
     void BeginPull(InstanceState& inst, GroupSnapshot const& snap, Map* map,
-                   time_t now, bool logTable, bool newColumns)
+                   time_t now, bool logTable, bool newColumns, bool posColumns)
     {
         OpenPull pull;
         pull.mapId = map->GetId();
@@ -205,7 +230,20 @@ namespace
 
         if (logTable)
         {
-            if (newColumns)
+            if (newColumns && posColumns)
+                WorldDatabase.PExecute(
+                    "INSERT INTO `ai_playerbot_pull_log` "
+                    "(`map`,`instance_id`,`seq`,`ord`,`target_guid`,`target_entry`,`tank_guid`,"
+                    "`group_id`,`source`,`members`,`started_at`,`result`,`mobs_total`,`mobs_alive`,"
+                    "`target_x`,`target_y`,`target_z`,`spawn_group_id`) VALUES "
+                    "('%u','%u','%u','%u','%u','%u','%u','%u','%s','%u','%u','pending','%u','%u',"
+                    "'%f','%f','%f','%u')",
+                    pull.mapId, pull.instanceId, pull.seq, uint32(pull.ord), pull.firstMobGuid,
+                    pull.firstMobEntry, pull.leaderGuid, pull.groupId,
+                    snap.hasRealPlayer ? "player" : "bot", snap.members,
+                    uint32(now), pull.mobsTotal, pull.mobsTotal,
+                    snap.firstMobX, snap.firstMobY, snap.firstMobZ, snap.firstMobGroupId);
+            else if (newColumns)
                 WorldDatabase.PExecute(
                     "INSERT INTO `ai_playerbot_pull_log` "
                     "(`map`,`instance_id`,`seq`,`ord`,`target_guid`,`target_entry`,`tank_guid`,"
@@ -345,6 +383,10 @@ namespace pullrec
                 {
                     snap.firstMobGuid = creature->GetGUIDLow();
                     snap.firstMobEntry = creature->GetEntry();
+                    snap.firstMobX = creature->GetPositionX();
+                    snap.firstMobY = creature->GetPositionY();
+                    snap.firstMobZ = creature->GetPositionZ();
+                    snap.firstMobGroupId = map->GetSpawnManager().GetGroupIdForObject(creature->GetObjectGuid());
                 }
                 snap.mobs.insert(creature->GetGUIDLow());
             }
@@ -363,6 +405,10 @@ namespace pullrec
                 {
                     snap.firstMobGuid = creature->GetGUIDLow();
                     snap.firstMobEntry = creature->GetEntry();
+                    snap.firstMobX = creature->GetPositionX();
+                    snap.firstMobY = creature->GetPositionY();
+                    snap.firstMobZ = creature->GetPositionZ();
+                    snap.firstMobGroupId = map->GetSpawnManager().GetGroupIdForObject(creature->GetObjectGuid());
                 }
                 snap.mobs.insert(creature->GetGUIDLow());
             }
@@ -425,7 +471,7 @@ namespace pullrec
             if (inst.pulls.count(snap.leaderGuid))
                 continue;
 
-            BeginPull(inst, snap, map, now, logTable, newColumns);
+            BeginPull(inst, snap, map, now, logTable, newColumns, PullLogHasPosColumns());
         }
 
         // ---- 3) 僵尸清理：没有在拉的波、且很久没扫到的实例状态丢掉 ----
