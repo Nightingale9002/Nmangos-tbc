@@ -11,7 +11,7 @@
 --      （不登记的话专属集永远不会挂上，等于白写）；
 --   ③ 补 SET NAMES utf8mb4（否则中文 note 在 mysql CLI 下会乱码）。
 SET NAMES utf8mb4;
-USE `tbccharacters`;
+USE `tbcmangos`;
 
 
 -- ============================================================================
@@ -21,13 +21,13 @@ USE `tbccharacters`;
 --           PlayerBots「自定义策略」的规则行，让 bot 打某个 BOSS 时自动套上对应规则。
 --           只有数据，不改战斗代码。
 -- 两块数据：
---   ① 通用集 + 各 BOSS 专属集 → 角色库 tbccharacters.ai_playerbot_custom_strategy
+--   ① 通用集 + 各 BOSS 专属集 → 角色库 tbcmangos.ai_playerbot_custom_strategy
 --        name        = boss_common*（通用集，所有登记过的 BOSS 都会挂）
 --                      或 boss_<BOSS 的 creature entry>（该 BOSS 专属；引擎里键名 = custom::<name>）
 --        owner       = 0（全服共享：bot 查不到自己的行会自动回落 owner=0）
 --        idx         = 同一集内的规则序号
 --        action_line = `<触发器> > <动作>[!权重], 动作2, ...`
---   ② BOSS 登记表 → tbccharacters.ai_playerbot_boss_strategy(entry, note)
+--   ② BOSS 登记表 → tbcmangos.ai_playerbot_boss_strategy(entry, note)
 --        打这些 entry 的怪时钩子才会挂"通用集"（有 boss_<entry> 专属行的 BOSS 自动算登记过，
 --        本表用来收录"只有通用行为、没有专属规则"的 BOSS，或显式列出要覆盖的 BOSS）。
 -- 角色精细分工（2026-10-16，两套并存）：
@@ -57,16 +57,16 @@ USE `tbccharacters`;
 --     而 `/root/apply_dev_sql.sh` 是用**世界库当默认库**跑的：
 --         mysql -u root … tbcmangos < dev/179_BOSS战策略表.sql
 --     它自己的注释里也写明约定："dev 里的 SQL 幂等，且**自带库名限定**（无需选默认库）"。
---     ⇒ 本文件所有表名都写全 `tbccharacters.` 限定（即使默认库是世界库也写对地方），
---       并在下面补一句 `USE tbccharacters;` 让手工执行的人一眼看到目标库。
+--     ⇒ 本文件所有表名都写全 `tbcmangos.` 限定（即使默认库是世界库也写对地方），
+--       并在下面补一句 `USE tbcmangos;` 让手工执行的人一眼看到目标库。
 -- 幂等    ：只有 IF NOT EXISTS 建表 + 按 (owner=0, name) DELETE 再 INSERT + 登记表整表重写，
 --           可重复执行；不写 JOIN / 子查询 / 聚合，全部静态字面量（云端只跑静态幂等写）。
 -- ============================================================================
 
-USE `tbccharacters`;
+USE `tbcmangos`;
 
--- 表在角色库：tbccharacters.ai_playerbot_custom_strategy（模块读的就是这张）
-CREATE TABLE IF NOT EXISTS `tbccharacters`.`ai_playerbot_custom_strategy` (
+-- 表在角色库：tbcmangos.ai_playerbot_custom_strategy（模块读的就是这张）
+CREATE TABLE IF NOT EXISTS `tbcmangos`.`ai_playerbot_custom_strategy` (
   `id` bigint(20) NOT NULL AUTO_INCREMENT,
   `name` varchar(255) NOT NULL,
   `idx` bigint(20),
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS `tbccharacters`.`ai_playerbot_custom_strategy` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
 -- BOSS 登记表（钩子据此决定"这场 BOSS 战要不要挂通用集"）
-CREATE TABLE IF NOT EXISTS `tbccharacters`.`ai_playerbot_boss_strategy` (
+CREATE TABLE IF NOT EXISTS `tbcmangos`.`ai_playerbot_boss_strategy` (
   `entry` int(10) unsigned NOT NULL,
   `note` varchar(255) NOT NULL DEFAULT '',
   PRIMARY KEY (`entry`)
@@ -87,8 +87,8 @@ CREATE TABLE IF NOT EXISTS `tbccharacters`.`ai_playerbot_boss_strategy` (
 -- 「做不到」的机制（没有对应触发器）写在注释里，供后续加触发器时接手。
 
 -- ===== BOSS 登记表（打这些 BOSS 时自动挂通用集 boss_common*）=====
-DELETE FROM `tbccharacters`.`ai_playerbot_boss_strategy`;
-INSERT INTO `tbccharacters`.`ai_playerbot_boss_strategy` (`entry`, `note`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_boss_strategy`;
+INSERT INTO `tbcmangos`.`ai_playerbot_boss_strategy` (`entry`, `note`) VALUES
 (17306, '地狱火城墙 - 巡视者加戈玛 Watchkeeper Gargolmar'),
 (17308, '地狱火城墙 - 无疤者奥摩尔 Omor the Unscarred'),
 (17536, '地狱火城墙 - 纳杉 Nazan（瓦兹德的坐骑，二阶段同场）'),
@@ -145,7 +145,7 @@ INSERT INTO `tbccharacters`.`ai_playerbot_boss_strategy` (`entry`, `note`) VALUE
 (21467, '禁魔监狱 - 预言者斯克瑞斯的幻象 2（36932 召唤）');
 
 -- ===== 清理：owner=0 的 boss* 集（含改过名/已废弃的旧集）=====
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` LIKE 'boss%';
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` LIKE 'boss%';
 
 -- ===== boss_common =====
 -- 低血保命、中毒解毒、被恐惧解控等通用行为一律归 boss_common，本文件不重复
@@ -194,8 +194,8 @@ DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND
 -- boss_common 机制: 被恐惧期间自解（瞬发恐惧也能救）
 -- boss_common 机制: **有读条**的恐惧提前插战栗图腾 / 上防恐结界（瞬发恐惧抓不到，只有这条能用）
 -- boss_common 机制: 非坦克被顶进 BOSS 模型里就退出来（避免站正面/模型内吃顺劈；MoveOutOfEnemyContactAction::isUseful 只在 inside target 时为真）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_common';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_common';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_common', 1, 0, 'feared>every_man_for_himself!96,will of the forsaken!95'),
 ('boss_common', 2, 0, 'target of fear cast>tremor totem!90,fear ward!89'),
 ('boss_common', 3, 0, 'val::and::{trigger::enemy too close for melee,not::is tank}>move out of enemy contact!80');
@@ -251,8 +251,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_16807   —— "被恐惧就自解" 已在 bossrules_common.tsv 规则1（feared > every_man_for_himself / will of the forsaken），本组不重复；
 -- boss_16807   30500 是**瞬发**（CastingTimeIndex=1）⇒ `target of fear cast`（查 attacker 正在读条）抓不到，只有 feared 能用。
 -- boss_16807   若站长要给 bot 配 PvP 徽章，可另加 `has aura::spellid::30500 > use trinket!90`（注意"顺手记②"）。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_16807';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_16807';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_16807', 1, 0, 'val::and::{is tank,trigger::target critical health}>move out of enemy contact!80'),
 ('boss_16807', 2, 0, 'val::and::{is dps,trigger::target critical health,trigger::low health}>healing potion!70,try emergency!60');
 
@@ -299,8 +299,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_16808 归 boss_common: 无（本 BOSS 对玩家没有 boss_common 已覆盖的可查 debuff，除了规则2 的两条控制）。
 -- boss_17461 规则1 证据: 同 boss_16808 规则1（HasNearestAddsTrigger + AttackLeastHpTargetAction + NearestAdsValue(FleeDistance=8.0)）；
 -- boss_20923 规则1 证据: 同 boss_16808 规则1；弓手 17427=20283 血 / 首领 20923=103320 血 ⇒ 实战会选弓手/狂热者。数值待定
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_16808';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_16808';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_16808', 1, 0, 'val::and::{is dps,trigger::has nearest adds}>attack least hp target!20'),
 ('boss_16808', 2, 0, 'val::or::{trigger::has aura::spellid::25821,trigger::has aura::spellid::23601}>use trinket!95');
 
@@ -343,8 +343,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_16809   原因: 站位与朝向没有规则行入口（没有"分散队形/指定点位"的动作），只能靠自由移动与阵型系统，留人工。
 -- boss_16809 归 boss_common: 恐惧 30584（aura7=MOD_FEAR，40 码全员 3 秒）
 -- boss_16809   —— 已被 bossrules_common.tsv 规则1（feared > every_man_for_himself / will of the forsaken）覆盖，本组不重复。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_16809';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_16809';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_16809', 1, 0, 'val::and::{not::is tank,trigger::has aggro}>stoneshield potion!80,healing potion!75,try emergency!60');
 
 -- ===== boss_17306  Watchkeeper Gargolmar (rank=1) =====
@@ -358,8 +358,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17306 TODO 做不到: 压制 Overpower 32154 —— 脚本对当前目标（坦克）直接施放，前置条件是坦克躲闪（核心判定），无 aura、机器人没有可干预点
 -- boss_17306 备注: 攻略写"反击风暴生命值降至 30% 时施放"，脚本实测阈值是 <20%（boss_watchkeeper_gargolmarAI::ExecuteAction() → GARGOLMAR_ACTION_RETALIATION）
 -- boss_17308 规则1/2 证据: 触发器同 boss_17306（HasAuraTrigger 只查自己）；动作 actions/MovementActions.cpp → FleeAction::Execute() → MovementAction::Flee()。近似点: Flee 以"当前目标"（=Boss）为基点 —— 无真人主人的 bot 走 MoveChase(目标, flee 距离) 保持最大距离；带真人主人时会先 MoveNear 到"治疗/远程队友"⇒ 只是近似"离开人群/脱离 15 码"，不是严格"远离队友"。权重 90=应急档，数值待定
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17306';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17306';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17306', 1, 0, 'has aura::spellid::30641>healing potion!70,stoneshield potion!60,try emergency!50'),
 ('boss_17306', 2, 0, 'has aura::spellid::36814>healing potion!70,stoneshield potion!60,try emergency!50');
 
@@ -375,15 +375,15 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17308 TODO 做不到: 军犬的烧蓝/吸血 —— 技能栏 creature_spell_list 1754001 是 Mana Burn 15785（目标类型 105 = on mana user），EventAI 1754003 是 30% 血 Drain Life 35748；两者都是瞬发、不挂 debuff，没有"正在被军犬烧蓝"的触发器，也没有"按 entry 指定控场目标"的触发器 ⇒ 攻略的"多用晕恐等控场"只能靠职业策略/人工
 -- boss_17308 TODO 做不到: 轨道打击 Orbital Strike 30637 —— spell_template: Effect1=2 伤害 + Effect2=98 击退，不施加任何 Aura ⇒ 没有可查的自 debuff；`falling`/`falling far` 只是移动标志触发器（triggers/GenericTriggers.cpp → IsFallingTrigger::IsActive()，本 core=TBC 定义的是 MANGOSBOT_ONE（PlayerBots/CMakeLists.txt: TBC ⇒ -DMANGOSBOT_ONE），走 `#ifndef MANGOSBOT_TWO` 分支 = MOVEFLAG_JUMPING，检测的是"在跳"而不是"被扔上天"）⇒ 识别不了
 -- boss_17308 TODO 做不到: 恶魔护盾 Demonic Shield 31901（<20% 血起每 15s 重施，是 Boss 自身的 aura；spell_template: Aura1=87 MOD_DAMAGE_PERCENT_TAKEN、BasePoints=-76 ⇒ 约 75% 减伤，攻略另说会周期反射法术）—— 同样没有"目标身上有 aura"的触发器 ⇒ 没法让法系停手躲反射、让近战减少输出
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17308';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17308';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17308', 1, 0, 'has aura::spellid::30695>flee!90'),
 ('boss_17308', 2, 0, 'has aura::spellid::37566>flee!90');
 
 -- ===== boss_17308_dps  Omor the Unscarred (rank=1) =====
 -- boss_17308_dps 机制: 军犬(17540) 只让 **DPS** 转火（角色后缀 `_dps`；坦克/治疗不挂这个集）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17308_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17308_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17308_dps', 1, 0, 'has nearest adds>attack least hp target!20');
 
 -- ===== boss_17377  Keli'dan the Breaker (rank=1) =====
@@ -399,15 +399,15 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17377 TODO 做不到: [暗影箭雨] 17228（目标=22 TARGET_LOCATION_CASTER_SRC + 半径索引10） / 原因: 纯伤害效果、不留光环，没有可触发条件；"散开"也没有对应动作
 -- boss_17377 说明: 一阶段必须先杀 5 个影月导魔者（boss_kelidan_the_breaker.cpp → MAX_ADDS=5、DoSetupAdds() 期间给 BOSS 挂 UNIT_FLAG_UNINTERACTIBLE|UNIT_FLAG_IMMUNE_TO_NPC），
 -- boss_17377 说明: 攻略提到的[暗影之怒]在本地数据里查无（boss_kelidan_the_breaker.cpp 无此技能、creature_template.SpellList=0、creature_ai_scripts 无 17377 记录）⇒ 不写规则
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17377';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17377';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17377', 1, 0, 'has aura::spellid::30937>dispel magic!55,cleanse magic!50'),
 ('boss_17377', 2, 0, 'has aura::spellid::30938>dispel magic!55,cleanse magic!50');
 
 -- ===== boss_17380_dps  Broggok (rank=1) =====
 -- boss_17380_dps 机制: 软泥喷射(30913)正面锥只让 **DPS** 绕背（角色后缀 `_dps`）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17380_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17380_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17380_dps', 1, 0, 'not behind target>set behind!20');
 
 -- ===== boss_17381  The Maker (rank=1) =====
@@ -420,8 +420,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17381 TODO 做不到: [爆炸之杯] 30925 "8码分散站位" / 原因: spell_template 显示 30925 只有 Effect1=SCHOOL_DAMAGE(2)、Effect2=KNOCK_BACK(98)，DurationIndex=0、Dispel=0
 -- boss_17381 TODO 做不到: 心控坦克/治疗时"爆发速杀" / 原因: 通用触发器没有"BOSS 血量档/阶段/正在施法"，也没有"队友被心控"（`charmed` 只查自己）
 -- boss_17381 说明: 被心控的队友不会被机器人当目标打（PossibleAttackTargetsValue.cpp → IsImmuneToDamage() 把 charmed 队友判为免疫、EnemyPlayerValue.cpp 也排除），
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17381';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17381';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17381', 1, 0, 'has aura::spellid::30923>every_man_for_himself!96,will of the forsaken!95,use trinket!90');
 
 -- ===== boss_17461  Shattered Hand Blood Guard (rank=1) =====
@@ -442,27 +442,27 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17461 备注: 攻略"顺劈斩/恐惧"与 DB 不一致 —— 17461 的 EventAI 里**没有**顺劈斩（15496 Cleave 只在英雄版 20923 的脚本里），
 -- boss_17461   "恐惧"在 20923 的 creature_ai_scripts（2092301-2092306）里也**不存在** ⇒ 本 BOSS 无这两条规则可写。
 -- boss_17461 归 boss_common: 无（本 BOSS 不给玩家挂任何可查 debuff）。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17461';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17461';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17461', 1, 0, 'val::and::{is dps,trigger::has nearest adds}>attack least hp target!20');
 
 -- ===== boss_17536_dps  Nazan (rank=1) =====
 -- boss_17536_dps 机制: 纳杉火锥术正面规避只让 **DPS** 绕背（角色后缀 `_dps`）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17536_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17536_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17536_dps', 1, 0, 'not behind target>set behind!20');
 
 -- ===== boss_17537_dps  Vazruden (rank=1) =====
 -- boss_17537_dps 机制: 火锥术正面规避只让 **DPS** 绕背（角色后缀 `_dps`）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17537_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17537_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17537_dps', 1, 0, 'not behind target>set behind!20');
 
 -- ===== boss_17796_melee  Mekgineer Steamrigger (rank=1) =====
 -- 角色分工两套并存（速查 §5）：整个集只给某角色 ⇒ 集名后缀（boss_17796_melee / boss_17975_dps）；
 -- boss_17796_melee 规则1 证据: triggers/GenericTriggers.cpp → IsNotBehindTargetTrigger::IsActive()
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17796_melee';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17796_melee';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17796_melee', 1, 0, 'not behind target>set behind!20');
 
 -- ===== boss_17797  Hydromancer Thespia (rank=1) =====
@@ -488,8 +488,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- 原因: ① 没有"附近小怪正在读条/正在引导"的触发器（同 boss_17797 的说明）；
 -- + UseHealingPotionAction。权重 60 与 boss_17797 规则3 一致，数值待定。
 -- boss_17978 规则1 拿不准（见回报）: ① 与 boss_17797 规则2 同：`use trinket` 取的是身上第一个
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17797';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17797';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17797', 1, 0, 'has aura::spellid::31718>use trinket!95,try emergency!50'),
 ('boss_17797', 2, 0, 'has aura::spellid::31481>healing potion!60'),
 ('boss_17797', 3, 0, 'val::and::{trigger::has nearest adds,is dps}>attack least hp target!20');
@@ -509,8 +509,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17798 备注: 裂颅 16172（耐力 -200，15 秒）无任何可做的规则行 —— 无 aura 可查（debuff 在
 -- 原因: 规则行没有控制 BOSS 站位的入口（同 boss_17798 的那条）。
 -- boss_19219       规则行改不了 —— 见 bossrules_H.tsv boss_17798 的同条说明）。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17798';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17798';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17798', 1, 0, 'has aura::spellid::39061>healing potion!60');
 
 -- ===== boss_17826  Swamplord Musel'ek (rank=1) =====
@@ -524,8 +524,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17826 TODO 做不到: 冰冻陷阱 31946/31932（魔法定身）+ 描准射击 31623 的连招
 -- boss_17826 TODO 归内置策略: 熊 20% 血变形（ACTION_T_UPDATE_TEMPLATE 17894）后停战 —— 脚本已强制 evade，
 -- （"ra" 需要 aura 名参数，见 boss_17826 同类说明）；
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17826';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17826';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17826', 1, 0, 'val::and::{trigger::enemy too close for melee,is ranged}>flee!50');
 
 -- ===== boss_17848  Lieutenant Drake (rank=1) =====
@@ -538,8 +538,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17848 备注（可写但攻略没要求，本组不写）: 断筋 9080 是 -61% 减速（可被"行动自由药水"清），
 -- boss_17848 备注: 攻略"坦克务必吃铁盾药水**开怪**"——规则集只在战斗中由钩子挂载（BossStrategyHook.h → FightTargetEntry()
 -- 触发器与动作证据同 boss_17848 规则1。数值待定
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17848';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17848';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17848', 1, 0, 'val::and::{is tank,trigger::has aura::spellid::31911,trigger::low health}>healing potion!70,stoneshield potion!60,try emergency!50'),
 ('boss_17848', 2, 0, 'has aura::spellid::33792>use trinket!95');
 
@@ -557,15 +557,15 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- 规则1 证据: 同 boss_17862 规则1（HasNearestAddsTrigger + AttackLeastHpTargetAction，半径 FleeDistance 8 码）；
 -- self-target 自解动作证据同 boss_17862 规则2。数值待定
 -- 原因: 同 boss_17862 的"打断圣光术"—— 没有"按 entry 指定打断目标"的动作，职业打断只作用于当前目标且是各职业自己的触发器名
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17862';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17862';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17862', 1, 0, 'has aura::spellid::13005>use trinket!95,cleanse magic!50,dispel magic!50'),
 ('boss_17862', 2, 0, 'has aura::spellid::15654>dispel magic!55,cleanse magic!50');
 
 -- ===== boss_17862_dps  Captain Skarloc (rank=1) =====
 -- 角色分工两套并存（速查 §5）：整个集只给某角色 → 集名后缀（本文件 boss_17862_dps / boss_18096_dps）；
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17862_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17862_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17862_dps', 1, 0, 'has nearest adds>attack least hp target!20');
 
 -- ===== boss_17879  Chrono Lord Deja (rank=1) =====
@@ -630,8 +630,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17879   （x64_Debug/aiplayerbot.conf 里该项是注释掉的）＝"贴脸 8 码风筝"，都不是我们要的。
 -- boss_17879   现状: 只有规则2 把非坦克从模型里推出去（≈0.5 码），"回到 15 码外"要人工或后续加动作。
 -- boss_17879 归 boss_common: 时间流逝的"驱散"如果站长认为不该在本集重复，删规则1 后由 boss_common/职业策略接管。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17879';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17879';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17879', 1, 0, 'has aura::spellid::31467>dispel magic!60,cleanse magic!59'),
 ('boss_17879', 2, 0, 'val::and::{trigger::enemy too close for melee,not::is tank}>move out of enemy contact!80');
 
@@ -677,8 +677,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17880   但没有后退到指定距离的动作，理由同 17879 的"吸引"TODO）⇒ 只能人工或后续加动作。
 -- boss_17880 归 boss_common: 无（本 BOSS 给玩家的可查 debuff 只有坦克头上的 31464，已由规则1 处理）。
 -- boss_17880 备注: 攻略"输出速战速决，在 [重伤] 叠到坦克扛不住前杀掉"= 输出节奏，没有对应动作（tank assist/dps assist 已是默认行为）。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17880';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17880';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17880', 1, 0, 'val::and::{is tank,trigger::has aura::spellid::31464::greater or equal::4}>stoneshield potion!80,healing potion!70,try emergency!60');
 
 -- ===== boss_17881  Aeonus (rank=1) =====
@@ -771,8 +771,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17881       所以只有**坦克**能用；而 GrindTargetValue::FindTargetForGrinding() 对"非任务需求、也不给经验"的怪
 -- boss_17881       有 `urand(0,50)` 的丢弃（≈2% 命中），在 70 级副本里基本是噪声，还会把坦克从 BOSS 身上拉走 ⇒ 我没写。
 -- boss_17881 归 boss_common: [时间停止] 之外的昏迷/减速通用处理（恐惧自解、定身除根等）走 boss_common 与各职业策略，本组不重复。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17881';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17881';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17881', 1, 0, 'has aura::spellid::31422>use trinket!95'),
 ('boss_17881', 2, 0, 'dispel enrage>tranquilizing shot!40');
 
@@ -791,20 +791,20 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17881_melee 备注: "除坦克外不要站龙头"里的**远程**部分做不到 —— 没有"站到 BOSS 侧后方"的动作，
 -- boss_17881_melee   而 `set behind` 对 >15 码的 bot 无效（isUseful 里那条距离判据）⇒ 远程只能靠默认站位，留人工。
 -- boss_17881   只能靠 boss_17881_melee 的绕背近似缓解（坦克必须站正面，所以规则里用 isPossible() 自动排除坦克）。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17881_melee';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17881_melee';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17881_melee', 1, 0, 'not behind target>set behind!20');
 
 -- ===== boss_17882_tank  The Black Stalker (rank=1) =====
 -- boss_17882_tank 机制: 只给 **坦克**（角色后缀 _tank）—— 被顶进 BOSS 模型里就退出来
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17882_tank';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17882_tank';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17882_tank', 1, 0, 'enemy too close for melee>move out of enemy contact!80');
 
 -- ===== boss_17941_dps  Mennu the Betrayer (rank=1) =====
 -- boss_17941_dps 机制: 转火只让 **DPS**（角色后缀 _dps；坦克/治疗不挂这个集）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17941_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17941_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17941_dps', 1, 0, 'has nearest adds>attack least hp target!20');
 
 -- ===== boss_17975_dps  High Botanist Freywinn (rank=1) =====
@@ -812,8 +812,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17975_dps 机制: 优先击杀树苗（白>其它）与魔花保护者 19953 —— 集名后缀 _dps = 只给 DPS 挂
 -- boss_17975_dps 规则1 证据: triggers/GenericTriggers.cpp → HasNearestAddsTrigger::IsActive()
 -- boss_17975_dps 规则1 语义注意（拿不准，见回报）: ① 树苗/保护者是**脚本召唤**且只调用了
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17975_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17975_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17975_dps', 1, 0, 'has nearest adds>attack least hp target!20');
 
 -- ===== boss_17977  Warp Splinter (rank=1) =====
@@ -827,8 +827,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17977 TODO 做不到: "多用缓速技能牵制树苗"
 -- boss_17977 TODO 归 boss_common: 治疗保持全满应对奥术箭雨高额伤害 —— 属治疗档位配置/人工。
 -- 怨灵在 JustSummoned() 里被显式 AttackClosestEnemy() ⇒ 在列表里（与 bossrules_H.tsv boss_17977
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17977';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17977';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17977', 1, 0, 'val::and::{trigger::has nearest adds,is dps}>attack least hp target!20');
 
 -- ===== boss_17978  Thorngrin the Tender (rank=1) =====
@@ -841,8 +841,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17978 TODO 做不到: 激怒 34670 的驱散
 -- boss_17978 TODO 做不到: 坦克把 BOSS 带离原平台（保护被牺牲的玩家）
 -- boss_17978 备注: 攻略"治疗重点关注被牺牲的玩家"= 治疗目标优先级，属职业治疗策略/人工。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17978';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17978';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17978', 1, 0, 'has aura::spellid::34661>use trinket!95');
 
 -- ===== boss_17980  Laj (rank=1) =====
@@ -858,26 +858,26 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_17980 TODO 做不到: 过敏反应的"驱散掉"（尤其对队友）
 -- boss_17980 TODO 做不到: 元素转换 34703-34710 的"换抗性"应对
 -- boss_17980 备注: "全程分散"没有"与队友距离"的触发器（`party member low health` 之类是状态，
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17980';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17980';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17980', 1, 0, 'has aura::spellid::34697>flee!85'),
 ('boss_17980', 2, 0, 'val::and::{trigger::has nearest adds,is dps}>attack least hp target!20');
 
 -- ===== boss_17991_healer  Rokmar the Crackler (rank=1) =====
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17991_healer';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_17991_healer';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_17991_healer', 1, 0, 'low health>try emergency!80,healing potion!70');
 
 -- ===== boss_18096_dps  Epoch Hunter (rank=1) =====
 -- 角色分工两套并存（速查 §5）：整个集只给某角色 → 集名后缀（本文件 boss_17862_dps / boss_18096_dps）；
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18096_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18096_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18096_dps', 1, 0, 'not behind target>set behind!20');
 
 -- ===== boss_18105_dps_melee  Ghaz'an (rank=1) =====
 -- boss_18105_dps_melee 机制: 只给 **近战 DPS**（角色后缀 _dps_melee；坦克/治疗/远程都不挂）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18105_dps_melee';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18105_dps_melee';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18105_dps_melee', 1, 0, 'not behind target>set behind!20');
 
 -- ===== boss_18170  Infinite Slayer (rank=1) =====
@@ -887,23 +887,23 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- 规则1 证据: 同 boss_18170 规则4（21068 Dispel=1 DISPEL_MAGIC、aura3 PERIODIC_DAMAGE）。数值待定
 -- boss_18171 TODO 做不到: 打断暗影箭 15232/38386 —— 同 boss_18170 的说明。
 -- 规则1 证据: 同 boss_18170 规则4（self-target 自解魔法）。数值待定
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18170';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18170';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18170', 1, 0, 'val::and::{is tank,trigger::has aura::spellid::16856,trigger::low health}>healing potion!70,stoneshield potion!60,try emergency!50'),
 ('boss_18170', 2, 0, 'val::and::{is tank,trigger::has aura::spellid::15708,trigger::low health}>healing potion!70,stoneshield potion!60,try emergency!50'),
 ('boss_18170', 3, 0, 'has aura::spellid::21068>dispel magic!55,cleanse magic!50');
 
 -- ===== boss_18170_dps  Infinite Slayer (rank=1) =====
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18170_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18170_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18170_dps', 1, 0, 'val::and::{is dps,trigger::has nearest adds}>attack least hp target!20');
 
 -- ===== boss_18171  Infinite Defiler (rank=1) =====
 -- boss_18171 机制: 腐蚀术 21068（魔法 DOT）自己解
 -- boss_18171 机制: 永恒之敌 Curse of Infinity 31977（aura118 MOD_HEALING_PCT -51 + aura87 MOD_DAMAGE_PERCENT_TAKEN +49，约1分钟）是自己中的诅咒
 -- boss_18171 TODO 做不到: 打断暗影箭 15232/38386 —— 同 boss_18170 的说明。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18171';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18171';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18171', 1, 0, 'has aura::spellid::21068>dispel magic!55,cleanse magic!50'),
 ('boss_18171', 2, 0, 'has aura::spellid::31977>remove curse!55');
 
@@ -911,16 +911,16 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_18172 机制: 腐蚀术/其他魔法 DOT 的处理 —— 钩子按 entry 挂集，破坏者是当前目标时这套规则才在（所以这里也留一份）
 -- boss_18172 TODO 做不到: 进攻驱散暗影之盾 31976（攻略: 进攻驱散暗影之盾）
 -- boss_18172 备注: 顺劈斩 15496 是正面顺劈（范围小、0-5 码），"非坦克别站正面"已由 bossrules_common.tsv 规则3 兜住。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18172';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18172';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18172', 1, 0, 'has aura::spellid::21068>dispel magic!55,cleanse magic!50');
 
 -- ===== boss_18343_dps  Tavarok (rank=1) =====
 -- 角色分工两套并存（速查 §5）：整个集只给某角色 → 集名后缀（本文件 boss_18343_dps / boss_22930_dps）；
 -- boss_18343_dps 机制: 正面锥规避只让 **DPS**（集名后缀 `_dps`；坦克会被 SetBehindTargetAction::isPossible() 排除）
 -- boss_22930 规则1 证据: 与 boss_18343_dps 规则1 同（IsNotBehindTargetTrigger + SetBehindTargetAction
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18343_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18343_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18343_dps', 1, 0, 'not behind target>set behind!20');
 
 -- ===== boss_18344  Nexus-Prince Shaffar (rank=1) =====
@@ -937,16 +937,16 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_18344 TODO 做不到: [火球术 32363 / 寒冰箭 32364] 的单体伤害与减速 / 原因: 单体点名 + 魔法减速，
 -- boss_18344 TODO 做不到: [闪现术 34605] / 原因: 玩家身上没有可查光环（spell 34605 的效果都作用在施法者自己），
 -- boss_18344 说明: 英雄版 20266（HeroicEntry=20266）无独立刷新点；脚本 m_isRegularMode=false 只改计时
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18344';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18344';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18344', 1, 0, 'val::and::{trigger::has attackers,is dps}>attack least hp target!70'),
 ('boss_18344', 2, 0, 'val::and::{trigger::target critical health,is dps}>attack!75'),
 ('boss_18344', 3, 0, 'has aura::spellid::32365>dispel magic!55,cleanse magic!50');
 
 -- ===== boss_18371_dps_melee  Shirrak the Dead Watcher (rank=1) =====
 -- boss_18371_dps_melee 机制: 血肉撕咬叠 4 层退开 —— 只让 **近战 DPS**（后缀 `_dps_melee`；
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18371_dps_melee';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18371_dps_melee';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18371_dps_melee', 1, 0, 'has aura::spellid::36383::greater or equal::4>flee!68');
 
 -- ===== boss_18373  Exarch Maladaar (rank=1) =====
@@ -966,8 +966,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_18373 TODO 做不到: 坦克在化身(18478)出现时"立刻嘲讽" / 原因: taunt 是战士职业专属动作（warrior/WarriorAiObjectContext.cpp → CastTauntAction），规则行没有"只让坦克执行"的角色条件 → 写下去 DPS 战士也会嘲讽抢仇恨
 -- boss_18373 TODO 做不到: 灵魂缎带(32422)对坦克的伤害规避 / 原因: 对当前目标的单体伤害，没有可执行动作（换坦/开技能属职业与坦克策略）
 -- （GetTargetName()="current target"，语义是"继续打当前目标"、不主动换目标）。与 C 组 boss_18373 规则2 同款写法。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18373';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18373';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18373', 1, 0, 'val::and::{trigger::has nearest adds,is dps}>attack least hp target!62'),
 ('boss_18373', 2, 0, 'val::and::{trigger::target critical health,is dps}>attack!65');
 
@@ -993,8 +993,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_18472 说明: 元素被击杀后没有"重新召唤"；BOSS 死亡 / JustReachedHome() 会 RemoveGuardians() 清掉残留元素。
 -- 动作同 boss_18472 规则1（PriestAiObjectContext.cpp → creators["dispel magic"]=CastDispelMagicAction、
 -- 动作: 同 boss_18472 规则5（AttackLeastHpTargetAction → values/LeastHpTargetValue.h → 取 attackers 里血最少）。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18472';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18472';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18472', 1, 0, 'val::or::{trigger::has aura::spellid::15039,trigger::has aura::spellid::12548,trigger::has aura::spellid::33534,trigger::has aura::spellid::33620}>dispel magic!55,cleanse magic!50'),
 ('boss_18472', 2, 0, 'val::or::{trigger::has aura::spellid::15616,trigger::has aura::spellid::21401,trigger::has aura::spellid::38135,trigger::has aura::spellid::38136}>dispel magic!55,cleanse magic!50'),
 ('boss_18472', 3, 0, 'val::or::{trigger::has aura::spellid::33526::greater or equal::3,trigger::has aura::spellid::33527::greater or equal::3,trigger::has aura::spellid::33528::greater or equal::3,trigger::has aura::spellid::33529::greater or equal::3}>dispel magic!60,cleanse magic!55'),
@@ -1013,8 +1013,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_18473 TODO 做不到: [法力护盾] 38151（<15% 血、BOSS 自身 aura、Dispel=MAGIC、吸收 9999）
 -- boss_18473 说明: 每次魔爆术后 DoResetThreat()（坦克重新建仇 / 输出别立刻暴打）引擎已有，不需要规则：
 -- boss_18344 规则3 证据: 触发器/动作同 boss_18473 规则1（HasAuraTrigger 只查自己 + CastDispelMagicAction /
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18473';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18473';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18473', 1, 0, 'has aura::spellid::35032>dispel magic!55,cleanse magic!50'),
 ('boss_18473', 2, 0, 'val::or::{trigger::has aura::spellid::38245,trigger::has aura::spellid::43309}>dispel magic!55,cleanse magic!50');
 
@@ -1025,8 +1025,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_18667 TODO 做不到: 煽动混乱 33676/33684（15秒自相残杀）
 -- boss_18667 TODO 做不到: 冲锋 33709 的昏迷2秒
 -- boss_18667 TODO 做不到: "战争践踏削坦克威胁值" 的应对（脚本 OnSpellCast() 里 SPELL_CHARGE 之后 DoResetThreat()）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18667';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18667';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18667', 1, 0, 'enemy too close for melee>move out of enemy contact!90'),
 ('boss_18667', 2, 0, 'val::and::{trigger::enemy too close for melee,is ranged}>flee!60');
 
@@ -1037,8 +1037,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_18732 机制: 贴脸拉开只让 **远程**（规则内 val::and::{…,is ranged}；近战 DPS 本来就该贴）
 -- boss_18732 TODO 做不到: 放逐术 38791 的驱散（尤其坦克被放逐）
 -- boss_18732 TODO 做不到: 暗影牵制 33563 + 火焰之雨 33617 的"迅速远离"
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18732';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_18732';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_18732', 1, 0, 'val::and::{trigger::has nearest adds,is dps}>attack least hp target!90'),
 ('boss_18732', 2, 0, 'val::and::{trigger::enemy too close for melee,is ranged}>flee!50');
 
@@ -1090,8 +1090,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_19218   但都不是靠规则行（前者靠引擎 potions，后者靠职业打断/法师偷取），已在上面写清。
 -- boss_19710 TODO 做不到: Shadow Power 35322/39193 —— 同 boss_19218 的那条（引擎职业打断 + 法师 spellsteal 已覆盖）
 -- boss_19710 归 boss_common / 引擎已覆盖: 流动机蒸汽 35311（中毒）—— 同 boss_19218 的说明（引擎 potions 策略）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_19218';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_19218';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_19218', 1, 0, 'val::or::{trigger::has aura::spellid::35318,trigger::has aura::spellid::39192}>healing potion!60'),
 ('boss_19218', 2, 0, 'has aura::spellid::35311>cure poison!85,anti-venom!80');
 
@@ -1174,8 +1174,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_19219 备注: "把 Boss 拉到王房外、非坦克站楼梯棱线上（不同平面可无视）"—— 规则行没有控制
 -- boss_19219   BOSS 站位/指定点位的入口（坦克选位由核心与职业策略决定），只能人工。
 -- boss_19219 规则1 用**方案 B（val::and::{is tank,trigger::…}）**。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_19219';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_19219';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_19219', 1, 0, 'val::and::{is tank,trigger::has aura::spellid::35161}>healing potion!70');
 
 -- ===== boss_19220_dps  Pathaleon the Calculator (rank=1) =====
@@ -1184,8 +1184,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_19220_dps 规则1 证据: triggers/TriggerContext.h:84 → HasNearestAddsTrigger::IsActive()
 -- boss_19220_dps 规则1 语义: 怨灵 8384 血 vs Boss 100351(英雄 135474) 血 ⇒ 引擎默认的 "dps target"
 -- boss_19220_dps 角色分工备注: 本文件同时演示两套写法 —— 本集用**方案 A（集名后缀）**，
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_19220_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_19220_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_19220_dps', 1, 0, 'has nearest adds>attack least hp target!20');
 
 -- ===== boss_19221  Nethermancer Sepethrea (rank=1) =====
@@ -1225,8 +1225,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_19221 TODO 做不到: 地狱火 35268/39346 期间（Boss 自己定身+沉默，8 秒）的应对 + 锁定换人
 -- boss_19221 TODO 做不到: 奥术冲击 35314 的击退 + 威胁值减半（坦克仇恨不稳）
 -- boss_19221 TODO 做不到: 冰霜攻击 45195 的减速
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_19221';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_19221';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_19221', 1, 0, 'raging flames too close>move away from raging flames!90'),
 ('boss_19221', 2, 0, 'has aura::spellid::35250>use trinket!95');
 
@@ -1268,8 +1268,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_19710     但"提前跑出范围"仍然做不到（不能把整场战斗都建立在"打断一定成功"上）。
 -- boss_19710 TODO 做不到: Shadow Power 35322/39193 —— 同 boss_19218 的那条（引擎职业打断 + 法师 spellsteal 已覆盖）
 -- boss_19710 归 boss_common / 引擎已覆盖: 流动机蒸汽 35311（中毒）—— 同 boss_19218 的说明（引擎 potions 策略）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_19710';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_19710';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_19710', 1, 0, 'has aura::spellid::35326>use trinket!95'),
 ('boss_19710', 2, 0, 'has aura::spellid::35311>cure poison!85,anti-venom!80');
 
@@ -1285,8 +1285,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_20870 TODO 做不到: 躲脚下的 [虚空领域]（36119 → NPC 21101 → 36120/39003 → 36121/39004）
 -- boss_20870 TODO 做不到: [暗影新星] 的"卡视角 / 出 45 码躲"与"读条时开减伤"
 -- boss_20870 备注: 坦克"靠墙坦住 / 被击退后重新定位"属控制 BOSS 站位，规则行没有入口（坦克选位由核心 +
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20870';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20870';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_20870', 1, 0, 'val::or::{trigger::has aura::spellid::36123,trigger::has aura::spellid::39367}>flee!85'),
 ('boss_20870', 2, 0, 'val::and::{trigger::low health,is dps}>try emergency!80');
 
@@ -1299,8 +1299,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_20885 TODO 做不到: 近战躲 [旋风斩] 36142
 -- boss_20885 TODO 做不到: "治疗尽量别治疗中了 [礼物] 的人" / 被点名者自救
 -- boss_20885 备注: 双重攻击 19818 是 BOSS 自身光环，没有"目标有 aura"的触发器 ⇒ 近战无法据此规避；
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20885';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20885';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_20885', 1, 0, 'has aura::spellid::39016>healing potion!60');
 
 -- ===== boss_20886  Wrath-Scryer Soccothrates (rank=1) =====
@@ -1312,8 +1312,8 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_20886 TODO 做不到: 躲 [邪火] 冲锋路径 / 坦克把 BOSS 带离火墙
 -- boss_20886 TODO 做不到: 全员离开 [邪能献祭] 36051/39007 的 15 码光环
 -- boss_20886 备注: 若站长认可"火系伤害前吃火焰防护药水"，可另写
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20886';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20886';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_20886', 1, 0, 'val::or::{trigger::has aura::spellid::35759,trigger::has aura::spellid::39006}>healing potion!60,try emergency!50');
 
 -- ===== boss_20912  Harbinger Skyriss (rank=1) =====
@@ -1334,16 +1334,16 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_20912 TODO 做不到: 治疗的"重点关注被 [心灵撕裂] 的队友" / "除坦克外不要站怪正面"
 -- boss_20912 备注: 一阶段四个牢房（Warden Mellichar 与各牢房召唤物）**不是 BOSS entry**，拿不到
 -- boss_20912 备注: 本文件只登记 20912，BossStrategyHook.h → FightTargetEntry() 用 GetEntry() 找 BOSS
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20912';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20912';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_20912', 1, 0, 'val::or::{trigger::has aura::spellid::36924,trigger::has aura::spellid::39017}>use trinket!95,try emergency!50');
 
 -- ===== boss_20912_dps  Harbinger Skyriss (rank=1) =====
 -- 角色分工两套并存（速查 §5）：整个集只给某角色 ⇒ 集名后缀（boss_20912_dps）；
 -- boss_20912_dps 规则1 证据: triggers/GenericTriggers.cpp → HasNearestAddsTrigger::IsActive()
 -- boss_20912_dps 规则1 语义注意（见回报）: ① 判定半径是 fleeDistance（源码默认 8 码）——
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20912_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20912_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_20912_dps', 1, 0, 'has nearest adds>attack least hp target!20');
 
 -- ===== boss_20923  Blood Guard Porung (rank=1) =====
@@ -1364,22 +1364,22 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_20923   NPC 16704 Shattered Hand Sharpshooter 与 17622 Sharpshooter Guard（卡加斯战的卫兵）身上，本 BOSS 战不出现
 -- boss_20923   ⇒ 本组不写该条（卡加斯那边已覆盖）。
 -- boss_20923 归 boss_common: 无。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20923';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_20923';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_20923', 1, 0, 'val::and::{is dps,trigger::has nearest adds}>attack least hp target!20');
 
 -- ===== boss_21466  Harbinger Skyriss (rank=1) =====
 -- 而队伍打幻象时目标 entry=幻象 ⇒ 本体的集会被摘掉 ⇒ 该规则已移到 boss_21466 / boss_21467。
 -- boss_21466 预言者斯克瑞斯的幻象 1（boss_harbinger_skyriss.cpp → SPELL_66_ILLUSION=36931 召唤）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_21466';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_21466';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_21466', 1, 0, 'val::or::{trigger::has aura::spellid::36929,trigger::has aura::spellid::39021}>healing potion!55,try emergency!50');
 
 -- ===== boss_21467  Harbinger Skyriss (rank=1) =====
 -- 而队伍打幻象时目标 entry=幻象 ⇒ 本体的集会被摘掉 ⇒ 该规则已移到 boss_21466 / boss_21467。
 -- boss_21467 预言者斯克瑞斯的幻象 2（SPELL_33_ILLUSION=36932 召唤，EventAI 同样 36929/39021）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_21467';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_21467';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_21467', 1, 0, 'val::or::{trigger::has aura::spellid::36929,trigger::has aura::spellid::39021}>healing potion!55,try emergency!50');
 
 -- ===== boss_22930  Yor (rank=1) =====
@@ -1394,19 +1394,19 @@ INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owne
 -- boss_22930 TODO 做不到: "使尤尔背对人群" / 原因: 没有让坦克移动/转向 BOSS 的动作（见 boss_18343 说明）。
 -- boss_22930 TODO 做不到: [践踏] 36405 的击退与 10 码 AoE 本身 / 原因: Effect1=58+Effect2=98，玩家身上
 -- boss_22930 说明: 尤尔没有英雄版（creature_template.HeroicEntry=0），单 entry，不需要写第二套。
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_22930';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_22930';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_22930', 2, 0, 'val::and::{trigger::enemy ten yards,is ranged}>flee!45');
 
 -- ===== boss_22930_dps  Yor (rank=1) =====
 -- 角色分工两套并存（速查 §5）：整个集只给某角色 → 集名后缀（本文件 boss_18343_dps / boss_22930_dps）；
 -- boss_22930_dps 机制: 正面锥规避只让 **DPS**（集名后缀 `_dps`；坦克被 isPossible() 排除，见 boss_18343 规则1）
-DELETE FROM `tbccharacters`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_22930_dps';
-INSERT INTO `tbccharacters`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
+DELETE FROM `tbcmangos`.`ai_playerbot_custom_strategy` WHERE `owner` = 0 AND `name` = 'boss_22930_dps';
+INSERT INTO `tbcmangos`.`ai_playerbot_custom_strategy` (`name`, `idx`, `owner`, `action_line`) VALUES
 ('boss_22930_dps', 1, 0, 'not behind target>set behind!20');
 
 -- [2026-10-19] 补登记：有专属集但漏登记的 4 个 BOSS（放在文件末尾，避免被上面的 DELETE 清掉）
-INSERT INTO `tbccharacters`.`ai_playerbot_boss_strategy` (`entry`, `note`) VALUES
+INSERT INTO `tbcmangos`.`ai_playerbot_boss_strategy` (`entry`, `note`) VALUES
 (17461, '破碎大厅：破碎之手血卫（带小弟/斩杀）'),
 (18170, '时光之穴：无限杀戮者（致死打击/暗影箭）'),
 (18171, '时光之穴：无限玷污者（驱散/解除诅咒）'),

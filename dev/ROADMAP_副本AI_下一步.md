@@ -12,7 +12,7 @@
 |---|---|
 | 本地编译 | ✅ 全绿 `errors=0`，产物 `md5=03c80a5a81344943d2009cf9fe6ffab9`（父 `d679731fa` / 子模块 `agent/los` 最新） |
 | 云端二进制 | `01ed9a5a6051868cb0bc38b4a0ae3802`（旧版；等站长下令重启部署新版） |
-| 云端 DB | `tbcmangos.ai_playerbot_pull_log` 已建；`tbccharacters.ai_playerbot_priority_target` 10 行；`ai_playerbot_priority_obs` **等新版部署时一起建**（现 `dev/186_副本拉怪记录与优先级观测.sql`） |
+| 云端 DB | `tbcmangos.ai_playerbot_pull_log` 已建；`tbcmangos.ai_playerbot_priority_target`（2026-10-19 起策略表迁到世界库）；`ai_playerbot_priority_obs` **等新版部署时一起建**（现 `dev/186_副本拉怪记录与优先级观测.sql`） |
 | 开关默认值 | 自动开怪 **默认关**（`.bot route on` 才开）；跳过 critter 默认开；标记/拉怪日志只写不读 |
 | 本地仿真（2026-10-19） | 模式A 推进（最近目标 + 30 码视线即停 + 波中心路点）、波锁定 150s、15 秒零伤害跳过、纯 NPC 波开局跳过、角色不足换人重选、`attempts=0` 无限跑；map 547 实测 `cleared=6/30`、4~6 只一波能在 60~100 秒清掉 |
 

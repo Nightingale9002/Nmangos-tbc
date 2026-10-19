@@ -2131,7 +2131,7 @@ Boss 在场地门口的二只小怪死亡后激活，开战前提前恢复好状
 
 - 一个策略名 = 一组规则行，格式 `<触发器> > <动作>[!权重], 动作2, ...`
   （`toTriggerNode()` / `toNextActionArray()` / `toNextAction()`）；
-- 规则行存角色库 `tbccharacters.ai_playerbot_custom_strategy(id, name, idx, owner, action_line)`；
+- 规则行存世界库 `tbcmangos.ai_playerbot_custom_strategy(id, name, idx, owner, action_line)`（2026-10-19 起从角色库迁入）；
 - **bot 查不到自己的行（`owner` = bot guid low）会自动回落 `owner = 0`**
   （`CustomStrategy.cpp → InitNonCombatTriggers()` → `LoadActionLines(0)`）
   ⇒ BOSS 策略只写 `owner = 0` 一份，全服 bot 立刻生效，**改数据不用重启**；

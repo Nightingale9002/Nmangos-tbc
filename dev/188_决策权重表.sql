@@ -19,8 +19,8 @@
 --   log.decision              预留：决策打分日志开关（0/1，默认 0）
 --
 -- 幂等（IF NOT EXISTS + INSERT IGNORE），可重复执行。
--- 云端执行：mysql --defaults-file=/root/.my_cm.cnf tbccharacters < dev/202_决策权重表.sql
--- 本地执行：mysql -uroot -pqwerty tbccharacters < dev/202_决策权重表.sql
+-- 云端执行：mysql --defaults-file=/root/.my_cm.cnf tbcmangos < dev/202_决策权重表.sql
+-- 本地执行：mysql -uroot -pqwerty tbcmangos < dev/202_决策权重表.sql
 
 CREATE TABLE IF NOT EXISTS `ai_playerbot_decision_weight` (
   `key`    VARCHAR(64)  NOT NULL COMMENT '决策项.因子，例 target.threat_tier',
@@ -36,22 +36,22 @@ INSERT IGNORE INTO `ai_playerbot_decision_weight` (`key`,`weight`,`note`) VALUES
   ('position.cover_distance',  -1,   '卡视野掩体点：距离惩罚（每码）'),
   ('log.decision',             0,    '预留：决策打分日志开关');
 
--- 复核：SELECT `key`,`weight` FROM tbccharacters.ai_playerbot_decision_weight ORDER BY `key`;
+-- 复核：SELECT `key`,`weight` FROM tbcmangos.ai_playerbot_decision_weight ORDER BY `key`;
 
 -- 203_决策权重表_移除标签泄漏项.sql
 -- [2026-10-18 站长口径] 骷髅标记是**人工指挥（动作/结果）**，不是特征（原因）：
 --   - 代码侧：标记改为 override（先按标记选中），不再进入加权打分；
 --   - 数据侧：删掉权重表里的 target.skull（避免以后又被当成可学习特征）。
 -- 幂等（DELETE 重复执行无副作用）。
-DELETE FROM `tbccharacters`.`ai_playerbot_decision_weight` WHERE `key` = 'target.skull';
+DELETE FROM `tbcmangos`.`ai_playerbot_decision_weight` WHERE `key` = 'target.skull';
 
 -- 204_决策权重扩展.sql
 -- [2026-10-18 决策参数化·第二批] 把剩余决策点也挪到权重表：
 --   控制目标排序 / 治疗目标排序 / 进攻驱散排序 / 跑位模式选择。
 -- 代码默认值见 playerbot/DecisionWeights.h；表里没有的 key 用默认值。
 -- 幂等（INSERT IGNORE）。
--- 云端：mysql --defaults-file=/root/.my_cm.cnf tbccharacters < dev/204_决策权重扩展.sql
--- 本地：mysql -uroot -pqwerty tbccharacters < dev/204_决策权重扩展.sql
+-- 云端：mysql --defaults-file=/root/.my_cm.cnf tbcmangos < dev/204_决策权重扩展.sql
+-- 本地：mysql -uroot -pqwerty tbcmangos < dev/204_决策权重扩展.sql
 
 INSERT IGNORE INTO `ai_playerbot_decision_weight` (`key`,`weight`,`note`) VALUES
   -- 控制（CC）目标排序

@@ -118,7 +118,7 @@ def emit_sql(marks, clears, out_path, priority, min_count, maps=None):
             reason += "；被改掉/清标 %d 次" % clears[entry]
         reason = reason.replace("'", "''")[:255]
         lines.append(
-            "INSERT INTO `tbccharacters`.`ai_playerbot_priority_target` "
+            "INSERT INTO `tbcmangos`.`ai_playerbot_priority_target` "
             "(`entry`,`priority`,`source`,`reason`) VALUES (%d,%d,'skull-log','%s') "
             "ON DUPLICATE KEY UPDATE `priority`=VALUES(`priority`),"
             "`source`=VALUES(`source`),`reason`=VALUES(`reason`);" % (entry, priority, reason))
