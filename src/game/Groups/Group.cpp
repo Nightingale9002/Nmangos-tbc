@@ -538,16 +538,73 @@ void Group::Disband(bool hideDestroy)
     m_leaderName.clear();
 }
 
-void Group::SetTargetIcon(uint8 id, ObjectGuid targetGuid)
+// [2026-10-18 站长口径] 团队标记日志（骷髅等）：标记对象是**对象上的事实**，全队共享，
+//   所以"谁在什么时候把哪只怪标成骷髅 / 从骷髅改成别的 / 清掉"必须能从日志复盘
+//   （尤其副本推进要看"集火目标到底怎么被指定的"）。
+//   落盘形式：`[MARKER] group=.. leader=.. changer=.. icon=7(skull) old=名字(guid) new=名字(guid)`。
+namespace
+{
+    char const* MarkerIconName(uint8 id)
+    {
+        static char const* const names[TARGET_ICON_COUNT] =
+        {
+            "star", "circle", "diamond", "triangle", "moon", "square", "cross", "skull"
+        };
+        return id < TARGET_ICON_COUNT ? names[id] : "?";
+    }
+
+    // 怪物刷点 guid -> creature_template.entry（日志里直接给 entry，方便离线做
+    //   "按骷髅标记自动分析优先级"的统计；玩家/非怪物返回 0）
+    uint32 MarkerEntry(ObjectGuid guid)
+    {
+        if (!guid || !guid.IsCreature())
+            return 0;
+        if (CreatureData const* data = sObjectMgr.GetCreatureData(guid.GetCounter()))
+            return data->id;
+        return 0;
+    }
+
+    // 把 guid 变成日志可读的"名字(guid)"（玩家查名字缓存，怪物反查刷点 entry）
+    std::string MarkerTargetDesc(ObjectGuid guid)
+    {
+        if (!guid)
+            return "-";
+
+        if (guid.IsPlayer())
+        {
+            std::string name;
+            if (sObjectMgr.GetPlayerNameByGUID(guid, name) && !name.empty())
+                return name + "(" + guid.GetString() + ")";
+            return guid.GetString();
+        }
+
+        if (guid.IsCreature())
+        {
+            if (CreatureData const* data = sObjectMgr.GetCreatureData(guid.GetCounter()))
+            {
+                if (CreatureInfo const* info = ObjectMgr::GetCreatureTemplate(data->id))
+                    return std::string(info->Name) + "(" + guid.GetString() + ")";
+            }
+            return guid.GetString();
+        }
+
+        return guid.GetString();
+    }
+}
+
+void Group::SetTargetIcon(uint8 id, ObjectGuid targetGuid, ObjectGuid changer)
 {
     if (id >= TARGET_ICON_COUNT)
         return;
+
+    // 改标前的旧值（用于日志：清标/改标都要能看到变化）
+    ObjectGuid const oldGuid = m_targetIcons[id];
 
     // clean other icons
     if (targetGuid)
         for (int i = 0; i < TARGET_ICON_COUNT; ++i)
             if (m_targetIcons[i] == targetGuid)
-                SetTargetIcon(i, ObjectGuid());
+                SetTargetIcon(i, ObjectGuid(), changer);
 
     m_targetIcons[id] = targetGuid;
 
@@ -556,6 +613,13 @@ void Group::SetTargetIcon(uint8 id, ObjectGuid targetGuid)
     data << uint8(id);
     data << targetGuid;
     BroadcastPacket(data, true);
+
+    if (oldGuid != targetGuid)
+        sLog.outString("[MARKER] group=%u leader=%s changer=%s icon=%u(%s) old=%s old_entry=%u new=%s new_entry=%u",
+            m_Id, MarkerTargetDesc(GetLeaderGuid()).c_str(), MarkerTargetDesc(changer).c_str(),
+            uint32(id), MarkerIconName(id),
+            MarkerTargetDesc(oldGuid).c_str(), MarkerEntry(oldGuid),
+            MarkerTargetDesc(targetGuid).c_str(), MarkerEntry(targetGuid));
 }
 
 static void GetDataForXPAtKill_helper(Player* player, Unit const* victim, uint32& sum_level, Player*& member_with_max_level, Player*& not_gray_member_with_max_level)

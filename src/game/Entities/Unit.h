@@ -1036,7 +1036,18 @@ enum ReactiveType
 
 // delay time next attack to prevent client attack animation problems
 #define ATTACK_DISPLAY_DELAY 200
-#define MAX_PLAYER_STEALTH_DETECT_RANGE 45.0f               // max distance for detection targets by player
+// [STEALTH-RANGE] Single tuning knob of the player side stealth visibility. Used in three places:
+//   VisibilityData::GetStealthVisibilityDistance (Entities/ObjectVisibility.cpp) - hard cap of the result
+//   Player::HandleStealthedUnitsDetection        (Entities/Player.cpp)           - search radius for stealth units
+//   Unit::IsVisibleForOrDetect                   (Entities/Unit.cpp)            - "must be in front" arc radius
+// Detection distance = max(combatReach, min(0.3 * (30 + 5*(viewerLevel-1) + detectStrength - stealthStrength), this))
+// Every stealth aura of the world DB is applied as stealthStrength via Aura::HandleModStealth; the flat
+// NPC stealth spells (Sneak 22766, Faded 6408, Shadowstalker Stealth 5916, ...) carry a value of only 0..5,
+// so for every player above ~level 35 the raw formula returns 90+ yards and this cap alone decides how
+// far away a stealthed NPC pops in (269 of 298 stealth spawns in our DB land exactly on the cap).
+// 45 yards was reported far too generous; TrinityCore uses 30.0f for the same constant. Lower it further
+// (e.g. 20.0f) to tighten stealth even more - nothing else needs to be changed.
+#define MAX_PLAYER_STEALTH_DETECT_RANGE 30.0f               // max distance for detection targets by player
 #define MAX_CREATURE_ATTACK_RADIUS 45.0f                    // max distance for creature aggro (use with CONFIG_FLOAT_RATE_CREATURE_AGGRO)
 
 // Regeneration defines
@@ -1128,6 +1139,31 @@ class Unit : public WorldObject
         void CleanupsBeforeDelete() override;               // used in ~Creature/~Player (or before mass creature delete to remove cross-references to already deleted units)
 
         float GetCollisionHeight() const override;
+        // [SWIM/AIR HEIGHT 2026-10-03] Model-based vertical placement (operator-confirmed as correct):
+        //   GetSwimSurfaceDepth()   - how deep a swimming model's origin sits below the water surface
+        //   GetAirGroundClearance() - clearance kept above the floor for an airborne flyer
+        //   GetSwimStartDepth()     - water depth at which the unit starts swimming
+        // All three derive from the model's collision height and the matching Creature.* factor (0 = legacy fixed).
+        float GetSwimSurfaceDepth() const;
+        float GetAirGroundClearance() const;
+        float GetSwimStartDepth() const;
+        // [SWIM-CRITERION 2026-10-03] 当前位置该不该游泳（水深 vs 碰撞高度 + 水面迟滞）。
+        // Unit::Update 的每 tick 维护与 Object::SendCreateUpdateToPlayer 的 create 前状态修正共用。
+        // 两个可选输出参数返回该点的液面高度与静态地面高度（供调用方算游泳深度）。
+        bool ShouldSwimAtCurrentPosition(float* outWaterLevel = nullptr, float* outGround = nullptr) const;        // [SWIM-ORIGIN 2026-10-03] 把"游泳中"的原点压到客户端会播游泳动作的深度
+        // （waterLevel - GetSwimSurfaceDepth()）。返回是否真的动了。见 Unit.cpp 里的实测数据。
+        bool SinkToSwimOriginDepth(bool sendMove);
+        // [SWIM-DEPTH-ADAPTIVE 2026-10-04] 按该点"实际水深"算游泳深度：水浅时只浮在水面下一点点，
+        // 水够深才用设定值 GetSwimSurfaceDepth()。修复"固定深度与水线冲突"——浅水处被顶回水面
+        // （于是没有游泳动作、看着像走水面），以及入水/出水时 z 跳档。
+        // 依据（71558 的 PFDBG 逐点日志）：水里那些路径点原始 z=19.02（比水面还高 0.75），被按到 15.14
+        // （固定 3.12 码深），跨水线一步就掉 3.9 码。
+        float GetSwimDepthForWaterDepth(float waterDepth) const;
+        // [POS-SYNC 2026-10-03] 让客户端重新按服务器位置摆放这只生物：以它当前 spline 的终点重新发一条
+        // monster-move（从当前位置出发，所以不会跳）。用于 create 里被剥掉 spline 的游泳怪（客户端会
+        // 停在出现的位置上）以及其它需要定期纠正客户端位置的情形。返回是否真的发了。
+        bool ResyncMovementToClients();
+
         float GetCollisionWidth() const override;
         float GetObjectBoundingRadius() const override { return m_floatValues[UNIT_FIELD_BOUNDINGRADIUS]; } // overwrite WorldObject version
         float GetCombatReach() const override { return m_floatValues[UNIT_FIELD_COMBATREACH]; } // overwrite WorldObject version
@@ -1221,6 +1257,9 @@ class Unit : public WorldObject
          * @return True if an attack was made and no error happened, false otherwise
          */
         bool UpdateMeleeAttackingState();
+        // [DEADHIT-DIAG] 2026-10-02: "not alive" / "zero health" / "alive but still scheduled to
+        // respawn" - returns nullptr when the unit is in a clean state (see Map::ReportDeadAction).
+        char const* GetNonActingStateReason() const;
         /**
          * Check is a given equipped weapon can be used, ie the mainhand, offhand etc.
          * @param attackType The attack type to check, ie: main/offhand/ranged
@@ -2125,10 +2164,16 @@ class Unit : public WorldObject
         SpellSchoolMask GetMainAttackSchoolMask();
 
         // Visibility system
+        // [INVIS-AGGRO 2026-10-01] forceAINotify = false recomputes visibility for everyone around but does
+        // NOT let the AI sweep the area for aggro targets (see Unit::UpdateVisibilityAndViewInternal).
+        // Entering stealth/invisibility must not be the trigger that makes a creature attack a stealthed
+        // unit that it was unable to see a moment earlier.
         UnitVisibility GetVisibility() const { return m_Visibility; }
-        void SetVisibility(UnitVisibility x);
+        void SetVisibility(UnitVisibility x, bool forceAINotify = true);
         void SetVisibilityWithoutUpdate(UnitVisibility x) { m_Visibility = x; }
         void UpdateVisibilityAndView() override;            // overwrite WorldObject::UpdateVisibilityAndView()
+        void UpdateVisibilityAndViewNoAINotify();           // [INVIS-AGGRO] same without ScheduleAINotify(0)
+        void UpdateVisibilityAndViewInternal(bool forceAINotify);
 
         // common function for visibility checks for player/creatures with detection code
         bool IsVisibleForOrDetect(Unit const* u, WorldObject const* viewPoint, bool detect, bool inVisibleList = false, bool is3dDistance = true, bool spell = false, bool ignorePhase = false) const;     

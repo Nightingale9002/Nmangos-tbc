@@ -255,6 +255,8 @@ struct go_screaming_hall_door : public GameObjectAI
     go_screaming_hall_door(GameObject* go) : GameObjectAI(go), m_doorCheckNearbyPlayersTimer(1000), m_doorOpen(false)
     {
         m_pInstance = (ScriptedInstance*)go->GetInstanceData();
+        // [SL-DOOR 2026-10-06] 定向诊断：确认门脚本 AI 已挂上（配合 Murmur 侧日志定位"开门后杀死逃跑者"事件）
+        sLog.outError("[SL-DOOR] ai attached: entry=%u guid=%u", go->GetEntry(), go->GetGUIDLow());
     }
 
     ScriptedInstance* m_pInstance;
@@ -278,8 +280,18 @@ struct go_screaming_hall_door : public GameObjectAI
                     m_go->Use(player);
                     m_doorOpen = true;
 
+                    // [SL-DOOR 2026-10-06] 定向诊断：门开启后"发给 Murmur 的 AI 事件"这一半是否真的发生
+                    // （门的 DB 脚本一半是独立的：dbscripts_on_go_use 183295 置 worldstate 5550001~5550005
+                    //   并让躲藏组刷出，所以"组刷出来了"不能证明事件发过）
                     if (Creature* pMurmur = m_pInstance->GetSingleCreatureFromStorage(NPC_MURMUR))
+                    {
+                        sLog.outError("[SL-DOOR] opened by %s -> AI_EVENT_CUSTOM_A to Murmur guid=%u alive=%u incombat=%u",
+                                      player->GetName(), pMurmur->GetGUIDLow(), pMurmur->IsAlive() ? 1 : 0, pMurmur->IsInCombat() ? 1 : 0);
                         pMurmur->AI()->SendAIEvent(AI_EVENT_CUSTOM_A, pMurmur, pMurmur);
+                    }
+                    else
+                        sLog.outError("[SL-DOOR] opened by %s but Murmur(%u) not in instance storage -> NO AI event",
+                                      player->GetName(), uint32(NPC_MURMUR));
                 });
             }
             m_doorCheckNearbyPlayersTimer = 1000;

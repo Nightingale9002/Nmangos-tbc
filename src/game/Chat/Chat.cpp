@@ -1011,6 +1011,9 @@ ChatCommand* ChatHandler::getCommandTable()
         { "unlearn",        SEC_ADMINISTRATOR,  false, &ChatHandler::HandleUnLearnCommand,             "", nullptr },
         { "distance",       SEC_ADMINISTRATOR,  false, &ChatHandler::HandleGetDistanceCommand,         "", nullptr },
         { "los",            SEC_ADMINISTRATOR,  false, &ChatHandler::HandleGetLosCommand,              "", nullptr },
+        // [LOS-DIAG 2026-10-01] 控制台专用 vmap 诊断（SEC_CONSOLE + isConsole=true => 玩家既看不到也用不了）
+        { "vmaplos",        SEC_CONSOLE,        true,  &ChatHandler::HandleVMapLosCommand,            "", nullptr },
+        { "vmapunload",     SEC_CONSOLE,        true,  &ChatHandler::HandleVMapUnloadCommand,         "", nullptr },
         { "recall",         SEC_MODERATOR,      false, &ChatHandler::HandleRecallCommand,              "", nullptr },
         { "save",           SEC_PLAYER,         false, &ChatHandler::HandleSaveCommand,                "", nullptr },
         { "saveall",        SEC_MODERATOR,      true,  &ChatHandler::HandleSaveAllCommand,             "", nullptr },

@@ -41,10 +41,12 @@
 #include "OutdoorPvP/OutdoorPvP.h"
 #include "Spells/Spell.h"
 #include "Util/Util.h"
+#include "Util/CallerAddress.h"
 #include "Grids/GridNotifiers.h"
 #include "Grids/GridNotifiersImpl.h"
 #include "Grids/CellImpl.h"
 #include "Movement/MoveSplineInit.h"
+#include "Movement/MoveSpline.h"
 #include "Entities/CreatureLinkingMgr.h"
 #include "Maps/SpawnManager.h"
 
@@ -184,6 +186,7 @@ Creature::Creature(CreatureSubtype subtype) : Unit(),
     m_immunitySet(UINT32_MAX), m_ai(nullptr),
     m_isInvisible(false), m_ignoreMMAP(false), m_forceAttackingCapability(false),
     m_airborneFlagAutomatic(false),
+    m_lastPosSyncTime(0),
     m_settings(this),
     m_countSpawns(false),
     m_creatureGroup(nullptr), m_imposedCooldown(false), m_healthMultiplier(1.f), m_damageMultiplier(1.f), m_baseAP(0), m_baseRAP(0),
@@ -240,6 +243,7 @@ void Creature::AddToWorld()
     }
 
     Unit::AddToWorld();
+
 
     // Make active if required
     if (sWorld.isForceLoadMap(GetMapId()) || (GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_ACTIVE))
@@ -299,8 +303,19 @@ void Creature::RemoveFromWorld()
     Unit::RemoveFromWorld();
 }
 
-void Creature::RemoveCorpse(bool inPlace)
+// [POS-SYNC 2026-10-03] 见 Object::SendCreateUpdateToPlayer：create 里被剥掉 spline 的游泳怪，
+// 客户端会停在出现的位置上，需要立刻补一条"从当前位置出发"的移动包；这里做 2 秒节流。
+bool Creature::HasRecentPosSync(uint32 ms) const
 {
+    return m_lastPosSyncTime && WorldTimer::getMSTimeDiff(m_lastPosSyncTime, WorldTimer::getMSTime()) <= ms;
+}
+
+void Creature::MarkPosSync()
+{
+    m_lastPosSyncTime = WorldTimer::getMSTime();
+}
+
+void Creature::RemoveCorpse(bool inPlace){
     if (!inPlace && !IsInWorld())
        return;
 
@@ -820,6 +835,25 @@ void Creature::Update(const uint32 diff)
 
                 GetMap()->Add(this);
 
+
+                // [CREATE-ALIVE 2026-10-03] 复活时必须在"已经变回 ALIVE 之后"再让客户端重建对象。
+                //
+                // 复活流程是：RemoveCorpse() 先把怪挪回复活点（此刻状态仍是 DEAD）-> 发一次**尸体**的
+                // create -> 之后 Creature::Update 的 DEAD 分支才 SetDeathState(JUST_ALIVED)，而变活只发
+                // 字段更新、不再发位置。客户端因此只知道"一个尸体出现在复活点"，这个对象被字段更新成活的
+                // 时候用的还是客户端自己那份位置 —— 站长实测"远处打死、复活时客户端显示在死亡点、服务端却
+                // 在复活点"就是这个（本地日志：13 次 create 全是 dead=1，没有一次活着的 create）。
+                // 与 RemoveCorpse 里同样的做法：先让所有观察者销毁它，再重建 -> 客户端拿到"活着的、位置正确
+                // 的 create"，模型位置与动作状态一起归位。
+                if (IsInWorld())
+                {
+                    UnitVisibility const currentVisibility = GetVisibility();
+                    SetVisibility(VISIBILITY_OFF);
+                    UpdateObjectVisibility();
+                    SetVisibility(currentVisibility);
+                    UpdateObjectVisibility();
+                }
+
                 if (GetObjectGuid().GetHigh() != HIGHGUID_PET)
                     if (uint16 poolid = sPoolMgr.IsPartOfAPool<Creature>(GetDbGuid()))
                         sPoolMgr.UpdatePool<Creature>(*GetMap()->GetPersistentState(), poolid, GetDbGuid());
@@ -829,6 +863,12 @@ void Creature::Update(const uint32 diff)
         case CORPSE:
         {
             Unit::Update(diff);
+
+            // [REVIVE-DIAG] 2026-10-02: "corpse with health" - a script that healed the victim while
+            // Unit::Kill was still running (SetDeathState is only called at its very end) leaves
+            // exactly this half-dead state; see the analysis in KNOWN_ISSUES 2026-10-02.
+            if (GetHealth() > 0 && GetMap())
+                GetMap()->ReportRevive(this, "corpse-with-health", MANGOS_CALLER_ADDR());
 
             if (m_loot)
                 m_loot->Update();
@@ -842,8 +882,20 @@ void Creature::Update(const uint32 diff)
             // creatures keep the old corpse-gated revival, their 25s default respawn delay is not
             // a real spawn timer. Creatures whose corpse must persist on purpose
             // (FOREVER_CORPSE_DURATION) are never touched either.
+            // [DYNGUID-CORPSE 2026-10-06] 新增第三种情形：新刷新系统（GetDbGuid() != GetGUIDLow()，即刷怪组成员）
+            // 在死亡时把 m_respawnTime 设成 numeric_limits<time_t>::max() 哨兵（Creature.cpp:2140），
+            // 真正的刷新计划存在 persistent state 的 CreatureRespawnTime 里 —— 于是上面那条"排定时间已过"
+            // 判据**永远不成立**，尸体只能等 m_corpseDelay 自然腐烂。尸体横在世界上期间，刷怪组无法重建该槽位
+            // （SpawnGroup.cpp:297-305 的守卫："槽位里还有对象就不重新生成"），表现就是整组"不刷新"：
+            // 实测破碎大厅 Legionnaire 001 身边那组（spawntimesecs=5，普通 5400002 / 英雄 5400003）从不回来。
+            // 这里把 persistent 里的排定时间也纳入判据（仅静态 DB 刷点、且确实存在一个已到期的非零时间）。
+            time_t savedRespawnTime = 0;
+            if (HasStaticDBSpawnData() && IsUsingNewSpawningSystem())
+                savedRespawnTime = GetMap()->GetPersistentState()->GetCreatureRespawnTime(GetDbGuid());
+
             if (IsCorpseExpired() ||
-                (HasStaticDBSpawnData() && m_respawnTime && m_respawnTime <= time(nullptr) && !GetSettings().HasFlag(CreatureStaticFlags3::FOREVER_CORPSE_DURATION)))
+                (HasStaticDBSpawnData() && m_respawnTime && m_respawnTime <= time(nullptr) && !GetSettings().HasFlag(CreatureStaticFlags3::FOREVER_CORPSE_DURATION)) ||
+                (savedRespawnTime && savedRespawnTime <= time(nullptr) && !GetSettings().HasFlag(CreatureStaticFlags3::FOREVER_CORPSE_DURATION)))
                 RemoveCorpse();
 
             break;
@@ -857,6 +909,13 @@ void Creature::Update(const uint32 diff)
             if (!IsAlive())
                 break;
 
+            // [REVIVE-DIAG] 2026-10-02: "alive yet still holding a future respawn time" - the exact
+            // inconsistency 站长 hit (mob acted normally while .npc info showed a respawn countdown).
+            // The m_respawnTime check keeps this free for healthy creatures (it is 0 there, so no
+            // time() call); one report per unit per run.
+            if (m_respawnTime && m_respawnTime > time(nullptr) && GetMap())
+                GetMap()->ReportRevive(this, "alive-with-pending-respawn", MANGOS_CALLER_ADDR());
+
             // Creature can be dead after unit update
             if (IsAlive())
                 RegenerateAll(diff);
@@ -865,6 +924,30 @@ void Creature::Update(const uint32 diff)
         }
         default:
             break;
+    }
+
+    // [POS-SYNC-5S 2026-10-04] 移动中每 5 秒把服务器位置重新钉给客户端。
+    //
+    // 为什么需要：create 里被剥掉内嵌 spline 的游泳怪，客户端在两次移动包之间可能停在旧位置（路径点怪
+    // 一条 spline 可长达 20 秒）。只补 create 后那一次不够，移动中再定期钉一次，位置才跟得上。
+    //
+    // 代价（写在这里备查）：每次纠偏都是"从当前位置直线奔向它原定终点"，若剩余路径本来要绕障碍，会抄一次
+    // 近路。所以只对存活的、正在移动的游泳怪做（z 会被水路钳制在水体带内），且只在有玩家看得见它时才发。
+    //
+    // 本地对比（2026-10-04，同一只纳迦走一圈）：站长目视认为位置比"只在 create 后补一次"更贴合。
+    if (IsAlive() && IsInWorld() && m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING) &&
+        movespline && !movespline->Finalized() && !HasRecentPosSync(5000))
+    {
+        for (const auto& itr : GetMap()->GetPlayers())
+        {
+            Player* player = itr.getSource();
+            if (player && player->HasAtClient(this))
+            {
+                MarkPosSync();
+                ResyncMovementToClients();
+                break;
+            }
+        }
     }
 }
 
@@ -964,6 +1047,14 @@ void Creature::RegenerateHealth()
 
 bool Creature::AIM_Initialize()
 {
+    // [DOOR-DIAG 2026-10-03] (Re)initialising the AI of a creature that is not alive re-arms everything
+    // that should be dormant on a corpse (scripts, EventAI timers, summon/aura addons) - name the caller
+    // (Util/CallerAddress.h) so the "corpse casts / corpse moves" reports can be traced to a driver.
+    // Filter: creatures that are DEAD (respawn pending, despawned/invisible) are re-armed by design in
+    // LoadFromDB -> AIM_Initialize; only a client-visible CORPSE is worth reporting (log must stay quiet).
+    if (!IsAlive() && !IsDespawned() && GetMap())
+        GetMap()->ReportCorpseDriver(this, "aim-initialize", MANGOS_CALLER_ADDR());
+
     i_motionMaster.Initialize();
     m_ai.reset(FactorySelector::selectAI(this));
 
@@ -2059,8 +2150,18 @@ void Creature::SetDeathState(DeathState s)
         if (IsUsingNewSpawningSystem())
         {
             m_respawnTime = std::numeric_limits<time_t>::max();
-            if (m_respawnDelay && s == JUST_DIED && !GetCreatureGroup())
-                GetMap()->GetSpawnManager().AddCreature(GetDbGuid());
+            if (m_respawnDelay && s == JUST_DIED)
+            {
+                if (GetCreatureGroup())
+                    // Group members are re-materialized by the spawn group logic instead of the
+                    // SpawnManager, but the slot must still observe the respawn delay: SpawnGroup::Spawn
+                    // runs on every map update (SpawnManager::Update) and would otherwise rebuild the
+                    // whole pack right after one member dies - the killed slot plus its group visibly
+                    // blinking in and out with a new guid each tick.
+                    GetMap()->GetPersistentState()->SaveCreatureRespawnTime(GetDbGuid(), time(nullptr) + m_respawnDelay);
+                else
+                    GetMap()->GetSpawnManager().AddCreature(GetDbGuid());
+            }
         }
     }
 
@@ -2082,9 +2183,23 @@ void Creature::SetDeathState(DeathState s)
 
     if (s == JUST_ALIVED)
     {
+        // [REVIVE-DIAG] 2026-10-02: the regular revive path - see Map::ReportRevive
+        if (GetMap())
+            GetMap()->ReportRevive(this, "SetDeathState-JUST_ALIVED", MANGOS_CALLER_ADDR());
+
         clearUnitState(static_cast<uint32>(UNIT_STAT_ALL_STATE));
 
         Unit::SetDeathState(ALIVE);
+
+        // [SWIM-STATE 2026-10-03] 复活必须补发一次 SMSG_SPLINE_MOVE_START_SWIM(0x30B)。
+        //
+        // 客户端靠这条动画包**进入**游泳（UNIT_FLAG_SWIMMING(0x8000) 字段只负责保持），而 Unit::SetSwim
+        // 只在状态**变化**时发包。复活时移动标志往往已经带着 MOVEFLAG_SWIMMING（死亡不会清它），
+        // 于是"状态没变化 -> 一次 0x30B 都不发"，客户端只能一直播走路，直到它自己走到判据翻转处才补上 ——
+        // 这就是"刷点是深水，刷新后却走路，走一会儿才开始游泳"的成因（抓包证据：字段 0x8000 被设置过，
+        // 但整段会话没有任何 START_SWIM 包）。这里在变活的一刻无条件重发一次。
+        if (m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING) && IsInWorld())
+            SetSwim(true);
 
         SetWalk(true, true);
         ResetEntry(true);
@@ -2118,6 +2233,12 @@ void Creature::SetDeathState(DeathState s)
 
 void Creature::Respawn()
 {
+    // [REVIVE-DIAG] 2026-10-02: this is the "script/mechanism revives a creature" entry point
+    // (70 call sites in the tree) - report who state it was in before it goes further
+    if (GetMap())
+        GetMap()->ReportRevive(this, IsUsingNewSpawningSystem() ? "Respawn-dynguid" : "Respawn",
+                               MANGOS_CALLER_ADDR());
+
     // Dynguid creatures (new spawning system) are (re)spawned by the SpawnManager,
     // which owns their respawn schedule. In-place revive does not work for them:
     // their m_respawnTime is set to max at death and LoadFromDB rejects a future
@@ -2144,11 +2265,6 @@ void Creature::Respawn()
 
 void Creature::ForcedDespawn(uint32 timeMSToDespawn, bool onlyAlive)
 {
-    // [SGDBG 2026-09-29] 临时诊断：谁在收走食人魔之魂（脚本里的 ForcedDespawn 会走到这里）
-    if (GetEntry() == 22912)
-        sLog.outError("[SGDBG] spirit 22912 guid=%u ForcedDespawn: delay=%u onlyAlive=%u alive=%u",
-                      GetGUIDLow(), timeMSToDespawn, onlyAlive ? 1 : 0, IsAlive() ? 1 : 0);
-
     if (timeMSToDespawn)
     {
         ForcedDespawnDelayEvent* pEvent = new ForcedDespawnDelayEvent(*this, onlyAlive);

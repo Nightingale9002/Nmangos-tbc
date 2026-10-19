@@ -72,6 +72,13 @@ void CreatureAI::EnterEvadeMode()
 
 void CreatureAI::AttackStart(Unit* who)
 {
+    // [FIX 2026-10-03] Never let a dead / corpse creature start an attack: the COMBAT_PING block below and
+    // EngageInCombatWith must not run either.  Unit::Attack() refuses a dead attacker anyway, but that
+    // refusal happens last - the corpse had already been put into combat state (see the chain in
+    // UnitAI::AttackedBy and KNOWN_ISSUES "[机制] 2026-10-02 尸体打人").
+    if (!m_creature->IsAlive())
+        return;
+
     if (m_creature->GetSettings().HasFlag(CreatureStaticFlags::COMBAT_PING))
     {
         if (Player* owner = dynamic_cast<Player*>(m_creature->GetSpawner()))

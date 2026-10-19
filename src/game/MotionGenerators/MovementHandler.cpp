@@ -27,6 +27,7 @@
 #include "Entities/Transports.h"
 #include "BattleGround/BattleGround.h"
 #include "MotionGenerators/WaypointMovementGenerator.h"
+#include "MotionGenerators/PlayerNavObs.h"   // [2026-10-19] 真人跳跃/电梯标注观测
 #include "Maps/MapPersistentStateMgr.h"
 #include "Globals/ObjectMgr.h"
 #include "World/World.h"
@@ -409,6 +410,9 @@ void WorldSession::HandleMovementOpcodes(WorldPacket& recv_data)
 
     if (!ProcessMovementInfo(movementInfo, mover, plMover, recv_data))
         return;
+
+    // [2026-10-19 站长口径] 真人跳跃/电梯标注观测（起点/落点 + mmap 方块 tile）
+    navobs::OnClientMove(_player, mover, uint32(opcode), movementInfo);
 
     // CMSG opcode has no handler in client, should not be sent to others.
     // It is sent by client when you jump and hit something on the way up,

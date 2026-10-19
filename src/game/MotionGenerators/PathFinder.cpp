@@ -25,6 +25,8 @@
 #include "Log/Log.h"
 #include "World/World.h"
 #include "Entities/Transports.h"
+// [PATH-MMAP 2026-10-17] 跨格载格用 Cell(...) 的模板实现（Cell 的构造函数在 CellImpl.h 里）
+#include "Grids/CellImpl.h"
 #include <Detour/Include/DetourCommon.h>
 #include <Detour/Include/DetourMath.h>
 
@@ -33,6 +35,7 @@
 #endif
 
 #include <limits>
+#include <set>
 ////////////////// PathFinder //////////////////
 PathFinder::PathFinder(const Unit* owner, bool ignoreNormalization) :
     m_type(PATHFIND_BLANK), m_useStraightPath(false), m_forceDestination(false), m_straightLine(false),
@@ -183,12 +186,52 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
 #endif    
         !HaveTile(start) || !HaveTile(dest))
     {
-        // No navigation tile at start or destination: fall back to a straight
-        // shortcut for everyone (upstream behaviour). Marking ground units
-        // NOPATH here froze them in ungenerated tiles (stuck evading).
+        // [PATH-MMAP 2026-10-17 站长口径] 正常陆地寻路必须走 mmap：
+        //   同格 ⇒ 保持旧行为（下面的直连）；跨格 ⇒ 先把 start/dest 的格载进来再重算一次。
+        //   加载后仍没有 mmap（真的没提取）⇒ 不再退回直连，直接给空路径（走到哪算哪）。
+        bool const ignorePf = m_sourceUnit && m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING);
+        Cell const startCell(MaNGOS::ComputeCellPair(start.x, start.y));
+        Cell const destCell(MaNGOS::ComputeCellPair(dest.x, dest.y));
+        if (m_sourceUnit && !ignorePf && !m_sourceUnit->IsFlying() && !m_sourceUnit->IsInWater())
+        {
+            if (!(startCell == destCell))
+            {
+                if (Map* map = m_sourceUnit->GetMap())
+                {
+                    map->EnsureGridLoadedForPath(startCell);
+                    map->EnsureGridLoadedForPath(destCell);
+                }
+                SetCurrentNavMesh();
+            }
+        }
+
+        if (!m_navMesh || !m_navMeshQuery || !HaveTile(start) || !HaveTile(dest))
+        {
+            // 没有 mmap 且不是同格 ⇒ 不直连（站长口径），只报错并给空路径
+            if (startCell != destCell)
+            {
+                PFDBG_MSG(m_sourceUnit, "NO tile after load: navMesh=%d query=%d haveStartTile=%d haveEndTile=%d -> EMPTY PATH (no straight shortcut)",
+                          m_navMesh ? 1 : 0, m_navMeshQuery ? 1 : 0, HaveTile(start) ? 1 : 0, HaveTile(dest) ? 1 : 0);
+                // [感知层 2026-10-19] 每个 map 只报一次：`target reachable` 这类感知值会每 2 秒
+                //   对一个 bot 求一次值，真没提取 mmap 的地图会把这里刷成每 bot 每 2 秒一条。
+                {
+                    static std::set<uint32> sNoMmapReportedMaps;
+                    if (sNoMmapReportedMaps.insert(m_defaultMapId).second)
+                    {
+                        sLog.outError("[PATH-NOMMAP] map=%u start=(%.1f,%.1f) dest=(%.1f,%.1f) ignorePF=%d -> no mmap, refusing straight shortcut"
+                                      " (this map will not be reported again)",
+                                      m_defaultMapId, start.x, start.y, dest.x, dest.y, ignorePf ? 1 : 0);
+                    }
+                }
+                m_pathPoints.clear();
+                m_type = PathType(PATHFIND_NOPATH);
+                return true;
+            }
+        }
+
+        // 同格 / 非陆地（飞/游）/ ignorePF ⇒ 保留上游的直连行为
         PFDBG_MSG(m_sourceUnit, "NO tile: navMesh=%d query=%d ignorePF=%d haveStartTile=%d haveEndTile=%d -> BuildShortcut NORMAL|NOT_USING",
-                  m_navMesh ? 1 : 0, m_navMeshQuery ? 1 : 0,
-                  m_sourceUnit ? (m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING) ? 1 : 0) : 0,
+                  m_navMesh ? 1 : 0, m_navMeshQuery ? 1 : 0, ignorePf ? 1 : 0,
                   HaveTile(start) ? 1 : 0, HaveTile(dest) ? 1 : 0);
         PfProbe::PfProbeAt(m_sourceUnit, dest.x, dest.y, dest.z, "pf-no-tile-dest");
         BuildShortcut();
@@ -1061,6 +1104,42 @@ void PathFinder::BuildPointPath(const float* startPoint, const float* endPoint)
             }
 
             // last point
+            // [PATH-END-SNAP 2026-10-06] 上面的循环给**每一个中间点**都补了 mmap 面高度，
+            // 只有终点是直接塞请求值的。追击时"请求的终点"就是被追者当前的 z，于是
+            // 目标悬空/上一状态残留的高 z 会原样进入路径，客户端把那个高度当"地面"走：
+            // 实测 Slave Pens 水池里的 Bogstrok 稳定停在水面上方 ~3 码
+            // （PathFinder 日志 `FINAL pt2 z=0.19376564`，而该点 mmap 面（水面）是 -2.84、
+            // floorZ -4.23），并且会自我维持、传染给追它的其它单位。
+            // 这里只做一件事：给终点补同一套贴面。门槛刻意收窄，避免把本来该在空中的移动拽下来：
+            //   · 只处理**生物**（玩家的 z 由客户端决定，不动）
+            //   · 排除会飞/带空中标记的（模板 INHABIT_AIR 或已 SetLevitate）
+            //   · 排除**当前就在空中**的单位（"地面模板但会飞"的龙鹰等，其追击/飞行靠
+            //     MoveSplineInit 的 [FLY-FLAG] 依终点判定，终点一旦被贴地就会不再起飞）
+            // 判定阈值沿用全局的 CREATURE_AIRBORNE_TOLERANCE（4 码），与 airborne 逻辑同口径。
+            if (m_sourceUnit && m_sourceUnit->GetTypeId() == TYPEID_UNIT && !m_sourceUnit->IsLevitating())
+            {
+                Creature const* endSnapCreature = static_cast<Creature const*>(m_sourceUnit);
+                if ((endSnapCreature->GetCreatureInfo()->InhabitType & INHABIT_AIR) == 0 &&
+                    !endSnapCreature->IsAirbornePosition(endSnapCreature->GetPositionX(),
+                                                         endSnapCreature->GetPositionY(),
+                                                         endSnapCreature->GetPositionZ()))
+                {
+                    float endSnapPoint[3] = {endVec.y, endVec.z, endVec.x};
+                    float endSnapDistance = 0.0f;
+                    dtPolyRef endSnapPoly = getPolyByLocation(endSnapPoint, &endSnapDistance);
+                    if (endSnapPoly != INVALID_POLYREF)
+                    {
+                        float endSnapZ = endVec.z;
+                        if (dtStatusSucceed(m_navMeshQuery->getPolyHeight(endSnapPoly, endSnapPoint, &endSnapZ)) &&
+                            std::fabs(endSnapZ - endVec.z) > 0.01f)
+                        {
+                            PFDBG_MSG(m_sourceUnit, "PATH-END-SNAP last point z=%.4f -> %.4f (poly %u)",
+                                      endVec.z, endSnapZ, uint32(endSnapPoly));
+                            endVec.z = endSnapZ;
+                        }
+                    }
+                }
+            }
             m_pathPoints.push_back(endVec);
             pointCount = static_cast<uint32>(m_pathPoints.size());
 

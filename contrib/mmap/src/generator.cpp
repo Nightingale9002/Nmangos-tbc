@@ -84,6 +84,13 @@ void printUsage()
     printf("--configInputPath [file.*] : Path to json configuration file.\n\n");
     printf("--gameObjectInput [file.*] : Path to file listing gameobject collision to bake into the navmesh\n\n");
     printf("--buildGameObjects : builds only gameobject models for transports\n\n");
+    printf("--autoOffMesh : auto-add bidirectional off-mesh links for small components\n");
+    printf("                (no external offmesh file needed). For each connected component\n");
+    printf("                with <= autoOffMeshMaxComp polys, find the nearest poly outside\n");
+    printf("                it; if the horizontal gap dh <= autoOffMeshMaxDH and\n");
+    printf("                |height delta| <= autoOffMeshMaxDV, add one link.\n");
+    printf("                All three thresholds can be overridden per map/tile in the\n");
+    printf("                json config (units: yards).\n\n");
     printf("--threads [#]: specifies number of threads to use for maps processing\n\n");
     printf("--workdir [directory] : Path to basedir of maps/vmaps.\n\n");
     printf("Example:\nmovemapgen (generate all mmap with default arg\n"
@@ -103,6 +110,7 @@ bool handleArgs(int argc, char** argv,
                 bool& debugOutput,
                 bool& silent,
                 bool& buildGameObjects,
+                bool& autoOffMesh,
                 const char*& offMeshInputPath,
                 const char*& configInputPath,
                 const char*& gameObjectInputPath,
@@ -164,6 +172,10 @@ bool handleArgs(int argc, char** argv,
         else if (strcmp(argv[i], "--buildGameObjects") == 0)
         {
             buildGameObjects = true;
+        }
+        else if (strcmp(argv[i], "--autoOffMesh") == 0)
+        {
+            autoOffMesh = true;
         }
         else if (strcmp(argv[i], "--offMeshInput") == 0 && i + 1 < argc)
         {
@@ -256,6 +268,7 @@ int main(int argc, char** argv)
     bool debug = false;
     bool silent = false;
     bool buildGameObjects = false;
+    bool autoOffMesh = false;
 
     const char* offMeshInputPath = "offmesh.txt";
     const char* configInputPath = "config.json";
@@ -264,7 +277,7 @@ int main(int argc, char** argv)
 
     bool validParam = handleArgs(argc, argv, mapIds, tileX, tileY, skipLiquid,
                                  skipContinents, skipJunkMaps, skipBattlegrounds,
-                                 debug, silent, buildGameObjects, offMeshInputPath, configInputPath,
+                                 debug, silent, buildGameObjects, autoOffMesh, offMeshInputPath, configInputPath,
                                  gameObjectInputPath, threads, workdir);
 
     if (!validParam)
@@ -296,7 +309,7 @@ int main(int argc, char** argv)
     if (!checkDirectories(debug, workdir))
         return -3;
 
-    MapBuilder builder(configInputPath, threads, skipLiquid, skipContinents, skipJunkMaps, skipBattlegrounds, debug, offMeshInputPath, workdir, gameObjectInputPath);
+    MapBuilder builder(configInputPath, threads, skipLiquid, skipContinents, skipJunkMaps, skipBattlegrounds, debug, offMeshInputPath, workdir, gameObjectInputPath, autoOffMesh);
 
     if (mapIds.size() == 1 && tileX > -1 && tileY > -1)
         builder.buildSingleTile(mapIds.front(), tileX, tileY);

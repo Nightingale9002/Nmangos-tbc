@@ -304,7 +304,20 @@ FILE* Log::openLogFile(char const* configFileName, char const* configTimeStampFl
             logfn += m_logsTimestamp;
     }
 
-    return fopen((m_logsDir + logfn).c_str(), mode);
+    std::string const path = m_logsDir + logfn;
+
+    // [LOGROTATE 2026-10-03] A truncating open used to wipe the previous run's file, which is where the
+    // post-crash diagnostics live: the world server SIGSEGV of 2026-10-03 10:50:06 lost its whole pre-crash
+    // Server.log (156 KB -> 3.7 KB) to the watchdog restart (see dev/KNOWN_ISSUES.md).  Keep the previous
+    // file as <name>.prev instead, so a crash can still be explained after the automatic restart.
+    if (mode && mode[0] == 'w')
+    {
+        std::string const previous = path + ".prev";
+        remove(previous.c_str());                           // drop the run before last
+        rename(path.c_str(), previous.c_str());             // harmless failure when there is no previous file
+    }
+
+    return fopen(path.c_str(), mode);
 }
 
 FILE* Log::openGmlogPerAccount(uint32 account)

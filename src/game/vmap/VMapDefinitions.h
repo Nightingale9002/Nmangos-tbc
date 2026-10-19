@@ -35,6 +35,9 @@ namespace VMAP
 #include "Util/Errors.h"
 #include "Log/Log.h"
 #define ERROR_LOG(...) sLog.outError(__VA_ARGS__);
+// [VMAP-KEEPALIVE 2026-10-01] 信息级提示（vmap 自愈/状态变化）。sLog 在 mmap/vmap 工具构建里
+// 不存在（NO_CORE_FUNCS），所以单独包一层，保证同一份源码两种构建都能过。
+#define NOTICE_LOG(...) sLog.outString(__VA_ARGS__);
 #elif defined MMAP_GENERATOR
 #include <assert.h>
 #define MANGOS_ASSERT(x) assert(x)
@@ -43,6 +46,7 @@ namespace VMAP
 #define LOG_FILTER_MAP_LOADING true
 #define DEBUG_FILTER_LOG(F,...) do{ if (F) DEBUG_LOG(__VA_ARGS__); } while(0)
 #define ERROR_LOG(...) do{ printf("ERROR:"); printf(__VA_ARGS__); printf("\n"); } while(0)
+#define NOTICE_LOG(...) do{ printf(__VA_ARGS__); printf("\n"); } while(0)
 #else
 #include <assert.h>
 #define MANGOS_ASSERT(x) assert(x)
@@ -51,6 +55,7 @@ namespace VMAP
 #define LOG_FILTER_MAP_LOADING true
 #define DEBUG_FILTER_LOG(F,...) do{ if (F) DEBUG_LOG(__VA_ARGS__); } while(0)
 #define ERROR_LOG(...) do{ printf("ERROR:"); printf(__VA_ARGS__); printf("\n"); } while(0)
+#define NOTICE_LOG(...) do{ printf(__VA_ARGS__); printf("\n"); } while(0)
 #endif
 
 #endif // _VMAPDEFINITIONS_H

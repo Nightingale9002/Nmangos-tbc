@@ -293,6 +293,13 @@ bool CreatureEventAI::CheckEvent(CreatureEventAIHolder& holder, Unit* actionInvo
     if (!holder.enabled || holder.timer || holder.inProgress)
         return false;
 
+    // [FIX 2026-10-03] Safety net for every other path that can reach ProcessEvents with a non-alive
+    // creature: EventAI must stay dormant on a dead/corpse unit.  EVENT_T_DEATH is the only exception
+    // (JustDied runs it while the creature is already dead; see JustRespawned's comment for the original
+    // observation of a DEAD creature casting).
+    if (!m_creature->IsAlive() && holder.event.event_type != EVENT_T_DEATH)
+        return false;
+
     if (holder.event.event_flags & EFLAG_COMBAT_ACTION && !CanExecuteCombatAction())
         return false;
 
@@ -1431,6 +1438,18 @@ void CreatureEventAI::JustRespawned()                       // NOTE that this is
     m_EventDiff = 0;
     m_throwAIEventStep = 0;
     m_LastSpellMaxRange = 0;
+
+    // [FIX 2026-10-03] JustRespawned() is also reached from the AI constructor (Creature::AIM_Initialize)
+    // and, through Creature::LoadFromDB -> AIM_Initialize, for creatures that are still DEAD (respawn
+    // pending, not visible).  Enabling every event and running the SPAWNED ones there made such a creature
+    // execute EventAI actions - including DoCastSpellIfCan - while it was not alive, bypassing the
+    // IsAlive() guard of UnitAI::UpdateAI (observed 2026-10-03 01:18 on Sunwell entry 25001: spell 45227,
+    // stack AIM_Initialize -> ProcessEvents -> ProcessEvent -> ProcessAction -> DoCastSpellIfCan).
+    // The genuine respawn path (Creature::Update DEAD branch -> SetDeathState(JUST_ALIVED) ->
+    // AI()->JustRespawned()) calls this again once the creature is alive, so nothing is lost by returning
+    // early here; the creature simply stays dormant until it really spawns.
+    if (!m_creature->IsAlive())
+        return;
 
     IncreaseDepthIfNecessary();
     for (auto& i : m_CreatureEventAIList)

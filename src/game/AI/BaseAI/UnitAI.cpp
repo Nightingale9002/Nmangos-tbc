@@ -17,6 +17,7 @@
  */
 
 #include "UnitAI.h"
+#include "Util/CallerAddress.h"
 #include "Entities/Creature.h"
 #include "Server/DBCStores.h"
 #include "Spells/Spell.h"
@@ -112,6 +113,11 @@ void UnitAI::EnterCombat(Unit*)
 
 void UnitAI::EnterEvadeMode()
 {
+    // [DOOR-DIAG] a non-alive unit should never be told to evade (walk home etc.)
+    if (!m_unit->IsAlive() && m_unit->GetTypeId() == TYPEID_UNIT && m_unit->GetMap())
+        m_unit->GetMap()->ReportCorpseDriver(static_cast<Creature*>(m_unit), "evade-while-dead",
+                                             MANGOS_CALLER_ADDR());
+
     ClearCombatOnlyRoot();
     m_unit->RemoveAllAurasOnEvade();
     m_unit->CombatStopWithPets(true);
@@ -140,6 +146,14 @@ void UnitAI::JustDied(Unit* /*killer*/)
 
 void UnitAI::AttackedBy(Unit* attacker)
 {
+    // [FIX 2026-10-03] A creature that is not alive must not react to being attacked.  Observed chain:
+    // a spell landed on a corpse -> Unit::AttackedBy -> UnitAI::AttackedBy -> CreatureAI::AttackStart ->
+    // Unit::EngageInCombatWith / SetInCombatState -> CreatureAI::AttackStart -> Unit::Attack (which refused
+    // and logged [DOOR] attack-while-dead, but only AFTER the corpse had been pushed into combat state).
+    // See KNOWN_ISSUES "[机制] 2026-10-02 尸体打人".
+    if (!m_unit->IsAlive())
+        return;
+
     if (!m_unit->IsInCombat() && !m_unit->GetVictim())
         AttackStart(attacker);
 }

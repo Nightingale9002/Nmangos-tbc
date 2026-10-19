@@ -1308,10 +1308,25 @@ bool rcBuildPolyMeshDetail(rcContext* ctx, const rcPolyMesh& mesh, const rcCompa
 		}
 		
 		// Move detail verts to world space.
+		//
+		// [CMaNGOS-TBC] 原版这里是：
+		//     verts[j*3+1] += orig[1] + chf.ch;   // Is this offset necessary?
+		// 也就是给**每一个**细节网格顶点硬编码再多加一个 ch（格子高度）。
+		// 上游自己在注释里就问了这句话 —— 实测下来这一格是凭空上浮。
+		//
+		// Sethekk Halls（map 556 tile 31,31, cs=ch=0.266667）同一根柱子的三层高度：
+		//     几何地板 0.5187  ->  compact heightfield 0.7020  ->  最终导航面 1.2100
+		// 导航面比高度场高 0.508 码 = 1.9 个 ch，其中整整 1 个 ch 就是这一行加进去的
+		// （另一部分是 getCornerHeight 取相邻 span 最大值，最多再 +1 ch）。
+		// 去掉之后同一格 955 个采样点的偏差中位 +0.321 -> +0.260、最大 1.080 -> 1.054。
+		//
+		// 安全性：细节顶点高度 = 轮廓顶点高度 * ch，而轮廓顶点来自 chf.spans[].y，
+		// 它本身就是 ceil(几何高度/ch) 的结果，所以 span_y * ch >= 真实几何高度。
+		// 去掉 +ch 之后顶点仍在几何**之上或齐平**，不可能穿进地板。
 		for (int j = 0; j < nverts; ++j)
 		{
 			verts[j*3+0] += orig[0];
-			verts[j*3+1] += orig[1] + chf.ch; // Is this offset necessary?
+			verts[j*3+1] += orig[1];
 			verts[j*3+2] += orig[2];
 		}
 		// Offset poly too, will be used to flag checking.

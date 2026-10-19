@@ -17,7 +17,9 @@
  */
 
 #include "MotionGenerators/MotionMaster.h"
+#include "Util/CallerAddress.h"
 #include "MotionGenerators/PfDebug.h"   // [PFDBG]
+#include "MotionGenerators/PlayerNavObs.h"   // [2026-10-19] 跳跃观测
 #include "HomeMovementGenerator.h"
 #include "IdleMovementGenerator.h"
 #include "MotionGenerators/PathMovementGenerator.h"
@@ -55,6 +57,45 @@ inline bool isStatic(MovementGenerator* mv)
     return (mv == &si_idleMovement);
 }
 
+// [PATHCORRUPT-DIAG 2026-10-03] Single funnel for deleting a movement generator.
+//
+// Cloud core 2026-10-03 10:50:06 (see dev/KNOWN_ISSUES.md): SIGSEGV at address 0x61 because
+// Pet::SetDeathState -> Unit::SetDeathState -> MotionMaster::DirectClean -> delete FollowMovementGenerator
+// read i_path == 1 (object+0x50) and called PathFinder::~PathFinder() with this == 1.  The generator itself
+// was alive and correctly linked - only that one pointer member had been overwritten from outside, i.e. this
+// is a stray write (use-after-free class), not a double delete.  The corruption itself has to be found by the
+// [PATHCORRUPT] line that TargetedMovementGeneratorMedium::Update emits on the first tick after it happens;
+// this guard makes sure the server survives the deletion until then, and records who was being deleted.
+void MotionMaster::GuardedDeleteGenerator(MovementGenerator* gen, char const* site)
+{
+    if (!gen || isStatic(gen))
+        return;                                             // static generators are never owned
+
+    uintptr_t const path = reinterpret_cast<uintptr_t>(gen->GetPathPointerForDiag());
+    if (path != 0 && path < 0x10000)
+    {
+        uint32 const topGen = empty() ? 0xFFFFFFFF : uint32(top()->GetMovementGeneratorType());
+
+        sLog.outError("[PATHCORRUPT] site=%s gen=%u genptr=0x%llX path=0x%llX stackTop=%u map=%u owner=%s ownerEntry=%u "
+                      "ownerType=%u alive=%d deathState=%u incombat=%d caller=0x%llX base=0x%llX stack=%s",
+                      site, uint32(gen->GetMovementGeneratorType()),
+                      static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(gen)),
+                      static_cast<unsigned long long>(path), topGen,
+                      m_owner->GetMapId(), m_owner->GetGuidStr().c_str(), m_owner->GetEntry(),
+                      uint32(m_owner->GetTypeId()), m_owner->IsAlive() ? 1 : 0, uint32(m_owner->GetDeathState()),
+                      m_owner->IsInCombat() ? 1 : 0,
+                      static_cast<unsigned long long>(MANGOS_CALLER_ADDR()),
+                      static_cast<unsigned long long>(MANGOS_IMAGE_BASE()),
+                      MaNGOS::FormatBacktrace().c_str());
+
+        // The value is not a PathFinder this generator owns, so there is nothing to free: forget it and let
+        // the generator rebuild one lazily on its next update.
+        gen->ClearPathPointerForDiag();
+    }
+
+    delete gen;
+}
+
 void MotionMaster::Initialize()
 {
 #ifdef BUILD_METRICS
@@ -66,6 +107,22 @@ void MotionMaster::Initialize()
         { "instance_id", std::to_string(m_owner->GetInstanceId()) }
     }, 1000);
 #endif
+    // [DOOR-DIAG 2026-10-03] This is the ONLY path that (re)installs the default movement generator of a
+    // creature (random wander / waypoints). Doing that for a non-alive creature is what the "corpse with
+    // RANDOM_MOTION_TYPE" report showed (2026-10-02 [DOOR] move-while-dead, movegen=1), so name the
+    // caller here - `caller` resolves against the linker map (Util/CallerAddress.h).
+    // Filter: only a CORPSE (client-visible body) is suspicious.  A creature that is merely DEAD
+    // (respawn pending, despawned/invisible) is deliberately loaded with an armed AI and default motion
+    // by Creature::LoadFromDB -> Creature::AIM_Initialize -> here, which is normal upstream behaviour and
+    // would otherwise print one line per killed creature at every grid load (2026-10-03: the very first
+    // run of this hook caught exactly that path, stack = LoadFromDB <- ObjectGridLoader <- EnsureGridLoaded).
+    if (!m_owner->IsAlive() && m_owner->GetTypeId() == TYPEID_UNIT && m_owner->GetMap() &&
+        !static_cast<Creature*>(m_owner)->IsDespawned())
+    {
+        m_owner->GetMap()->ReportCorpseDriver(static_cast<Creature*>(m_owner), "mm-initialize",
+                                              MANGOS_CALLER_ADDR());
+    }
+
     // stop current move
     m_owner->StopMoving();
 
@@ -106,8 +163,7 @@ MotionMaster::~MotionMaster()
     {
         MovementGenerator* m = top();
         pop();
-        if (!isStatic(m))
-            delete m;
+        GuardedDeleteGenerator(m, "dtor");                  // no Finalize: owner memory may already be gone
     }
 }
 
@@ -115,6 +171,20 @@ void MotionMaster::UpdateMotion(uint32 diff)
 {
     if (m_owner->hasUnitState(UNIT_STAT_CAN_NOT_MOVE))
         return;
+
+    // [DOOR-DIAG] 2026-10-02: a non-alive creature should sit on its idle generator (set by
+    // Unit::SetDeathState -> MoveIdle). Anything else means a path started movement on a corpse.
+    // [DIAG 2026-10-03] FALL_MOTION_TYPE is whitelisted: Unit::SetDeathState itself calls MoveFall() so a
+    // creature killed in mid-air drops to the ground (observed 2026-10-03 01:38 on guid 5300854, entry
+    // 25063: mm-mutate newgen=18 came from Unit::SetDeathState, and this hook then reported the完全正常的
+    // fall every tick).  Only generators that can not belong to a corpse are worth a line.
+    if (!m_owner->IsAlive() && m_owner->GetTypeId() == TYPEID_UNIT && m_owner->GetMap() &&
+        top()->GetMovementGeneratorType() != IDLE_MOTION_TYPE &&
+        top()->GetMovementGeneratorType() != FALL_MOTION_TYPE)
+    {
+        m_owner->GetMap()->ReportCorpseDriver(static_cast<Creature*>(m_owner), "move-while-dead",
+                                              MANGOS_CALLER_ADDR());
+    }
 #ifdef BUILD_METRICS
     metric::duration<std::chrono::microseconds> meas("motionmaster.updatemotion", {
         { "entry", std::to_string(m_owner->GetEntry()) },
@@ -139,10 +209,7 @@ void MotionMaster::UpdateMotion(uint32 diff)
     if (m_expList)
     {
         for (auto mg : *m_expList)
-        {
-            if (!isStatic(mg))
-                delete mg;
-        }
+            GuardedDeleteGenerator(mg, "update-expire");
 
         delete m_expList;
         m_expList = nullptr;
@@ -166,8 +233,7 @@ void MotionMaster::DirectClean(bool reset, bool all)
         pop();
         curr->Finalize(*m_owner);
 
-        if (!isStatic(curr))
-            delete curr;
+        GuardedDeleteGenerator(curr, "direct-clean");
     }
 
     if (!all && reset)
@@ -220,7 +286,7 @@ void MotionMaster::DirectExpire(bool reset)
             MovementGenerator* temp = top();
             pop();
             temp->Finalize(*m_owner);
-            delete temp;
+            GuardedDeleteGenerator(temp, "direct-expire");
         }
     }
 
@@ -229,8 +295,7 @@ void MotionMaster::DirectExpire(bool reset)
     // it can add another motions instead
     curr->Finalize(*m_owner);
 
-    if (!isStatic(curr))
-        delete curr;
+    GuardedDeleteGenerator(curr, "direct-expire");
 
     if (empty())
         Initialize();
@@ -563,6 +628,27 @@ void MotionMaster::MoveDistract(uint32 timer)
     Mutate(mgen);
 }
 
+// [2026-10-19] 跳跃/跃迁：TBC 分支只有声明没有实现（MoveJump/MoveJumpFacing），
+//   这里补一个最小实现：沿直线（不寻路）以 fall 样条移动到落点。
+//   用途：路线跳点（DungeonRoute.h → TryRouteLink）、bot 跟随主人跳下楼层。
+void MotionMaster::MoveJump(float x, float y, float z, float horizontalSpeed, float max_height, uint32 id/* = EVENT_JUMP*/)
+{
+    (void)max_height;   // 该分支 MoveSplineInit 没有 parabolic 参数，先按"下落样条"处理
+
+    // [2026-10-19 站长口径] bot 的服务端跳跃也记一份样本（is_bot=1；真人走客户端包）
+    navobs::OnServerJump(m_owner, m_owner->GetPositionX(), m_owner->GetPositionY(), m_owner->GetPositionZ(), x, y, z);
+
+    if (m_owner->hasUnitState(UNIT_STAT_NO_FREE_MOVE))
+        return;
+
+    Movement::MoveSplineInit init(*m_owner);
+    init.SetWalk(false);
+    init.SetVelocity(horizontalSpeed > 0.1f ? horizontalSpeed : 8.0f);
+    init.MoveTo(x, y, z, false);   // 跳跃走直线，不生成寻路
+    init.SetFall();
+    Mutate(new EffectMovementGenerator(init, id, false));
+}
+
 void MotionMaster::MoveCharge(float x, float y, float z, float speed, uint32 id/* = EVENT_CHARGE*/)
 {
     if (m_owner->hasUnitState(UNIT_STAT_NO_FREE_MOVE))
@@ -571,8 +657,7 @@ void MotionMaster::MoveCharge(float x, float y, float z, float speed, uint32 id/
     Movement::MoveSplineInit init(*m_owner);
     init.SetWalk(false);
     init.SetVelocity(speed);
-    // navmesh charge: PathFinder snaps every point (incl. the endpoint) to the
-    // walkable surface, so a charge never leaves the creature stuck floating in
+    // navmesh charge: PathFinder snaps every point (incl. the endpoint) to the    // walkable surface, so a charge never leaves the creature stuck floating in
     // the air / inside a wall after clipping through geometry (straight-line
     // charge was tried and removed 2026-08-24 for that reason).
     init.MoveTo(x, y, z, true);
@@ -626,6 +711,20 @@ bool MotionMaster::MoveFall(ObjectGuid guid/* = ObjectGuid()*/, uint32 relayId/*
 
 void MotionMaster::Mutate(MovementGenerator* m)
 {
+    // [DOOR-DIAG 2026-10-03] Mutate() is the single funnel through which every Move* helper installs a
+    // movement generator (21 call sites, no direct push(new ...) anywhere), so a corpse that suddenly
+    // holds a non-idle generator is named here - together with the generator being installed and the
+    // caller chain (Util/CallerAddress.h).
+    // Filter: same rule as the other two hooks - only a client-visible CORPSE is suspicious.  The first run
+    // (2026-10-03 01:37) caught a legitimate DEAD path instead: Unit::SetDeathState -> MoveFall for a
+    // creature killed in mid-air (newgen=18 FALL_MOTION_TYPE), which is not worth a log line.
+    if (m && !m_owner->IsAlive() && m_owner->GetTypeId() == TYPEID_UNIT && m_owner->GetMap() &&
+        !static_cast<Creature*>(m_owner)->IsDespawned())
+    {
+        m_owner->GetMap()->ReportCorpseDriver(static_cast<Creature*>(m_owner), "mm-mutate",
+                                              MANGOS_CALLER_ADDR(), m->GetMovementGeneratorType());
+    }
+
     if (!empty())
     {
         switch (top()->GetMovementGeneratorType())

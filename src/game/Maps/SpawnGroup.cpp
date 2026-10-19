@@ -28,6 +28,7 @@
 #include "MotionGenerators/TargetedMovementGenerator.h"
 #include "World/World.h"
 #include "Maps/InstanceData.h"
+#include "Config/Config.h"      // fork addition: SpawnGroup.DebugLog conf key
 
 namespace
 {
@@ -64,6 +65,8 @@ namespace
 
 SpawnGroup::SpawnGroup(SpawnGroupEntry const& entry, Map& map, uint32 typeId) : m_entry(entry), m_map(map), m_chosenSquad(-1), m_objectTypeId(typeId), m_enabled(m_entry.EnabledByDefault)
 {
+    // Fork addition: optional per-spawn logging for diagnosing empty packs/instances.
+    m_debugLog = sConfig.GetBoolDefault("SpawnGroup.DebugLog", false);
 }
 
 void SpawnGroup::AddObject(uint32 dbGuid, uint32 entry)
@@ -291,6 +294,16 @@ void SpawnGroup::Spawn(bool forced, bool ignoreRespawntime)
     time_t now = time(nullptr);
     for (auto itr = eligibleGuids.begin(); itr != eligibleGuids.end();)
     {
+        // A slot whose object is still in the world (dead body awaiting removal, or a member the
+        // group still owns) must never be materialized again: WorldObject::SpawnCreature would
+        // remove the old object and the whole pack would visibly blink and get a new guid each
+        // update, because Spawn() is driven from SpawnManager::Update every map update.
+        if (m_map.GetCreature((*itr)->DbGuid))
+        {
+            itr = eligibleGuids.erase(itr);
+            continue;
+        }
+
         if (m_map.GetPersistentState()->GetObjectRespawnTime(GetObjectTypeId(), (*itr)->DbGuid) > now)
         {
             if (!ignoreRespawntime)
@@ -425,12 +438,30 @@ void SpawnGroup::Spawn(bool forced, bool ignoreRespawntime)
             m_map.GetPersistentState()->AddGameobjectToGrid(dbGuid, data);
         }
         AddObject(dbGuid, entry);
-        if (forced || m_entry.Active || m_map.IsLoaded(x, y))
+        // [懒加载 2026-10-16] 站长口径：本服一律懒加载 —— `Active` 组**不再"隔空刷新"**：
+        // 只有该网格已加载（或显式 forced，例如脚本 `Spawn(true, ...)`）才生成成员。
+        // 原因（dev/KNOWN_ISSUES.md）：Active 组散布整张图，首轮 Map::Update 里 SpawnManager
+        // 逐个 spawn 会触发 TerrainInfo::GetHeightStatic/IsSwimmable ⇒ TerrainInfo::LoadMapAndVMap
+        // 把每格的 terrain+vmap+mmap 全拖进内存（massif 实测：mmap +335MB / vmap +132MB /
+        // 高度查询 +404MB）⇒ 启动峰值 +470MB（其中约 660MB 是 mallinfo 看不见的大块匿名分配）。
+        // 开放世界与副本同样处理：网格加载时 Map::Update → SpawnGroup::Update() 会照常把成员刷出来。
+        if (forced || m_map.IsLoaded(x, y))
         {
+            WorldObject* spawned = nullptr;
             if (GetObjectTypeId() == TYPEID_UNIT)
-                WorldObject::SpawnCreature(dbGuid, &m_map, entry);
+                spawned = WorldObject::SpawnCreature(dbGuid, &m_map, entry);
             else
-                WorldObject::SpawnGameObject(dbGuid, &m_map, entry);
+                spawned = WorldObject::SpawnGameObject(dbGuid, &m_map, entry);
+
+            // Fork addition: an entry that resolved to 0 cannot be created - and that used to happen
+            // without any log at all (see the Arcatraz case in dev/KNOWN_ISSUES.md).
+            if (!entry && m_zeroEntryReported.insert(dbGuid).second)
+                sLog.outError("SpawnGroup %u (%s): member guid %u could not resolve an entry (entry 0) - nothing was spawned",
+                              m_entry.Id, m_entry.Name.c_str(), dbGuid);
+
+            if (m_debugLog)
+                sLog.outString("[SGD] group %u (%s) member guid %u -> entry %u : %s", m_entry.Id, m_entry.Name.c_str(), dbGuid, entry,
+                               spawned ? "spawned" : "NOT created");
         }
     }
 }

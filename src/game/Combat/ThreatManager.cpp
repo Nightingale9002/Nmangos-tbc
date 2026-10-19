@@ -632,6 +632,23 @@ void ThreatManager::setCurrentVictim(HostileReference* hostileReference)
 {
     if (hostileReference && hostileReference != iCurrentVictim)
     {
+        // [2026-10-18 站长口径] "怪物被冰环的时候 如果近战范围有多个人，会来回切换目标，
+        //   而不是打距离内仇恨最高的" —— 先记录**每一次切换**的现场（旧/新目标、threat、
+        //   近战可达、是否被定身），拿真实现场再决定改阈值/滞回，不拍脑袋改核心选目标逻辑。
+        Unit* oldVictim = iCurrentVictim ? iCurrentVictim->getTarget() : nullptr;
+        Unit* newVictim = hostileReference->getTarget();
+        if (newVictim)
+        {
+            sLog.outString("[THREAT-SWITCH] %s guid=%u rooted=%d old=%s threat=%.1f reach=%d -> new=%s threat=%.1f reach=%d",
+                iOwner->GetName(), iOwner->GetGUIDLow(),
+                int(iOwner->hasUnitState(UNIT_STAT_ROOT)),
+                oldVictim ? oldVictim->GetName() : "-",
+                iCurrentVictim ? iCurrentVictim->getThreat() : 0.0f,
+                oldVictim ? int(iOwner->CanReachWithMeleeAttack(oldVictim)) : 0,
+                newVictim->GetName(), hostileReference->getThreat(),
+                int(iOwner->CanReachWithMeleeAttack(newVictim)));
+        }
+
         iOwner->SendHeituChangeCurrentVictimOpcode(hostileReference);
     }
     iCurrentVictim = hostileReference;

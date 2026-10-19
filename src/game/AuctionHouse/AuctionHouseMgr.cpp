@@ -473,7 +473,22 @@ void AuctionHouseMgr::LoadAuctions()
 void AuctionHouseMgr::AddAItem(Item* it)
 {
     MANGOS_ASSERT(it);
-    MANGOS_ASSERT(mAitems.find(it->GetGUIDLow()) == mAitems.end());
+
+    // [AH-DUP 2026-10-17] 以前这里是 MANGOS_ASSERT(mAitems.find(...) == mAitems.end())：
+    //   DB 里只要有两条拍卖行指向同一个 itemguid（实测本地库 tbcmangos.auction 就有重复），
+    //   服务端就会 "Critical Error: A condition which must never be false..." 直接自杀，
+    //   表现是起服卡在 "Loading Auctions..."。
+    //   改成：保留先加载的那份，重复的后加载者记录一条错误并丢弃 —— 服务能起，
+    //   重复的那条拍卖在后续 GetAItem 校验里会自己失败并被跳过。
+    ItemMap::iterator existing = mAitems.find(it->GetGUIDLow());
+    if (existing != mAitems.end())
+    {
+        sLog.outError("[AH-DUP] duplicate auction item guid=%u — keep the first instance, drop this one",
+                      it->GetGUIDLow());
+        delete it;
+        return;
+    }
+
     mAitems[it->GetGUIDLow()] = it;
 }
 
@@ -874,6 +889,18 @@ void WorldSession::BuildListAuctionItems(std::vector<AuctionEntry*> const& aucti
 
 AuctionEntry* AuctionHouseObject::AddAuction(AuctionHouseEntry const* auctionHouseEntry, Item* newItem, uint32 etime, uint32 bid, uint32 buyout, uint32 deposit, Player* pl /*= nullptr*/)
 {
+    // [AH-DUP 2026-10-17 站长口径] 挂单前先校验：这个 item guid 已经在拍卖行里了 ⇒ 拒绝重复挂单。
+    //   来源是 AHBot 的"重新定价/重新挂出"路径会拿同一个 item 再挂一次（AuctionHouseBot.cpp:509/530 等），
+    //   加上 DB 里历史遗留的重复行 ⇒ AuctionHouseMgr::AddAItem 的断言会把服务端打成 Critical Error。
+    //   ⚠️ 只拦【非玩家】挂单（pl == nullptr，即 AHBot / GM 命令）：玩家挂单走 HandleAuctionSellItem，
+    //     那里 deposit 已扣、物品已从背包取出，拦下会丢失物品 ⇒ 玩家路径保持原样。
+    if (newItem && !pl && sAuctionMgr.GetAItem(newItem->GetGUIDLow()))
+    {
+        sLog.outError("[AH-DUP] refuse to list item guid=%u entry=%u: already in auction house",
+                      newItem->GetGUIDLow(), newItem->GetEntry());
+        return nullptr;
+    }
+
     uint32 auction_time = uint32(etime * sWorld.getConfig(CONFIG_FLOAT_RATE_AUCTION_TIME));
 
     AuctionEntry* AH = new AuctionEntry;
@@ -983,12 +1010,15 @@ void AuctionEntry::SaveToDB() const
 void AuctionEntry::AuctionBidWinning(Player* newbidder)
 {
     // [2026-09-21] 经济追踪：每一笔成交（含玩家↔玩家、玩家↔AHBot、竞价获胜/买断）
-    // 在唯一结算点记一行到 tbccharacters.auction_history，并同时落一条 ERROR 级日志。
+    // 在唯一结算点记一行到 tbccharacters.auction_history，并同时落一条 Server.log 日志。
     // 落盘说明（站长要求）：
     //   ① DB 行刻意写在下面 BeginTransaction() **之外** ⇒ 自己独立提交，不会被后续事务回滚带走；
     //      InnoDB autocommit 立刻落盘（auction_history 见 deploy/dev SQL）。
-    //   ② 同时用 sLog.outError 写 Server.log（ERROR 级必然输出，见 handoff 第十三章），
-    //      即使 DB 写失败/表被删，成交记录仍有一份在磁盘上，可用于事后对账。
+    //   ② 同时写 Server.log。**2026-10-01 起改用 sLog.outString**（原来用 outError）：
+    //      outString 同样**无条件**写日志文件（Log::outString 里不检查 LogFileLevel，
+    //      见 src/shared/Log/Log.cpp），所以"即使 DB 写失败，成交记录仍有一份在磁盘上"这条保证不变；
+    //      而不再带 "ERROR:" 前缀 —— 成交是正常业务记录，挂在 ERROR 上会把真错误淹掉
+    //      （普查：云端一个日志窗口里 [AHTRADE]+[MMQUOTE] 占全部 ERROR/WARN 行约 49%）。
     {
         uint32 const unitPrice = bid / std::max<uint32>(1, itemCount);
         uint32 const houseIdx = sAuctionMgr.GetAuctionMapIndex(auctionHouseEntry);
@@ -998,7 +1028,12 @@ void AuctionEntry::AuctionBidWinning(Player* newbidder)
                                    "VALUES (%u, %u, %u, %u, %u, %u, %u, %u, %u, %u)",
                                    now, houseIdx, itemTemplate, itemCount, unitPrice, bid,
                                    owner, bidder, owner ? 0 : 1, bidder ? 0 : 1);
-        sLog.outError("[AHTRADE] time=%u house=%u item=%u count=%u unit=%u total=%u seller=%u buyer=%u sellerBot=%u buyerBot=%u",
+        // [LOG-NOISE 2026-10-01] 成交审计日志：内容一字不改，只是不再用 outError ——
+        // 它是"正常业务记录"不是错误，混在 ERROR 里会把真错误淹掉（普查：云端一个日志窗口里
+        // [MMQUOTE]+[AHTRADE] 占了全部 ERROR/WARN 行的 ~49%）。
+        // 仍然用 outString：它在 LogFileLevel=0 时也照样写 Server.log，
+        // 所以"审计必进日志"的保证不变，只是不再带 "ERROR:" 前缀。
+        sLog.outString("[AHTRADE] time=%u house=%u item=%u count=%u unit=%u total=%u seller=%u buyer=%u sellerBot=%u buyerBot=%u",
                       now, houseIdx, itemTemplate, itemCount, unitPrice, bid,
                       owner, bidder, owner ? 0 : 1, bidder ? 0 : 1);
     }

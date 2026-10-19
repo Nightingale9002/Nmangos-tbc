@@ -65,6 +65,12 @@ void WorldStateVariableManager::SetVariable(int32 Id, int32 value)
     if (variable.value == value)
         return;
 
+    // [SHH-WS 2026-10-06] 定向诊断：破碎大厅「Legionnaire Group 01」的世界状态（5400001）由
+    // Legionnaire 001 的 AI 写（shattered_hallsScripts.cpp）——站长反馈那组野人/异教徒从不刷新，
+    // 这条日志用来确认变量到底取到了什么值（若一次都不打印 ⇒ 那段 AI 逻辑没跑到）。
+    if (Id == 5400001)
+        sLog.outError("[SHH-WS] 5400001: %d -> %d", variable.value, value);
+
     variable.value = value;
     if (m_variables[Id].send)
         BroadcastVariable(Id);

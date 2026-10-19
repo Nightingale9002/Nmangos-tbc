@@ -267,6 +267,26 @@ void PetAI::UpdateAI(const uint32 diff)
     }
 }
 
+// [PETCAST-FIX 2026-10-01] 判断一条（被判成 AoE 的）法术是否**同时**含"单体目标"型效果：
+// 这种法术必须把单位目标传下去，否则 Spell 会以 SPELL_FAILED_BAD_TARGETS 拒绝施法。
+// 判据与 PetAI::CheckPetCast 内那道检查一致，纯区域型 AoE 返回 false（行为不变）。
+static bool PetSpellNeedsExplicitUnitTarget(SpellEntry const* spellInfo)
+{
+    for (int i = 0; i < MAX_EFFECT_INDEX; ++i)
+    {
+        uint32 const targets[2] = { spellInfo->EffectImplicitTargetA[i], spellInfo->EffectImplicitTargetB[i] };
+        for (int t = 0; t < 2; ++t)
+        {
+            SpellTargetInfo const& targetData = SpellTargetInfoTable[targets[t]];
+            if (targetData.filter == TARGET_SCRIPT)
+                continue;
+            if (targetData.type == TARGET_TYPE_UNIT || targetData.type == TARGET_TYPE_PLAYER)
+                return true;
+        }
+    }
+    return false;
+}
+
 std::vector<std::tuple<SpellEntry const*, Unit*, bool>> PetAI::PickSpellWithTarget(Unit* owner, Unit* victim, CharmInfo* charmInfo)
 {
     std::vector<std::tuple<SpellEntry const*, Unit*, bool>> nonblockingSpells;
@@ -370,7 +390,14 @@ std::vector<std::tuple<SpellEntry const*, Unit*, bool>> PetAI::PickSpellWithTarg
             }
 
             // Target is not required for pet AoE spells
-            nonblockingSpells.emplace_back(spellInfo, nullptr, false);
+            // [PETCAST-FIX 2026-10-01] 例外：有些 AoE 法术**同时含"单体目标"型效果**（尖啸 Screech：
+            // Effect1 = SCHOOL_DAMAGE + TARGET_UNIT_ENEMY，只是 Effect2 的 B 目标为 8 码敌方区域才
+            // 被 IsAreaOfEffectSpell 判成 AoE）。这类法术没有单位目标时，Spell 侧会直接以
+            // SPELL_FAILED_BAD_TARGETS 拒绝整次施法（实测日志：cast spell=24579 target=none result=11 ×468/468）
+            // ⇒ 表现就是"自动释放开着也不放"。判据与 PetAI::CheckPetCast 里那道检查同一套
+            // （SpellTargetInfoTable 的 type 为 TARGET_TYPE_UNIT / TARGET_TYPE_PLAYER）。
+            // 纯区域型 AoE（雷霆践踏、火焰吐息、狂怒之嚎）判据为 false，行为完全不变。
+            nonblockingSpells.emplace_back(spellInfo, PetSpellNeedsExplicitUnitTarget(spellInfo) ? victim : nullptr, false);
             continue;
         }
         // In all other cases, try to find a good use for the spell

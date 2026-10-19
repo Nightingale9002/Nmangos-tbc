@@ -49,6 +49,14 @@ class MovementGenerator
         virtual MovementGeneratorType GetMovementGeneratorType() const = 0;
         virtual Unit* GetCurrentTarget() const { return nullptr; }
 
+        // [PATHCORRUPT-DIAG 2026-10-03] Generators that own a PathFinder* expose it here so MotionMaster can
+        // recognise a stray write into that member before dereferencing it.  Background: the cloud world
+        // server crashed on 2026-10-03 10:50:06 inside PathFinder::~PathFinder() because a live
+        // FollowMovementGenerator's i_path had been overwritten with a small integer (observed value 1).
+        // Default: nothing to check.
+        virtual void* GetPathPointerForDiag() const { return nullptr; }
+        virtual void  ClearPathPointerForDiag() { }
+
         virtual void UnitSpeedChanged() { }
 
         // used by Evade code for select point to evade with expected restart default movement

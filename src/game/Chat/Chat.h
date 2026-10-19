@@ -728,6 +728,8 @@ class ChatHandler
         bool HandleUnLearnCommand(char* args);
         bool HandleGetDistanceCommand(char* args);
         bool HandleGetLosCommand(char* args);
+        bool HandleVMapLosCommand(char* args);       // 控制台专用：对任意两点做 vmap LOS/height 查询
+        bool HandleVMapUnloadCommand(char* args);    // 控制台专用：强制卸掉某张图的 vmap 树（故障复现）
         bool HandleModifyStandStateCommand(char* args);
         bool HandleDieCommand(char* args);
         bool HandleDamageCommand(char* args);

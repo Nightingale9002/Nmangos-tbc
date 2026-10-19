@@ -238,7 +238,9 @@ class Group
                 SendUpdate();
         }
 
-        void SetTargetIcon(uint8 id, ObjectGuid targetGuid);
+        // [2026-10-18 站长口径] 团队标记（骷髅等）的"标记 / 改标 / 清标"要落盘到日志：
+        //   changer = 谁改的（玩家 guid；bot/内部调用留空即可）。默认参数保证旧调用点不用改。
+        void SetTargetIcon(uint8 id, ObjectGuid targetGuid, ObjectGuid changer = ObjectGuid());
 
         void SetDifficulty(Difficulty difficulty);
         Difficulty GetDifficulty() const { return m_difficulty; }

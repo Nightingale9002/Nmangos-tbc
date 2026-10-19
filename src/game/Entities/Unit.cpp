@@ -17,6 +17,7 @@
  */
 
 #include "Entities/Unit.h"
+#include "Util/CallerAddress.h"
 #include "Log/Log.h"
 #include "Server/Opcodes.h"
 #include "Server/WorldPacket.h"
@@ -51,6 +52,7 @@
 #include "Entities/Transports.h"
 #include "Anticheat/Anticheat.hpp"
 #include "Spells/SpellStacking.h"
+#include "Combat/CombatLogRecorder.h"
 
 #ifdef BUILD_METRICS
  #include "Metric/Metric.h"
@@ -528,25 +530,31 @@ void Unit::Update(const uint32 diff)
     // update abilities available only for fraction of time
     UpdateReactives(diff);
 
-    // Dynamically update swimming state: the SWIMMING flag is only set at creature
-    // creation based on the spawn point. A water dweller spawned in shallow water and
-    // chasing into deep water stays flagged as a land unit and sinks/evades. Recompute
-    // from the current position each tick (SetSwim only sends packets on state change).
-    // Skip WALK_IN_WATER creatures (crabs etc.): they must walk on the seabed, forcing
-    // them to swim makes the client sink/bob against the server position.
-    if (GetTypeId() == TYPEID_UNIT && CanSwim() &&
+    // [SWIM-STATE 2026-10-03] 注意：**非存活单位整段跳过**，不能只让判据返回 false —— 那样会落到
+    // 下面的 `else if (swimming) SetSwim(false)` 上，把尸体/刚死的怪的游泳字段清掉并广播 STOP_SWIM，
+    // 而复活后移动标志本来就是"已游泳"，`SetSwim(true)`（只在状态变化时发包）便永远不再触发，
+    // 客户端因此收不到 START_SWIM，只能一直播走路（抓包证据：字段被设了 0x8000 却没有任何 START_SWIM）。
+    if (IsAlive() && GetTypeId() == TYPEID_UNIT && CanSwim() &&
         !(static_cast<Creature const*>(this)->GetCreatureInfo()->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER))
     {
-        // A swimmer starts swimming as soon as it is below the surface (with a
-        // small hysteresis band so the waterline does not flip-flop the state),
-        // and stops swimming only once it is clearly out of the water. This
-        // keeps it swimming across the shallow bank too, instead of wading the
-        // seabed when it follows the target back toward the shore.
-        float waterLevel = GetMap()->GetTerrain()->GetWaterLevel(GetPositionX(), GetPositionY(), GetPositionZ());
         bool const swimming = m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
-        if (!swimming && waterLevel > INVALID_HEIGHT && GetPositionZ() < waterLevel - 0.5f)
-            SetSwim(true);
-        else if (swimming && (waterLevel <= INVALID_HEIGHT || GetPositionZ() > waterLevel + 0.5f))
+        bool const wantSwim = ShouldSwimAtCurrentPosition();
+
+        if (wantSwim)
+        {
+            if (!swimming)
+            {
+                // 进入游泳时先把原点沉到客户端会播游泳的深度，否则它会继续"走在水面"直到自己沉下去
+                SinkToSwimOriginDepth(true);
+                SetSwim(true);
+            }
+            else if (movespline->Finalized())
+            {
+                // 站着（等刷新点/等路径等待）且原点太浅：沉到位（不动的话客户端只会一直播走路）
+                SinkToSwimOriginDepth(true);
+            }
+        }
+        else if (swimming)
             SetSwim(false);
     }
 
@@ -695,6 +703,30 @@ enum SwingErrors
     SWING_ERROR_CANT_ATTACK_TARGET,
 };
 
+// [DEADHIT-DIAG] 2026-10-02: short reason when this unit is in a state in which it must NOT be
+// able to attack or cast; nullptr when everything looks normal. See Map::ReportDeadAction.
+//   not-alive       : death state != ALIVE yet the unit is acting
+//   zero-health     : health 0 but not flagged dead (GM kill / script zeroing the HP)
+//   respawn-pending : ALIVE with health > 0, but the creature's respawn clock is still running
+//                     (站长报告的那个矛盾组合：它活着在打人，同时重生计时还在走)
+char const* Unit::GetNonActingStateReason() const
+{
+    if (!IsAlive())
+        return "not-alive";
+
+    if (GetHealth() == 0)
+        return "zero-health";
+
+    if (GetTypeId() == TYPEID_UNIT)
+    {
+        Creature const* c = static_cast<Creature const*>(this);
+        if (c->GetRespawnTimeEx() > time(nullptr))
+            return "respawn-pending";
+    }
+
+    return nullptr;
+}
+
 bool Unit::UpdateMeleeAttackingState()
 {
     Unit* victim = GetVictim();
@@ -705,7 +737,14 @@ bool Unit::UpdateMeleeAttackingState()
     // hp == 0 is treated as dead even if the death state was never set
     // (GM kill spells can zero the health without going through SetDeathState).
     if (!victim || !IsAlive() || GetHealth() == 0 || IsNonMeleeSpellCasted(false))
+    {
+        // [DEADHIT-DIAG] a unit that should not be able to act still holds a victim: log it once
+        // per unit (the guard below already blocks the swing - this tells us the path is reached)
+        if (victim && GetTypeId() == TYPEID_UNIT && GetMap())
+            if (char const* why = GetNonActingStateReason())
+                GetMap()->ReportDeadAction(this, "melee-blocked", why, victim, 0, 0, 0, MANGOS_CALLER_ADDR());
         return false;
+    }
 
     if (GetTypeId() != TYPEID_PLAYER && (!static_cast<Creature*>(this)->CanInitiateAttack()))
         return false;
@@ -999,6 +1038,12 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
 
     if (dealer)
     {
+        // [BOT-ML 2026-10-17] bot 输出统计（核心数据）：dealer 是 bot 玩家 ⇒ 累计真实伤害。
+        //   仅 playerbot 构建有 isRealPlayer()；不开模块时这段不编译。
+#ifdef ENABLE_PLAYERBOTS
+        if (dealer->IsPlayer() && !static_cast<Player*>(dealer)->isRealPlayer())
+            static_cast<Player*>(dealer)->botDamageDealt += damage;
+#endif
         // Rage from Damage made (only from direct weapon damage)
         if (cleanDamage && damagetype == DIRECT_DAMAGE && dealer != victim && dealer->GetTypeId() == TYPEID_PLAYER && (dealer->GetPowerType() == POWER_RAGE))
         {
@@ -1180,12 +1225,39 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
 
     DEBUG_FILTER_LOG(LOG_FILTER_DAMAGE, "DealDamageEnd returned %d damage", damage);
 
+    // [副本数据采集 2026-10-18 站长口径] 服务端战斗日志（副本 + 玩家相关；见 Combat/CombatLogRecorder.h）
+    combatlog::OnDamage(dealer, victim, damage, damagetype, damageSchoolMask, spellInfo);
+
     return damage;
 }
 
 void Unit::Kill(Unit* killer, Unit* victim, DamageEffectType damagetype, SpellEntry const* spellInfo, bool durabilityLoss, bool duel_hasEnded)
 {
     DEBUG_FILTER_LOG(LOG_FILTER_DAMAGE, "DealDamage %s Killed %s", killer ? killer->GetGuidStr().c_str() : "", victim->GetGuidStr().c_str());
+
+    // [副本数据采集 2026-10-18 站长口径] 战斗日志 UNIT_DIED
+    combatlog::OnDeath(killer, victim, spellInfo);
+
+#ifdef ENABLE_PLAYERBOTS
+    // [rewards 2026-10-19] 奖励函数的原始计数（模块每 5 秒取增量写 bm_kills / bm_deaths）：
+    //   · 击杀：受害者是生物，且击杀归属玩家是 bot（isRealPlayer() == false）
+    //   · 死亡：受害者是 bot 玩家
+    //   放在函数最前面，保证无论后面怎么返回都已记账。
+    if (victim && victim->GetTypeId() == TYPEID_UNIT)
+    {
+        if (Player* credited = killer ? killer->GetBeneficiaryPlayer() : nullptr)
+        {
+            if (!credited->isRealPlayer())
+                ++credited->botKills;
+        }
+    }
+    if (victim && victim->GetTypeId() == TYPEID_PLAYER)
+    {
+        Player* victimPlayer = static_cast<Player*>(victim);
+        if (!victimPlayer->isRealPlayer())
+            ++victimPlayer->botDeaths;
+    }
+#endif
 
     /*
     *  Preparation: Who gets credit for killing whom, invoke SpiritOfRedemtion?
@@ -2833,6 +2905,13 @@ void Unit::CalculateAbsorbResistBlock(Unit* caster, SpellNonMeleeDamage* spellDa
 
 void Unit::AttackerStateUpdate(Unit* pVictim, WeaponAttackType attType, bool extra)
 {
+    // [DEADHIT-DIAG] this is the only function that actually deals melee damage - if a unit that
+    // should not be able to act ever arrives here, the report names it and prints its real state
+    // (see Map::ReportDeadAction; 站长报告的矛盾组合就靠这一行定案).
+    if (GetMap() && GetTypeId() == TYPEID_UNIT)
+        if (char const* why = GetNonActingStateReason())
+            GetMap()->ReportDeadAction(this, "melee-swing", why, pVictim, 0, 0, 0, MANGOS_CALLER_ADDR());
+
     if (hasUnitState(UNIT_STAT_CAN_NOT_REACT) || HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PACIFIED))
         return;
 
@@ -6750,7 +6829,12 @@ bool Unit::Attack(Unit* victim, bool meleeAttack)
 
     // dead units can neither attack nor be attacked
     if (!IsAlive() || !victim->IsInWorld() || !victim->IsAlive())
+    {
+        // [DOOR-DIAG] something tried to make a non-alive unit attack - name it once per guid
+        if (!IsAlive() && GetTypeId() == TYPEID_UNIT && GetMap())
+            GetMap()->ReportCorpseDriver(static_cast<Creature*>(this), "attack-while-dead", MANGOS_CALLER_ADDR());
         return false;
+    }
 
     // player cannot attack in mount state
     if (GetTypeId() == TYPEID_PLAYER && IsMounted())
@@ -7413,6 +7497,11 @@ int32 Unit::DealHeal(Unit* pVictim, uint32 addhealth, SpellEntry const* spellPro
 
     if (unit->IsPlayer())
     {
+        // [BOT-ML 2026-10-17] bot 治疗统计（核心数据）：只计**有效治疗**（gain，过量治疗不算）。
+#ifdef ENABLE_PLAYERBOTS
+        if (!static_cast<Player*>(unit)->isRealPlayer())
+            static_cast<Player*>(unit)->botHealingDone += gain;
+#endif
         if (BattleGround* bg = static_cast<Player*>(unit)->GetBattleGround())
             bg->UpdatePlayerScore(static_cast<Player*>(unit), SCORE_HEALING_DONE, gain);
     }
@@ -7420,6 +7509,9 @@ int32 Unit::DealHeal(Unit* pVictim, uint32 addhealth, SpellEntry const* spellPro
     // Script Event HealedBy
     if (pVictim->AI())
         pVictim->AI()->HealedBy(this, addhealth);
+
+    // [副本数据采集 2026-10-18 站长口径] 战斗日志 SPELL_HEAL（只记有效治疗 gain）
+    combatlog::OnHeal(this, pVictim, gain, spellProto);
 
     return gain;
 }
@@ -8853,6 +8945,29 @@ bool Unit::IsVisibleForOrDetect(Unit const* u, WorldObject const* viewPoint, boo
 
 void Unit::UpdateVisibilityAndView()
 {
+    UpdateVisibilityAndViewInternal(true);
+}
+
+// [INVIS-AGGRO 2026-10-01] Same as UpdateVisibilityAndView, but without ScheduleAINotify(0).
+//
+// Why this exists: UpdateVisibilityAndView() ends with ScheduleAINotify(0), and that event
+// (UnitVisitObjectsInRangeNotifyEvent, below in this file) does two things for a creature:
+//   1) creature.SetCanAggro(creature.IsAlive())   - lifts the post-respawn aggro gate
+//   2) CreatureVisitObjectsNotifier over every object in range, i.e. a complete "can I aggro
+//      anything?" sweep: UnitVisitObjectsNotifierWorker -> AI()->IsVisible() -> MoveInLineOfSight()
+//      -> DetectOrAttack() -> AttackStart().
+// MoveInLineOfSight() is reached *only* from such sweeps (GridNotifiersImpl.h), so a stationary
+// creature never re-checks a player standing still next to it - until something schedules a sweep.
+// Applying/removing stealth or invisibility is exactly such a trigger, which made a creature attack a
+// stealthed player at the very instant it entered invisibility, although the same player had been
+// ignored for minutes before. Use this variant whenever a visibility change must not change aggro.
+void Unit::UpdateVisibilityAndViewNoAINotify()
+{
+    UpdateVisibilityAndViewInternal(false);
+}
+
+void Unit::UpdateVisibilityAndViewInternal(bool forceAINotify)
+{
     static const AuraType auratypes[] = {SPELL_AURA_BIND_SIGHT, SPELL_AURA_FAR_SIGHT, SPELL_AURA_NONE};
     for (AuraType const* type = &auratypes[0]; *type != SPELL_AURA_NONE; ++type)
     {
@@ -8878,7 +8993,8 @@ void Unit::UpdateVisibilityAndView()
 
     GetViewPoint().Call_UpdateVisibilityForOwner();
     UpdateObjectVisibility();
-    ScheduleAINotify(0);
+    if (forceAINotify)
+        ScheduleAINotify(0);
     GetViewPoint().Event_ViewPointVisibilityChanged();
 }
 
@@ -8890,12 +9006,17 @@ SpellSchoolMask Unit::GetMainAttackSchoolMask()
         return GetMeleeDamageSchoolMask();
 }
 
-void Unit::SetVisibility(UnitVisibility x)
+void Unit::SetVisibility(UnitVisibility x, bool forceAINotify)
 {
     m_Visibility = x;
 
     if (IsInWorld())
-        UpdateVisibilityAndView();
+    {
+        if (forceAINotify)
+            UpdateVisibilityAndView();
+        else
+            UpdateVisibilityAndViewNoAINotify();   // [INVIS-AGGRO] no AI aggro sweep
+    }
 }
 
 void Unit::UpdateSpeed(UnitMoveType mtype, bool forced, float ratio)
@@ -12731,6 +12852,190 @@ float Unit::GetCollisionHeight() const
 
     float const collisionHeight = scaleMod * modelData->CollisionHeight * modelData->Scale * displayInfo->scale;
     return collisionHeight == 0.0f ? DEFAULT_COLLISION_HEIGHT : collisionHeight;
+}
+
+// [SWIM/AIR HEIGHT 2026-10-03] Model-based vertical placement (operator-confirmed as correct). The client
+// renders a unit's model around the position we send, so the swim depth below the surface and the flyer's
+// clearance above the floor have to suit the model's size (a ~3.5 yd naga vs a ~0.5 yd fish). 0 = legacy fixed.
+float Unit::GetSwimSurfaceDepth() const
+{
+    float const factor = sWorld.getConfig(CONFIG_FLOAT_CREATURE_SWIM_SURFACE_DEPTH_FACTOR);
+    if (factor <= 0.0f)
+        return 1.5f;                                        // legacy fixed value
+    return std::max(0.5f, GetCollisionHeight() * factor);
+}
+
+float Unit::GetAirGroundClearance() const
+{
+    float const minimum = sWorld.getConfig(CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE);
+    float const factor = sWorld.getConfig(CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE_FACTOR);
+    if (factor <= 0.0f)
+        return minimum;                                     // legacy fixed value
+    return std::max(minimum, GetCollisionHeight() * factor);
+}
+
+float Unit::GetSwimStartDepth() const
+{
+    float const collisionHeight = GetCollisionHeight();
+    float const factor = sWorld.getConfig(CONFIG_FLOAT_CREATURE_SWIM_START_DEPTH_FACTOR);
+    if (factor <= 0.0f)
+        return collisionHeight;                             // legacy: water had to cover the whole body
+    return std::max(0.8f, collisionHeight * factor);
+}
+
+// [SWIM-CRITERION 2026-10-03] 单位**当前所在位置**该不该是游泳状态 —— 每 tick 维护
+// （Unit::Update）与"给客户端建 create 之前的状态修正"（Object::SendCreateUpdateToPlayer）
+// 共用同一份判据，避免两处口径漂移（历史上正是口径漂移导致岸边浅水整片播游泳动作）。
+//
+// 判据（延迟式迟滞，站长的口径）：
+//   开始游泳：水深 > 碰撞高度（与刷点判据 TerrainInfo::IsSwimmable 完全一致，同一个量）
+//   停止游泳：水深 <= max(0.5, 碰撞高度 - 0.5)（0.5 码迟滞带，防水线附近来回翻转）
+//   水面检查：未游泳时要求脚底低于液面 0.2 码（防"站在栈桥/礁石上、下方水很深"被误判），
+//             已游泳时要求不高于液面 0.2 码（防"浮在空中"仍保持游泳）。
+//   跳过 WALK_IN_WATER（螃蟹等贴水底生物）。
+// GetWaterLevel 的第四个参数是**输出参数**：写成该点静态地面高度（GridMap.cpp:1396-1398），
+// 因此 (waterLevel - liquidBottom) 就是"站在此处的水深"，与 IsSwimmable 用的
+// `liquid.level - liquid.depth_level` 同源，且不额外增加地形查询。
+bool Unit::ShouldSwimAtCurrentPosition(float* outWaterLevel, float* outGround) const
+{
+    // 尸体不游泳：复活流程里 Corpse/DEAD 状态也会走到 Unit::Update，之前这套判据会去 SetSwim、沉位、
+    // 发 START_SWIM（日志里能看到"给尸体沉到游泳深度"），纯属脏操作。
+    if (!IsAlive())
+        return false;
+
+    if (GetTypeId() != TYPEID_UNIT || !CanSwim() || !GetMap())
+        return false;
+
+    Creature const* creature = static_cast<Creature const*>(this);
+    CreatureInfo const* cinfo = creature->GetCreatureInfo();
+    if (!cinfo || (cinfo->ExtraFlags & CREATURE_EXTRA_FLAG_WALK_IN_WATER))
+        return false;
+
+    float liquidBottom = INVALID_HEIGHT;
+    float const waterLevel = GetMap()->GetTerrain()->GetWaterLevel(GetPositionX(), GetPositionY(),
+                                                                   GetPositionZ(), &liquidBottom);
+    if (outWaterLevel)
+        *outWaterLevel = waterLevel;
+    if (outGround)
+        *outGround = liquidBottom;
+
+    bool const swimming = m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING);
+
+    bool surfaceOk;
+    if (waterLevel <= INVALID_HEIGHT)
+        surfaceOk = false;
+    else if (swimming)
+        surfaceOk = (GetPositionZ() <= waterLevel + 0.2f);
+    else
+        surfaceOk = (GetPositionZ() < waterLevel - 0.2f);
+
+    float const collisionHeight = GetCollisionHeight();
+    // [SWIM-STOP-THRESHOLD 2026-10-03] 停止游泳的门槛**不能**用"碰撞高度−0.5"。
+    //
+    // 抓包实测（纳迦 71576）：它在 z=15.84 时被判成"停止游泳"并清掉 UNIT_FLAG_SWIMMING 字段 ——
+    // 而那里水面 18.268、水底 15.28，即脚底仍在水面下 **2.4 码**、水里 3.0 码深，只是因为
+    // 门槛写成 `碰撞高度(3.54) - 0.5 = 3.04` 才被判成"站得住、该上岸"。按手册已确认的结论
+    // （客户端认 UNIT_FIELD_FLAGS 的 0x8000 作游泳锚定），字段被清 -> 客户端立刻按走路处理，
+    // 并给模型加下坠、每帧被服务器位置拉回，表现就是"在水里走路 + 抖"。
+    //
+    // 现在：开始游泳仍然是"水深 > 碰撞高度"（与刷点判定一致），但**停止**改用一个低得多的门槛
+    // GetSwimStartDepth()（= max(0.8, 碰撞高度 × Creature.SwimStartDepthFactor)，本怪约 1.77 码），
+    // 只在真的快出水时才停。迟滞带因此从 0.5 码放大到 [1.77, 3.54]，浅滩段不再反复开关。
+    float const swimDepth = swimming ? GetSwimStartDepth() : collisionHeight;
+    bool const deepEnough = (liquidBottom > INVALID_HEIGHT && (waterLevel - liquidBottom) > swimDepth);
+
+    return deepEnough && surfaceOk;
+}
+
+// [SWIM-DEPTH-ADAPTIVE 2026-10-04] 按该点实际水深自适应游泳深度。
+//
+// 原来无论水多深都用固定值 GetSwimSurfaceDepth()（本怪 3.12~3.54 码），于是出现两个毛病：
+//   1. 浅水（水深 < 固定深度 + 0.5）时"水面 − 固定深度"落到水底以下，夹取退化，代码只好把点钉回
+//      水面高度 -> 它贴在水面上，而游泳标记在那种水深又不成立 -> 客户端就是"走水面"、没有游泳动作；
+//   2. 跨水线那一步 z 从 ~19.0 直接掉到 15.14（实测 3.9 码）-> 入水/出水看着像猛地一沉。
+//
+// 改成：游泳深度 = min(设定深度, 水深 - 0.5)，下限 0.5。
+//   水深 5 码 -> 用设定值（3.12）；水深 2 码 -> 只浮在水面下 1.5 码；水深 1 码 -> 水面下 0.5 码。
+//   夹取区间因此永远是 [水底+0.5, 该点的自适应上限]，不会再退化到"钉水面"，也不会跳档。
+float Unit::GetSwimDepthForWaterDepth(float waterDepth) const
+{
+    return std::min(GetSwimSurfaceDepth(), std::max(0.5f, waterDepth - 0.5f));
+}
+
+// [SWIM-ORIGIN 2026-10-03] 客户端播不播游泳动作，取决于**它自己算出来的位置与水面之差**，与我们发的
+// 移动标志/UNIT_FLAG_SWIMMING(0x8000)/0x30B 都无关 —— 站长实测（本服 2.4.3 客户端，纳迦 entry 20089）：
+//   刷点 z=16.87（水面 18.268，下方 1.40 码）-> 客户端**走**在水面
+//   移动路径被水路钳制到 z=15.61（下方 2.66 码）-> 客户端**游泳**
+// 也就是门槛落在 1.40 ~ 2.66 码之间。而刷新/站立时原点用的是 DB 的 z（较浅），所以这里把游泳中的原点
+// 压到与移动路径同一个深度：waterLevel - GetSwimSurfaceDepth()（该值 = 碰撞高度 × conf 系数，本怪 2.66）。
+// 返回是否真的移动过。sendMove=true 时用一条 monster-move 让客户端把模型沉下去（否则客户端停留在旧
+// 位置的认知里，还是走路）；建 create 之前调用时用 false，位置直接写进 create 块。
+bool Unit::SinkToSwimOriginDepth(bool sendMove)
+{
+    if (GetTypeId() != TYPEID_UNIT || IsClientControlled())
+        return false;
+
+    float waterLevel = INVALID_HEIGHT;
+    float ground = INVALID_HEIGHT;
+    if (!ShouldSwimAtCurrentPosition(&waterLevel, &ground) || waterLevel <= INVALID_HEIGHT)
+        return false;
+
+    // [SWIM-DEPTH-ADAPTIVE 2026-10-04] 站立/建 create 时的沉位也按该点实际水深自适应，
+    // 否则浅水里会想把怪按到水底以下（被下面的 guard 挡掉），或把它顶回水面。
+    float const targetZ = waterLevel - GetSwimDepthForWaterDepth(waterLevel - ground);
+    // 已经够深，或下方没有足够空间（浅水/贴近水底）就不动
+    if (GetPositionZ() <= targetZ + 0.1f || (ground > INVALID_HEIGHT && ground + 0.5f > targetZ))
+        return false;
+
+    float const x = GetPositionX();
+    float const y = GetPositionY();
+    float const o = GetOrientation();
+
+    if (sendMove && IsInWorld())
+    {
+        // 让客户端跟着沉下去：一条正常的 monster-move，客户端把模型放到新位置并播游泳动作。
+        // 位置由 spline 走完时同步，所以这里不再手动 Relocate（避免两套位置来源打架）。
+        Movement::MoveSplineInit init(*this);
+        init.MoveTo(x, y, targetZ);
+        init.SetWalk(true);
+        init.Launch();
+        return true;
+    }
+
+    if (IsInWorld() && GetMap())
+    {
+        GetMap()->CreatureRelocation(static_cast<Creature*>(this), x, y, targetZ, o);
+        m_movementInfo.ChangePosition(x, y, targetZ, o);
+    }
+    else
+        Relocate(x, y, targetZ, o);
+    return true;
+}
+
+// [POS-SYNC 2026-10-03] 定期/按需把服务器位置重新钉给客户端。
+//
+// 背景（同一天查明）：游泳怪的 create 块里不能再带内嵌 spline（那条 spline 会让客户端按"移动动作"播
+// 走路，顶掉 UNIT_FLAG_SWIMMING 的游泳判定）。代价是客户端在 create 时不知道它在移动，会把模型停在
+// 出现的位置 —— 路径点怪一条 spline 可长达 20 秒，于是"服务器早就走远了、客户端还在原地"。
+//
+// 这里用它当前 spline 的终点重新下发一条 monster-move：起点是它**现在的位置**（所以模型不会跳回），
+// 客户端拿到带 Runmode 的正常移动包后位置立刻对齐；游泳动作不受影响（实测：会正常游泳的鱼一直在收
+// monster-move）。
+// 注意：这条重发是"直线奔向原终点"，如果剩余路径本来要绕开障碍，会抄一次近路。因此调用点都限定在
+// 游泳怪（z 会被水路钳制在水体带内），不对陆地怪做。
+bool Unit::ResyncMovementToClients()
+{
+    if (GetTypeId() != TYPEID_UNIT || !IsAlive() || !IsInWorld() || !movespline)
+        return false;
+    if (movespline->Finalized())
+        return false;                                   // 没在移动：客户端位置本来就是对的
+
+    Vector3 const dest = movespline->FinalDestination();
+    Movement::MoveSplineInit init(*this);
+    init.MoveTo(dest.x, dest.y, dest.z);
+    init.SetWalk(m_movementInfo.HasMovementFlag(MOVEFLAG_WALK_MODE));
+    init.Launch();
+    return true;
 }
 
 float Unit::GetCollisionWidth() const

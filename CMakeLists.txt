@@ -371,6 +371,19 @@ add_subdirectory(dep)
 # Don't place this above 'dep' subdirectory! Because of defines build will crash.
 set(DEFINITIONS "")
 
+# [2026-10-18 云端崩溃根因] GenerateBotTests **必须 core + module 看到同一份**：
+#   `PlayerbotMgr.h` 里 PlayerbotHolder 的成员（testResultsMutex / pendingTests / testResults，
+#   合计 0x58 字节）挂在 `#ifdef GenerateBotTests` 下：
+#     · 只在模块里定义 ⇒ 模块 TU 认为 sizeof(RandomPlayerbotMgr)=0x668，core TU 认为 0x610；
+#     · `inline RandomPlayerbotMgr::instance()` 的静态对象按 core 的 0x610 分配（BSS 紧邻
+#       `WorldSocket::m_packetCooldowns`），构造函数按模块的 0x668 写成员 ⇒ 尾部越界，
+#       把 m_packetCooldowns.begin 踩成 0x53；
+#     · 后果：客户端一发 opcode 493 就在 socket 线程 `segfault at 0x807`（0x53+493*4），
+#       崩点与 bot 代码毫无关系，极易误判成客户端/网络问题。
+#   ⚠️ 必须加进下面的 DEFINITIONS（395-401 行会用 set_directory_properties **覆盖**
+#   COMPILE_DEFINITIONS，之前 add_definitions 在这里会被抹掉，所以不能放在上面的全局区）。
+set(DEFINITIONS ${DEFINITIONS} GenerateBotTests)
+
 if(POSTGRESQL)
   set(DEFINITIONS ${DEFINITIONS} DO_POSTGRESQL)
 elseif(SQLITE)

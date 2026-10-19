@@ -337,6 +337,20 @@ struct npc_shattered_hand_legionnaire : public CombatAI
     instance_shattered_halls* m_instance;
     bool m_reinfCD;
 
+    // [SHH-LEGIONNAIRE 2026-10-06] WORLD_STATE_LEGIONNAIRE_001 原本**只在构造函数里**写一次（见上），
+    // 而 JustDied 会把它置 0 ⇒ Legionnaire 001（16700 / guid 5400150）死过一次后，变量永远是 0，
+    // 即使他 7200 秒后复活，身边那组"碎手野人/异教徒"（spawn_group 5400002 普通 / 5400003 英雄，
+    // 条件 5400001 = CONDITION_WORLDSTATE）也不会再刷。
+    // 这个钩子在 AI 创建时（Creature::AIM_Initialize → JustRespawned，Creature.cpp:1051）与每次复活
+    // （Creature.cpp:813）都会被调用，所以放这里既覆盖原来那次，也补上复活那次。
+    void JustRespawned() override
+    {
+        CombatAI::JustRespawned();
+
+        if (m_creature->HasStringId(FIRST_LEGIONNAIRE_STRING))
+            m_creature->GetMap()->GetVariableManager().SetVariable(WORLD_STATE_LEGIONNAIRE_001, m_creature->IsAlive() ? 1 : 0);
+    }
+
     void Aggro(Unit* /*who*/) override
     {
         if (urand(0, 4) > 2)

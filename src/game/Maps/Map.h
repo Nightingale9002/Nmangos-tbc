@@ -196,6 +196,44 @@ class Map : public GridRefManager<NGridType>
 
         bool GetUnloadLock(const GridPair& p) const { return getNGrid(p.x_coord, p.y_coord)->getUnloadLock(); }
         void SetUnloadLock(const GridPair& p, bool on) { getNGrid(p.x_coord, p.y_coord)->setUnloadExplicitLock(on); }
+        // [MEMFIX-A 2026-10-02] Drop the spawn-grid unload locks of the active objects living
+        // in this grid so it can be unloaded; see the definition for the exact scope.
+        bool ReleaseActiveGridLocks(uint32 x, uint32 y);
+        // [GRIDLOAD-DIAG] 2026-10-02: name the path that loads a grid while nobody is in the map
+        // (one line per grid per run); see KNOWN_ISSUES "[内存] 2026-10-02".
+        void ReportGridLoad(char const* tag, WorldObject const* obj, uint32 x, uint32 y);
+        // [DEADHIT-DIAG] 2026-10-02: "a dead / zero-health unit still acts" (站长报：死怪继续近战
+        // 并继续放技能). site = 调用点（melee-swing / melee-blocked / spell-prepare），
+        // reason = 状态原因（not-alive / zero-health / respawn-pending）。每 (guid, site) 一次。
+        // [DIAG 2026-10-03] caller = MANGOS_CALLER_ADDR() at the hook site (names the driver).
+        void ReportDeadAction(Unit* who, char const* site, char const* reason, Unit const* victim = nullptr,
+                              uint32 spellId = 0, uint32 auraTriggerSpell = 0, uint32 spellTriggerSpell = 0,
+                              uintptr_t caller = 0);
+        // [REVIVE-DIAG] 2026-10-02: who revives a creature, in what state, and whether the
+        // "alive yet still holding a future respawn time" inconsistency shows up (站长问的
+        // "它到底算不算真死亡单位"). One report per unit per run. caller = MANGOS_CALLER_ADDR().
+        void ReportRevive(Creature* c, char const* what, uintptr_t caller = 0);
+        // [DIAG 2026-10-03] While a GM command deliberately respawns creatures (.respawn, .npc move,
+        // .npc set movetype, .npc spawndist, .wp modify), [REVIVE] stays silent: those revives are the
+        // operator's own action, not evidence of a server-side bug (a single .respawn used to print one
+        // line per visible corpse).  Thread-local, so only the thread running the command is affected.
+        struct GmRespawnScope
+        {
+            GmRespawnScope();
+            ~GmRespawnScope();
+        };
+        static bool IsGmForcedRespawn();
+        // [DOOR-DIAG] 2026-10-02: "something drives a unit that is not alive" (stationary corpse
+        // suddenly moves / gets attacked into combat / evades). One report per guid+reason per run.
+        // caller = MANGOS_CALLER_ADDR() at the hook site: names the code that drove the corpse.
+        // newGenerator = movement generator being installed (only used by what=mm-mutate).
+        void ReportCorpseDriver(Creature* c, char const* what, uintptr_t caller = 0, uint32 newGenerator = 0xFFFFFFFF);
+
+        // [CENSUS-DIAG] 2026-10-02: 5-minute sweep over this map's creatures looking for the
+        // anomalous states (corpse with health, alive with pending respawn, non-alive in combat,
+        // non-alive with a movement generator) - runs on the map thread, logs only when it finds
+        // something. This is the "can't reproduce it, so census the state instead" safety net.
+        void CensusAnomalies();
         void ForceLoadGrid(float x, float y);
         bool UnloadGrid(const uint32& x, const uint32& y, bool pForce);
         virtual void UnloadAll(bool pForce);
@@ -433,6 +471,10 @@ class Map : public GridRefManager<NGridType>
         bool HasActiveZone(uint32 zoneId) { return find(m_activeZones.begin(), m_activeZones.end(), zoneId) != m_activeZones.end(); }
 #endif
 
+        // [PATH-MMAP 2026-10-17] 给寻路用的最小入口：把某一格的地形/vmap/mmap 拉进来。
+        //   限频由调用方负责（PathFinder 只在"跨格且缺 tile"时调用），不改变既有加载策略。
+        void EnsureGridLoadedForPath(Cell const& cell) { EnsureGridLoaded(cell); }
+
     private:
         void LoadMapAndVMap(int gx, int gy);
 
@@ -485,6 +527,20 @@ class Map : public GridRefManager<NGridType>
         typedef WorldObjectSet ActiveNonPlayers;
         ActiveNonPlayers m_activeNonPlayers;
         ActiveNonPlayers::iterator m_activeNonPlayersIter;
+        // [MEMLOCK-DIAG] 2026-10-02: grids already reported as "still locked" (one report per
+        // process run, key = x * MAX_NUMBER_OF_GRIDS + y) - diagnosis of the memory fix A,
+        // see KNOWN_ISSUES "[内存] 2026-10-02".
+        std::set<uint32> m_memLockReportedGrids;
+        // [GRIDLOAD-DIAG] 2026-10-02: same idea for "which path loaded this grid with 0 players".
+        std::set<uint32> m_gridLoadReportedGrids;
+        // [DEADHIT-DIAG] 2026-10-02: (guidLow, site-literal) pairs already reported.
+        std::set<std::pair<uint32, void const*>> m_deadActionReported;
+        // [REVIVE-DIAG] 2026-10-02: guids already reported as revived / alive-with-pending-respawn.
+        std::set<uint32> m_reviveReportedGuids;
+        // [DOOR-DIAG] 2026-10-02: (guidLow, reason-literal) pairs already reported.
+        std::set<std::pair<uint32, void const*>> m_corpseDriverReported;
+        // [CENSUS-DIAG] 2026-10-02: 5-minute anomaly sweep timer (map thread).
+        uint32 m_anomalyCensusTimer;
         MapStoredObjectTypesContainer m_objectsStore;
         std::map<uint32, uint32> m_tempCreatures;
         std::map<uint32, uint32> m_tempPets;

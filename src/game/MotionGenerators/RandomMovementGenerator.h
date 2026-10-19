@@ -41,6 +41,10 @@ class AbstractRandomMovementGenerator : public MovementGenerator
         void Reset(Unit& owner) override;
         bool Update(Unit& owner, const uint32& diff) override;
 
+        // [PATHCORRUPT-DIAG 2026-10-03] see MovementGenerator: this generator also owns a PathFinder.
+        void* GetPathPointerForDiag() const override { return m_pathFinder.get(); }
+        void  ClearPathPointerForDiag() override { m_pathFinder.release(); }
+
     protected:
         virtual int32 _setLocation(Unit& owner);
 

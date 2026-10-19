@@ -132,6 +132,14 @@ bool ChatHandler::HandleServerInfoCommand(char* /*args*/)
 // 用法：GM 命令 `.server memstat` 手动打印；或由 World::Update 每 5 分钟自动写一行到 Server.log。
 // 输出：Server.log 里形如
 //   [MEMSTAT][auto] maps=12 creatures=48213 pets=7 gameobjects=33120 dynobjs=3 players=3 heap_inuse=812MB heap_free=190MB
+//   grids=NN glocked=NN gremoval=NN
+// 2026-10-02 扩充（站长要求）：grids/glocked 用来定案"白天加载的网格在玩家走光后
+//   为什么不释放"。卸载需要同时满足 GridStates.cpp:59 的 `!info.getUnloadLock()` 与
+//   Map.cpp:1310 的"附近没有玩家"；本行区分这两种情况：
+//     · glocked 长期 > 0 且与夜里赖着不走的生物数吻合 ⇒ 被 Map::AddToActive
+//       (Map.cpp:1710，给 active 怪的出生网格 incUnloadActiveLock) 钉住了；
+//     · glocked 0 而 grids 不降 ⇒ 是状态机/玩家判定那边的问题。
+//   代价：每张图 64x64 次数组探测，每 5 分钟一次（CPU 空闲，站长已同意以 CPU 换内存）。
 // 注意：临时诊断代码，不并入生产分支。
 // ---------------------------------------------------------------------------
 namespace
@@ -160,7 +168,8 @@ namespace
 void LogServerMemStat(const char* tag)
 {
     uint32 maps = 0, creatures = 0, pets = 0, gameobjects = 0, dynobjects = 0, players = 0;
-    char buf[512];
+    uint32 grids = 0, gridsLocked = 0, gridsRemoval = 0;
+    char buf[640];
 
     sMapMgr.DoForAllMaps([&](Map* map)
     {
@@ -174,15 +183,47 @@ void LogServerMemStat(const char* tag)
         gameobjects += uint32(store.GetSize<GameObject>());
         dynobjects  += uint32(store.GetSize<DynamicObject>());
         players     += uint32(map->GetPlayers().getSize());
+
+        // [MEMFIX-DIAG] Grid accounting (see the note above the block): how many grids
+        // are actually loaded, how many of them refuse to unload (unloadLock != 0) and
+        // how many are already parked in the removal state. Uses only the public Map
+        // wrappers (IsLoaded / GetUnloadLock / IsRemovalGrid) - the underlying
+        // loaded()/getNGrid() are private. Their position overloads take WORLD
+        // coordinates, not grid indices, so the grid centre is rebuilt with the same
+        // constants MaNGOS::ComputeGridPair uses (GridDefines.h:148-162). Plain array
+        // probing, no locks taken.
+        auto gridCenterCoord = [](uint32 g) -> float
+        {
+            return CENTER_GRID_OFFSET - float(int32(CENTER_GRID_ID) - int32(g)) * SIZE_OF_GRIDS;
+        };
+
+        for (uint32 gx = 0; gx < MAX_NUMBER_OF_GRIDS; ++gx)
+        {
+            for (uint32 gy = 0; gy < MAX_NUMBER_OF_GRIDS; ++gy)
+            {
+                float wx = gridCenterCoord(gx);
+                float wy = gridCenterCoord(gy);
+                if (!map->IsLoaded(wx, wy))
+                    continue;
+
+                ++grids;
+                if (map->GetUnloadLock(GridPair(gx, gy)))
+                    ++gridsLocked;
+                if (map->IsRemovalGrid(wx, wy))
+                    ++gridsRemoval;
+            }
+        }
     });
 
 #ifdef __linux__
     HeapInfo h = GetHeapInfo();
-    snprintf(buf, sizeof(buf), "[MEMSTAT][%s] maps=%u creatures=%u pets=%u gameobjects=%u dynobjs=%u players=%u heap_inuse=" UI64FMTD "MB heap_free=" UI64FMTD "MB heap_arena=" UI64FMTD "MB",
-             tag ? tag : "-", maps, creatures, pets, gameobjects, dynobjects, players, h.inUseMb, h.freeMb, h.arenaMb);
+    snprintf(buf, sizeof(buf), "[MEMSTAT][%s] maps=%u creatures=%u pets=%u gameobjects=%u dynobjs=%u players=%u heap_inuse=" UI64FMTD "MB heap_free=" UI64FMTD "MB heap_arena=" UI64FMTD "MB grids=%u glocked=%u gremoval=%u",
+             tag ? tag : "-", maps, creatures, pets, gameobjects, dynobjects, players, h.inUseMb, h.freeMb, h.arenaMb,
+             grids, gridsLocked, gridsRemoval);
 #else
-    snprintf(buf, sizeof(buf), "[MEMSTAT][%s] maps=%u creatures=%u pets=%u gameobjects=%u dynobjs=%u players=%u",
-             tag ? tag : "-", maps, creatures, pets, gameobjects, dynobjects, players);
+    snprintf(buf, sizeof(buf), "[MEMSTAT][%s] maps=%u creatures=%u pets=%u gameobjects=%u dynobjs=%u players=%u grids=%u glocked=%u gremoval=%u",
+             tag ? tag : "-", maps, creatures, pets, gameobjects, dynobjects, players,
+             grids, gridsLocked, gridsRemoval);
 #endif
 
     // 控制台/屏幕日志（screen 日志）各写一份，另外写进 CustomLogFile（本分支建议设为 MemStat.log）

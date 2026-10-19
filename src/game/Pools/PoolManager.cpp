@@ -467,6 +467,13 @@ void PoolGroup<Creature>::Spawn1Object(MapPersistentState& mapState, PoolObject*
         // for not loaded grid just update respawn time (avoid work for instances until implemented support)
         else if (!instantly)
             mapState.SaveCreatureRespawnTime(obj->guid, time(nullptr) + data->GetRandomRespawnTime());
+
+        // A freshly created instance has no loaded grid yet, and for those the block above did
+        // nothing at all - the pool marked the spawn as taken but no object was ever created, so
+        // pooled spawns inside instances (e.g. the Steamvault chest pools) never appeared. Hand the
+        // slot to the SpawnManager, which materialises it as soon as the grid is loaded.
+        if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
+            dataMap->GetSpawnManager().RespawnCreature(obj->guid, instantly ? 0 : data->GetRandomRespawnTime());
     }
 }
 
@@ -515,6 +522,14 @@ void PoolGroup<GameObject>::Spawn1Object(MapPersistentState& mapState, PoolObjec
                 }
             }
         }
+
+        // See the creature equivalent above: a freshly created instance has no loaded grid, the pool
+        // only registered the spawn and (with instantly == true, which is what InitSpawnPool uses) not
+        // even a respawn time, so nothing ever created the object. Steamvault's two chest pools
+        // (48440/48441, 7 candidate points, max_limit 1) were invisible for exactly this reason.
+        // Hand the slot to the SpawnManager so it materialises with the grid load.
+        if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
+            dataMap->GetSpawnManager().RespawnGameObject(obj->guid, instantly ? 0 : data->GetRandomRespawnTime());
     }
 }
 

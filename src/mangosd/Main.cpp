@@ -129,8 +129,11 @@ int main(int argc, char* argv[])
 #endif
 
 #ifdef ENABLE_PLAYERBOTS
+    // [2026-10-18 仿真] `--aiplayerbot=` 之前写的是 PlayerbotAIConfig 并不使用的 _PLAYERBOT_CONFIG，
+    //   实际生效的是 _D_AIPLAYERBOT_CONFIG（默认 SYSCONFDIR "aiplayerbot.conf"）⇒ 传了等于没传。
+    //   本地仿真要指定自己的 conf 文件，所以这里改成真正生效的变量（默认值不变 ⇒ 云端行为不变）。
     if (vm.count("aiplayerbot"))
-        _PLAYERBOT_CONFIG = aiPlayerBotConfig;
+        _D_AIPLAYERBOT_CONFIG = aiPlayerBotConfig;
 #endif
 
 #ifdef _WIN32                                                // windows service command need execute before config read

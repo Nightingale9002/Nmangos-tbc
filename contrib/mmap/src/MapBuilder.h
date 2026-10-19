@@ -50,6 +50,41 @@ namespace MMAP
     // value have to divide GRID_SIZE(533.33333f) ( aka: 0.5333, 0.2666, 0.3333, 0.1333, etc )
     const static float BASE_UNIT_DIM = 0.2666666f;
 
+    // ---------------------------------------------------------------------
+    // 体素尺寸：**水平格宽 cs** 和 **垂直格高 ch** 拆开，各自独立。
+    //
+    // 背景：BASE_UNIT_DIM 原来同时承担两个角色 ——
+    //   ① 体素尺寸：    config.cs = config.ch = BASE_UNIT_DIM
+    //   ② 配置值的单位：params.walkableHeight = BASE_UNIT_DIM * config.walkableHeight
+    //                   （walkableRadius / walkableClimb 同理，
+    //                     detailSampleDist = BASE_UNIT_DIM * 16、detailSampleMaxError = BASE_UNIT_DIM）
+    // 直接改它，②会让 config.json 里那些反复实测调出来的数值**静默改变含义**
+    // （20 多处 per-map/per-tile 覆盖，每一条都对应一个修过的问题，而且不会报错）。
+    //
+    // 定案 2026-10-14：只把 ch 从 BASE_UNIT_DIM 降到 2/3，cs 保持不动。
+    //
+    // 为什么 cs 不能动：这个 fork 的**子格网格**是按 cs = BASE_UNIT_DIM 硬算的 ——
+    //   VERTEX_PER_MAP = GRID_SIZE / BASE_UNIT_DIM = 2000
+    //   VERTEX_PER_TILE = 80，TILES_PER_MAP = 25
+    //   一个 533 码 tile 被切成 25x25 个 80 格的子格，合计覆盖 25*80*cs。
+    //   cs 一变小，25*80*cs 就盖不满 533 码：实测把 cs/ch 一起设成 0.1778 之后，
+    //   map 556 的 4 个 tile 只写出 2 个、而且是残缺的（只覆盖约 2/3 面积）。
+    // 想真正缩小 cs，必须同时改 VERTEX_PER_TILE / TILES_PER_MAP 和 maxEdgeLen 的
+    // 单位换算 —— 那是另一件事，不要顺手做。
+    //
+    // 为什么动 ch 就够：导航面相对真实地板的上浮几乎全部与 ch 成正比。
+    //
+    // 位宽约束（已核实，比想象中宽松得多）：
+    //   rcSpan.smin/smax 是 RC_SPAN_HEIGHT_BITS 位，CMaNGOS 在 083d78c6f(2023-08-02)
+    //   把它从 13 提到了 16，所以 RC_SPAN_MAX_HEIGHT = 65535（不是 8191）：
+    //       ch = 0.2666666 -> 上限 17476 码
+    //       ch = 0.1777778 -> 上限 11650 码
+    //   全量 2766 个 .mmtile 扫描：最大高度跨度 2270.5 码（5303028），
+    //   两个值下超限 tile 都是 **0 个**，最高占用率 19.5%。
+    // ---------------------------------------------------------------------
+    const static float CELL_SIZE   = BASE_UNIT_DIM;         // cs：水平格宽，**保持原值**
+    const static float CELL_HEIGHT = 0.1777778f;            // ch：垂直格高 = BASE_UNIT_DIM * 2/3
+
     // All are in UNIT metrics!
     const static int VERTEX_PER_MAP = int(GRID_SIZE / BASE_UNIT_DIM + 0.5f);
     const static int VERTEX_PER_TILE = 80; // must divide VERTEX_PER_MAP
@@ -74,6 +109,20 @@ namespace MMAP
         int riseLe4;
         int riseLe8;
         int riseMore;
+    };
+
+    // 【调试】Recast 中间结果 dump 的上下文（MapBuilder.cpp 里的 dumpHeader 有完整说明）。
+    // 设环境变量 MMAP_DEBUG_DUMP=<已存在的目录> 打开，每个 sub-tile 写 .tri/.rawhf/.chf。
+    // ⚠️ 生成器是多线程的（一个 533 码 tile 一个线程），所以坐标必须随调用传，
+    //    不能用全局变量 —— 第一版就是全局的，结果文件名互相覆盖、全部错位。
+    struct DumpCtx
+    {
+        uint32 map = 0;
+        uint32 tileX = 0;
+        uint32 tileY = 0;
+        int subX = -1;
+        int subY = -1;
+        bool enabled = false;
     };
 
     typedef std::map<uint32, std::set<uint32>> TileList;
@@ -127,7 +176,8 @@ namespace MMAP
                        bool debug               = false,
                        const char* offMeshFilePath = NULL,
                        const char* workdir = NULL,
-                       const char* gameObjectFilePath = NULL);
+                       const char* gameObjectFilePath = NULL,
+                       bool autoOffMesh = false);
 
             ~MapBuilder();
 
@@ -160,8 +210,9 @@ namespace MMAP
             void buildNavMesh(uint32 mapID, dtNavMesh*& navMesh);
 
             void buildTile(uint32 mapID, uint32 tileX, uint32 tileY, dtNavMesh* navMesh, uint32 curTile, uint32 tileCount);
-            bool buildCommonTile(const char* tileString, Tile& tile, rcConfig& tileCfg, float* tVerts, int tVertCount, int* tTris, int tTriCount, float* lVerts, int lVertCount,
-                                 int* lTris, int lTriCount, uint8* lTriFlags, int preErosionMedianPasses, int seamBridgeMaxRise, SeamFixStats* seamStats);
+            bool buildCommonTile(const char* tileString, const DumpCtx& dbg, Tile& tile, rcConfig& tileCfg, float* tVerts, int tVertCount, int* tTris, int tTriCount, float* lVerts, int lVertCount,
+                                 int* lTris, int lTriCount, uint8* lTriFlags, int preErosionMedianPasses, int seamBridgeMaxRise, SeamFixStats* seamStats,
+                                 int terrainTriCount = 0, float terrainSlopeAngle = 0.0f, bool splitTerrain = false);
 
             // move map building
             void buildMoveMapTile(uint32 mapID, uint32 tileX, uint32 tileY, MeshData& meshData, float bmin[3], float bmax[3], dtNavMesh* navMesh);
@@ -183,6 +234,10 @@ namespace MMAP
 
             const char* m_offMeshFilePath;
             const char* m_workdir;
+
+            // [AUTOOFFMESH] 生成时自动为"小连通分量"补双向 off-mesh 连接
+            // （规则与判据见 MapBuilder.cpp 的 buildAutoOffMeshConnections）
+            bool m_autoOffMesh;
 
             // [GOBAKE] gameobject collision baked into the terrain navmesh
             const char* m_gameObjectFilePath;

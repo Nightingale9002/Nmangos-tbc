@@ -17,6 +17,7 @@
  */
 
 #include "Maps/Map.h"
+#include "Util/CallerAddress.h"
 #include "Maps/MapManager.h"
 #include "Entities/Player.h"
 #include "Grids/GridNotifiers.h"
@@ -40,6 +41,7 @@
 #include "Weather/Weather.h"
 #include "AI/ScriptDevAI/ScriptDevAIMgr.h"
 #include "BattleGround/BattleGroundMgr.h"
+#include "Combat/InstancePullRecorder.h"
 
 #ifdef BUILD_METRICS
  #include "Metric/Metric.h"
@@ -165,6 +167,7 @@ Map::Map(uint32 id, time_t expiry, uint32 InstanceId, uint8 SpawnMode)
       m_activeNonPlayersIter(m_activeNonPlayers.end()), m_onEventNotifiedIter(m_onEventNotifiedObjects.end()),
       i_gridExpiry(expiry), m_TerrainData(sTerrainMgr.LoadTerrain(id)),
       i_data(nullptr), i_script_id(0), m_transportsIterator(m_transports.begin()), m_spawnManager(*this),
+      m_anomalyCensusTimer(0),                                  // [CENSUS-DIAG]
 #ifdef ENABLE_PLAYERBOTS
       m_activeZonesTimer(0), hasRealPlayers(false),
 #endif
@@ -396,6 +399,12 @@ bool Map::EnsureGridLoaded(const Cell& cell)
     MANGOS_ASSERT(grid != nullptr);
     if (!isGridObjectDataLoaded(cell.GridX(), cell.GridY()))
     {
+        // [GRIDLOAD-DIAG] 2026-10-02: a grid really is being loaded here. With nobody in this map
+        // that is exactly the thing we want to name (the "who keeps ~10 grids loaded with 0
+        // players" puzzle, KNOWN_ISSUES "[内存] 2026-10-02"). One line per grid per process run;
+        // the tagged call sites (Add-active / creature-cross / go-cross / forceload / AddToActive)
+        // insert first, so this fallback only fires for a path that has no tag yet.
+        ReportGridLoad("unknown-path", nullptr, cell.GridX(), cell.GridY());
         // it's important to set it loaded before loading!
         // otherwise there is a possibility of infinity chain (grid loading will be called many times for the same grid)
         // possible scenario:
@@ -411,6 +420,243 @@ bool Map::EnsureGridLoaded(const Cell& cell)
     }
 
     return false;
+}
+
+// [DIAG 2026-10-03] Small backtrace formatter for the corpse diagnostics: returns the caller chain as
+// base-relative addresses ("0x312974,0x2A1B20,...") so a single line names the whole code path that
+// drove a corpse.  Resolution: MSVC -> build1\bin\x64_Release\mangosd.map (same link as the exe) via
+// _agent_tmp/resolve_map_addr.py --rva <list>; Linux -> addr2line -f -C -e /opt/mangos/bin/mangosd <addr>.
+// The first two captured frames are this helper and the Report* function itself, so they are skipped:
+// the first printed address is the hook site that called us.
+static std::string FormatDriverBacktrace()
+{
+    void* frames[12];
+    size_t const n = MaNGOS::CaptureStack(frames, 12);
+    uintptr_t const base = MANGOS_IMAGE_BASE();
+
+    std::string out;
+    for (size_t i = 2; i < n; ++i)
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%s0x%llX", out.empty() ? "" : ",",
+                 static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i]) - base));
+        out += buf;
+    }
+    return out.empty() ? std::string("-") : out;
+}
+
+// [GRIDLOAD-DIAG] 2026-10-02: report a grid load that happens while nobody is in this map -
+// one line per grid per process run, so it can never spam. See KNOWN_ISSUES "[内存] 2026-10-02"
+// (the ~10 grids that stay loaded with 0 players: we want to know which path loads them).
+void Map::ReportGridLoad(char const* tag, WorldObject const* obj, uint32 x, uint32 y)
+{
+    // [GRIDLOAD-DIAG 2026-10-16] 逐次计数 + 调用栈（env GRIDLOAD_TRACE=1 时输出前 N 次，
+    // 用于回答"没人在地图里，谁把网格/vmap 拉进来"。Linux 解析：addr2line -f -C -e <bin> <addr>
+    static bool const traceAll = (std::getenv("GRIDLOAD_TRACE") != nullptr);
+    static uint32 loadCount = 0;
+    ++loadCount;
+
+    if (traceAll)
+    {
+        if (loadCount <= 300)
+        {
+            if (obj)
+                sLog.outString("[GRIDLOAD#%u] map=%u grid=(%u,%u) players=%u src=%s by=%s entry=%u bt=%s",
+                               loadCount, i_id, x, y, (uint32)GetPlayers().getSize(), tag,
+                               obj->GetGuidStr().c_str(), obj->GetEntry(), FormatDriverBacktrace().c_str());
+            else
+                sLog.outString("[GRIDLOAD#%u] map=%u grid=(%u,%u) players=%u src=%s bt=%s",
+                               loadCount, i_id, x, y, (uint32)GetPlayers().getSize(), tag,
+                               FormatDriverBacktrace().c_str());
+        }
+        else if (loadCount == 301)
+            sLog.outString("[GRIDLOAD] trace truncated after 300 loads");
+        return;
+    }
+
+    if (GetPlayers().getSize() != 0)
+        return;                                  // normal case: players are around, nothing to report
+
+    if (!m_gridLoadReportedGrids.insert(x * MAX_NUMBER_OF_GRIDS + y).second)
+        return;                                  // already reported once for this grid
+
+    if (obj)
+        sLog.outError("[GRIDLOAD] map=%u grid=(%u,%u) src=%s by=%s entry=%u",
+                      i_id, x, y, tag, obj->GetGuidStr().c_str(), obj->GetEntry());
+    else
+        sLog.outError("[GRIDLOAD] map=%u grid=(%u,%u) src=%s", i_id, x, y, tag);
+}
+
+// [DEADHIT-DIAG] 2026-10-02: "a unit acts although it should not be able to" - one line per unit
+// per run. 站长报告（云端 5300482 Unleashed Hellion）：它**活着在打我**（近战 + 继续放技能），
+// 同时 `.npc info` 的重生计时还在走、玩家又打不动它 —— 这三点组合在一起自相矛盾，所以这里
+// 把"攻击者的实际状态"整行打出来，由 what= 区分是哪一种矛盾：
+//    not-alive        : 死亡状态还在动手（Unit.cpp:743 / UnitAI.cpp:1105 两道守卫本该挡住）
+//    zero-health      : 血 0 还在动手
+//    respawn-pending  : **活着**（血>0、deathState=ALIVE）却在动手，同时重生时钟还在走 ← 站长的那个矛盾
+// 正常情况一条都不会有。
+void Map::ReportDeadAction(Unit* who, char const* site, char const* reason, Unit const* victim,
+                           uint32 spellId, uint32 auraTriggerSpell, uint32 spellTriggerSpell, uintptr_t caller)
+{
+    if (!who || !site)
+        return;
+
+    // 每 (guid, 调用点) 只报一次：这样"近战被拦"不会把"施法"那行的名额占掉
+    if (!m_deadActionReported.emplace(who->GetGUIDLow(), static_cast<void const*>(site)).second)
+        return;
+
+    long respawnIn = -1;
+    if (who->GetTypeId() == TYPEID_UNIT)
+    {
+        time_t const respawn = static_cast<Creature*>(who)->GetRespawnTimeEx();
+        respawnIn = long(respawn - time(nullptr));
+    }
+
+    sLog.outError("[DEADHIT] site=%s reason=%s map=%u guid=%u entry=%u type=%u alive=%d health=%u/%u "
+                  "deathState=%u flags=0x%08X dynFlags=0x%08X respawnIn=%lds spell=%u auraTrigger=%u spellTrigger=%u "
+                  "victim=%s victimHealth=%u caller=0x%llX base=0x%llX stack=%s pos=(%.1f,%.1f,%.1f)",
+                  site, reason ? reason : "-", i_id, who->GetGUIDLow(), who->GetEntry(), uint32(who->GetTypeId()),
+                  who->IsAlive() ? 1 : 0, who->GetHealth(), who->GetMaxHealth(), uint32(who->GetDeathState()),
+                  who->GetUInt32Value(UNIT_FIELD_FLAGS), who->GetUInt32Value(UNIT_DYNAMIC_FLAGS), respawnIn,
+                  spellId, auraTriggerSpell, spellTriggerSpell,
+                  victim ? victim->GetGuidStr().c_str() : "-", victim ? victim->GetHealth() : 0,
+                  static_cast<unsigned long long>(caller), static_cast<unsigned long long>(MANGOS_IMAGE_BASE()),
+                  FormatDriverBacktrace().c_str(),
+                  who->GetPositionX(), who->GetPositionY(), who->GetPositionZ());
+}
+
+// [REVIVE-DIAG] 2026-10-02: 站长问的"它到底算不算真死亡单位" —— 这道日志回答三件事：
+//   what=Respawn / Respawn-dynguid : 脚本/机制调用 Creature::Respawn()（全仓 70 处调用点）
+//   what=SetDeathState-JUST_ALIVED  : 常规复活路径（Creature::Update 的 DEAD 分支）
+//   what=alive-with-pending-respawn : **活着（ALIVE）却还挂着未来的重生时间** ← 就是那个矛盾态
+// 行内有 deathState/health/respawnIn/inWorld/despawned/viewers，用来判断"复活后时钟有没有清"
+// 以及"复活的时候客户端看不看得见（viewers=0 说明客户端那份可能是旧尸体副本）"。
+// ⚠️ 只在"异常"时报：**重生时钟还在走** —— 即按逻辑它此刻不该已经活着/不该正在复活。
+// 常规复活路径会先 `m_respawnTime = 0`（Creature.cpp:785），所以一条都不会写；
+// 本地实测（2026-10-02，0 玩家新开服 6 分钟）：不过滤时 **298 行**（全是天灾入侵那些 active 怪的
+// 收起/重生 churn），加了这个过滤才行 —— 云端日志必须保持安静，否则真正的那一行会被淹掉。
+// 每 guid 每次运行只报一次。
+// [DIAG 2026-10-03] GM-forced respawn scope (see Map.h).  Thread-local: only the thread that runs the
+// command suppresses the [REVIVE] lines, map threads keep reporting normally.
+static thread_local bool s_gmForcedRespawn = false;
+Map::GmRespawnScope::GmRespawnScope() { s_gmForcedRespawn = true; }
+Map::GmRespawnScope::~GmRespawnScope() { s_gmForcedRespawn = false; }
+bool Map::IsGmForcedRespawn() { return s_gmForcedRespawn; }
+
+void Map::ReportRevive(Creature* c, char const* what, uintptr_t caller)
+{
+    if (!c)
+        return;
+
+    if (s_gmForcedRespawn)
+        return;                                  // a GM command forced this respawn - not evidence
+
+    time_t const now = time(nullptr);
+    if (c->GetRespawnTimeEx() <= now)
+        return;                                  // 正常复活：重生时钟已清，不报
+
+    if (!m_reviveReportedGuids.insert(c->GetGUIDLow()).second)
+        return;
+
+    long respawnIn = long(c->GetRespawnTimeEx() - now);
+    // m_respawnTime == 死亡时刻 + m_respawnDelay ⇒ 反推"它多久前死的"
+    long const deathTime = long(c->GetRespawnTimeEx()) - long(c->GetRespawnDelay());
+    long const diedAgo = long(now) - deathTime;
+
+    sLog.outError("[REVIVE] what=%s map=%u guid=%u entry=%u deathState=%u alive=%d health=%u/%u "
+                  "respawnIn=%lds diedAgo=%lds inWorld=%d despawned=%d viewers=%d caller=0x%llX base=0x%llX stack=%s pos=(%.1f,%.1f,%.1f)",
+                  what, i_id, c->GetGUIDLow(), c->GetEntry(), uint32(c->GetDeathState()), c->IsAlive() ? 1 : 0,
+                  c->GetHealth(), c->GetMaxHealth(), respawnIn, diedAgo, c->IsInWorld() ? 1 : 0,
+                  c->IsDespawned() ? 1 : 0, c->GetViewPoint().hasViewers() ? 1 : 0,
+                  static_cast<unsigned long long>(caller), static_cast<unsigned long long>(MANGOS_IMAGE_BASE()),
+                  FormatDriverBacktrace().c_str(),
+                  c->GetPositionX(), c->GetPositionY(), c->GetPositionZ());
+}
+
+// [DOOR-DIAG] 2026-10-02: "something drives a unit that is not alive" —— 尸体不该动/不该进战斗/不该闪避，
+// 出现即说明有路径在驱动它（①事件回调 ②移动生成器 ③战斗管理器 ④触发施法）。
+// 每 (guid, 原因) 只报一次。原因用字符串字面量指针做 key（字面量地址稳定）。
+void Map::ReportCorpseDriver(Creature* c, char const* what, uintptr_t caller, uint32 newGenerator)
+{
+    if (!c || !what)
+        return;
+
+    if (!m_corpseDriverReported.emplace(c->GetGUIDLow(), static_cast<void const*>(what)).second)
+        return;
+
+    time_t const now = time(nullptr);
+    long respawnIn = -1;
+    if (c->GetRespawnTimeEx() > now)
+        respawnIn = long(c->GetRespawnTimeEx() - now);
+
+    std::string const newGenStr = (newGenerator == 0xFFFFFFFF) ? std::string("-") : std::to_string(newGenerator);
+
+    sLog.outError("[DOOR] what=%s map=%u guid=%u entry=%u deathState=%u alive=%d health=%u/%u "
+                  "respawnIn=%lds flags=0x%08X incombat=%d movegen=%u newgen=%s victim=%s caller=0x%llX base=0x%llX stack=%s pos=(%.1f,%.1f,%.1f)",
+                  what, i_id, c->GetGUIDLow(), c->GetEntry(), uint32(c->GetDeathState()), c->IsAlive() ? 1 : 0,
+                  c->GetHealth(), c->GetMaxHealth(), respawnIn,
+                  c->GetUInt32Value(UNIT_FIELD_FLAGS), c->IsInCombat() ? 1 : 0,
+                  uint32(c->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+                  newGenStr.c_str(),
+                  c->GetVictim() ? c->GetVictim()->GetGuidStr().c_str() : "-",
+                  static_cast<unsigned long long>(caller), static_cast<unsigned long long>(MANGOS_IMAGE_BASE()),
+                  FormatDriverBacktrace().c_str(),
+                  c->GetPositionX(), c->GetPositionY(), c->GetPositionZ());
+}
+
+// [CENSUS-DIAG] 2026-10-02: 每 5 分钟在本图线程上扫一遍全部生物，找"不该存在的状态"。
+// 只在真的发现异常时才写日志 —— 这是"没法稳定复现"的兜底：状态一旦出现，5 分钟内必被记录。
+void Map::CensusAnomalies()
+{
+    time_t const now = time(nullptr);
+    uint32 total = 0, corpseHealth = 0, alivePending = 0, deadInCombat = 0, deadMoving = 0;
+    std::vector<Creature*> offenders;
+
+    for (auto itr = GetObjectsStore().begin<Creature>(); itr != GetObjectsStore().end<Creature>(); ++itr)
+    {
+        Creature* c = itr->second;
+        if (!c)
+            continue;
+
+        ++total;
+        bool bad = false;
+
+        if (!c->IsAlive())
+        {
+            if (c->GetHealth() > 0) { ++corpseHealth; bad = true; }
+            if (c->IsInCombat())    { ++deadInCombat; bad = true; }
+            // [DIAG 2026-10-03] Only a client-visible CORPSE can actually be driven: DEAD (respawn pending,
+            // despawned) creatures are deliberately loaded with an armed AI + a default movement generator
+            // by Creature::LoadFromDB -> AIM_Initialize, and their Update() never reaches Unit::Update, so
+            // they do not move.  Counting them flooded the census (39 of 39 "anomalies" were DEAD).
+            if (!c->IsDespawned() && c->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE) { ++deadMoving; bad = true; }
+        }
+        else if (c->GetRespawnTimeEx() > now) { ++alivePending; bad = true; }
+
+        if (bad && offenders.size() < 8)
+            offenders.push_back(c);
+    }
+
+    if (!corpseHealth && !alivePending && !deadInCombat && !deadMoving)
+        return;
+
+    sLog.outError("[CENSUS] map=%u creatures=%u anomalies=%u corpseHealth=%u alivePending=%u deadInCombat=%u deadMoving=%u",
+                  i_id, total, corpseHealth + alivePending + deadInCombat + deadMoving,
+                  corpseHealth, alivePending, deadInCombat, deadMoving);
+
+    for (Creature* c : offenders)
+    {
+        long respawnIn = -1;
+        if (c->GetRespawnTimeEx() > now)
+            respawnIn = long(c->GetRespawnTimeEx() - now);
+        sLog.outError("[CENSUS]   guid=%u entry=%u deathState=%u alive=%d health=%u/%u respawnIn=%lds "
+                      "incombat=%d movegen=%u flags=0x%08X pos=(%.1f,%.1f,%.1f)",
+                      c->GetGUIDLow(), c->GetEntry(), uint32(c->GetDeathState()), c->IsAlive() ? 1 : 0,
+                      c->GetHealth(), c->GetMaxHealth(), respawnIn, c->IsInCombat() ? 1 : 0,
+                      uint32(c->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+                      c->GetUInt32Value(UNIT_FIELD_FLAGS),
+                      c->GetPositionX(), c->GetPositionY(), c->GetPositionZ());
+    }
 }
 
 uint32 Map::GetLoadedGridsCount()
@@ -429,6 +675,7 @@ void Map::ForceLoadGrid(float x, float y)
     {
         CellPair p = MaNGOS::ComputeCellPair(x, y);
         Cell cell(p);
+        ReportGridLoad("forceload", nullptr, cell.GridX(), cell.GridY());   // [GRIDLOAD-DIAG]
         EnsureGridLoadedAtEnter(cell);
         // [MEMFIX] Do not permanently lock the grid. The permanent lock (setUnloadExplicitLock(true))
         // kept every grid containing an active creature loaded forever: startup loaded 74 grids and
@@ -498,7 +745,10 @@ void Map::Add(T* obj)
 
     Cell cell(p);
     if (obj->isActiveObject())
+    {
+        ReportGridLoad("Add-active", obj, cell.GridX(), cell.GridY());      // [GRIDLOAD-DIAG]
         EnsureGridLoadedAtEnter(cell);
+    }
     else
         EnsureGridCreated(GridPair(cell.GridX(), cell.GridY()));
 
@@ -727,6 +977,14 @@ void Map::Update(const uint32& t_diff)
 
     GetMessager().Execute(this);
     m_spawnManager.Update();
+
+    // [CENSUS-DIAG] 5 分钟一次异常状态普查（本图线程内，见 CensusAnomalies）
+    m_anomalyCensusTimer += t_diff;
+    if (m_anomalyCensusTimer >= 300000)
+    {
+        m_anomalyCensusTimer = 0;
+        CensusAnomalies();
+    }
 
     /// update active cells around players and active objects
     resetMarkedCells();
@@ -1040,6 +1298,10 @@ void Map::Update(const uint32& t_diff)
     if (i_data)
         i_data->Update(t_diff);
 
+    // [副本数据采集 2026-10-18 站长口径] 拉怪记录：所有玩家（含真人）/ 所有副本图
+    //   （非副本图本函数第一行就返回；实现在 Combat/InstancePullRecorder.cpp，缺表静默）
+    pullrec::Update(this);
+
     m_weatherSystem->UpdateWeathers(t_diff);
 }
 
@@ -1214,6 +1476,7 @@ void Map::GameObjectRelocation(GameObject* go, float x, float y, float z, float 
             DEBUG_FILTER_LOG(LOG_FILTER_CREATURE_MOVES, "Creature (GUID: %u Entry: %u) attempt move from grid[%u,%u]cell[%u,%u] to unloaded grid[%u,%u]cell[%u,%u].", go->GetGUIDLow(), go->GetEntry(), old_cell.GridX(), old_cell.GridY(), old_cell.CellX(), old_cell.CellY(), new_cell.GridX(), new_cell.GridY(), new_cell.CellX(), new_cell.CellY());
             return;
         }
+        ReportGridLoad("go-cross", go, new_cell.GridX(), new_cell.GridY());       // [GRIDLOAD-DIAG]
         EnsureGridLoadedAtEnter(new_cell);
     }
 
@@ -1242,6 +1505,7 @@ bool Map::CreatureCellRelocation(Creature* c, const Cell& new_cell)
             DEBUG_FILTER_LOG(LOG_FILTER_CREATURE_MOVES, "Creature (GUID: %u Entry: %u) attempt move from grid[%u,%u]cell[%u,%u] to unloaded grid[%u,%u]cell[%u,%u].", c->GetGUIDLow(), c->GetEntry(), old_cell.GridX(), old_cell.GridY(), old_cell.CellX(), old_cell.CellY(), new_cell.GridX(), new_cell.GridY(), new_cell.CellX(), new_cell.CellY());
             return false;
         }
+        ReportGridLoad("creature-cross", c, new_cell.GridX(), new_cell.GridY());   // [GRIDLOAD-DIAG]
         EnsureGridLoadedAtEnter(new_cell);
     }
 
@@ -1294,7 +1558,16 @@ bool Map::CreatureRespawnRelocation(Creature* c)
     if (CreatureCellRelocation(c, resp_cell))
     {
         c->Relocate(resp_x, resp_y, resp_z, resp_o);
-        c->GetMotionMaster()->Initialize();                 // prevent possible problems with default move generators
+        // [FIX 2026-10-03] Only an ALIVE creature may get the default movement generator back.  Running
+        // Initialize() unconditionally also ran for corpses: a grid unload (Map::UnloadGrid ->
+        // ObjectGridUnloader::MoveToRespawnN -> here) installed RANDOM/WAYPOINT movement on a corpse, and
+        // because Creature::Update's CORPSE branch calls Unit::Update -> MotionMaster::UpdateMotion, the
+        // corpse then really walked around (observed 2026-10-03 01:24:20, entry 25028, [DOOR] mm-initialize
+        // immediately followed by [DOOR] move-while-dead movegen=1).  Dead creatures get a clean idle stack.
+        if (c->IsAlive())
+            c->GetMotionMaster()->Initialize();             // prevent possible problems with default move generators
+        else
+            c->GetMotionMaster()->MoveIdle();
         c->OnRelocated();
         return true;
     }
@@ -1702,12 +1975,21 @@ bool Map::ActiveObjectsNearGrid(uint32 x, uint32 y) const
 
 void Map::AddToActive(WorldObject* obj)
 {
-    m_activeNonPlayers.insert(obj);
+    // [MEMFIX-A 2026-10-02] The unload lock below is a refcount paired with active-list
+    // membership: an object that is already tracked must not take the lock a second time,
+    // otherwise the counter can never be balanced off again and its spawn grid stays pinned
+    // forever. (Membership and counter now change strictly together; RemoveFromActive uses
+    // the same rule in reverse.)
+    bool const newlyTracked = m_activeNonPlayers.insert(obj).second;
+
     Cell cell = Cell(MaNGOS::ComputeCellPair(obj->GetPositionX(), obj->GetPositionY()));
+    // [GRIDLOAD-DIAG] this is one of the few paths that can load a grid with no players around
+    // (an active creature coming to world pulls its own grid in)
+    ReportGridLoad("AddToActive", obj, cell.GridX(), cell.GridY());
     EnsureGridLoaded(cell);
 
     // also not allow unloading spawn grid to prevent creating creature clone at load
-    if (obj->GetTypeId() == TYPEID_UNIT)
+    if (newlyTracked && obj->GetTypeId() == TYPEID_UNIT)
     {
         Creature* c = (Creature*)obj;
 
@@ -1730,16 +2012,19 @@ void Map::AddToActive(WorldObject* obj)
 
 void Map::RemoveFromActive(WorldObject* obj)
 {
+    // [MEMFIX-A 2026-10-02] Mirror of AddToActive: only an object that is really in the
+    // active list ever took the spawn-grid unload lock, so anything else returns here. This
+    // keeps the counter balanced when the object is unbound twice (the unload path calls
+    // this again for every active object it deletes) and it avoids erasing
+    // m_activeNonPlayersIter when it happens to be end() (was UB before).
+    ActiveNonPlayers::iterator itr = m_activeNonPlayers.find(obj);
+    if (itr == m_activeNonPlayers.end())
+        return;
+
     // Map::Update for active object in proccess
-    if (m_activeNonPlayersIter != m_activeNonPlayers.end())
-    {
-        ActiveNonPlayers::iterator itr = m_activeNonPlayers.find(obj);
-        if (itr == m_activeNonPlayersIter)
-            ++m_activeNonPlayersIter;
-        m_activeNonPlayers.erase(itr);
-    }
-    else
-        m_activeNonPlayers.erase(obj);
+    if (itr == m_activeNonPlayersIter)
+        ++m_activeNonPlayersIter;
+    m_activeNonPlayers.erase(itr);
 
     // also allow unloading spawn grid
     if (obj->GetTypeId() == TYPEID_UNIT)
@@ -1761,6 +2046,119 @@ void Map::RemoveFromActive(WorldObject* obj)
             }
         }
     }
+}
+
+// [MEMFIX-A 2026-10-02] Release the spawn-grid unload locks that the active objects living in
+// this grid hold, so the grid can finally be unloaded.
+//
+// Background: Map::AddToActive takes an unload lock on the SPAWN grid of every active object
+// (creatures with CREATURE_EXTRA_FLAG_ACTIVE) and the only release path used to be
+// RemoveFromActive, whose realistic trigger is "the grid is being unloaded and the object is
+// deleted" - i.e. exactly what the lock prevents (GridStates.cpp RemovalState checks
+// getUnloadLock() before UnloadGrid). Result: any grid that ever loaded an active creature
+// stayed resident until the process restarted, which is what the daily RSS growth was made of.
+//
+// Scope: objects whose spawn is in this grid AND that are inside it right now are simply
+// unbound - the unload that follows deletes them (or respawn-moves them within the same grid),
+// so no live creature is left behind with an unprotected spawn grid (the "creature clone at
+// load" scenario the lock was meant to guard, Map.cpp:1709).
+//
+// [MEMFIX-A+ 2026-10-02] Objects whose spawn is here but that have walked out of this grid are
+// what the [MEMLOCK] diagnostic caught as the real problem: measured on the local server they
+// had moved only 6.5-21.9 yd (i.e. they just stepped over a grid border, 7 of 8 startup grids
+// were pinned that way) and in every observed case nobody was near them (playersNearIt=0).
+// They cannot be unbound silently (unloading this grid does not delete them, so a reload would
+// spawn a second copy), so they are DESPAWNED instead - exactly what happens to them when the
+// grid they are standing in unloads: the respawn time is saved by the standard path
+// (Map::Remove -> SaveRespawnTime) and they respawn at their spawn point from the DB. A holder
+// that has players near it is left alone (keptHolders): that grid is in use, and it self-heals
+// once those players leave and the holder is deleted with its own grid.
+//
+// The caller must have verified that no player is near the grid (Map::ActiveObjectsNearGrid).
+// Returns true when the grid's unload lock is fully released afterwards.
+bool Map::ReleaseActiveGridLocks(uint32 x, uint32 y)
+{
+    NGridType* grid = getNGrid(x, y);
+    if (!grid || !grid->getUnloadLock())
+        return true;
+
+    std::vector<WorldObject*> toUnbind;
+    std::vector<Creature*>    toDespawn;
+    std::vector<Creature*>    keptHolders;   // spawn grid is here, holder is elsewhere and watched
+    for (WorldObject* obj : m_activeNonPlayers)
+    {
+        if (obj->GetTypeId() != TYPEID_UNIT)
+            continue;
+
+        Creature* c = static_cast<Creature*>(obj);
+        if (c->IsPet() || !c->HasStaticDBSpawnData())
+            continue;
+
+        float rx, ry, rz;
+        c->GetRespawnCoord(rx, ry, rz);
+        GridPair const spawnGrid = MaNGOS::ComputeGridPair(rx, ry);
+        if (spawnGrid.x_coord != x || spawnGrid.y_coord != y)
+            continue;
+
+        GridPair const curGrid = MaNGOS::ComputeGridPair(c->GetPositionX(), c->GetPositionY());
+        if (curGrid.x_coord == x && curGrid.y_coord == y)
+        {
+            toUnbind.push_back(obj);                  // inside: unload of this grid will take it
+            continue;
+        }
+
+        if (ActiveObjectsNearGrid(curGrid.x_coord, curGrid.y_coord))
+        {
+            keptHolders.push_back(c);                 // watched by a player: leave everything as is
+            continue;
+        }
+
+        toDespawn.push_back(c);                       // stepped out and unwatched: goes with its grid
+    }
+
+    for (WorldObject* obj : toUnbind)
+        RemoveFromActive(obj);
+
+    for (Creature* c : toDespawn)
+    {
+        // release the lock now (so the unload below can happen in this same tick); the queued
+        // removal repeats RemoveFromActive later, which is a no-op thanks to its idempotency
+        RemoveFromActive(c);
+        c->AddObjectToRemoveList();                   // Map::Remove saves the respawn time and deletes
+    }
+
+    bool const released = !grid->getUnloadLock();
+
+    // [MEMLOCK-DIAG] 2026-10-02: one report per grid per process run - "who still holds the lock".
+    // A grid is only reachable here when no player is near it, so the report is the wanted
+    // diagnostic and not a per-tick spam; it also tells us (playersNearIt) whether the holder
+    // could safely be despawned by the A+ pass above.
+    uint32 const key = x * MAX_NUMBER_OF_GRIDS + y;
+    if (!released && m_memLockReportedGrids.insert(key).second)
+    {
+        sLog.outError("[MEMLOCK] map=%u grid=(%u,%u) STILL LOCKED unbound=%zu despawned=%zu kept=%zu",
+                      i_id, x, y, toUnbind.size(), toDespawn.size(), keptHolders.size());
+        uint32 shown = 0;
+        for (Creature* c : keptHolders)
+        {
+            float rx, ry, rz;
+            c->GetRespawnCoord(rx, ry, rz);
+            GridPair const spawnGrid = MaNGOS::ComputeGridPair(rx, ry);
+            GridPair const curGrid = MaNGOS::ComputeGridPair(c->GetPositionX(), c->GetPositionY());
+            float const movedBy = std::sqrt(c->GetDistance2d(rx, ry));
+            sLog.outError("[MEMLOCK]   holder guid=%u entry=%u spawn=(%u,%u) cur=(%u,%u) movedBy=%.1fyd playersNearIt=%u",
+                          c->GetGUIDLow(), c->GetEntry(), spawnGrid.x_coord, spawnGrid.y_coord,
+                          curGrid.x_coord, curGrid.y_coord, movedBy,
+                          ActiveObjectsNearGrid(curGrid.x_coord, curGrid.y_coord) ? 1 : 0);
+            if (++shown >= 8)
+            {
+                sLog.outError("[MEMLOCK]   ... %zu more holders not listed", keptHolders.size() - shown);
+                break;
+            }
+        }
+    }
+
+    return released;
 }
 
 void Map::AddToOnEventNotified(WorldObject* obj)

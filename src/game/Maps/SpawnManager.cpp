@@ -265,6 +265,30 @@ void SpawnManager::RespawnAll()
     }
 }
 
+// [懒加载 2026-10-16] 站长口径：补刷也要懒加载。补刷队列里的对象如果所在网格没载，就不刷
+//（等网格真被加载后再刷）——否则一次补刷会通过 Map::AddToActive → EnsureGridLoaded 把该格的
+// terrain(.map)+vmap 全拉进来。实测：没人在地图里时这类网格加载会带进上千个格的数据，
+// 峰值 +470~500MB（massif + addr2line 调用栈证据见 dev/KNOWN_ISSUES.md）。
+bool SpawnManager::IsSpawnGridLoaded(SpawnInfo const& spawnInfo) const
+{
+    float x = 0.f, y = 0.f;
+    if (spawnInfo.GetHighGuid() == HIGHGUID_UNIT)
+    {
+        CreatureData const* data = sObjectMgr.GetCreatureData(spawnInfo.GetDbGuid());
+        if (!data)
+            return true;                 // 数据缺失交给正常路径报错
+        x = data->posX; y = data->posY;
+    }
+    else
+    {
+        GameObjectData const* data = sObjectMgr.GetGOData(spawnInfo.GetDbGuid());
+        if (!data)
+            return true;
+        x = data->posX; y = data->posY;
+    }
+    return m_map.IsLoaded(x, y);
+}
+
 void SpawnManager::Update()
 {
     m_updated = true;
@@ -279,7 +303,7 @@ void SpawnManager::Update()
     {
         auto& spawnInfo = *itr;
         if (spawnInfo.IsUsed() ||
-            (spawnInfo.GetRespawnTime() <= now && spawnInfo.ConstructForMap(m_map)))
+            (spawnInfo.GetRespawnTime() <= now && IsSpawnGridLoaded(spawnInfo) && spawnInfo.ConstructForMap(m_map)))
             itr = m_spawns.erase(itr);
         else
             ++itr;

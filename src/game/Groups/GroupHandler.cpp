@@ -465,7 +465,8 @@ void WorldSession::HandleRaidTargetUpdateOpcode(WorldPacket& recv_data)
 
         ObjectGuid guid;
         recv_data >> guid;
-        group->SetTargetIcon(x, guid);
+        // [2026-10-18] 把"谁改的"一起传进去 ⇒ 日志能复盘标记来源（真人改还是 bot 改）
+        group->SetTargetIcon(x, guid, GetPlayer()->GetObjectGuid());
     }
 }
 

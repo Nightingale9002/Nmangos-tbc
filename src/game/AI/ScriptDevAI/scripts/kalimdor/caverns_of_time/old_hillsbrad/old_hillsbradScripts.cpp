@@ -147,7 +147,14 @@ enum
 
     SAY_TH_LEAVE_COMBAT1            = 17607,
     SAY_TH_LEAVE_COMBAT2            = 17608,
-    SAY_TH_LEAVE_COMBAT3            = 10457,
+    // [TEXT-ID-FIX 2026-10-12] 这里原本写的是 10457 —— 那是祖尔格拉布哈卡的台词
+    // （"Blood and souls for Hakkar!  HAHAHAH!" / "鲜血和灵魂，为了哈卡而战！哈哈哈！"），
+    // 于是旧希尔斯布莱德护送里的萨尔一脱战就喊一句哈卡的话（站长 2026-10-12 报的问题）。
+    // 同组 LEAVE_COMBAT1/2 = 17607/17608 是"我欠你们的情，陌生人"/"谢谢你们，你们给了我希望"，
+    // 17609 正是同批第三句（"I will not waste this chance. I will seek out my destiny."），
+    // 而 17609 在源码与库脚本里**原本没有任何引用**（被这行写错而孤立）。
+    // 错值来自上游 cmangos 提交 e8b9665e3 "OHF: Rename old hillsbrad to new style part 1"（2023-05-28）。
+    SAY_TH_LEAVE_COMBAT3            = 17609,
 
     // reset texts
     SAY_ERONZION_RESET_THRALL       = 16729,
@@ -239,6 +246,7 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
         InitializeDialogueHelper(m_pInstance);
         pCreature->SetActiveObjectState(true);              // required for proper relocation
         m_bHadMount = false;
+        m_bRemountPending = false;
         Reset();
     }
 
@@ -246,6 +254,12 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
 
     bool m_bIsLowHp;
     bool m_bHadMount;
+    // Fork fix v2 (2026-10-16, 站长口径): 上马时机 = 「脱战 **并且已回到路线**」，不是一脱战就上马。
+    // 旧实现把 Mount 放在 Reset() 里 —— 核心一脱战就调 Reset()，于是萨尔站在原地（打架的位置）就上马。
+    // 现在改为**状态判断**：Aggro 只置 pending；真正 Mount 发生在 WaypointReached —— 也就是 escort
+    // 脱战后恢复走点、重新踏回路线的那一刻。不用距离阈值、也不加任何超时兜底（贴不回路线是状态机的问题，
+    // 兜底只会把同一个 bug 放回来并掩盖它）。
+    bool m_bRemountPending;
     bool m_bHasChurchYelled;
     bool m_bHasInnYelled;
     bool m_bHasEpochYelled;
@@ -266,7 +280,7 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
         m_uiStrikeTimer      = urand(3000, 7000);
         m_uiShieldBlockTimer = urand(6000, 11000);
 
-        if (m_bHadMount)
+        if (m_bHadMount && !m_bRemountPending)
             m_creature->Mount(MODEL_SKARLOC_MOUNT);
 
         if (!HasEscortState(STATE_ESCORT_ESCORTING))
@@ -293,10 +307,19 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
             case 3: DoBroadcastText(SAY_TH_RANDOM_AGGRO4, m_creature); break;
         }
 
-        if (m_creature->IsMounted())
+        // Fork fix (upstream bug): the mounted state is tracked by the escort phase (set with the
+        // script mount at waypoint 40, cleared at the barn), NOT by Creature::IsMounted().  A
+        // script mount only sets UNIT_FIELD_MOUNTDISPLAYID, while IsMounted() tests UNIT_FLAG_MOUNT,
+        // which is only ever set for aura mounts (Unit.h: "not used with creature non-aura mounts").
+        // Upstream therefore never set m_bHadMount here - and UnitAI already dismounted Thrall in
+        // HandleMovementOnAttackStart (m_dismountOnAggro) before this handler runs - so Reset()
+        // skipped its Mount(MODEL_SKARLOC_MOUNT) and Thrall stayed on foot after every fight.
+        if (m_bHadMount)
         {
             m_creature->Unmount();
-            m_bHadMount = true;
+            // 站长口径（2026-10-16）：脱战不等于可以上马，要等他重新踏回路线 —— 只置 pending，
+            // 真正的 Mount 在 WaypointReached（状态驱动，无距离阈值、无超时）。
+            m_bRemountPending = true;
         }
     }
 
@@ -687,6 +710,14 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
         if (!m_pInstance)
             return;
 
+        // Fork fix v2 (2026-10-16, 站长口径)：上马时机由**状态**决定 —— 只有「脱战 + 已重新踏回路线」
+        // （escort 恢复后到达下一个路点）才上马；这是"回到原位"的定义，不用距离阈值、也没有超时兜底。
+        if (m_bRemountPending && m_bHadMount && !m_creature->IsInCombat())
+        {
+            m_creature->Mount(MODEL_SKARLOC_MOUNT);
+            m_bRemountPending = false;
+        }
+
         switch (uiPoint)
         {
             // *** Escort event - Part I - inside the keep ***
@@ -796,6 +827,7 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
                 DoBroadcastText(SAY_TH_MOUNTS_UP, m_creature);
                 m_creature->SetFacingTo(5.33f);
                 m_creature->Mount(MODEL_SKARLOC_MOUNT);
+                m_bHadMount = true;             // ride until the barn (waypoint 68) - see Aggro()
                 break;
             // *** Escort event - Part II - reached barn ***
             case 68:

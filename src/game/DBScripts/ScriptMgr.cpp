@@ -1431,8 +1431,12 @@ std::pair<bool, bool> ScriptAction::GetScriptProcessTargets(WorldObject* origina
         else if (m_script->data_flags & SCRIPT_FLAG_BUDDY_BY_SPAWN_GROUP) // Buddy by group
         {
             WorldObject* origin = originalSource ? originalSource : originalTarget;
+            // [崩溃修复 2026-10-15] 源与目标都为空时 origin 会是 nullptr，后面 origin->GetDistance() 直接踩空
+            // （线上实测 SIGSEGV at 0x38c，栈：GetScriptProcessTargets ← HandleScriptStep ← Map::ScriptsProcess）。
+            if (!origin)
+                return { false, false };
             if (origin->GetTypeId() == TYPEID_PLAYER && originalSource && originalSource->GetTypeId() != TYPEID_PLAYER)
-                origin = originalTarget;
+                origin = originalTarget ? originalTarget : originalSource;
 
             SpawnGroupEntry* entry = m_map->GetMapDataContainer().GetSpawnGroup(m_script->buddyEntry);
             WorldObject* closest = nullptr;
@@ -1482,8 +1486,12 @@ std::pair<bool, bool> ScriptAction::GetScriptProcessTargets(WorldObject* origina
         else if (m_script->data_flags & SCRIPT_FLAG_BUDDY_BY_STRING_ID)
         {
             WorldObject* origin = originalSource ? originalSource : originalTarget;
+            // [崩溃修复 2026-10-15] 源与目标都为空时 origin 会是 nullptr，后面 origin->GetDistance() 直接踩空
+            // （线上实测 SIGSEGV at 0x38c，栈：GetScriptProcessTargets ← HandleScriptStep ← Map::ScriptsProcess）。
+            if (!origin)
+                return { false, false };
             if (origin->GetTypeId() == TYPEID_PLAYER && originalSource && originalSource->GetTypeId() != TYPEID_PLAYER)
-                origin = originalTarget;
+                origin = originalTarget ? originalTarget : originalSource;
             auto worldObjects = m_map->GetWorldObjects(m_script->buddyEntry);
             if (worldObjects == nullptr)
                 return { false, false };
@@ -1531,8 +1539,12 @@ std::pair<bool, bool> ScriptAction::GetScriptProcessTargets(WorldObject* origina
 
             // Prefer non-players as searcher
             WorldObject* origin = originalSource ? originalSource : originalTarget;
+            // [崩溃修复 2026-10-15] 源与目标都为空时 origin 会是 nullptr，后面 origin->GetDistance() 直接踩空
+            // （线上实测 SIGSEGV at 0x38c，栈：GetScriptProcessTargets ← HandleScriptStep ← Map::ScriptsProcess）。
+            if (!origin)
+                return { false, false };
             if (origin->GetTypeId() == TYPEID_PLAYER && originalSource && originalSource->GetTypeId() != TYPEID_PLAYER)
-                origin = originalTarget;
+                origin = originalTarget ? originalTarget : originalSource;
 
             if (m_script->IsCreatureBuddy())
             {
@@ -2179,6 +2191,15 @@ bool ScriptAction::ExecuteDbscriptCommand(WorldObject* pSource, WorldObject* pTa
             }
 
             if (LogIfNotUnit(pSource))
+                break;
+
+            // [FIX 2026-10-03] A DB script must not make a dead creature cast.  Map::ScriptsProcess was
+            // observed driving a CORPSE through this very command: the Sunwell Dawnblade channel beams
+            // (spells 45104 Shadow Channelling / 30944 Red Beam) kept being cast by corpses, so players saw
+            // a corpse that "still casts" (stack 2026-10-03 01:18: ScriptsProcess -> HandleScriptStep ->
+            // ExecuteDbscriptCommand -> Unit::CastSpell).  Scripts that must affect a dead unit can still
+            // target it (the pTarget side is untouched); only the caster has to be alive.
+            if (static_cast<Unit*>(pSource)->GetTypeId() == TYPEID_UNIT && !static_cast<Unit*>(pSource)->IsAlive())
                 break;
 
             SpellCastTargets spellCastTargets;
@@ -2977,6 +2998,10 @@ bool ScriptAction::ExecuteDbscriptCommand(WorldObject* pSource, WorldObject* pTa
             if (LogIfNotUnit(pTarget))
                 break;
             if (LogIfNotUnit(pSource))
+                break;
+
+            // [FIX 2026-10-03] same guard as SCRIPT_COMMAND_CAST_SPELL: never cast from a dead creature
+            if (static_cast<Unit*>(pSource)->GetTypeId() == TYPEID_UNIT && !static_cast<Unit*>(pSource)->IsAlive())
                 break;
 
             ((Unit*)pSource)->CastCustomSpell((Unit*)pTarget, m_script->castCustomSpell.spellId, &m_script->textId[0], &m_script->textId[1], &m_script->textId[2], m_script->castCustomSpell.castFlags);

@@ -4117,8 +4117,11 @@ void Aura::HandleModStealth(bool apply, bool Real)
             // apply only if not in GM invisibility (and overwrite invisibility state)
             if (target->GetVisibility() != VISIBILITY_OFF)
             {
-                target->SetVisibility(VISIBILITY_GROUP_NO_DETECT);
-                target->SetVisibility(VISIBILITY_GROUP_STEALTH);
+                // [INVIS-AGGRO 2026-10-01] forceAINotify = false: entering stealth must not schedule the
+                // creature's AI aggro sweep, which is the only moment a stationary creature ever re-checks
+                // a stealthed player (see Unit::UpdateVisibilityAndViewInternal).
+                target->SetVisibility(VISIBILITY_GROUP_NO_DETECT, false);
+                target->SetVisibility(VISIBILITY_GROUP_STEALTH, false);
             }
 
             // apply full stealth period bonuses only at first stealth aura in stack
@@ -4232,7 +4235,21 @@ void Aura::HandleInvisibility(bool apply, bool Real)
     }
 
     if (target->IsInWorld())
-        target->UpdateVisibilityAndView();
+    {
+        // [INVIS-AGGRO 2026-10-01] Neither entering NOR leaving invisibility may schedule the AI aggro
+        // sweep (Unit::UpdateVisibilityAndView -> ScheduleAINotify(0) -> UnitVisitObjectsInRangeNotifyEvent
+        // -> CreatureVisitObjectsNotifier). That sweep was the one and only moment a stationary creature
+        // re-checked - and attacked - a stealthed player standing next to it, which looked like
+        // "it notices me the instant it goes invisible".
+        //
+        // Both directions matter for the reported case (18884 Warp Chaser): the mob's invisibility is
+        // re-applied by a 30s periodic trigger (32942 -> 32943) and only lasts 8s, so the aura expires
+        // long before the next tick - the expiry (apply == false) would sweep just as well as the
+        // application did and keep the "它一隐身就发现我" symptom alive with an 8s offset.
+        // Becoming visible is still noticed by the AI as soon as the creature moves, is spawned/respawned,
+        // or its detection range makes it heartbeat-sweep (Creature.cpp:3353-3359).
+        target->UpdateVisibilityAndViewNoAINotify();
+    }
 }
 
 void Aura::HandleInvisibilityDetect(bool apply, bool Real)

@@ -17,6 +17,14 @@
  */
 
 #include "WorldModel.h"
+// [2026-10-17] <unistd.h>/sysconf 只有 POSIX 有 —— MSVC（本地 Windows 构建）不提供，
+// 因此诊断打点里这唯一的两处 Linux 依赖必须显式守卫；Linux 行为逐字不变。
+#if defined(__linux__)
+#include <unistd.h>
+#endif
+#include "Log/Log.h"
+#include <cstdio>
+#include <cstdlib>
 #include "VMapDefinitions.h"
 #include "MapTree.h"
 #include "ModelInstance.h"
@@ -597,11 +605,39 @@ namespace VMAP
         return result;
     }
 
+    // [VMAP-DIAG 2026-10-16] 数 vmap 瓦片的读取次数与字节数（env VMAP_TRACE=1）
+    static uint32 g_vmapTraceCount = 0;
+    static uint64 g_vmapTraceBytes = 0;
+
     bool WorldModel::readFile(const std::string& filename)
     {
+        static bool const vmapTrace = (std::getenv("VMAP_TRACE") != nullptr);
         FILE* rf = fopen(filename.c_str(), "rb");
         if (!rf)
             return false;
+        if (vmapTrace)
+        {
+            fseek(rf, 0, SEEK_END);
+            uint64 sz = (uint64)ftell(rf);
+            fseek(rf, 0, SEEK_SET);
+            ++g_vmapTraceCount;
+            g_vmapTraceBytes += sz;
+            if ((g_vmapTraceCount % 25) == 1 || g_vmapTraceCount <= 3)
+            {
+                uint32 rssMb = 0;
+#if defined(__linux__)
+                if (FILE* f = fopen("/proc/self/statm", "r"))
+                {
+                    unsigned long total = 0, resident = 0;
+                    if (fscanf(f, "%lu %lu", &total, &resident) == 2)
+                        rssMb = (uint32)((resident * (unsigned long)sysconf(_SC_PAGESIZE)) / (1024 * 1024));
+                    fclose(f);
+                }
+#endif
+                sLog.outString("[VMAP#%u] rss=%uMB this=%.2fMB total=%.1fMB file=%s",
+                    g_vmapTraceCount, rssMb, double(sz) / 1048576.0, double(g_vmapTraceBytes) / 1048576.0, filename.c_str());
+            }
+        }
 
         bool result = true;
         uint32 chunkSize = 0;

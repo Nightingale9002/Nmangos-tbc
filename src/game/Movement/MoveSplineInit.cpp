@@ -147,7 +147,14 @@ namespace Movement
                     // through to the water below it)
                     if (groundZ < waterLevel && p.z <= waterLevel + 2.0f)
                     {
-                        sawUnderwater = true;
+                        // [SWIM-DEPTH 2026-10-01] 只有"水深 > 碰撞高度"才算真正进入水体，
+                        // 与 Unit::Update 的新判据一致（那边用同一个量：水面 - 静态地面高度）。
+                        // 只没过脚踝/小腿的浅滩不再置游泳标记 —— 否则 Unit::Update 下一 tick 就会把它
+                        // 清掉，而 TargetedMovementGenerator 以"标记翻转"触发重新寻路，
+                        // 表现为岸边闪一下游泳动作。
+                        // 注意：下面的 z 修正对**所有**水深仍然生效（那段浅水夹取逻辑本来就是为浅滩写的）。
+                        if ((waterLevel - groundZ) > unit.GetCollisionHeight())
+                            sawUnderwater = true;
                         // fully-submerged band requires enough depth (bottom+0.5 <
                         // surface-1.5). In a shallow pocket (e.g. waterline at 18.27,
                         // floor 18.20) max(groundZ+0.5, min(p.z, surface-1.5)) used to
@@ -155,11 +162,18 @@ namespace Movement
                         // -> creature floated out of the water. Clamp to the band when
                         // it exists, else floor or skim the waterline.
                         float const lo = groundZ + 0.5f;
-                        float const hi = waterLevel - 1.5f;
+                        // [SWIM/AIR HEIGHT 2026-10-03] model-derived surface margin (was a fixed 1.5 yd): the client poses the
+                        // swimming model around the position we send, so a tall naga needs a deeper origin than a small fish.
+                        // [SWIM-DEPTH-ADAPTIVE 2026-10-04] 但**不能对浅水也用这个固定深度**：水深不够时
+                        // "水面 - 固定深度"会落到水底以下，夹取退化，原来的兜底是把点钉回水面高度 ——
+                        // 于是怪贴在水面上、又因为游泳标记在那种水深不成立，客户端就成了"走水面"（没有游泳
+                        // 动作）；跨水线那一步还会从 ~19.0 直接掉到 15.14（实测 3.9 码，入水/出水看着猛沉）。
+                        // 改成按该点实际水深自适应：浅水只浮在水面下一点点，水够深才用设定深度。
+                        float const hi = waterLevel - unit.GetSwimDepthForWaterDepth(waterLevel - groundZ);
                         if (lo <= hi)
                             p.z = std::max(lo, std::min(p.z, hi));
                         else
-                            p.z = std::min(lo, waterLevel);        // shallow: walk floor / skim surface
+                            p.z = std::min(lo, waterLevel);        // 水深 < 0.5 码：贴底/擦水面（极端浅滩）
                     }
                     PFDBG_MSG(&unit, "MoveSplineInit water-rewrite pt(%.8f,%.8f) origZ=%.8f -> newZ=%.8f groundZ=%.8f waterLevel=%.8f walkInWater=%d canSwim=%d",
                               p.x, p.y, origZ, p.z, groundZ, waterLevel, walkInWater ? 1 : 0, canSwim ? 1 : 0);
@@ -170,7 +184,7 @@ namespace Movement
                 // movement flag and the client plays the swim animation. The z
                 // correction alone leaves it "walking through water". Unit::Update
                 // clears the flag when the unit surfaces (z > surface + 0.5).
-                if (sawUnderwater && canSwim && !walkInWater &&
+                if (sawUnderwater && canSwim && !walkInWater && unit.IsAlive() &&
                     !unit.m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING))
                 {
                     unit.SetSwim(true);
@@ -197,7 +211,8 @@ namespace Movement
         if (unit.GetTypeId() == TYPEID_UNIT && unit.IsLevitating() && !unit.IsHovering() && !unit.IsInWater())
         {
             Creature* creature = static_cast<Creature*>(&unit);
-            float const clearance = sWorld.getConfig(CONFIG_FLOAT_CREATURE_AIR_GROUND_CLEARANCE);
+            // [SWIM/AIR HEIGHT 2026-10-03] model-derived clearance for airborne flyers
+            float const clearance = unit.GetAirGroundClearance();
             if (clearance > 0.0f && !creature->IsClientControlled() &&
                     (creature->GetCreatureInfo()->InhabitType & INHABIT_AIR) != 0 &&
                     creature->IsAirbornePosition(unit.GetPositionX(), unit.GetPositionY(), unit.GetPositionZ(), clearance * 0.5f))

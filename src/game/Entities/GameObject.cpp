@@ -649,6 +649,16 @@ void GameObject::Update(const uint32 diff)
             if (preventDespawn) // mainly serves to prevent casting traps from despawning
                 break;
 
+            /* 2026-10-07 (Kabu), re-scoped 2026-10-10 (Kabu): GO_FLAG_NODESPAWN (0x20) means "never
+             * despawn, typically for doors, they just change state" (Globals/SharedDefines.h) and this
+             * path never honoured it, so the Shattered Halls entrance door (184912, guid 25826) was
+             * removed from the world for its whole spawn timer right after auto-close and only came back
+             * much later. That is fixed here, but ONLY for that door: applying it to every NODESPAWN
+             * door/button broke unrelated objects (e.g. the Steamvault main chambers door 183049 and its
+             * access panels), so the rule is intentionally entry-scoped - do not widen it again without
+             * checking the other users of the flag. */
+            bool const neverDespawns = (GetEntry() == 184912) && !m_forcedDespawn;
+
             // Remove wild summoned after use
             // non-consumable chests/goobers (IsDespawnAtAction == false) must never despawn,
             // even when wild-summoned by a spell: keep them alive with reset loot so other
@@ -664,8 +674,24 @@ void GameObject::Update(const uint32 diff)
                 return;
             }
 
+            // [SV-DOOR 2026-10-09] NODESPAWN doors/buttons stay in the world, but they must still get their
+            // runtime flags reset when they are deactivated - this is exactly what the (skipped) block below
+            // does, and it is how GO_FLAG_IN_USE gets cleared after the door was opened. Without the reset the
+            // flag lingers and the client keeps treating the door as "in use" (Steamvault main chambers door
+            // 183049, flags LOCKED|NODESPAWN), i.e. it never shows up as an opened/usable door.
+            if (neverDespawns)
+            {
+                if (GetMap()->Instanceable())
+                {
+                    // In Instances GO_FLAG_LOCKED, GO_FLAG_INTERACT_COND or GO_FLAG_NO_INTERACT are not changed
+                    uint32 currentLockOrInteractFlags = GetUInt32Value(GAMEOBJECT_FLAGS) & (GO_FLAG_LOCKED | GO_FLAG_INTERACT_COND | GO_FLAG_NO_INTERACT);
+                    SetUInt32Value(GAMEOBJECT_FLAGS, (GetGOInfo()->flags & ~(GO_FLAG_LOCKED | GO_FLAG_INTERACT_COND | GO_FLAG_NO_INTERACT)) | currentLockOrInteractFlags);
+                }
+                else
+                    SetUInt32Value(GAMEOBJECT_FLAGS, GetGOInfo()->flags);
+            }
             // burning flags in some battlegrounds, if you find better condition, just add it
-            if (GetGOInfo()->IsDespawnAtAction() || GetGoAnimProgress() > 0)
+            else if (GetGOInfo()->IsDespawnAtAction() || GetGoAnimProgress() > 0)
             {
                 SendObjectDeSpawnAnim(GetObjectGuid());
                 // reset flags
@@ -683,6 +709,11 @@ void GameObject::Update(const uint32 diff)
             m_loot = nullptr;
             SetLootRecipient(nullptr);
             SetLootState(GO_READY);
+
+            // GO_FLAG_NODESPAWN doors/buttons are back in their rest state now; keep them in the
+            // world instead of scheduling a respawn (see neverDespawns above).
+            if (neverDespawns)
+                break;
 
             // non-consumable chests and goobers should never despawn
             // exception: 185861 Fel Cannonball Stack - it is deactivated by spell 40160 "Throw Bomb"

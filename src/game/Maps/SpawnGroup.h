@@ -51,6 +51,9 @@ class SpawnGroup
         std::string to_string() const;
         uint32 GetObjectTypeId() const { return m_objectTypeId; }
         void SetEnabled(bool enabled) { m_enabled = enabled; }
+        // Fork addition (2026-10-10): used only by the .respawn GM command. RemoveObject sets a
+        // "full wipe" cooldown for outdoor groups; a deliberate GM respawn must not be swallowed by it.
+        void ClearCooldown() { m_cooldown = TimePoint(); }
         SpawnGroupEntry const& GetGroupEntry() const { return m_entry; }
         uint32 GetGroupId() const { return m_entry.Id; }
 
@@ -73,6 +76,12 @@ class SpawnGroup
         uint32 m_objectTypeId;
         bool m_enabled;
         TimePoint m_cooldown; // used for full wipe scenario only - data is still saved per spawn to db
+        // Fork addition: runtime diagnostics for "why is this pack/instance empty".  m_debugLog is
+        // switched on with the `SpawnGroup.DebugLog` conf key (default off) and then logs every spawn
+        // attempt with the entry it resolved to; the set only tracks members that resolved to entry 0,
+        // so that failure is reported once instead of on every map update.
+        bool m_debugLog;
+        std::set<uint32> m_zeroEntryReported;
 };
 
 class CreatureGroup : public SpawnGroup
