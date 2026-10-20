@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS `ai_playerbot_boss_ability` (
   `interruptible`  TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '是否可打断（0/1）',
   `dispellable`    VARCHAR(16) NOT NULL DEFAULT '' COMMENT '可驱散类型：magic/disease/curse/poison（空=不可驱散/未知）',
   `avoid_sectors`  VARCHAR(32) NOT NULL DEFAULT '' COMMENT '禁站扇区：front/right/back/left（60° 一档，逗号分隔）',
+  `facing_mode`    VARCHAR(24) NOT NULL DEFAULT 'away_group' COMMENT '朝向模式：away_group/fixed/open/wall',
+  `facing_deg`     SMALLINT NOT NULL DEFAULT 0 COMMENT 'fixed 模式下的目标朝向（度）',
   `generic_handling` VARCHAR(32) NOT NULL DEFAULT '' COMMENT '交给哪条通用链路（空 = 通用处理不了）',
   `needs_special`  TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '1 = 需要单独策略',
   `source`         ENUM('guide','db','observed') NOT NULL DEFAULT 'guide' COMMENT '数据来源',
@@ -60,27 +62,20 @@ CREATE TABLE IF NOT EXISTS `ai_playerbot_boss_ability` (
 -- 197_BOSS能力表_主键加category.sql
 -- 原因：同一 boss 可以同时有 los/frontal/knockback/... 多个类别，而"攻略级"条目的 spell_id=0，
 --       旧主键 (map,boss_entry,owner_entry,spell_id) 会互相覆盖 ⇒ 主键加上 category。
--- 幂等：先查当前主键列，已是 5 列就跳过。
-SET @pk := (SELECT COUNT(*) FROM information_schema.statistics
-            WHERE table_schema=DATABASE() AND table_name='ai_playerbot_boss_ability'
-              AND index_name='PRIMARY');
-SET @sql := IF(@pk = 4,
-  'ALTER TABLE `ai_playerbot_boss_ability` DROP PRIMARY KEY, ADD PRIMARY KEY (`map`,`boss_entry`,`owner_entry`,`spell_id`,`category`)',
-  'DO 0');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+-- [2026-10-20 口径修订] 这里原来用 information_schema + PREPARE 守卫（属于逻辑查询，见 README §〇）；
+--   **结构变更一律静态**：新库由上面的 CREATE TABLE 直接建成 5 列主键，老库按下面这条**手工**执行一次：
+--   ALTER TABLE `ai_playerbot_boss_ability` DROP PRIMARY KEY,
+--     ADD PRIMARY KEY (`map`,`boss_entry`,`owner_entry`,`spell_id`,`category`);
+--   云端/本地 2026-10-20 已核对：PRIMARY KEY 就是这 5 列 ✓，不需要再跑。
 
 -- 199_BOSS能力表_禁站扇区.sql
 -- [2026-10-18 站长口径] 跑位避让按**扇区**算：以 BOSS 朝向为 0°，60° 一档分 6 个扇区；
 --   正面锥形禁 front、龙类甩尾禁 back（有的前后都禁）。
 --   avoid_sectors: 逗号分隔，取值 front/right/back/left（front=正前±30°，back=正后±30°，
 --   right/left=对应侧 60°）。空 = 无扇区限制。
--- 幂等（列存在就跳过）。
-SET @c := (SELECT COUNT(*) FROM information_schema.columns
-           WHERE table_schema=DATABASE() AND table_name='ai_playerbot_boss_ability' AND column_name='avoid_sectors');
-SET @sql := IF(@c = 0,
-  'ALTER TABLE `ai_playerbot_boss_ability` ADD COLUMN `avoid_sectors` VARCHAR(32) NOT NULL DEFAULT '''' COMMENT ''禁站扇区：front/right/back/left（60° 一档，逗号分隔）'' AFTER `dispellable`',
-  'DO 0');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+-- [2026-10-20] `avoid_sectors` 已并入 CREATE TABLE；老库手工执行（云端/本地均已存在 ✓）：
+--   ALTER TABLE `ai_playerbot_boss_ability` ADD COLUMN `avoid_sectors` VARCHAR(32) NOT NULL DEFAULT ''
+--     COMMENT '禁站扇区：front/right/back/left（60° 一档，逗号分隔）' AFTER `dispellable`;
 
 -- 201_BOSS能力表_朝向规则.sql
 -- [2026-10-18 站长口径] 调整怪物朝向不止"背朝团队"，还包括特定方向：
@@ -90,20 +85,17 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 --     open        面向最空旷的方向（用服务端 vmap/地形采样，避免把怪顶到墙/悬崖）
 --     wall        面向最近的墙（需要把 BOSS 顶到墙边时用；坦克站到它与墙之间）
 --   facing_deg: 仅 fixed 用。
--- 幂等：列存在就跳过。
-SET @c1 := (SELECT COUNT(*) FROM information_schema.columns
-            WHERE table_schema=DATABASE() AND table_name='ai_playerbot_boss_ability' AND column_name='facing_mode');
-SET @sql := IF(@c1 = 0,
-  'ALTER TABLE `ai_playerbot_boss_ability` ADD COLUMN `facing_mode` VARCHAR(24) NOT NULL DEFAULT ''away_group'' COMMENT ''朝向模式：away_group/fixed/open/wall'' AFTER `avoid_sectors`',
-  'DO 0');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @c2 := (SELECT COUNT(*) FROM information_schema.columns
-            WHERE table_schema=DATABASE() AND table_name='ai_playerbot_boss_ability' AND column_name='facing_deg');
-SET @sql := IF(@c2 = 0,
-  'ALTER TABLE `ai_playerbot_boss_ability` ADD COLUMN `facing_deg` SMALLINT NOT NULL DEFAULT 0 COMMENT ''fixed 模式下的目标朝向（度）'' AFTER `facing_mode`',
-  'DO 0');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+-- [2026-10-20 定案·已修] 这两列**从未在云端生效**：守卫式 ALTER 写法（information_schema + PREPARE）
+--   在 apply_dev_sql.sh 里没跑成，而 marker 已推进 ⇒ 挂在 `ai_playerbot_boss_ability` 上的
+--   `PartyPositionCoordinator::RefreshBossFacing()`（`SELECT DISTINCT … facing_mode …`）每 5 分钟报
+--   `Unknown column 'facing_mode' in 'field list'`，BOSS 朝向数据完全没生效。
+--   ⇒ 已按规范改成**静态 DDL**（2026-10-20 云端手工执行 ✓，44 行数据未动 ✓），新库由 CREATE TABLE 建好；
+--   老库手工执行：
+--   ALTER TABLE `ai_playerbot_boss_ability`
+--     ADD COLUMN `facing_mode` VARCHAR(24) NOT NULL DEFAULT 'away_group'
+--       COMMENT '朝向模式：away_group/fixed/open/wall' AFTER `avoid_sectors`,
+--     ADD COLUMN `facing_deg`  SMALLINT     NOT NULL DEFAULT 0
+--       COMMENT 'fixed 模式下的目标朝向（度）' AFTER `facing_mode`;
 
 -- 196_BOSS能力表_LOS种子.sql（dev/analyzers 从攻略正文提取；幂等 INSERT IGNORE）
 -- 让 PartyPositionCoordinator 的 LOS 触发集合有数据（category='los'）

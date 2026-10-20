@@ -11768,10 +11768,19 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 
 - `.bot prio` 是**全服全局**改档（按 entry），非 GM 也能用 ⇒ 只能靠 `[BOTCMD]` 日志事后追责；若以后要按玩家/队伍隔离，需要在 `SetPriorityRank()` 上加 owner 维度。
 - 动态优先级只调了"动作 relevance"；控制目标怎么挑仍由 `values/CcTargetValue.cpp → FindTargetForCcStrategy`（按普通输出/优先级 4 排序）决定，两处口径要一起看。
-- ⚠️ **顺带发现的部署缺口（未修，等站长点头）**：`dev/187_副本BOSS能力表.sql` 没在云端应用 ⇒
-  `tbcmangos.ai_playerbot_boss_ability` 缺 `facing_mode` / `facing_deg` 两列 ⇒ `PartyPositionCoordinator.h → PartyPositionCoordinator::RefreshBossFacing()`
-  （`SELECT DISTINCT … facing_mode … WHERE facing_mode <> 'away_group'`）每 5 分钟报一次 `Unknown column 'facing_mode' in 'field list'`
-  并且 **BOSS 朝向/跑位分带数据在云端完全不生效**。补法是静态 DDL（`ALTER TABLE … ADD COLUMN`），必须先建列、再把 dev SQL 里的守卫式 ALTER 去掉。
+- ✅ **顺带发现的部署缺口（2026-10-20 已修）**：`dev/187_副本BOSS能力表.sql` 里的**守卫式 ALTER**
+  （`information_schema` + `PREPARE`）在云端没跑成、marker 已推进 ⇒ `tbcmangos.ai_playerbot_boss_ability`
+  缺 `facing_mode` / `facing_deg` 两列 ⇒ `PartyPositionCoordinator.h → PartyPositionCoordinator::RefreshBossFacing()`
+  每 5 分钟报一次 `Unknown column 'facing_mode' in 'field list'`，**BOSS 朝向/跑位分带数据完全不生效**。
+  **修法（静态 DDL，2026-10-20 云端手工执行 ✓）**：
+  `ALTER TABLE ai_playerbot_boss_ability ADD COLUMN facing_mode VARCHAR(24) NOT NULL DEFAULT 'away_group' AFTER avoid_sectors, ADD COLUMN facing_deg SMALLINT NOT NULL DEFAULT 0 AFTER facing_mode;`
+  —— 44 行数据未动 ✓、主键仍是 5 列（`map,boss_entry,owner_entry,spell_id,category`）✓。
+  **`dev/187` 已按规范改写**：两列并入 `CREATE TABLE`；3 处 `information_schema + PREPARE` 守卫（主键/avoid_sectors/facing）
+  改成注释里的静态 DDL（新库直接建好、老库手工执行），不再有逻辑查询。
+  **验证**：改前最后一条错误 `12:36:50`；改后下一次刷新 `12:41:50` 输出
+  `[POSITION] 跑位触发集合: 44 个 entry（6 种模式）` 且 `grep -c facing_mode DBErrors.log` **停在 52 不再增长** ⇒ **不用重启即生效**。
+  ⚠️ 残留：云端 44 行的 `facing_mode` 现在**全是默认 `away_group`**（= 沿用旧行为）；要真正用上
+  `fixed/open/wall` 得按攻略往表里填行（填完 ≤5 分钟自动生效）。
 
 ---
 
