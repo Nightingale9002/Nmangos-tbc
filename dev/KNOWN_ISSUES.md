@@ -2780,7 +2780,7 @@ std::mt19937* GetRandomGenerator()
 （`WorldObject::SpawnCreature()` / `SpawnGameObject()`）、`src/game/Grids/ObjectGridLoader.cpp`（`LoadHelper()`）、
 `src/game/Maps/Map.cpp`（`Map::ReportGridLoad()`）。
 
-## [崩溃] 服务端崩溃/段错误总账 — 2026-08-23 ~ 2026-10-03（本章合并自 5 章：[部署] mmap 热替换导致 mangosd 崩溃循环（2026-08-25 排查）、[稳定性] 服务器宕机根因：Map::Update 活动对象列表 use-after-free — 2026-08-23 已修复并验证（云端已部署）、[崩溃] 换格崩溃根因定案：MEMFIX 懒卸载 × Pet 驻留"世界容器" —— 2026-09-26、[崩溃] Oronok 链第二次崩溃：召唤物回调里的未初始化指针（`0cb0058d0`）—— 2026-09-29（本地已验证通过，云端未部署）、[崩溃] 2026-10-03 00:01:51 云端 mangosd 段错误（异步写回调里析构 shared_ptr，`WorldSocket::SendPacket` 的 lambda）—— **未定案；宕机约 110 秒，watchdog 已自动拉起**）
+## [崩溃] 服务端崩溃/段错误总账 — 2026-08-23 ~ 2026-10-20（本章合并自 5 章：[部署] mmap 热替换导致 mangosd 崩溃循环（2026-08-25 排查）、[稳定性] 服务器宕机根因：Map::Update 活动对象列表 use-after-free — 2026-08-23 已修复并验证（云端已部署）、[崩溃] 换格崩溃根因定案：MEMFIX 懒卸载 × Pet 驻留"世界容器" —— 2026-09-26、[崩溃] Oronok 链第二次崩溃：召唤物回调里的未初始化指针（`0cb0058d0`）—— 2026-09-29（本地已验证通过，云端未部署）、[崩溃] 2026-10-03 00:01:51 云端 mangosd 段错误（异步写回调里析构 shared_ptr，`WorldSocket::SendPacket` 的 lambda）—— **未定案；宕机约 110 秒，watchdog 已自动拉起**）
 
 > **合章说明（2026-10-16）**：本章由 5 个旧章合并；旧结论一律保留，被后续推翻/取代的已就地标注。
 
@@ -3390,6 +3390,40 @@ DELETE a FROM auction a JOIN auction b ON a.itemguid=b.itemguid AND a.auction_id
 
 - 本地：清掉重复行后能起服 ✓；修复版二进制起服**不再出现 Critical Error** ✓
 - 云端：`2026-10-18 04:21:56 CMANGOS: World initialized` ✓（新二进制 `af645698732a2ad9995c196ba2e100fb` ✓），日志里**无** `Critical Error` / `[AH-DUP]` ✓
+
+### [崩溃/自研bug] `FormationMovementGenerator::BuildPath()` 空路径 ⇒ `segfault at 4`（卡拉赞 map 532 系列，5 次 core）— 2026-10-20 定案：已修（本地编译通过，待部署）
+
+#### 现象
+- `/var/lib/systemd/coredump/` 里共 **5 个 mangosd core**：2026-10-18 14:38 / 14:44 / 14:53、2026-10-19 04:00、2026-10-20 11:20。
+- 2026-10-20 那次：`11:20:03 segfault at 4 … in mangosd`，**不是 OOM**（崩前 `free -m` avail 481MB、`mem_monitor` 里 mangosd RSS≈996MB），停机约 1 分钟，watchdog `11:21:03` 自动拉起。
+- 崩前 `Server.log` 尾部正好是 **map 532（卡拉赞）实例加载**：`Creature … used AI is EventAI` / `LoadPath` / `Condition-System … map 532`，夹着多条 `ERROR:MoveSplineInitArgs::Validate: expression 'path.size() > 1' failed`。
+
+#### 定位（证据链）
+1. `coredumpctl info` 给出的栈（5 次同族）：
+   `FormationMovementGenerator::BuildPath` ← `FormationMovementGenerator::_setLocation` ←
+   `TargetedMovementGeneratorMedium<Unit, FollowMovementGenerator>::Update` ← `MotionMaster::UpdateMotion` ←
+   `Unit::Update` ← `Creature::Update` ← `Map::Update`
+2. 二进制虽 stripped，但 `.dynsym` 带符号：`nm -D` 得 `FormationMovementGenerator::BuildPath` = `0x12034a0`；`dmesg` 的 `mangosd[563bdf3b3000+1918000]` 与 `readelf -l` 的 RX LOAD（vaddr=offset=`0xbb3000`、filesz `0x1917f91`）对齐 ⇒ 崩溃 vaddr = `0x1203928` = **`BuildPath+0x488`**。
+3. `objdump` 该处指令 = `movss -0x8(%rax),%xmm2`，而 `%rax = i_path->getPath().begin() + 12`（`G3D::Vector3` 12 字节）；循环条件是 `begin()+1 != end()` ⇒ **空 vector 时 `begin()`=nullptr、`begin()+1`=`0xc` ≠ `end()`=`0` ⇒ 进循环读 `nullptr+4` ⇒ 正好 `segfault at 4`**。
+4. 空路径的来源：`TargetedMovementGenerator.cpp → FormationMovementGenerator::BuildPath()` 里 `i_path->calculate(...)`；`PathFinder.cpp → PathFinder::calculate()` 在本服 `[PATH-MMAP 2026-10-17]` 改动后，无 mmap / 无 tile / 跨格 时走 `m_pathPoints.clear(); m_type = PathType(PATHFIND_NOPATH); return true;` ⇒ **返回空路径**（上游原来会退化成直连，所以上游版本没暴露这个空路径）。
+5. 同一现象的另一半是 `MoveSplineInitArgs::Validate: path.size() > 1 failed`（本服另加的 spline 保护在报错）⇒ 证明 `BuildPath()` 产出的 `path` 只有 1 个点。
+
+#### 修复（自研bug；只改出错点）
+`src/game/MotionGenerators/TargetedMovementGenerator.cpp → FormationMovementGenerator::BuildPath()`：
+在 `i_path->calculate(...)` / `getPath().push_back(...)` 之后加一行守卫
+`if (i_path->getPath().size() < 2) continue;` —— 空/单点路径没有长度可算，跳过本段；`speed` 保持 `-1`
+⇒ `_setLocation()` 本轮不移动，下一帧再算。第二个 `begin()+1` 循环（把点灌进 `path`）由 `pathLen > 0.5f`
+把关，只有第一个循环跑过 ≥2 点才会进 ⇒ 只需这一处守卫。
+
+#### 验证
+- 本地 WSL `make -j16 mangosd`：`rc=0`、`error:` 0、日志含 `[100%] Built target mangosd`；产物 `--version` 正常。
+- **云端：2026-10-20 12:31 已部署**（新二进制 md5 `9276fe9125b1955da8e913d62bdbef24`，旧二进制备份到 `/root/mangosd_bak_20261020_1230`）：
+  起服 60 秒内 8086 监听 ✓、`World initialized` 1 次 ✓、`Halting process` / `Critical Error` / `Assertion` 计数 **0** ✓、12 个 bot 在线恢复 ✓。
+- **尚未复现**：触发条件是"无 mmap 的编队追随者"，要等线上自然再遇到卡拉赞/副本编队场景；判据 = 后续不再新增 core（原来 3 天 5 次）。
+
+#### 残留风险
+- 本修复只**防崩**：空路径时该追随者这一帧不移动（本来也没路可走）。若某张图 `mmaps` 真没提取，表现是"编队追随者原地不动 + `[PATH-NOMMAP]` 日志"（`PathFinder.cpp` 里每 map 只报一次）⇒ 要补的是 mmaps 数据，不是改这里。
+- 同族 crash 覆盖副本的"编队跟随"路径，非副本的 `FollowMovementGenerator`（非 formation）不受影响。
 
 ---
 
@@ -11489,7 +11523,7 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 
 ---
 
-## [PlayerBots] 机器人行为、在线名单与轮换（always / add / 躲技能 / 跑尸 / 专精权重）— 2026-10-16 ~ 2026-10-17
+## [PlayerBots] 机器人行为、在线名单与轮换（always / add / 躲技能 / 跑尸 / 专精权重 / 控制技能优先级）— 2026-10-16 ~ 2026-10-20
 
 （本章合并自 1 批新增条目：站长 2026-10-17 明确「HANDOFF 只放铁律+索引，细节进 KNOWN_ISSUES」，故把当天写在 HANDOFF 里的 7 段细节全部搬到这里，HANDOFF 只留指针。）
 
@@ -11662,6 +11696,82 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
    仇恨重置 **10 个**（`feign death`/`vanish`/`fade`/`invisibility`/`soulshatter`/`cower`/`shadowmeld`…）、
    驱散 **93 个**（`cleanse magic/disease/poison/curse`、`abolish disease/poison`、`cure`、`cleanse spirit …`，含 `on party`/`party member` 变体）。
    ⇒ **零件齐全，缺的是"条件与优先级"**，按 BOSS 攻略逐条落。
+
+---
+
+### 十一、控制技能优先级：按战斗情况动态 + `.bot prio <0-5>` 手动档位（2026-10-20 站长口径）
+
+> 口径原文（2026-10-20）：
+> ① "（变羊/放逐这类控制的优先级）**应该能根据战斗情况动态调整**"；
+> ② "`.bot prio <数字1-5>` 指定**当前目标**的优先级，并且**实时生效**。骷髅头标记也要**随时生效**"；
+> ③ "`.bot prio` 让 **GM 和非 GM 都能用**，但是**保留日志记录**"。
+
+#### ① 动态控制优先级（全职业共用一处注册）
+
+- 实现：`playerbot/strategy/generic/ClassStrategy.cpp → CcRelevanceMultiplier`（`Multiplier`），由
+  `ClassStrategy.cpp → CcStrategy::InitCombatMultipliers()` 注册。各职业的 `…CcStrategy`（`MageCcStrategy`/`WarlockCcStrategy`/…）
+  都继承 `CcStrategy` ⇒ **一处覆盖全职业**，不用改各职业策略里的固定 relevance。
+- 为什么不改固定值：固定值只能一刀切；同一个 bot "单怪"和"5 只怪围上来"该不该控完全不同。
+  `Multiplier` 每 tick 参与动作选优（`strategy/Engine.cpp → Engine::DoNextAction()` 里是
+  `relevance *= multiplier->GetValue(action)`）⇒ 返回 `target/current` 把 relevance **精确设成绝对值**；
+  同一 action 被多个 cc 策略重复注册也幂等（第二次调用 `current == target` ⇒ 返回 1.0）。
+- 公式（权重全在 `tbcmangos.ai_playerbot_decision_weight`，`DecisionWeights.h` 给默认值；
+  `dw::Get()` 有 300 秒缓存 ⇒ **改表 ≤5 分钟生效、不用重启**）：
+  `target = clamp(base + per_enemy*(同时交战怪数-1) + hurt_ally*(队内血量 < hurt_health% 的人数), 1, max)`
+
+  | key | 默认 | 语义 |
+  |---|---|---|
+  | `cc.dyn.base` | 10 | 保底档（参考：普通输出 10~22、打断 40、驱散 50、治疗 60~90） |
+  | `cc.dyn.per_enemy` | 12 | 每多一只**同时交战**的怪 +12 |
+  | `cc.dyn.hurt_ally` | 10 | 队里每多一个低血成员 +10 |
+  | `cc.dyn.hurt_health` | 60 | 低血线（%） |
+  | `cc.dyn.max` | 80 | 上限（压在治疗/急救之下） |
+
+- 参与动态的动作（`ClassStrategy.cpp → IsDynamicCcAction()`）：`polymorph`、`banish on cc`、`fear on cc`、
+  `hibernate on cc`、`entangling roots`、`sap`、`turn undead`、`scare beast on cc`。
+  **不含**猎人陷阱：`HunterStrategy.cpp` 注释明确要求陷阱必须 ≥ `ACTION_INTERRUPT`（陷阱有前置移动 + 连招），降级会破坏动作链。
+- **人工标记豁免**：`rti cc target` 或**星星标记**（队伍标记 index 0 = 控制标记）存在 ⇒ **不降级**，保持策略里写的原优先级。
+- 效果：单怪/队伍安全 ⇒ 变羊放逐排到普通输出之后（基本不控）；多怪同时打/有人快死 ⇒ 抬到打断~驱散附近（积极控场）。
+
+#### ② `.bot prio <0-5>`（恢复丢失过的命令）
+
+- 用法：**选中一只怪**后 `.bot prio`（查询：表档位 + 威胁等级）或 `.bot prio <0-5>`（改档，`0` = 清除）。
+  不用写 bot 名字（holder 级命令，走 `PlayerbotMgr.cpp → m_holderHandlers["prio"]`）。
+- 档位语义同 `ai_playerbot_priority_target`：`1`=只打断、`2`=没有对应驱散才优先、`3`=优先击杀、
+  `4`=**优先控制、最后击杀**、`5`=任何情况立刻转火击杀。
+- 权限：**GM 与非 GM 都能用**。`prio` 已加进 `PlayerbotAIConfig.cpp → PlayerbotAIConfig::Initialize()` 的**非 GM 默认白名单**
+  （否则会被 2026-10-17 的 `.bot` 命令闸门 `PlayerbotHolder::CheckPlayerBotCommand()` 直接拒掉；云端 live `aiplayerbot.conf`
+  没写 `AiPlayerbot.PlayerCommandWhitelist` ⇒ 吃代码默认值，改代码即生效）。
+- **日志留痕**：每次调用写 `sLog.outError("[BOTCMD] .bot prio entry=… name=… old -> new by <玩家> (gmlevel=…)")`；
+  改档本身还会写 `PossibleAttackTargetsValue.cpp → PossibleAttackTargetsValue::SetPriorityRank()` 里的 `[PRIO-CHANGE]`。
+- **实时生效机制**（这是"实时"的关键，别退回成"等重载"）：
+  `PossibleAttackTargetsValue.cpp → PossibleAttackTargetsValue::SetPriorityRank()`：
+  ① 幂等落库 `tbcmangos.ai_playerbot_priority_target`（`INSERT … ON DUPLICATE KEY UPDATE`；`0` ⇒ `DELETE`；
+     表不存在 ⇒ 只改内存，不影响出怪）；
+  ② 直改内存 `priorityByEntry` 并推进 `priorityEpoch`；`PriorityTargetRank()` 的 thread_local 读缓存带 epoch ⇒
+     **当场失效**，全服 bot 下一 tick 就按新档位选目标/控场（不用重启、不用等 300 秒自动重载）。
+  ③ 手动改档同时把 `priorityLoadedAt = now` ⇒ 下一次自动重载不会把内存里的新值当"旧数据"覆盖回去。
+- 作用域：**按 creature entry 全服生效**（表是 entry 表）⇒ 标一只 = 标同 entry 的所有怪。
+- **骷髅修正**：`PossibleAttackTargetsValue.cpp → PossibleAttackTargetsValue::ThreatTier()` 里把骷髅判定
+  提到"表优先级"**之前** ⇒ 骷髅由人工即时指定，永远压过表档位（修前：表里已有档位的怪被标骷髅也不生效）。
+
+#### 验证
+
+- 本地 WSL `make -j16 mangosd`：`rc=0`、`error:` 0、`[100%] Built target mangosd`（本次头文件改动触发首次 497 TU，之后增量 1 TU）；
+  strip 产物里能看到 `.bot prio` 文案。
+- **云端：2026-10-20 12:31 已部署**（md5 `9276fe9125b1955da8e913d62bdbef24`）：启动日志 `[priority] loaded 133 entries` ✓、
+  `[WEIGHTS] 决策权重已载入 26 项` ✓（= 动态控制权重走代码默认值，可随时改表）、8086 监听 ✓、无 `Critical Error` ✓。
+- **待做**：游戏内验收（选中怪 `.bot prio 4` → 看 `[BOTCMD]` / `[PRIO-CHANGE]` 日志 + bot 是否立刻转去控它；
+  骷髅标记怪是否立刻被集火；变羊/放逐是否明显变少）。
+
+#### 残留风险 / 待办
+
+- `.bot prio` 是**全服全局**改档（按 entry），非 GM 也能用 ⇒ 只能靠 `[BOTCMD]` 日志事后追责；若以后要按玩家/队伍隔离，需要在 `SetPriorityRank()` 上加 owner 维度。
+- 动态优先级只调了"动作 relevance"；控制目标怎么挑仍由 `values/CcTargetValue.cpp → FindTargetForCcStrategy`（按普通输出/优先级 4 排序）决定，两处口径要一起看。
+- ⚠️ **顺带发现的部署缺口（未修，等站长点头）**：`dev/187_副本BOSS能力表.sql` 没在云端应用 ⇒
+  `tbcmangos.ai_playerbot_boss_ability` 缺 `facing_mode` / `facing_deg` 两列 ⇒ `PartyPositionCoordinator.h → PartyPositionCoordinator::RefreshBossFacing()`
+  （`SELECT DISTINCT … facing_mode … WHERE facing_mode <> 'away_group'`）每 5 分钟报一次 `Unknown column 'facing_mode' in 'field list'`
+  并且 **BOSS 朝向/跑位分带数据在云端完全不生效**。补法是静态 DDL（`ALTER TABLE … ADD COLUMN`），必须先建列、再把 dev SQL 里的守卫式 ALTER 去掉。
 
 ---
 

@@ -1694,6 +1694,14 @@ float FormationMovementGenerator::BuildPath(Unit& owner, PointsArray& path)
             else
                 i_path->getPath().push_back(nextPos);
 
+            // [2026-10-20 崩溃修复] PathFinder::calculate() 可能返回**空路径**（无 navmesh / 起点终点过近 /
+            //   不可达都可能是空 vector：begin()==nullptr、end()==nullptr）。下面两个循环用的是
+            //   `begin() + 1`，空 vector 时 begin()+1 = 0xc 与 end()=0 不相等 ⇒ 循环进得去，
+            //   随后读 `nullptr + 4` ⇒ **segfault at 4**（2026-10-18/19/20 共 5 次 core 的根因，
+            //   反汇编定位：BuildPath+0x488 的 `movss -0x8(%rax)`）。
+            //   空/单点路径没有"长度"可算，直接跳过（speed 保持 -1 ⇒ _setLocation 本轮不移动，下一帧再算）。
+            if (i_path->getPath().size() < 2)
+                continue;
 
             for (auto posItr = i_path->getPath().begin() + 1; posItr != i_path->getPath().end(); ++posItr)
                 pathLen += (*(posItr - 1) - (*posItr)).length();
