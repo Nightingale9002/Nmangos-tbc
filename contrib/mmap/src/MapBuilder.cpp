@@ -2399,16 +2399,20 @@ namespace MMAP
             {"maxEdgeLen", VERTEX_PER_TILE + 1},
             {"maxSimplificationError", 1.8f},
             {"mergeRegionArea", 50},
-            // ⚠️ minRegionArea = 0：**任何可走区域都不删除**。
+            // ⚠️ minRegionArea **不能设 0**！（2026-10-22 回归实测）
             //
-            // 站长口径（2026-10-18）：**ADT 地面总是能通行的，不应该被删掉。**
-            // Recast 的 mergeAndFilterRegions() 里有一句
-            //     if (spanCount < minRegionArea && !connectsToBorder) 丢弃整个区域
-            // 原来配 60 ⇒ 经 rcSqr() 变 3600 cell ≈ 256 ㎡ ⇒ **小于 16×16 码的片被整块删**。
-            // 实测 530 全图：minRegionArea=60 时有 **60 个格**报 "No polygons to build on tile!"
-            // （线上这些格都有 navmesh），改成 0 之后只剩 **4 个** —— 即 56 个格是被这条删掉的。
-            // 0 ⇒ 该条件恒假；小碎块仍会被 mergeRegionArea 并进邻居。
-            {"minRegionArea", 0},
+            // 我一度按"ADT 地面不该被删"把它改成 0，结果**反而制造孤岛**：
+            // Recast 的 mergeAndFilterRegions() 是两步
+            //     ① 小于 mergeRegionArea 的区域 → 并进邻居
+            //     ② 小于 minRegionArea 的区域   → 删掉
+            // 设 0 之后第 ② 步一刀不砍，本该被清掉的**碎块全部留下来**，各自成一个连通分量。
+            // 实测生态船(map 553) entry 17980 的刷点（世界 -204.13, 391.25，格 32_31）：
+            //     minRegionArea=60 → 可达 835 面（连成一片）✓
+            //     minRegionArea=0  → 可达   7 面（落在一颗碎块上）✗
+            // 单参数二分同时排除了 walkableRadius / walkableClimb / terrainSlopeAngle（都不影响）。
+            //
+            // 60 经 rcSqr() 是 3600 cell ≈ 256 ㎡；以后想放宽往 20~30 试，**不要回到 0**。
+            {"minRegionArea", 60},
             // ⚠️ walkableClimb 从 4 提到 5（= 1.3333 码，原来是 1.0667 码）。
             //    原因：实测有一处台沿高 1.18 码，只比旧阈值高 0.11 码，被判定
             //    "爬不上去"⇒ 那个平台成了 5 面孤岛，怪物刷在上面就走不下来
