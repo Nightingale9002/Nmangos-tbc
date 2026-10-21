@@ -589,13 +589,37 @@ namespace MMAP
                 // model instances exist in tree even though there are instances of that model in this tile
                 WorldModel* worldModel = instance.getWorldModel();
                 if (!worldModel)
+                {
+                    // [VMAP-INST] 2026-10-22 排查 553 的 Dr_Holographic_Stand.m2 没进网格：
+                    //    如果这里是 null，说明 .vmo/.m2 文件加载失败（或者被裁决掉了）。
+                    if (getenv("MMAP_DEBUG_VMAP"))
+                        printf("[VMAP-INST] map=%u tile=%u,%u SKIP worldModel=null name=%s\n",
+                               mapID, tileX, tileY, instance.name.c_str());
                     continue;
+                }
 
                 // now we have a model to add to the meshdata
                 retval = true;
 
                 vector<GroupModel> groupModels;
                 worldModel->getGroupModels(groupModels);
+
+                // [VMAP-INST] 每个实例贡献多少面、落在哪 —— 用来确认某个模型到底进没进来。
+                if (getenv("MMAP_DEBUG_VMAP"))
+                {
+                    size_t triSum = 0;
+                    for (vector<GroupModel>::iterator git = groupModels.begin(); git != groupModels.end(); ++git)
+                    {
+                        vector<Vector3> tv;
+                        vector<MeshTriangle> tt;
+                        WmoLiquid* tl = nullptr;
+                        git->getMeshData(tv, tt, tl);
+                        triSum += tt.size();
+                    }
+                    printf("[VMAP-INST] map=%u tile=%u,%u name=%s groups=%u tris=%u pos=(%.1f,%.1f,%.1f) scale=%.2f\n",
+                           mapID, tileX, tileY, instance.name.c_str(), uint32(groupModels.size()),
+                           uint32(triSum), instance.iPos.x, instance.iPos.y, instance.iPos.z, instance.iScale);
+                }
 
                 // all M2s need to have triangle indices reversed
                 bool isM2 = instance.name.find(".m2") != instance.name.npos || instance.name.find(".M2") != instance.name.npos;

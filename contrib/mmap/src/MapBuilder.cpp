@@ -1416,6 +1416,36 @@ namespace MMAP
         delete [] dmmerge;
         delete [] tiles;
 
+        // ── 【导航面整体下移】─────────────────────────────────────────────
+        //
+        // 站长口径（2026-10-22）：导航面看起来整体**略高于**实际模型。
+        //
+        // 原因是 Recast 的 span 高度以体素格为单位、取的是**格子的顶面**：
+        //     高度 = bmin[1] + smax * ch
+        // ⇒ 向上取整最多差一整格（ch = 0.1778 码），再叠加 detail mesh 采样取整。
+        // 实测 553 的 5533231（同 tile 119 个面）：新数据平均高 **0.205 码**、
+        // 旧线上数据高 0.301 码 ⇒ 这是 Recast 固有偏差，不是本轮改动引入的。
+        //
+        // navZShiftCells 以 ch 为单位，0 = 不改（默认，保持线上口径）：
+        //   0.5 ⇒ 下移约半格（0.089 码）   1.0 ⇒ 下移整格（0.178 码）
+        // ⚠️ polyMesh 与 detailMesh 的顶点**都要移**，否则查询高度和贴地高度会打架。
+        if (iv.polyMesh && iv.polyMeshDetail)
+        {
+            const float zShiftCells = getTileConfig(mapID, tileX, tileY).value("navZShiftCells", 0.0f);
+            if (zShiftCells != 0.0f)
+            {
+                const float dz = -zShiftCells * config.ch;
+                for (int i = 0; i < iv.polyMesh->nverts; ++i)
+                    iv.polyMesh->verts[i * 3 + 1] += dz;
+                for (int i = 0; i < iv.polyMeshDetail->nverts; ++i)
+                    iv.polyMeshDetail->verts[i * 3 + 1] += dz;
+                if (std::getenv("MMAP_DEBUG_ZSHIFT"))
+                    printf("%s [ZSHIFT] %.2f cells = %.4f yd  polyVerts=%d detailVerts=%d\n",
+                           tileString, zShiftCells, dz, iv.polyMesh->nverts,
+                           iv.polyMeshDetail->nverts);
+            }
+        }
+
         // set polygons as walkable
         // TODO: special flags for DYNAMIC polygons, ie surfaces that can be turned on and off
         for (int i = 0; i < iv.polyMesh->npolys; ++i)
@@ -1858,9 +1888,9 @@ namespace MMAP
     }
 
     // rcSpan heights are bitfields, taking their address is illegal, copy first
-    static void dumpRawHeightfield(const DumpCtx& d, const rcHeightfield& hf)
+    static void dumpRawHeightfield(const DumpCtx& d, const rcHeightfield& hf, const char* suffix = "rawhf")
     {
-        FILE* f = dumpOpen(d, "rawhf");
+        FILE* f = dumpOpen(d, suffix);
         if (!f)
             return;
         dumpHeader(d, f, "MRHF");
@@ -2036,11 +2066,24 @@ namespace MMAP
         //    BASE_UNIT_DIM * 原值，所以导航数据里那几个物理量保持与线上完全一致。
         //
         //    注意用局部副本：tileCfg 是 625 个子格共用的，就地改会累乘。
+        //
+        // 【2026-10-22 站长口径】改用 ceilf 向上取整：
+        //    Recast 比较的是 span 顶端（bmin[1] + smax*ch，格子顶面），本来就有
+        //    向上取整的偏差；换算这一步若再 round/向下取，等于把 climb 又缩小了
+        //    不到一格（ch = 0.1778 码）。ceil 保证"物理上允许的高度"一定不会
+        //    因为换算被砍掉。
+        //    实测 walkableClimb=5 → 0.2667*5/0.1778 = 7.5 ⇒ ceil 8（与 round 相同）；
+        //    walkableClimb=4 → 6.0 ⇒ ceil 6（也相同）。差别只在非整数倍时体现。
         rcConfig cfg = tileCfg;
-        cfg.walkableHeight = (int)roundf(BASE_UNIT_DIM * float(tileCfg.walkableHeight) / CELL_HEIGHT);
-        cfg.walkableClimb  = (int)roundf(BASE_UNIT_DIM * float(tileCfg.walkableClimb) / CELL_HEIGHT);
+        cfg.walkableHeight = (int)ceilf(BASE_UNIT_DIM * float(tileCfg.walkableHeight) / CELL_HEIGHT);
+        cfg.walkableClimb  = (int)ceilf(BASE_UNIT_DIM * float(tileCfg.walkableClimb) / CELL_HEIGHT);
         if (cfg.walkableHeight < 1) cfg.walkableHeight = 1;
         if (cfg.walkableClimb < 0) cfg.walkableClimb = 0;
+        if (std::getenv("MMAP_DEBUG_CFG"))
+            printf("[CFG] climb cfg=%d (%d cells, %.4f yd)  height cfg=%d (%d cells, %.4f yd)  ch=%.4f\n",
+                   tileCfg.walkableClimb, cfg.walkableClimb, cfg.walkableClimb * CELL_HEIGHT,
+                   tileCfg.walkableHeight, cfg.walkableHeight, cfg.walkableHeight * CELL_HEIGHT,
+                   CELL_HEIGHT);
 
         // Build heightfield for walkable area
         tile.solid = rcAllocHeightfield();
@@ -2159,9 +2202,17 @@ namespace MMAP
             // 老路径：整体光栅化 + 三条过滤器（splitTerrain 关闭时的默认行为）
             rcRasterizeTriangles(m_rcContext, tVerts, tVertCount, tTris, triFlags, tTriCount,
                                  *tile.solid, cfg.walkableClimb);
+            // [HF-STAGE] 2026-10-22：把"光栅化后 / 每条过滤器之后"分别落盘，
+            // 用来定位某个可走面是在哪一步被删的（站长要查 553 的 M2 平台）。
+            // 只在 MMAP_DEBUG_HF=1 时触发，否则 625 个子格会把磁盘写爆。
+            const bool hfDbg = std::getenv("MMAP_DEBUG_HF") != nullptr;
+            if (hfDbg) dumpRawHeightfield(dbg, *tile.solid, "hf0");
             rcFilterLowHangingWalkableObstacles(m_rcContext, cfg.walkableClimb, *tile.solid);
+            if (hfDbg) dumpRawHeightfield(dbg, *tile.solid, "hf1");
             rcFilterLedgeSpans(m_rcContext, cfg.walkableHeight, cfg.walkableClimb, *tile.solid);
+            if (hfDbg) dumpRawHeightfield(dbg, *tile.solid, "hf2");
             rcFilterWalkableLowHeightSpans(m_rcContext, cfg.walkableHeight, *tile.solid);
+            if (hfDbg) dumpRawHeightfield(dbg, *tile.solid, "hf3");
         }
 
         // 把"不过滤"的地形 span 并回来
@@ -2419,7 +2470,12 @@ namespace MMAP
             //    （530 的 X1387.0 Y7392.7 高365.8）。这类"刚好卡在门槛外一点"
             //    的台沿在整张图里不会很多，但每一个都会变成卡怪点。
             //    5 × BASE_UNIT_DIM = 1.3333 码，对 WoW 生物是完全合理的台阶高度。
-            {"walkableClimb", 5},
+            //
+            // 【2026-10-22 改成 6】= 1.6000 码（ceil 后 9 格）。原因：
+            //   553 生态船召唤法术 34673 的传送点在一块高出地面 ~2.8 码的小平台上，
+            //   实测 climb=5（8 格 1.42 码）时该点是 1 面孤岛，climb=6 时和周围
+            //   连成 825 面的大分量。上游默认 4（1.07 码）更低，同样连不上。
+            {"walkableClimb", 6},
             {"walkableHeight", 6},
             // ⚠️ walkableRadius = 0：**不做侵蚀**（站长口径 2026-10-18："擦墙走是对的"）。
             //
@@ -2428,7 +2484,14 @@ namespace MMAP
             // 0 ⇒ 侵蚀是空操作，边缘全部保住。
             // 注意：这个值同时会写进 `.mmtile` 头的 agent 半径，运行期 Detour 用它做
             // 寻路走廊约束 —— 0 意味着允许贴墙走，这是站长确认想要的行为。
-            {"walkableRadius", 0},
+            //
+            // 【2026-10-22 改成 1】= 0.2667 码。原因：
+            //   · radius=0 时出现**贴墙爬**（怪贴着墙根往上爬），需要一点净空；
+            //   · radius=2 会把地形上的窄通道整条侵蚀掉（5473232：3576 → 2549 面，-29%），
+            //     那是玩家该走的路，不能删。
+            //   实测 547（climb=6）三档：r0=6558 / r1=5438 / r2=4673 面，
+            //   r1 与旧线上数据（5396）基本持平，既保住窄条又收回墙根净空。
+            {"walkableRadius", 1},
             // 【模型】坡度上限：WMO / M2 仍然守 60°（官方值）。
             {"walkableSlopeAngle", 60.0f},
             // 【地形】坡度上限：只作用于 ADT 地形三角，默认不限制。
