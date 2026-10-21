@@ -20,6 +20,7 @@
 #define _OBJECTMGR_H
 
 #include "Common.h"
+#include <mutex>
 #include "Entities/Object.h"
 #include "Entities/Bag.h"
 #include "Entities/Creature.h"
@@ -1044,8 +1045,14 @@ class ObjectMgr
         int GetOrNewStorageLocaleIndexFor(LocaleConstant loc);
 
         // global grid objects state (static DB spawns, global spawn mods from gameevent system)
-        CellObjectGuids const& GetCellObjectGuids(uint16 mapid, uint8 spawnMode, uint32 cell_id)
+        // [2026-10-21 CRASHFIX] mMapObjectGuids 会被多个 MapUpdater 线程并发读取
+        //   （ObjectGridLoader::LoadN → GetCellObjectGuids），同时 gameevent/pool 会
+        //   Add/RemoveCreatureToGrid 修改它；原来直接用 unordered_map::operator[] 返回引用，
+        //   并发 insert/rehash 时会 SIGSEGV（崩溃栈：LoadN → operator[]）。
+        //   这里加锁并**按值返回**，避免把可能失效的引用交出去。
+        CellObjectGuids GetCellObjectGuids(uint16 mapid, uint8 spawnMode, uint32 cell_id)
         {
+            std::lock_guard<std::mutex> lock(m_mapObjectGuidsMutex);
             return mMapObjectGuids[MAKE_PAIR32(mapid, spawnMode)][cell_id];
         }
 
@@ -1385,6 +1392,8 @@ class ObjectMgr
         CreatureClassLvlStats m_creatureClassLvlStats[DEFAULT_MAX_CREATURE_LEVEL + 1][MAX_CREATURE_CLASS][MAX_EXPANSION + 1];
 
         MapObjectGuids mMapObjectGuids;
+    // [2026-10-21 CRASHFIX] 保护 mMapObjectGuids 的并发读写（见 GetCellObjectGuids）
+    std::mutex m_mapObjectGuidsMutex;
         ActiveObjectGuidsOnMap m_activeCreatures;
         ActiveObjectGuidsOnMap m_activeGameObjects;
         CreatureSpawnTemplateMap m_creatureSpawnTemplateMap;

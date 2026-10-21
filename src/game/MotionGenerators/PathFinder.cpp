@@ -1373,21 +1373,11 @@ void PathFinder::createFilter()
 #ifdef ENABLE_PLAYERBOTS
     if (!m_sourceUnit || m_sourceUnit->GetTypeId() == TYPEID_PLAYER)
     {
-        // perfect support not possible, just stay 'safe'
-        if (!m_sourceUnit || ((Player*)m_sourceUnit)->GetPlayerbotAI()) //Blank or bot-navigation
-        {
-            includeFlags |= (NAV_GROUND | NAV_WATER);
-            excludeFlags |= (NAV_MAGMA_SLIME | NAV_GROUND_STEEP);
-
-            m_filter.setAreaCost(9, 20.0f);  //Water
-            m_filter.setAreaCost(12, 5.0f);  //Mob proximity
-            m_filter.setAreaCost(13, 20.0f); //Mob aggro
-        }
-        else
-        {
-            includeFlags |= (NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP);
-            excludeFlags |= (NAV_MAGMA_SLIME);
-        }
+        // [2026-10-21 站长口径] bot 与真实玩家完全一致：包含 steep、只排除岩浆，
+        //   不做 bot 专属 area cost / 不排除 steep —— 否则和怪物寻路口径不一致，
+        //   会出现"怪物→bot 无路、bot→怪物有路"的单向可达误判。
+        includeFlags |= (NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP);
+        excludeFlags |= (NAV_MAGMA_SLIME);
     }
     else if (m_sourceUnit->GetTypeId() == TYPEID_UNIT)
     {

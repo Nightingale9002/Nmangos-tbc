@@ -1093,6 +1093,9 @@ class WorldObject : public Object
 
         void SetMap(Map* map);
         Map* GetMap() const { MANGOS_ASSERT(m_currMap); return m_currMap; }
+        // 可空版本：传送/下线/移除世界期间 m_currMap 已被 ResetMap 置空，
+        // 这时用 GetMap() 会 MANGOS_ASSERT 直接 abort 服务器（2026-10-21 实测两次），需要判空的路径统一走这里。
+        Map* FindMap() const { return m_currMap; }
         // used to check all object's GetMap() calls when object is not in world!
         virtual void ResetMap() { m_currMap = nullptr; }
 

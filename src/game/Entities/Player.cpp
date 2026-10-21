@@ -1975,6 +1975,49 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
     if (HasCharmer())
         return false;
 
+#ifdef ENABLE_PLAYERBOTS
+    // [2026-10-21 仿真] 仿真队员在副本里禁止被"传出本 → 外面世界"：
+    //   光拦 RandomPlayerbotMgr::RandomTeleport 不够 —— 旅行/世界buff/跑尸/传送法术等
+    //   都会走 Player::TeleportTo。这里统一处理：
+    //   · 目标是**非副本**地图且自己在副本内、有队伍 ⇒ 改成"传回队长"（归队）；
+    //   · 队长也不在本里 ⇒ 直接拦截。
+    //   ⚠ 只拦"出本"，不能拦"副本 ↔ 副本"：仿真自己就会在 8 个本之间逐个传送换人，
+    //     2026-10-21 22:31 实测过宽的判断把 545→546 的换人也拦了，队伍被拆散。
+    //   ⚠ 必须先确认还在世界里：下线/被踢/实例卸载时 WorldSession::LogoutPlayer 会调 TeleportTo
+    //     回主城，那一刻 m_currMap 已经是 null，直接 GetMap() 会 MANGOS_ASSERT("GetMap(): m_currMap")
+    //     把整个服务器 abort 掉（2026-10-21 22:12 实测）。
+    MapEntry const* targetEntry = sMapStore.LookupEntry(mapid);
+    // [2026-10-21 22:57 实测] 例外：队长的 instance 和自己不同（"同图不同实例"）时，
+    //   仿真会故意把落单的人送回主城再重新进本修实例（`修正 instance`）。这条必须放行，
+    //   否则改道把人留在错误实例里，555 出现整队 "只有 1/5 落在副本图" 直接 FAILED。
+    bool instanceRepair = false;
+    if (Group* g = GetGroup())
+    {
+        Player* gLeader = sObjectMgr.GetPlayer(g->GetLeaderGuid());
+        if (gLeader && gLeader->GetMapId() == GetMapId() && gLeader->GetInstanceId() != GetInstanceId())
+            instanceRepair = true;
+    }
+    if (!instanceRepair && sPlayerbotAIConfig.simMode && GetPlayerbotAI() && FindMap() && FindMap()->IsDungeon() &&
+        GetGroup() && mapid != GetMapId() && (!targetEntry || !targetEntry->IsDungeon()))
+    {
+        Player* leader = sObjectMgr.GetPlayer(GetGroup()->GetLeaderGuid());
+        if (leader && leader != this && leader->GetMapId() == GetMapId())
+        {
+            sLog.outString("[SIM] 离本传送改道: %s map=%u -> 队长 %s", GetName(), GetMapId(), leader->GetName());
+            mapid = leader->GetMapId();
+            x = leader->GetPositionX();
+            y = leader->GetPositionY();
+            z = leader->GetPositionZ();
+            orientation = leader->GetOrientation();
+        }
+        else
+        {
+            sLog.outString("[SIM] 拦截离本传送: %s map=%u -> %u", GetName(), GetMapId(), mapid);
+            return false;
+        }
+    }
+#endif
+
     if (!MapManager::IsValidMapCoord(mapid, x, y, z, orientation))
     {
         sLog.outError("TeleportTo: invalid map %d or absent instance template.", mapid);

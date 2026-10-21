@@ -1036,6 +1036,23 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
             victim->SetStandState(UNIT_STAND_STATE_STAND);
     }
 
+#ifdef ENABLE_PLAYERBOTS
+    // [rewards 2026-10-19] 非坦克受伤：受害者是 bot 玩家 ⇒ 累计承伤（离线与坦克一起扣分）
+    if (victim->GetTypeId() == TYPEID_PLAYER && !static_cast<Player*>(victim)->isRealPlayer())
+        static_cast<Player*>(victim)->botDamageTaken += damage;
+
+    // [rewards 2026-10-19] DPS 打醒控制：bot 对处于控场（眩晕/恐惧/迷惑/定身等）的生物造成伤害
+    if (dealer && dealer->IsPlayer() && !static_cast<Player*>(dealer)->isRealPlayer() &&
+        victim->GetTypeId() == TYPEID_UNIT && damage > 0 &&
+        victim->hasUnitState(UNIT_STAT_CAN_NOT_REACT_OR_LOST_CONTROL | UNIT_STAT_ROOT))
+        ++static_cast<Player*>(dealer)->botBrokeCc;
+
+    // [rewards 2026-10-19] 打还没进战斗的怪：首刀新怪（乱开怪 / ADD）⇒ 离线扣分（坦克拉怪不算）
+    if (dealer && dealer->IsPlayer() && !static_cast<Player*>(dealer)->isRealPlayer() &&
+        victim->GetTypeId() == TYPEID_UNIT && damage > 0 && !victim->IsInCombat())
+        ++static_cast<Player*>(dealer)->botUnengagedHits;
+#endif
+
     if (dealer)
     {
         // [BOT-ML 2026-10-17] bot 输出统计（核心数据）：dealer 是 bot 玩家 ⇒ 累计真实伤害。

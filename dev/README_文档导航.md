@@ -144,7 +144,7 @@
 | 10816 | [待办] 尚未落地的改动与待定项 — 2026-09-16（本章合并自 1 章：[待办] 尚未落地的改动与待定项 — 2026-09-16（原 SERVER |
 | 10848 | [资源] 矿点（矿脉刷点）三方对比 — 2026-08-29 ~ 2026-09-16（本章合并自 2 章：[资源] 矿点三方对比与修复（Questie / |
 | 11036 | [机制] 钓鱼技能门槛 — 2026-09-22 ~ 2026-09-27（本章合并自 2 章：[机制] 钓鱼"技能等级不够"：硬编码区域表漏收录 ⇒ 整个 |
-| 11524 | [PlayerBots] 机器人行为、在线名单与轮换（always / add / 躲技能 / 跑尸 / 专精权重 / 控制技能优先级）— 2026-10-16 ~ 2026-10-20（本章合并自 1 批新增条目：`add` 事件是轮换门票，`always` 角色缺 `add` 就永远不登录；`SetEventValue` 在 `value=0` 时只 DELETE 不 INSERT；方案A 三处豁免 + `dev/182` 补数据 + 两遍式登录；副本通用躲地板技（`hostile aoe incoming` → `stored hazards` → `move away from hazard`）；副本躺尸跑尸（`GroupHasLivingRezzer`）；熊德坦(30) 权重与 caps；压力测试 12→60 bot 实测表）|
+| 11526 | [PlayerBots] 机器人行为、在线名单与轮换（always / add / 躲技能 / 跑尸 / 专精权重 / 控制技能优先级）— 2026-10-16 ~ 2026-10-21（本章合并自 1 批新增条目：`add` 事件是轮换门票，`always` 角色缺 `add` 就永远不登录；`SetEventValue` 在 `value=0` 时只 DELETE 不 INSERT；方案A 三处豁免 + `dev/182` 补数据 + 两遍式登录；副本通用躲地板技（`hostile aoe incoming` → `stored hazards` → `move away from hazard`）；副本躺尸跑尸（`GroupHasLivingRezzer`）；熊德坦(30) 权重与 caps；压力测试 12→60 bot 实测表；**bot 固定专精/职责落库**（`ai_playerbot_bot_profile` + `.rndbot sim profile`：IsTank 只在策略挂载后才判真，仿真选人改读 DB；附残留 group_member 清理与 FIFO/LogLevel 运维坑））|
 | 11668 | [构建/工具] 本地编译与战斗测试：7 层阻塞链 + 死规则自动发现 — 2026-10-19（构建改 git 同步（手工 cp 漏文件 + rsync 保 mtime 让 make 跳过重编）；`PathFinder.cpp` 的 mmap 改动**从未参与编译**（`IsSwimming`/`m_sourceMapId`/`CellImpl` 三处编译错误）；`GenerateBotTests` 宏从未定义 ⇒ 测试框架全被编译掉；spawn 的 holder/账号回查/借在线机器人；`create group` 应为 `form`；场景延迟 90 秒且不得 `return` 冻结 AI；死规则 `ads` 与 `finish ready check`；治疗"非策略性中断"保护；预期仇恨闸门 `will overaggro`）|
 
 ## 三、dev/ 之外的文档（同项目相关）

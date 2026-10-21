@@ -2244,6 +2244,9 @@ class Player : public Unit
         //   （站长口径"用核心数据"）。判据 isRealPlayer() 来自 session 远端地址，不依赖 playerbot 模块实现。
         uint64 botDamageDealt = 0;
         uint64 botHealingDone = 0;
+        uint64 botDamageTaken = 0;   // [rewards 2026-10-19] 奖励函数：非坦克受伤
+        uint32 botBrokeCc = 0;       // [rewards 2026-10-19] 奖励函数：DPS 打醒控制
+        uint32 botUnengagedHits = 0; // [rewards 2026-10-19] 奖励函数：打了还没进战斗的怪
         // [rewards 2026-10-19] 站长口径：副本里"推进进度是好的，灭团是坏的，自己死了是坏的"。
         //   击杀/死亡由核心侧累加（Unit::Kill），模块每 5 秒取增量写 bm_kills / bm_deaths。
         uint32 botKills = 0;

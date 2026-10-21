@@ -2501,6 +2501,7 @@ void ObjectMgr::LoadCreatures()
 
 void ObjectMgr::AddCreatureToGrid(uint32 guid, CreatureData const* data)
 {
+    std::lock_guard<std::mutex> lock(m_mapObjectGuidsMutex);
     uint8 mask = data->spawnMask;
     for (uint8 i = 0; mask != 0; ++i, mask >>= 1)
     {
@@ -2517,6 +2518,7 @@ void ObjectMgr::AddCreatureToGrid(uint32 guid, CreatureData const* data)
 
 void ObjectMgr::RemoveCreatureFromGrid(uint32 guid, CreatureData const* data)
 {
+    std::lock_guard<std::mutex> lock(m_mapObjectGuidsMutex);
     uint8 mask = data->spawnMask;
     for (uint8 i = 0; mask != 0; ++i, mask >>= 1)
     {
@@ -2846,6 +2848,7 @@ void ObjectMgr::LoadGameObjectTemplateAddons()
 
 void ObjectMgr::AddGameobjectToGrid(uint32 guid, GameObjectData const* data)
 {
+    std::lock_guard<std::mutex> lock(m_mapObjectGuidsMutex);
     uint8 mask = data->spawnMask;
     for (uint8 i = 0; mask != 0; ++i, mask >>= 1)
     {
@@ -2862,6 +2865,7 @@ void ObjectMgr::AddGameobjectToGrid(uint32 guid, GameObjectData const* data)
 
 void ObjectMgr::RemoveGameobjectFromGrid(uint32 guid, GameObjectData const* data)
 {
+    std::lock_guard<std::mutex> lock(m_mapObjectGuidsMutex);
     uint8 mask = data->spawnMask;
     for (uint8 i = 0; mask != 0; ++i, mask >>= 1)
     {
@@ -8616,6 +8620,7 @@ void ObjectMgr::DeleteGOData(uint32 guid)
 
 void ObjectMgr::AddCorpseCellData(uint32 mapid, uint32 cellid, uint32 player_guid, uint32 instance)
 {
+    std::lock_guard<std::mutex> lock(m_mapObjectGuidsMutex);
     // corpses are always added to spawn mode 0 and they are spawned by their instance id
     CellObjectGuids& cell_guids = mMapObjectGuids[MAKE_PAIR32(mapid, 0)][cellid];
     cell_guids.corpses[player_guid] = instance;
@@ -8623,6 +8628,7 @@ void ObjectMgr::AddCorpseCellData(uint32 mapid, uint32 cellid, uint32 player_gui
 
 void ObjectMgr::DeleteCorpseCellData(uint32 mapid, uint32 cellid, uint32 player_guid)
 {
+    std::lock_guard<std::mutex> lock(m_mapObjectGuidsMutex);
     // corpses are always added to spawn mode 0 and they are spawned by their instance id
     CellObjectGuids& cell_guids = mMapObjectGuids[MAKE_PAIR32(mapid, 0)][cellid];
     cell_guids.corpses.erase(player_guid);

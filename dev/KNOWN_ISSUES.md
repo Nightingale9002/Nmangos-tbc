@@ -11974,6 +11974,43 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 
 **验证**：`[SIM] … 离本检测` 不再出现；`[DUNGEONROUTE] 波 N 的怪重新刷出 ⇒ 重新打开` 在召唤波出现；540 第一波目标为 16700（碎手军团士兵）。
 
+### 十二、仿真测试流程与工具清单（2026-10-22）
+
+**目标**：改完代码/数据后，用**一条命令**跑 8 图 × 5 组（1+1+3），出指标、离线复盘；不靠"感觉变了"。
+
+**一轮的固定流程**（编排脚本 `_agent_tmp/tune/cycle.sh`）：
+1. **编译**（可选 `--build`）：`build_all_pending.sh` 按清单把源码拷进 WSL 构建树 → `make -j16 mangosd` → 停服后 `cp`/`strip`/`md5`；
+2. **起服**：`start_server.sh`（建 FIFO `/tmp/mcmdmulti2` + 持久 writer；注入 `SimMode=1 / StaticBots=1 / DungeonRoute=1 / LogLevel=2` 与 cheat、装备开关）；
+3. **清残留队伍**：`tune/clean_groups.py`（清 `groups`/`group_member`，否则会误判"没有真坦"）；
+4. **逐图下发**（45 秒一张图）：
+   `.rndbot sim start <map> 5 5 policy=continue attempts=3 seed=20261020 stuck=1800 maxtime=900 [boss=1]`；
+5. **采集窗口**（默认 900s）→ `tune/metrics.py` 出每图一行（写 `runs.csv`）→ 日志副本存 `/tmp/simlogs/`；
+6. `.rndbot sim stop all` → **离线分析** → 改代码/DB（`decision_weight` 300s 热加载）→ 下一轮。
+
+**工具清单**（`_agent_tmp/tune/`）：
+| 工具 | 用途 |
+|---|---|
+| `cycle.sh` | 一键：编译/装/起服/清队/开图/采集/指标/停仿真（`--boss --cheats --combat-cheats --equip-best --maps --groups --window --maxtime`） |
+| `metrics.py` / `diff_runs.py` | 每图波次/boss/死亡/跳过/拦截/复活 → `runs.csv`，并与上一轮对比 |
+| `analyze_log.py` | 单轮日志 → 每图"卡在哪"（拉怪几何、帮队友热点、末尾仍活的波） |
+| `analyze_pulls.py` / `analyze_pulltime.py` | `ai_playerbot_pull_log` → 清掉率/耗时/`ord=0` 异常 |
+| `analyze_coverage.py` / `learn_route.py` / `fix_route_coverage.py` | 路线登记率、**用实际拉怪序列反推路线**、按阵营补齐成员 |
+| `boss_reach.py` | navmesh 连通性 + `route_link` 桥接 → boss 可达性、缺口坐标 |
+| `analyze_combat.py` | `bot_events.csv` → 每角色/职业 KPI（承伤/击杀、死亡、破控、乱开怪、动作占比） |
+| `seed_weights.py` | 写 `ai_playerbot_decision_weight`（热加载） |
+| `btx.sh` / `bt_abort.sh` | WSL dump → gdb 回溯（dump 在 `%LOCALAPPDATA%\Temp\wsl-crashes`） |
+
+**关键开关**：`AiPlayerbot.EquipBestGear`（进本换最佳装备 + 忽略装等）、`GearProgressionSystem.Enable`、cheat 两组
+（常驻 `item,breath,taxi,repair,gold` / 战斗 `health,mana,power,cooldown,movespeed,attackspeed`）、`boss=1`（boss 优先）。
+
+**踩坑**（都实际发生过）：① `build_all_pending.sh` 清单漏文件 ⇒ 改了没生效（`PlayerbotAI.h`、`UpdateGearAction.cpp`）；
+② 运行中改 bash 脚本会让正在跑的脚本读偏移错位（EOF/语法错）；③ 未停服装二进制报 `Text file busy`；
+④ `GROUPS` 是 bash 特殊变量（要用 `NGROUPS`）；⑤ `LogLevel=2` 下 bot 动作日志 15 分钟可涨到 600MB+；
+⑥ 别并发跑两个 cycle（抢 FIFO/日志/重启）；⑦ 提交前按 HEAD 的 EOL 归一，否则整文件 diff 噪声。
+
+**当前状态**：`c541a77d` 已是"进本换装（忽略装等）"版本，但换装过程中服务端 SIGABRT（日志停在
+`possible items for slot N`），待用最新 dump 做 gdb 回溯定位；定位前不要把这版当稳定版。
+
 ---
 
 ## [构建/工具] 本地编译与战斗测试：7 层阻塞链 + 死规则自动发现 — 2026-10-19
