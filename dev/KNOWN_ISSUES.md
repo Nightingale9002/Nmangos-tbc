@@ -1639,6 +1639,87 @@ if (m_config.find(key) != m_config.end())           //    平铺的配置**根�
 
 **上游 issue**：<https://github.com/cmangos/issues/issues/4303>
 
+---
+
+##### 6.9 2026-10-22 追「召唤点变孤岛」揪出的四个问题（参数定型 r=1 / climb=6 / mr=60）
+
+> **关联**：`contrib/mmap/src/MapBuilder.cpp` → `getDefaultConfig()`、`buildCommonTile()`；
+> `contrib/mmap/src/TerrainBuilder.cpp` → `loadVMap()`。
+> 现场：553 生态船（法术 `34673 Teleport Self` 的目标点、生物 `17980 Laj`）、
+> 530（X1387.0 Y7392.7）、547（副本地形窄条）。
+
+**① `walkableHeight` / `walkableClimb` 的换算用 `roundf` 会少算一格（真 bug）**
+
+```cpp
+cfg.walkableClimb = (int)roundf(BASE_UNIT_DIM * tileCfg.walkableClimb / CELL_HEIGHT);
+```
+
+`0.2666666 × 5 / 0.1777778 = 7.4999999…`（浮点）⇒ `roundf` 得 **7 格 = 1.2444 码**，
+而设计值是 1.3333 码。改用 `ceilf` 后得 **8 格 = 1.4222 码**。
+**教训：凡是"物理量 ÷ ch"的换算，一律用 `ceilf`，不要 `roundf`** —— 抬升方向的误差应该偏向放宽。
+
+**② `minRegionArea = 0` 会**保留碎块**，反而制造孤岛（与直觉相反）**
+
+`mergeAndFilterRegions()` 是两步：① 小于 `mergeRegionArea` 的并进邻居 ② 小于 `minRegionArea` 的删掉。
+设 0 之后第 ② 步一刀不砍，本该清掉的碎块全留下、各自成分量。
+实测 553 的 `34673` 点：`mr=0` → 可达 7 面（碎块上）；`mr=60` → 可达 511~835 面。**定 60。**
+
+**③ `walkableRadius` 的三档取舍 —— 定 1**
+
+| 值 | 物理 | 547 面数 | 结果 |
+|---|---|---|---|
+| 0 | — | 6558 | **贴墙爬**（怪贴墙根往上走）✗ |
+| **1** | 0.267 码 | **5438** | 与旧线上（5396）持平，窄条保住 ✓ |
+| 2 | 0.533 码 | 4673 | 地形窄通道被整条侵蚀掉（5473232 −29%）✗ |
+
+**④ `walkableClimb` 5 → 6（1.6000 码 / 9 格）**
+
+553 的 `34673`（`Teleport Self` 目标，落在一块高出地面 ~2.8 码的全息台面上）：
+`climb=5`（8 格 1.42 码）时是 **1 面孤岛**，`climb=6`（9 格 1.60 码）时与 `17980` 同属 **825 面**分量。
+说明真实台阶在 1.42~1.60 码之间，是"大台阶"而非爬墙。上游默认 4（1.07 码）同样连不上。
+
+**⑤ 导航面整体比几何高 ~0.2 码（Recast 固有，不是本轮引入）**
+
+`rcSpan` 高度按体素格保存、取**格顶**（`bmin[1] + smax*ch`），加上 detail mesh 采样取整。
+实测 553 的 `5533231`：新数据平均 **+0.212 码**、旧线上 **+0.306 码**。
+新增配置项 `navZShiftCells`（单位 = `ch`，默认 0）：`1.0` 下移一格后中位从 **+0.205 → +0.077 码**。
+⚠️ `polyMesh->verts` 与 `polyMeshDetail->verts` **必须同时移**，否则查询高度与贴地高度打架。
+
+**⑥ 两个现场点的定性（不用修）**
+
+| 对象 | 是什么 |
+|---|---|
+| `19555 TK Atrium Channel Target` | **不可选中的法术锚点**（`UnitFlags = 0x02000000`、无 AIName、从不移动），中庭全息光束的落点。新网格里 1 面孤岛**不影响玩法** |
+| `34673` | 法术 **`Teleport Self`** —— 就是把玩家传送到全息台面上的那个法术，所以"平台必须可达" |
+
+**⑦ 全量重烘结果（2026-10-22，参数 r=1 / climb=6 / mr=60 / slope=60 / terrainSlope=90）**
+
+```
+2743 格 + 18 个 go 格 = 2761 格 / 72 图 / TILE-FAILED 0 / No polygons 60 / 13.3 分钟
+```
+
+| 校验点 | 旧线上 | 新全量 | 结论 |
+|---|---|---|---|
+| 553 `17980` | 511 面 | 694 面 | ✓ |
+| 553 `34673` 召唤点 | 511 面 | 694 面 | ✓ 与 17980 同一分量 |
+| 553 `5530140` | 939 面 | 1254 面 | ✓ |
+| 553 `5530141` | 948 面 | 1 面 | 可接受（法术锚点，见 ⑥） |
+| 530 台沿（X1387.0 Y7392.7）| 5 面 | 2362 面 | ✓ |
+
+**⑧ 提交**
+
+| 提交 | 内容 |
+|---|---|
+| `e793b3c31` | `minRegionArea` 改回 60 |
+| `4ca660c83` | 换算改 `ceilf` + 默认 `walkableRadius 1` / `walkableClimb 6` + `navZShiftCells` + `[CFG]`/`[HF-STAGE]`/`[VMAP-INST]` 调试输出 |
+
+**⑨ 工具侧的固定流程（2026-10-22 站长口径）**
+
+- 烘焙结果**一律替换** `D:\Game\cmangos\viewer_mmaps`（固定路径，**不要来回改 `--mmap-dir` 指向**）
+- `dev/tools/bake_all.ps1`：全量烘焙 → 补 `go*.mmtile` → 镜像进 `viewer_mmaps` → 重启 viewer
+- `dev/tools/deploy_mmap.ps1`：viewer → 本地 → WSL（符号链接跟随）→ 云端（`-Cloud` 显式指定）
+
+
 ## [寻路] 移动/追击与碰撞个案（Blink、水下追击、召唤物吸附、拴绳、悬空点）— 2026-08-19 ~ 2026-10-13（本章合并自 9 章：[地图] 湿地·维尔加挖掘场桥 — 宠物/服务端单位站到桥下、[机制] 法师闪现 Blink 落点修复 — 2026-08-30 完成（先 navmesh 有路径 / 无路径才碰撞）、[机制] 法师闪现 Blink：WMO 斜坡穿模修复 + 落点方案重做 — 2026-09-04（navmesh 目标点 + 通用碰撞 + 不钻底）、[机制] 召唤物被吸附到 vmap 地板 → 全局改为"只向上兜底"（不再向下吸）— 2026-09-16 已改（本地，待推云）、[机制] 不稳定邪能小鬼（22474）出生成后卡闪避：拴绳半径 30 码 < 门到炮 40~50 码 — 2026-09-16 已修（本地，待推云）、[机制] 标记"禁止战斗移动"的单位仍会追击：HandleMovementOnAttackStart 未查 IsCombatMovement — 2026-09-16 已改（本地，待推云）、[数据] 2026-09-30 能源舰「guid 5540055 会走上天上」＝路径点 z 悬空 9.65 码（`dev/147`）、[工具/数据] 2026-10-01 路径点悬空扫描的**口径大修**：上一版"3 万可疑点"里绝大多数是工具假阳性（真可疑 438 条 / 103 个生物）、[寻路] 黑色沼泽鳄鱼"直线穿岸" = 水下追击的直线捷径把刚算好的 navmesh 走廊丢掉 —— 2026-10-13）
 
 > **合章说明（2026-10-16）**：本章由 9 个旧章合并；旧结论一律保留，被后续推翻/取代的已就地标注。
@@ -3424,6 +3505,37 @@ DELETE a FROM auction a JOIN auction b ON a.itemguid=b.itemguid AND a.auction_id
 #### 残留风险
 - 本修复只**防崩**：空路径时该追随者这一帧不移动（本来也没路可走）。若某张图 `mmaps` 真没提取，表现是"编队追随者原地不动 + `[PATH-NOMMAP]` 日志"（`PathFinder.cpp` 里每 map 只报一次）⇒ 要补的是 mmaps 数据，不是改这里。
 - 同族 crash 覆盖副本的"编队跟随"路径，非副本的 `FollowMovementGenerator`（非 formation）不受影响。
+
+#### 2026-10-21 定案：`ObjectMgr::mMapObjectGuids` 并发读写崩溃（ObjectGridLoader SIGSEGV）
+
+**栈**（WSL core dump + gdb，pid 136112）：
+
+```
+#0 std::unordered_map<uint32, CellObjectGuids>::operator[]
+#1 ObjectGridLoader::LoadN()
+#2 Map::EnsureGridLoaded(Cell const&)
+#3 Camera::UpdateVisibilityForOwner(bool)
+#4 Map::Add(Player*)
+#5 DungeonMap::Add(Player*)
+```
+
+**根因**：
+
+- 读：多个 `MapUpdater` 线程加载网格 → `ObjectGridLoader::LoadN()` → `sObjectMgr.GetCellObjectGuids()` →
+  `mMapObjectGuids[map][cell]`（`unordered_map::operator[]`，会 insert/rehash）；
+- 写：gameevent/pool 同时调用 `Add/RemoveCreatureFromGrid`、`Add/RemoveGameobjectFromGrid`、
+  `Add/DeleteCorpseCellData`，对同一批 `unordered_map` insert/erase；
+- 无锁并发 ⇒ rehash 时引用失效 ⇒ SIGSEGV。今天 5 份 dump（05:25 / 12:52 / 19:28 / 20:02 / 20:13）全部落在这条路径；
+  05:25、12:52 发生在当天改动之前 ⇒ **既有 bug**，仿真高频进本只是提高触发率。
+
+**修复（本地已编译，未部署）**：
+
+- `ObjectMgr.h`：新增 `std::mutex m_mapObjectGuidsMutex`；`GetCellObjectGuids()` 加锁并**按值返回**
+  `CellObjectGuids`（不再返回可能被 rehash 失效的引用）；
+- `ObjectMgr.cpp`：6 个修改函数统一加锁；
+- `ObjectGridLoader.cpp`：3 处调用点改为持有拷贝。
+
+**待验证**：安装后长时间跑（含高频进本）不再出现 `ObjectGridLoader` SIGSEGV；期间观察 `dmesg | grep CaptureCrash` 不增长。
 
 ---
 
@@ -11523,7 +11635,7 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 
 ---
 
-## [PlayerBots] 机器人行为、在线名单与轮换（always / add / 躲技能 / 跑尸 / 专精权重 / 控制技能优先级）— 2026-10-16 ~ 2026-10-20
+## [PlayerBots] 机器人行为、在线名单与轮换（always / add / 躲技能 / 跑尸 / 专精权重 / 控制技能优先级）— 2026-10-16 ~ 2026-10-21
 
 （本章合并自 1 批新增条目：站长 2026-10-17 明确「HANDOFF 只放铁律+索引，细节进 KNOWN_ISSUES」，故把当天写在 HANDOFF 里的 7 段细节全部搬到这里，HANDOFF 只留指针。）
 
@@ -11781,6 +11893,86 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
   `[POSITION] 跑位触发集合: 44 个 entry（6 种模式）` 且 `grep -c facing_mode DBErrors.log` **停在 52 不再增长** ⇒ **不用重启即生效**。
   ⚠️ 残留：云端 44 行的 `facing_mode` 现在**全是默认 `away_group`**（= 沿用旧行为）；要真正用上
   `fixed/open/wall` 得按攻略往表里填行（填完 ≤5 分钟自动生效）。
+
+#### bot 固定专精/职责必须落库（2026-10-21：仿真“没有真正的坦克”根因）
+
+**现象**：仿真 `sim start` 后组队阶段反复 `角色不足（没有真正的坦克（候选： paladin,heal / warrior,dps …））`，连试 21 次失败；全量 0 组进本。
+
+**证据链**（只读排查，未改任何游戏行为）：
+
+1. `PlayerbotAI::IsTank(p)` 默认 `inGroup=true` ⇒ 只看 `ContainsStrategy(STRATEGY_TYPE_TANK)`，**不是看天赋**；策略由 `AiFactory::AddDefaultCombatStrategies()` 按 `GetPlayerSpecTab()`（天赋最高树）在 **AI 创建/登录时** 挂载。
+2. 仿真刚把 bot 拉上线就去挑坦 ⇒ 策略还没挂好 ⇒ 全部判 false。
+3. 另一层：character DB 里残留 **1751 条 `group_member` + 367 个空 `groups`**（历次中断的仿真组没清），`LoadCandidates` 的 `NOT EXISTS(group_member)` 把 **360 个防护坦全部排除**，池子里只剩 dps/heal。
+
+**修复（2026-10-21，本地已编译验证；未上云）**：
+
+- 新表 **`ai_playerbot_bot_profile`**（character DB）：`guid, cls, spec_tab, role(1=tank,2=heal,3=dps), updated_at`；
+- 构建命令 **`.rndbot sim profile`**（`SimScenario.cpp → BuildBotProfiles()`）：从 `character_spell`（天赋=已学天赋法术）+ `sTalentStore/sTalentTabStore` 算 `spec_tab`，用 `AiFactory::GetPlayerRoles(cls,tab)` 定职责，分块 `INSERT … ON DUPLICATE KEY UPDATE` 落库。
+  本地实测：**1925 个 bot ⇒ tank=360 / heal=415 / dps=1150**；
+- 仿真选人改读 DB：`Candidate.role`（`CachedRole()`）、`PickParty()` 优先 role=1/2、`SelectRealRoles()` 直接按 DB 职责判定（无数据才回退 `IsTank/IsHeal`）。
+  效果：`用真坦/真奶组队` 从 **0 → 18+**，8 图均有组进本；
+- 清理残留组数据（一次性，静态 DML）：
+  `DELETE m FROM group_member m JOIN (所有 ai_playerbot_random_bots.owner=0 的 bot guid) t ON t.guid=m.memberGuid;`
+  再删 `groups` 里已无成员且队长是 bot 的空组。
+
+**运维注意（这次踩过的坑，别再踩）**：
+
+- WSL 实例会自己重启：`/tmp` 清空、进程全没 ⇒ 看到“所有东西突然消失”先 `uptime`；
+- `LogLevel=4`（detail）在几十组并发时会写出 **500MB+/几分钟** 日志，拖慢登录/组队 ⇒ 验证跑用 `LogLevel=2`；
+- 命令通道：console 只认 **`.rndbot sim …`**（`.bot …` 的 console 标志是 false）；用独立脚本 `printf '.rndbot …\n' > /tmp/mcmdmulti2`（open→write→close）发送最可靠，**launcher 自己持有 FIFO 读写 fd 时命令会丢**；
+- 组不齐时先查**两件事**：`ai_playerbot_bot_profile` 里 role=1 的可用数量、`group_member` 是否残留；
+- 容量：一份候选=8 bot/组，组数×8 超过可用池时，后发的图会“候选不足/没坦” ⇒ 按图错峰发、或降组数。
+
+**静态 bot 名单（2026-10-21，站长口径：bot 应该固定，不该定时重随机）**：
+
+- 新配置 **`AiPlayerbot.StaticBots`**（默认 0）；置 1 后：
+  - `RandomPlayerbotMgr::Randomize()` / `RandomizeFirst()` 直接 return（不重随机、不换装升级）；
+  - `ScheduleRandomize()` 不再安排 `randomize` 事件；
+  - 于是 bot 的等级/天赋/专精/装备/职责**永久保持库中数据**，不会再被定时重随机；
+- 另加仿真保护：`RandomizeFirst()` 在 `SimMode=1 && bot 在副本 && 在队伍` 时直接返回
+  （该函数末尾有 `if (bot->GetGroup() && !hasPlayer) bot->RemoveFromGroup();`，会在 randomize 事件到点时把仿真队伍拆散 → 日志 `队伍被解散`）；
+- 注意 `DisbandBotOnlyGroups()` 另有 `RouteEnabled()` 保护，不是拆队元凶。
+- **第二条拆队路径（同日已修）**：`LeaveGroupAction.cpp → LeaveFarAwayAction::isUseful()` 会在
+  `GrouperType==SOLO` / 纯 bot 队伍死亡数 >4 / 15 分钟无经验荣誉 时让 bot 自行退队；
+  仿真下加 `if (sPlayerbotAIConfig.simMode) return false;` 关闭该行为。
+- **队伍必须是 1+1+3（站长口径）**：`SimScenario.cpp → PickParty()` 只各取 1 个 role=1/role=2，
+  其余优先 role=3（DPS）；`SelectRealRoles()` 若凑不齐 3 个真 DPS 直接失败换人，
+  **不再用第二个坦/奶凑数**（否则 `DungeonRoute` 的驱动坦 ≠ `run.tankGuid`，拉怪/监控全错）。
+  候选池职责配比参考：tank=360 / heal=415 / dps=1150（1925 个 bot）。
+
+**验证**：`[SIM] … 候选 8 人： … (<class>,tank)` 出现、`用真坦/真奶组队` 增长、组进入 `map=… instance=…` 且 `status cleared` 开始上涨。
+
+#### 2026-10-21 仿真全量结果与副本推进（8 图 × 5 组，约 40 分钟）
+
+| 图 | 最高清波 | BOSS 总数 | 最好击杀 | 结束原因 |
+|---|---|---|---|---|
+| 540 | 29/32 | 4 | 1 | stuck×4 / 队伍被解散×1 |
+| 543 | 25/25 | 3 | **3（全灭）** | stuck×4 / 队伍被解散×1 |
+| 545 | 28/28 | 3 | **3（全灭）** | stuck×1 / 队伍被解散×3 |
+| 546 | 5/14 | 4 | 0 | stuck×2 / 队伍被解散×1 |
+| 547 | 8/28 | 3 | 0 | stuck×1 |
+| 553 | 35/37 | 5 | **5（全灭）** | stuck×2 / 队伍被解散×1 |
+| 555 | 32/35 | 4 | 1 | stuck×1 |
+| 557 | 2/39 | 3 | 0 | stuck×3 |
+
+关键结论：
+
+- 本轮的 `跳过波` 总数 **0**（上一轮 982）⇒ “打不到不跳波、继续寻路/追击”的改动有效；
+- 543/545/553 的 BOSS 已经全部击杀（`probe bosses alive=0/N`），但组在写 `done error=cleared` 前因 stuck/解散收尾，所以历史统计里没有 cleared 记录；
+- 540 从长期 0/32 提升到 29/32。
+
+#### 2026-10-21 本轮新增/修复（仿真侧）
+
+1. **不再用“15s 无伤害”直接跳波**：先持续 `MoveChase`；只有“追击 45s 距离无缩短”或“近战 30s 完全无伤害”才跳；
+2. **队友在战斗时其余人去帮**：坦克无目标时优先打队友当前目标（`去帮队友打 <entry>`），不再自己开下一波、不再 15s 无目标跳波；
+3. **1+1+3 强制**：`PickParty()` 只各取 1 坦/1 奶，其余优先 DPS；凑不齐直接换人；
+4. **540 第一波 = 碎手军团士兵所在整组**（数据改动：`ai_playerbot_dungeon_route` 原 wave3 提到 ord=1，原 wave1/2 顺延），避免它在后面波次里无限召唤援军；
+5. **已清波必须“确实没刷新”**：`RefreshWaveKnowledge()` 新增 reopen 逻辑——已清波里只要有成员重新存活，就把该波从 `cleared` 移回 `seenAlive` 并解除锁定；
+6. **队员被随机传送出本**（本轮 `离本检测` 抓到多人被传到 map 0/1/530）：在
+   `RandomPlayerbotMgr::RandomTeleport()`（两个重载）/`RandomTeleportForLevel()`/`RandomTeleportForRpg()`/`ScheduleTeleport()`
+   加 `SimMode && 在副本 && 有队伍 ⇒ return`，禁止仿真队员被随机传送/轮换拽出本。
+
+**验证**：`[SIM] … 离本检测` 不再出现；`[DUNGEONROUTE] 波 N 的怪重新刷出 ⇒ 重新打开` 在召唤波出现；540 第一波目标为 16700（碎手军团士兵）。
 
 ---
 
