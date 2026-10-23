@@ -2003,16 +2003,27 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
         Player* leader = sObjectMgr.GetPlayer(GetGroup()->GetLeaderGuid());
         if (leader && leader != this && leader->GetMapId() == GetMapId())
         {
-            sLog.outString("[SIM] 离本传送改道: %s map=%u -> 队长 %s", GetName(), GetMapId(), leader->GetName());
+            sLog.outError("[SIM] 离本传送改道: %s map=%u -> 队长 %s", GetName(), GetMapId(), leader->GetName());
             mapid = leader->GetMapId();
             x = leader->GetPositionX();
             y = leader->GetPositionY();
             z = leader->GetPositionZ();
             orientation = leader->GetOrientation();
         }
+        // [2026-10-22 长跑修] 队长自己要离本（旅行/回城 AI）⇒ 拉回原地：不真的出本，
+        //   同时让那个旅行动作走完，避免每 tick 重试（实测 555/557 长跑时队长一直想传 530）。
+        else if (leader && leader == this)
+        {
+            sLog.outError("[SIM] 拦截队长离本: %s map=%u -> %u（拉回原地）", GetName(), GetMapId(), mapid);
+            mapid = GetMapId();
+            x = GetPositionX();
+            y = GetPositionY();
+            z = GetPositionZ();
+            orientation = GetOrientation();
+        }
         else
         {
-            sLog.outString("[SIM] 拦截离本传送: %s map=%u -> %u", GetName(), GetMapId(), mapid);
+            sLog.outError("[SIM] 拦截离本传送: %s map=%u -> %u", GetName(), GetMapId(), mapid);
             return false;
         }
     }

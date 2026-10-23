@@ -173,4 +173,19 @@
 | `questie_npc_audit.py` / `questie_npc_audit2.py` | **任务起止 NPC 全量比对**：解析 Questie `tbcQuestDB.lua`（6515 条）与本库 `creature_questrelation`/`creature_involvedrelation` 逐任务比对 → `questie_npc_audit.tsv`（分 A 本库缺 / B Questie 缺 / C 双方不一致） |
 | `cloud_*.sh`（ore_state / log_check / go_schema / respawn_check / src_check…） | 云端**只读**体检小脚本：查组上限、日志里 displayId/skip 报错、gameobject 表结构、复活表、云端源码与本地是否一致 |
 
+### 宣传与视频（`D:\Game\cmangos\宣传\`，**不在 git 仓库内**）
+
+| 路径 | 里面是什么 |
+|---|---|
+| `宣传\README.md` | 宣传文件夹总览（结构 + 先读哪份） |
+| `宣传\文档\00_宣传总纲_招测试者.md` | 定位/渠道对比/红线/排期 + **项目事实卡**（所有数字的唯一口径） |
+| **`宣传\文档\13_视觉风格规范_全动效.md`** | **《修服日志》全动效视频风格规范 v1（2026-10-23 站长认可）**：五段式结构、11 种画面场景、配色/字号/安全区、配音与字幕规则、构建命令、出片 QA 清单 |
+| `宣传\文档\12_会话纪要_项目宣传与视频.md` | 宣传/视频工作的整理：定位三次修正、B 站生态数据、事实口径表、**13 条踩坑台账** |
+| `宣传\文档\`（其余 00–11） | 自助包 / 报 bug 模板 / 文案库 / 流水线手册 / 可读性 / 关键词 / 术语表 / 各集方案 |
+| `宣传\mg_kit.py` | 视频套件：场景库 + 渲染管线（**加一集 = 复制 `ep2_mg.py` 改 `SEGS`**） |
+| `宣传\ep2_mg.py` | EP2 的 `SEGS`（范例；`python ep2_mg.py` 直接出 mp4+srt） |
+| `宣传\ep2\` | EP2 成片（3:59 / 11.8 MB）、SRT、轨迹原文卡、CoT 卡、打字动画 |
+| `宣传\ep1\`、`宣传\ep0\` | 前两集成片（录屏版）、封面、SRT |
+| `宣传\_一次性脚本\` | 当时用过的临时补丁/探针脚本（留档，不必再跑） |
+
 > 已整合并删除：`dev/寻路系统修改总结_vs_cmangos主分支.md`、`dev/050_矿点三方对比分析.md`、`SERVER_TODOS.md`（内容已并入 KNOWN_ISSUES.md 对应章节，按第二节索引检索，不再写死行号）。

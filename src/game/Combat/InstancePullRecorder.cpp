@@ -126,7 +126,7 @@ namespace
             if (!warned)
             {
                 warned = true;
-                sLog.outString("[PULL] ai_playerbot_pull_log 不存在 —— 拉怪记录关闭"
+                sLog.outError("[PULL] ai_playerbot_pull_log 不存在 —— 拉怪记录关闭"
                                "（应用 dev/192_副本拉怪记录表.sql + dev/194 可启用）");
             }
         }
@@ -263,7 +263,7 @@ namespace
                     pull.firstMobEntry, pull.leaderGuid, uint32(now), pull.mobsTotal, pull.mobsTotal);
         }
 
-        sLog.outString("[PULL] map=%u inst=%u seq=%u group=%u leader=%u source=%s%s mobs=%u members=%u 开拉",
+        sLog.outError("[PULL] map=%u inst=%u seq=%u group=%u leader=%u source=%s%s mobs=%u members=%u 开拉",
             pull.mapId, pull.instanceId, pull.seq, pull.groupId, pull.leaderGuid,
             snap.hasRealPlayer ? "player" : "bot", pull.routeClaimed ? " route" : "",
             pull.mobsTotal, snap.members);
@@ -299,7 +299,7 @@ namespace
                 uint32(now), duration, result, mobsAlive, deaths,
                 pull.mapId, pull.instanceId, pull.leaderGuid, pull.seq);
 
-        sLog.outString("[PULL] map=%u inst=%u seq=%u leader=%u => %s（%us，剩 %u 只，死 %u 人，%u 人还在本里）",
+        sLog.outError("[PULL] map=%u inst=%u seq=%u leader=%u => %s（%us，剩 %u 只，死 %u 人，%u 人还在本里）",
             pull.mapId, pull.instanceId, pull.seq, pull.leaderGuid, result,
             duration, mobsAlive, deaths, present);
 
