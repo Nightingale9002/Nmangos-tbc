@@ -649,15 +649,27 @@ void GameObject::Update(const uint32 diff)
             if (preventDespawn) // mainly serves to prevent casting traps from despawning
                 break;
 
-            /* 2026-10-07 (Kabu), re-scoped 2026-10-10 (Kabu): GO_FLAG_NODESPAWN (0x20) means "never
-             * despawn, typically for doors, they just change state" (Globals/SharedDefines.h) and this
-             * path never honoured it, so the Shattered Halls entrance door (184912, guid 25826) was
-             * removed from the world for its whole spawn timer right after auto-close and only came back
-             * much later. That is fixed here, but ONLY for that door: applying it to every NODESPAWN
-             * door/button broke unrelated objects (e.g. the Steamvault main chambers door 183049 and its
-             * access panels), so the rule is intentionally entry-scoped - do not widen it again without
-             * checking the other users of the flag. */
-            bool const neverDespawns = (GetEntry() == 184912) && !m_forcedDespawn;
+            /* 2026-10-07 (Kabu), re-scoped 2026-10-10 (Kabu), widened 2026-10-24 (Kabu, site owner):
+             * GO_FLAG_NODESPAWN (0x20) means "never despawn, typically for doors, they just change state"
+             * (Globals/SharedDefines.h) and this path never honoured it, so the Shattered Halls entrance
+             * door (184912, guid 25826) was removed from the world for its whole spawn timer right after
+             * auto-close and only came back much later.
+             *
+             * 2026-10-24: the same defect hit the Karazhan Gatehouse Door (183450, map 532): the door was
+             * removed for its 43200 s spawn timer after the first open, i.e. it could only ever be clicked
+             * once. 142 DOOR entries / 161 spawn points in this DB auto-close, so they all shared the bug.
+             * Rule now: a static-spawned door (HasStaticDBSpawnData() + spawntimesecsmin >= 0 =>
+             * m_spawnedByDefault) whose template has an auto-close time never despawns on deactivate - it
+             * just resets to its closed state and stays clickable. Script-spawned doors (negative spawn
+             * time, e.g. quest cages/portcullis), spell/script-summoned doors and BUTTONs are deliberately
+             * NOT covered (2026-10-10: widening to all NODESPAWN buttons interacted badly with
+             * panel-driven doors such as Steamvault 183049).
+             * 184912 keeps its explicit entry check (it is a DOOR with auto-close, so it is also covered
+             * by the general rule - the entry check makes the intent obvious for that regression case). */
+            bool const autoCloseStaticDoor = GetGoType() == GAMEOBJECT_TYPE_DOOR &&
+                                             GetGOInfo()->GetAutoCloseTime() > 0 && m_spawnedByDefault &&
+                                             HasStaticDBSpawnData();
+            bool const neverDespawns = !m_forcedDespawn && (GetEntry() == 184912 || autoCloseStaticDoor);
 
             // Remove wild summoned after use
             // non-consumable chests/goobers (IsDespawnAtAction == false) must never despawn,
