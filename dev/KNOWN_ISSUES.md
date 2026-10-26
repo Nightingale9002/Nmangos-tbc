@@ -11934,14 +11934,14 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 
 - `.bot prio` 是**全服全局**改档（按 entry），非 GM 也能用 ⇒ 只能靠 `[BOTCMD]` 日志事后追责；若以后要按玩家/队伍隔离，需要在 `SetPriorityRank()` 上加 owner 维度。
 - 动态优先级只调了"动作 relevance"；控制目标怎么挑仍由 `values/CcTargetValue.cpp → FindTargetForCcStrategy`（按普通输出/优先级 4 排序）决定，两处口径要一起看。
-- ✅ **顺带发现的部署缺口（2026-10-20 已修）**：`dev/187_副本BOSS能力表.sql` 里的**守卫式 ALTER**
+- ✅ **顺带发现的部署缺口（2026-10-20 已修）**：`dev/187_副本BOSS能力表.sql`（**2026-10-27 已并入 `dev/230_机器人调优数据_20261027.sql`**）里的**守卫式 ALTER**
   （`information_schema` + `PREPARE`）在云端没跑成、marker 已推进 ⇒ `tbcmangos.ai_playerbot_boss_ability`
   缺 `facing_mode` / `facing_deg` 两列 ⇒ `PartyPositionCoordinator.h → PartyPositionCoordinator::RefreshBossFacing()`
   每 5 分钟报一次 `Unknown column 'facing_mode' in 'field list'`，**BOSS 朝向/跑位分带数据完全不生效**。
   **修法（静态 DDL，2026-10-20 云端手工执行 ✓）**：
   `ALTER TABLE ai_playerbot_boss_ability ADD COLUMN facing_mode VARCHAR(24) NOT NULL DEFAULT 'away_group' AFTER avoid_sectors, ADD COLUMN facing_deg SMALLINT NOT NULL DEFAULT 0 AFTER facing_mode;`
   —— 44 行数据未动 ✓、主键仍是 5 列（`map,boss_entry,owner_entry,spell_id,category`）✓。
-  **`dev/187` 已按规范改写**：两列并入 `CREATE TABLE`；3 处 `information_schema + PREPARE` 守卫（主键/avoid_sectors/facing）
+  **`dev/187`（已并入 `dev/230`）已按规范改写**：两列并入 `CREATE TABLE`；3 处 `information_schema + PREPARE` 守卫（主键/avoid_sectors/facing）
   改成注释里的静态 DDL（新库直接建好、老库手工执行），不再有逻辑查询。
   **验证**：改前最后一条错误 `12:36:50`；改后下一次刷新 `12:41:50` 输出
   `[POSITION] 跑位触发集合: 44 个 entry（6 种模式）` 且 `grep -c facing_mode DBErrors.log` **停在 52 不再增长** ⇒ **不用重启即生效**。
@@ -12064,6 +12064,289 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 
 **当前状态**：`c541a77d` 已是"进本换装（忽略装等）"版本，但换装过程中服务端 SIGABRT（日志停在
 `possible items for slot N`），待用最新 dump 做 gdb 回溯定位；定位前不要把这版当稳定版。
+
+### 副本拉怪/推进调优 — 2026-10-25（安全拉怪点死锁 / 越界兜底 / 拉回 / 卡视野 / 552 Protean）
+
+> 全部是**本地仿真**（WSL `Ubuntu-20.04` + `mangosd_pb8_all`）的改动，云端未部署。实验脚本在 `_agent_tmp/tune/`，
+> 台账 `_agent_tmp/tune/ISSUES.md`、`runs.csv`。引用代码请按**符号名** grep。
+
+**(1) 安全拉怪点死锁（已修，r93 验证）**
+`PULLSAFE` 把坦克挪到"不引怪的安全点"后，`DungeonRoutePullAction` 顶部 `stand_override_hold` 直接 `return false`；
+而 `DungeonRoutePullTrigger` / `DungeonRouteMoveAction` 仍按**原拉怪位**算距离，把坦克推回去，到原拉怪位又被送回安全点
+⇒ 两个动作互顶，一次开怪都不发生。实测 557：位置 (-67,-120)↔(-59,-120)、距拉怪位 0↔8 码反复，`[PULLWHY] reason=stand_override_hold` 322 条、整组 472s 无战斗。
+修法：新增 `dungeonroute::SafePullPoint()`（安全点=本次拉怪位，战斗中/过期/离原拉怪位>60 码自动失效），
+两个触发器和两个 Action 的距离判定都改用它；`stand_override_hold` 只在战斗中保留；离安全点 >80 码时作废该点不再"站满 2 分钟"。
+验证：同图 `stand_override_hold` 322 → 0，557 恢复开怪并出现 `BOSSKILL`。
+
+**(2) 越界 / 击飞兜底（已加，带教训）**
+- 现象：同 map 但坐标在副本有效区域外（540 的 (-406,1014)、542 的 (1238,-752)、547 的 (2165,-1372)），寻路必然不完整 ⇒ 原地空转。
+- 日志：`[OOB]`（`DungeonRouteMoveAction`，连续 3 次≈30s 在网格外才打）+ 240s 兜底重置时记 `[OOB] run=.. reset:`
+- 兜底：`SimScenario` PHASE_RUN，每 10s 检查全组成员，满足 **连续 3 次网格外 + 与上次采样位移 ≤5 码 + 离队长 >40 码** ⇒ `[OOB-RESCUE]` 传回队长（队长不在本图则入口）。
+- **三条教训**：① 只判"网格外"会误救（2 分钟 129 次，把正常走路的 bot 传回入口）；必须加"静止"条件。
+  ② **不能用 z 判水域**（`Unit::IsInWater()` 是液面 z 比较，545 水区 bot 恒为 0）；游泳状态用移动标志 `MOVEFLAG_SWIMMING`。
+  ③ 阈值还不够严：离队长 40 码仍会误救入口附近的人，待提到 120 码（558 真被击飞那次是 251 码）。
+
+**(3) 拉回（已改代码，挂点待修）**
+`PullBegin()` 记 `pullBackPending` + 拉怪位 + 20s 窗口，`DungeonTankRepositionAction` 战斗中每 tick `MovePoint` 退回，日志 `[PULLBACK]`。
+**问题**：`[PULLED]`（PullBegin）只有 9 次，而 `[ENGAGE]` 有 40 次 —— 其中 `DungeonRouteActions.cpp` 里"坦克救场"那条 ENGAGE **不走 PullBegin**
+⇒ 大多数起手没挂上标记、`[PULLBACK]` 只出现 1 次。修法：在 `PullAction` **站上拉怪位、`pull my target` 之前**挂标记，并给 796 那条 ENGAGE 也挂一次。
+
+**(4) 卡视野聚怪（结论：现有实现几何前提就错，待重写）**
+- 现状：`DungeonTankEngageAction` 的 `[ENGAGE2]` 段先找"墙点"（32 方向×3/5/7 码不在网格上的点），再沿**切线**试最多 24 码。
+- 站长口径：**能断视线的点必然在凸墙角背面，切线方向必然找不到**；且找到点后用的是 `MovePoint`（直线），会撞墙/绕不过去。实测 `卡视野失败 … 附近 32 处墙面都没找到 ⇒ 直接冲过去拉` 多次，540 一次拉 1 只变 9 个攻击者。
+- 新方案（待实现）：候选点 30 码内 2 码网格 → **到最近墙点 >2.5 码直接舍弃**（纯浮点预筛）→ **环境掩护度判定：从候选点向 16~36 个方向各打一条 2.5 码视线（只看眼前 2.5 码有没有墙），被挡的方向算"有掩护"，可视弧 > 210° 直接舍弃**（站点在开阔处，不可能是墙角背面；2.5 码与"离墙"判据同一尺度，开销极低）→ 对留下点做 `怪→点` 的长距离视线判定（这一段按真实距离打，不通才留）→ 按距离从近到远最多 3~5 个做 `PathFinder` 可达性 → `MoveTo()`（沿导航面走）→ 一个都没有就**退回拉怪位等 2~3 秒**，不再"直接冲"。
+  > ⚠️ 口径区分：这里的 210° 是**环境掩护度**（人站的地方四周被挡多少），和 boss 策略里"只卡某一个单位/某一只 boss 的视野"不是一回事；
+  > boss 那条是单目标断视线（`ai_playerbot_boss_ability` + `partypos` 的 los_* 模式），不要混用。
+- 这条也顺带修 `PULLSAFE` 挪位点的 `MovePoint`（同样应"先算路径再走"）。
+
+**(5) 552 Arcatraz 的临时怪（数据修复）**
+Warder 清完后场上有会自己消失的 Protean 系列（动态出现，静态刷点在 x≈176~285），bot 去打分身就是送死；
+死亡记录常见 `attackers=0`（凶手已 despawn）。数据：`ai_playerbot_skip_entry` 加 552 的 20864/20865/21395（`dev/230` 数据快照，**本地已应用，云端未同步**）。
+效果：r99（600s）552 死 4 → r100（同窗口）死 1。
+顺带证据：日志里 Arcatraz Defender(20857) 对 Protean Nightmare 放 `38806`（Protean Subdual）—— 它们本来就在互相打。
+
+**(6) 威胁门配置（本地仿真配置，非代码）**
+`/root/run_local/aiplayerbot.conf`：`AiPlayerbot.WaitForAttackThreatLead` 1500 → **500**（站长口径）。`WaitForAttackThreatPercent` 仍 110；
+boss/免疫默认值 1000/1500 未动。效果：`hold fire` 反而由 8573 涨到 18326（起手更早、随后被百分比门压），说明瓶颈已从"起手门槛"转到"百分比门 + 日志无节流"。
+
+**(7) 指标表（`_agent_tmp/tune/metrics.py`）与验收口径**
+主表加 `boss 最好/中位` 列；"每组最好/中位"表扩为 波次 / boss / 死亡 三组 best/中位（同图各组的 max 与中位数）。
+> **站长口径（2026-10-26）**：**验收只看"boss 能不能清掉"**。TBC 小怪本来就多、而且不一定按组刷，
+> 所以"波次落后于 boss""跳过很多波"都**不算问题**；`waves / skipped` 只是进度统计，**不作为要求**，也不要用它判断成败。
+
+**(8) 拉怪准入"等更便宜的时刻"无限推迟（2026-10-26 修）**
+现象：r100（2h 轮）里每个图都有 2~7 次 `连续 1100~1338s 未进战斗 ⇒ 重置推进状态`；追到
+`[PULLCOST] … 代价=0（巡逻 0）⇒ 等代价最小的时刻` + `[PULLWHY] reason=waiting_best_window dist=0`。
+根因：`PullAdmissionDelayMs()` 在 2/4/6/8 秒前瞻里找更便宜的时刻并返回 `best.atMs`（2~8s），
+巡逻外推**每轮又给出一个新的"2 秒后更便宜"** ⇒ 等窗口永远刷新、人站在拉怪位空转；日志里的"代价=0"还是
+`outNow` 被 `best` 覆盖造成的假象。
+修法：① **当前代价 = 0 ⇒ 直接拉**（站长口径）；② `pullCostWaitSince` 记起始，**总等待上限 10 秒**，超时强制开拉并打日志；
+③ `outNow` 只记当前这一刻的代价，日志改成 `当前代价=N（巡逻 M）⇒ 等更便宜的时刻 / ⇒ 现在开`。
+
+**(9) 待办清单（按顺序）**
+
+1. 拉回挂点：`PullAction` 出手前挂 + 796 那条 ENGAGE；
+2. 卡视野重写（候选点 + 离墙预筛 + 沿路走 + 兜底等）；
+3. 救援阈值 40 → 120 码；
+4. 540 的 `ai_playerbot_pullback` 数据（远程怪 16507/17694/16594，25~30 码）；
+5. 558：击飞落点要落在桥上，即"怪—坦克—桥"角度与桥走向一致（属站位/躲技能层，排在后面）；
+6. 动态 guid 的刷怪组候选位：需要"按位置找怪/拉怪"的运行时能力（guid 不稳定，route 不能按 guid 记账）。
+
+**(10) 锚点表退役 + 数据库清理（2026-10-26）**
+- `ai_playerbot_wave_anchor` **已删除**：`DungeonRoute.h` 里那段 `SELECT pull_x/pull_y/pull_z` 已去掉，
+  拉怪位一律由 `MakeApproachPoint()` 实时计算（`Wave::pull.has=false` 走实时分支）；编译 + 冒烟（552，1 组）通过，
+  日志无该表 SQL 错误。
+- 清理了 **69 张备份表**（`*_bak*`/`*backup*`，约 178 MB）+ **3 张零引用空表**
+  （`ai_playerbot_action_weight`/`combat_sample`/`pull_record`）；保留 `ai_playerbot_dungeon_route_bak_20261026`
+  与 `ai_playerbot_boss_spawn_bak_20261023` 两个回滚点。清单 `_agent_tmp/drop_backups_20261026.sql`。
+
+**(11) 离线"代价 / 剥洋葱"数据（2026-10-26）**
+- `dev/tools/pull_cost_offline.py`：按整条巡逻路径推演，算每波最小代价/最佳相位 → `ai_playerbot_pull_timing`（`dev/223`）；
+- `dev/tools/peel_order.py`：剥洋葱算安全清怪顺序 → `ai_playerbot_pull_order`（`dev/224`）；
+- `dev/tools/route_gaps.py`：补路线缺口（静态刷点；动态 guid 候选位不进 route）。
+- 口径：仇恨半径 22 + 巡逻 5 + margin 2；速度 = 7.0 × `creature_template.SpeedRun`；
+  过滤小动物/不可选中/免疫玩家/免疫 NPC/skip_entry；随机游走（MovementType=1）才把 spawndist 当位置不确定性。
+- 当前结果：423 波，原顺序预期 ADD **1100** → 剥洋葱 **156**（−86%），零 ADD 步骤 **280/423**。
+
+**(12) ⚠️ mmap 坐标顺序用错 ⇒ "卡视野一个点都选不到"（2026-10-26，已修）**
+- 根因：CMaNGOS 的 mmap 顶点按 **`(y, z, x)`** 存（`PathFinder::getArea` 里就是 `point[3]={y,z,x}`，
+  `WorldPosition` 里是 `{coord_y, coord_z, coord_x}`）。`DungeonRouteActions` 里三处自己写的
+  `findNearestPoly` 全传成 `{x,y,z}` ⇒ 永远 `INVALID_POLYREF`，日志表现是
+  `候选拒绝：网格 1256 / … / 无多边形 1256` —— 整个候选搜索被第一道过滤吃光。
+- 同 bug 还在 `SimScenario` 的越界判据里（会把所有人误判成"掉出导航网格"）。三处统一改成
+  `pt = {y, z, x}`，返回的 `closest` 再换算回 `gx=closest[2], gy=closest[0], gz=closest[1]`。
+- 另一个坑：`MMapManager::loadMapData()` **只 init 网格参数，不加载瓦片**；离线跑（没有活着的 `Map` 实例）
+  必须自己 `loadMapInstance()` + 按 bbox 逐 grid `loadMap()`。`loadAllMapTiles()` 会在
+  `boost::filesystem::path::filename()` 里 SIGSEGV（core 已确认），不要用。
+
+**(13) 卡视野点库 `ai_playerbot_cover_spot`（2026-10-26，站长口径："简单预筛点，战斗时实时挑"）**
+- 离线生成：控制台 **`.rndbot sim spots <mapId|all>`**（`SimScenario::HandleCommand` 的 `spots` 分支）
+  → `coverspot::ScanMap()`：本图路线怪包围盒（±20 码）内 **2 码稠密取点**，逐个过四道筛：
+  ① 在导航网格上（参考高度取"最近一只路线怪的 z"，用全图平均 z 会把多层/斜坡大量误杀）；
+  ② 离墙 ≤ 0.8 码（8 方向 0.4/0.6/0.8 射线）；
+  ③ 站上去 1.2 码半径内 **实心遮挡 ≥ 180 度**（16 条射线 ≥ 8 条被挡，即"人贴墙 ⇒ 保底半球"）；
+  ④ 记 `seen_max_ord` = **能看到这个点的最大波次**，`seen_count` = 能看到它的路线怪数量。
+- 表结构见 `dev/228_cover_spot.sql`；每图约 300~660 个点（12 图共 6.3k）。
+- 运行期：`DungeonTankEngageAction` 的卡视野分支**先查点库**（`coverspot::Find`，取 35 码内最近、
+  且 `seen_max_ord < 当前波次` 的点；怪是动态刷位、不在路线表里时 `ord=0` 不做波次过滤，只靠现场复核），
+  现场只做 `NavMeshZ` + `Map::IsInLineOfSight`（那只怪确实看不见）两道复核；没有可用点才回落到
+  `PickCoverSpot()` 的几何选点（怪眼→坦克射线打墙面 / 坦克四周 32 条 vmap 射线找墙）。
+- 实测（r110 前 4 分钟）：`点库命中` 9 次、`卡视野：… 退到(x,y) 断视线` 9 次、失败 3 次
+  （失败都是"35 码内没有合适点 + 兜底几何也找不到墙"）。
+
+**(14) ⚠️「2 小时实验」其实只跑 45 分钟：`SimScenario` 硬上限盖掉 `maxtime`（2026-10-26，已修）**
+- `SimScenario` 的卡死分支原来是
+  `stuck = (now - lastProgressAt > run.stuckMs) || (now - attemptStartedAt > ATTEMPT_TIMEOUT_MS)`，
+  其中 `ATTEMPT_TIMEOUT_MS = 2700000`（45 分钟，写死）。`cycle.sh` 传 `--stuck 3000`(50 分钟) > 45 分钟
+  ⇒ **永远先撞 45 分钟那条**，而且 `policy=continue` 在 `stuck` 分支直接 `CloseRun` ⇒ 60 组整齐地
+  在 `indungeon=2700.0s` 报 `error=stuck`。r110 的「36 击杀 / 2 小时」其实是 **36 击杀 / 45 分钟**。
+- 修法：卡死只看"多久没有波次推进"（`run.stuckMs`），时间上限统一交给上面的 `run.maxRunMs`（`maxtime=` 可覆盖）。
+
+**(15) ⚠️ 安全点搜索把"待拉的这一波"自己算成威胁（1789 条/2h，已修）**
+- 日志：`[PULLSAFE] <bot> 附近没有安全拉怪点（<怪名> entry=…）=> 先拉，之后 pullback`，
+  括号里的怪就是**本次要拉的那只/那只 boss**（例：`Darkweaver Syth entry=18472`）。
+- 根因：`UnsafeStandOffender()` 用 `SafePointVisitor` 判"候选点会不会引到没参战的怪"，
+  但**没有排除本次目标波**；而拉怪位天生就落在目标波仇恨圈边上（`ThreatRingRadius + margin 5`）
+  ⇒ 拉怪位自己先被判不安全，再拿 12 方向 × 4/8/12/16 码找替代点，全部仍在目标波圈内 ⇒ `found=false`。
+- 修法：`SafePointVisitor`/`UnsafeStandOffender` 加 `excludeLow` 参数，`DungeonRoutePullAction` 把
+  `route->waves[target.ord].members` 的 guid 传进去（只排除这一波，别的波照旧算威胁）。
+
+**(16) r110 到底卡在哪（复盘数据，用于定下一个主攻方向）**
+- 60 组里 **43 组收尾时仍在战斗**（`combat>=1`），只有 11 组是"闲着"；`alive=5/5`、`deaths=0` 的组很多
+  ⇒ 不是灭团，是**打不动/推不动**。
+- `[DUNGEONROUTE] … 跳过 ord=N（wave stuck: no progress）` **824 次**，ord 从 1 一直散到 20+；
+  各图最好的组清波进度：547 `14/44`、552 `7/25`、540 `11/42`、546 `6/48`、545 `4/30`、542 `3/49`、
+  553 `2/39`、543 `2/17`、557 `8/34`。
+- `[UNREACH]`（走不到目标）108 次，`dist` 中位数 42 码，但 **27% 在 5 码以内** ⇒ 有一类"看得见、走不过去"。
+- **555（暗影迷宫）是最硬的死锁**：5 组全部 `cleared=0/45`、`deaths=0`、`combat=0`、`alive=5/5`，45 分钟
+  一次战斗都没进；状态行形如 `act=emote tgt=-:0% dist=3 drive=1 ok=1 ord=18 pw=0`（坦克就站在拉怪位
+  3 码处、有目标、有驱动资格，就是不开怪）；该图整轮 `[PULLED]` 0 次、`[PULL]` 仅 9 条。
+  同图 r85 还有 1 杀 ⇒ 555 的"开不了怪"要先单独查。
+
+**(17) ⚠️ 崩溃：`RandomItemMgr` 的全局缓存被多线程 worker 并发写（2026-10-26，已修）**
+- 现象：r111 起服后约 1 分钟进程消失，`[SIM] online 8/8` 之后就没了 output，FIFO 写失败。
+- core 符号化（`MapUpdater::WorkerThread` 线程）：
+  `Map::Update → Player::UpdateAI → PlayerbotAI::UpdateAI → UpdateGearAction::Execute
+   → PlayerbotFactory::InitEquipment → RandomItemMgr::Query → std::_Rb_tree_insert_and_rebalance` SIGSEGV。
+- 根因：`randomItemCache` / `equipCache` 是**全局 std::map**，`Query()` 里用 `operator[]` 会插入；
+  而 `Map::Update` 是**多线程**跑的（每个 map 一个 worker）⇒ 并发插入把红黑树写坏。
+- 修法：两个 `Query()` 各加一把 `static std::mutex` + `std::scoped_lock`（只保护这两处缓存，不影响其它逻辑）。
+
+**(18) 安全点排除的效果（r111，前 7 分钟实测）**
+- 修前 r110：`[PULLED]` 45 次 / 45 分钟（≈1 次/分）。
+- 修后 r111：`[PULLED]` **150 次 / 7 分钟**（≈21 次/分），`挪到最近的安全点` 只有 30 次
+  ⇒ 坦克不再被"自己待拉的那一波"反复顶开，开怪节奏恢复。
+- 仍有 `附近没有安全拉怪点`（7 分钟 661 条）：`target.ord` 为空时（**boss 阶段**、或动态刷位怪）
+  排除集合是空的 ⇒ 待拉的那只自己又被算成威胁。下一步把 `target.guid` 本身也加进排除集合。
+
+**(19) ✅【核心已修】卡闪避永远不脱战 ⇒ 永久僵持（2026-10-26）**
+- 现象：整组“在战斗”但 20+ 分钟零推进/零死亡/零伤害；`driver=(-)`（坦克永远 `IsInCombat` ⇒ `ShouldDrive` 恒假）。
+- 现场：`[STALEFIGHT] 目标=Shirrak(18371) hp=100% d=0 vic=坦克 reach=1` 持续 210 秒；`[GHOSTCOMBAT]` 108 条
+  （整组在战斗、**零攻击者**，宠物 0 条在战斗 ⇒ 排除宠物）。
+- 根因（`Unit::EvadeTimerExpired()`）：原逻辑只有“仇恨列表只剩 1 个目标”才 `EnterEvadeMode()`；
+  **多个目标时仅 `SetTargetSuppressed(GetVictim())`** —— 每 10 秒压一个、永远不脱战、之后谁都不打，
+  但 `IsInCombat` 一直挂着。`EVADE_COMBAT` 这个枚举其实**从未被设置**，所以“副本里卡闪避”没有任何超时。
+- 最终语义（站长定稿，按 WOW 原义）：脱战判据不是“仇恨目标数量”，而是**这只怪是否还拥有“可达+可攻击”的目标**：
+  ① 当前目标可达可攻击 ⇒ `StopEvade()`，正常战斗；
+  ② 当前目标不可达但不是“全部” ⇒ 在仇恨列表里找**能完整寻路到**的玩家（`PATHFIND_NORMAL/SHORTCUT`，
+  `INCOMPLETE` 不算）并切换过去继续打；
+  ③ 全部不可达且 `EvadeTimer`（10 s）到期 ⇒ `EnterEvadeMode()`：清仇恨 + 回位 + **回满血**（boss 同样 reset）；
+  ④ 玩家侧 `IsInCombat` 清掉是③的**派生结果**，不做“只清玩家战斗”的绕过。
+  仅对非玩家控制单位生效（玩家/宠物/召唤物不动）。日志 `[EVADEFIX]` 区分“切换目标 / EnterEvadeMode”。
+- 位置：`Unit::EvadeTimerExpired()`（`src/game/Entities/Unit.cpp`），是核心改动 ⇒ 云端上线必须走本地验证过的二进制。
+
+**(23) 仇恨门与优先级：`priority=6` 取代独立豁免表（2026-10-26 站长口径）**
+- `ai_playerbot_priority_target.priority` 的新语义：
+  - **6 = 必须立刻打，且不受“等坦克仇恨”门限制**（原 `ai_playerbot_dps_exempt` 表并入这一档；
+    典型：禁魔监狱 554 `Protean Spawn 21395/21609`，等坦克仇恨会被分裂淹掉）；
+  - **5 = 最高击杀优先级，但仇恨门照旧**（MT 先拉、DPS 再打）——`AttackAction::IsWaitingForTankThreat()`
+    里原来 `ThreatTier>=5` 的豁免已删除，改为 `>=6`；
+  - 3/2/1/4 语义不变（见 `PossibleAttackTargetsValue::ThreatTier()` 顶部注释）。
+- 代码：`PossibleAttackTargetsValue::ThreatTier()` 增 `case 6`（不降级）；`AttackAction::IsWaitingForTankThreat()`
+  用 `ThreatTier>=6` 放行并打 `[PRIO6]`；`playerbot/DpsExempt.h` 与 `ai_playerbot_dps_exempt` 表已删除（本地+云端）。
+- “怪正在打队友”不靠豁免 DPS，而是**坦克去拉**：`DungeonRouteActions → DungeonTankTauntAction`
+  会挑仇恨缺口最大的怪，嘲讽(355/6795)/正义防御(31789 对队友)/审判，然后走近 + `Attack`，
+  日志 `[TANKOT] … 抓 OT/接战`；坦克建立仇恨后 DPS 自然过门。
+
+**(24) 本地 ⇄ 云端 playerbot 库同步（2026-10-26）**
+- 备份：云端 `/root/db_backup_ai_playerbot_20261026_222726.sql`(41M) + `/root/db_backup_deprecated_20261026_222726.sql`(30M)；
+  本地 `_agent_tmp/db_backup_local_20261026_222758.sql`(139.6M，51 表 158.6 万行)。
+- 方向：`LOCAL_WINS`（route/stage/route_link/cover_spot/map_path/nav_block/pull_*/cc_creature/skip_entry/
+  threat_rule/avoid_spell/boss_require/unreachable/lift_obs/patrol/decision_weight/priority_target/boss_spawn/
+  boss_switch/boss_arena/dps_exempt）本地覆盖云端；`UNION`（boss_position / boss_ability）两边并集、同键本地优先；
+  `custom_strategy` 按 boss 名**整段用本地版**（站长裁定 Vorpil 18732 用本地、Ikiss 18473 的 40425-flee 保留）；
+  `SKIP`：`pull_log`（运行时）、`jump_obs`（本地 712k 离线产物）。
+- 废弃：云端 DROP `ai_playerbot_wave_anchor`（1272 行，代码已不再查询）+ 3 张 weightscale 备份表；
+  非 playerbot 的 `*_bak*`（item/locale/conditions 等）不在本次范围，保留。
+- 云端差异行保留：`priority_target` 138（含云端 guide 自动生成的 5 个 entry）、`boss_spawn` 234（含 542/543 的 4 个云端刷点）。
+
+**(25) ✅【核心已修】纯机器人队伍里"怪根本不更新" ⇒ 幽灵战斗的总根因（2026-10-27）**
+- 现象：dungeon 里整组"在战斗"但零推进、零死亡、零伤害；`[GHOSTCOMBAT]` 600s/5 图 **105 条**
+  （47% 是"被控且无 victim"、41% 是"有仇恨无 victim"）。目标怪 200~500 秒**没有 victim、不还手**、
+  `hp` 只在掉不掉血（玩家打它），`[EVADEFIX]` 却**全部发生在 map=0 的野外小动物身上**。
+- 排查：临时在 `Unit::SelectHostileTarget()` 里加 `[SHT-NOVIC]`（战斗+有威胁/攻击者+无 victim 时按分支打）。
+  结果：**副本里的目标怪一条都没有** ⇒ 不是被某个 if 挡住，而是这个函数**根本没被调用**。
+- 根因：`Map::Update()` 的 playerbots 优化（`ENABLE_PLAYERBOTS`）：
+  `if (!disableBotOptimizations && !player->isRealPlayer()) continue;` ——
+  **纯机器人队伍（仿真/挂机队）不 visit 网格**，只有 `isActiveObject()` 的怪才进 `m_activeNonPlayers` 被 Update。
+  地牢怪 `ExtraFlags=0`（`creature_template` 实测 18371/18472/18473/17491… 全是 0）⇒ 它们永远不 Update：
+  ① 不选目标、不还手；② 不脱战（威胁引用把整队钉住，坦克 `ShouldDrive()` 恒假）；③
+  **被控（恐惧/变形/缠绕）的光环计时永不推进** ⇒ 日志里"CC 锁 300~500 秒"的真相；④ 不主动仇恨（必须 bot 先打它）。
+- 修复（三层）：
+  1. **核心**：`Unit::SetInCombatState()` 的 creature 分支 —— 进战斗若还不是 active 就 `SetActiveObjectState(true)`
+     并记 `m_combatActivated`；`Unit::ClearInCombat()` 只撤销"这一次"（静态 ACTIVE / forceload / 脚本设的 active 不动）。
+     这样**任何**战斗中的怪每 tick 都有 AI（不依赖附近有没有真人）。
+  2. **仿真配置**：`AiPlayerbot.DisableBotOptimizations = 1`（已写进 `/root/start_server.sh` 的 `set_key`）。
+     不开这一条，怪连"靠近仇恨/巡逻/读条"都没有 —— 只靠第 1 条只能修"已经打起来的怪"。
+  3. **兜底**：`CombatManager::Update()` —— 在战斗、`thr>0`、**30 秒没有 victim**、非图腾/非玩家控制 ⇒
+     `EnterEvadeMode()`（日志 `[GHOSTRESET]`）；`DungeonRoute.h::ShouldDrive()` 加 `GroupUnderAttack()` +
+     10 秒确认窗口：只剩战斗标记（没有 victim、队伍/宠物都没被怪打）时不再挡住路线推进。
+- 验证（`--no-cheats --boss 1 --equip-best 1`）：
+  - r132（只开 `DisableBotOptimizations=1`、未编译修复）547/3 组/240s：**5 死**、`[STALEFIGHT]` 出现
+    `vic=坦克 reach=1 victimTank=1`、`[GHOSTCOMBAT]` 0 ⇒ 根因确认。
+  - r133（修复后，5 图×5 组 600s）：`[GHOSTCOMBAT]` **105 → 2**；`[EVADEFIX]` 337 次开始出现在副本里；
+    `[DEATHCTX]` 63（bot 第一次真的挨打）；`[GHOSTRESET]` 37（都是被控散怪，图腾已排除）。
+  - r135（修复后**全量** 12 图×5 组 900s）：`[GHOSTCOMBAT]` **284 → 11**（−96%）、`[DEATHCTX]` 119、
+    `[EVADEFIX]` 161（副本内）、boss 4/40、3 次灭团、拦截出本 448 → 28。
+    说明：修复后 boss/小怪会真的出招，**"boss 打不掉/灭团"重新成为主要矛盾**，这是新基线而不是回退。
+  - r136（代码/SQL 整合后冒烟，547×2 组 180s）：无 `[ROUTEQ]`/`[SNT]`/`[HREF]`、无崩溃、怪正常还手
+    （`victimTank=1`、`[EVADEFIX]` 16），波次 4/44。
+- ⚠️ **口径修正（重要）**：r92~r131 的"副本战斗"数据是在**怪站着不还手**的前提下测的 ——
+  死亡/仇恨/TPS/HPS/威胁门/技能那几类结论**全部作废、需要在新基线上重测**；
+  位移/路线/拉怪位/寻路/卡视野类结论（不依赖怪出招）不受影响。
+  以后每轮先确认日志里**副本内**有 `[EVADEFIX]` 与 `[DEATHCTX] attackers>0`，否则这一轮战斗数据无效。
+
+**(26) 历史提交 / 台账审计：哪些结论被 (25) 推翻（2026-10-27）**
+> 原则：**不重写历史**，只标注"哪一段证据无效、哪一段仍然有效"。核对方式：看该提交/台账条目是否依赖
+> "怪会出招"（选目标/平砍/施法/仇恨/死亡/CC），依赖即作废。
+- **仍然有效**（不依赖怪出招）：`4a901b4af`（Formation 空路径崩溃）、`87357d62c`/`e793b3c31`/`4ca660c83`/`cd574a8f8`
+  （mmap/寻路/网格）、`ff83b406e`（寻路工具手册）、`d97bbe8b7`（自动门重生计时）、
+  以及本章 (1)~(15) 里的**安全拉怪点/越界兜底/拉回/卡视野/拉怪位/离线代价**等路线类内容。
+- **战斗类结论作废、待新基线重测**：
+  - 子模块提交 `3ccf18cb`、`c8aa9427`、`0277cbaf`、`8bff15cf`、`7ef806d3` 里的
+    "战斗权重/仇恨门/优先级/死亡原因/输出治疗"相关结论；
+  - 父仓库 `147db0548`、`a5b1f6905` 的文档/数据里引用过"r92~r131 战斗数据"的部分；
+  - 本文件旧条目：**(19) 卡闪避** 的现象描述（"整组零伤害/零推进"）有 (25) 的成分、**(23) 仇恨门** 的
+    效果数据、以及 `_agent_tmp/tune/ISSUES.md` 的 A1（全队零伤害）/A7（hold fire 计数）/A8（552 死因）/
+    A11（Protean 死因）——这些**代码修复本身可以留**（防御性），但"因果/收益"必须重测。
+- 复测入口：`_agent_tmp/tune/run_r133.sh`（新基线，5 图×5 组 600s），验收口径仍按站长：
+  **只看 boss 能不能清掉**，波次/跳过只作进度统计。
+- 本次整合提交（仅本地，未 push）：父仓库 `feat(bot): 幽灵战斗修复 + 副本推进调优整合`（本次提交）、
+  子模块 `81d2c35c`（playerbots 调优 + 诊断清理）。squash 前的中间提交已并入，不再单列。
+
+**(27) SQL 整合：24 张调优表收成一份数据快照（2026-10-27）**
+- 新文件 **`dev/230_机器人调优数据_20261027.sql`**（~120 KB）= 下列 24 张表的**最终状态**（结构 + REPLACE 数据）：
+  `avoid_mob`、`avoid_spell`、`boss_ability`、`boss_arena`、`boss_position`、`boss_require`、`boss_spawn`、
+  `boss_switch`、`boss_strategy`、`cc_creature`、`custom_strategy`、`decision_weight`、`dungeon_stage`、
+  `mob_count_weight`、`priority_target`、`pull_first`、`pull_wait`、`pullback`、`route_link`、`skip_entry`、
+  `unreachable`、`weightscale_caps`、`weightscale_data`、`weightscales`。
+- **为什么用"库快照"而不是拼原文件**：这批补丁大量用 `DELETE ... WHERE map=X` + `INSERT` 互相覆盖，
+  而且 `priority_target` / `boss_spawn` 等表还混着 194/195 的数据 ⇒ 直接拼接无法还原最终状态
+  （实测 `dungeon_stage` / `priority_target` / `boss_spawn` / `pullback` / `skip_entry` 都对不上）。
+  从本地 world 库导出最终状态最可靠，也顺手消除了 216 那种 `INSERT ... SELECT FROM creature` 对 world 表的依赖。
+- **已删除的源文件**（内容全部在 230 里，git 历史仍可查）：
+  `184`、`187`、`188`、`189`、`191`、`192`、`193`、`194`、`195`、`201`、`204`~`222`、`227`、`229`
+  （`217_清理_常驻自动门残留重生计时.sql` 是 GO 清理，**保留**）。
+- **保留的独立数据集**：`182/183/185`（路线/巡逻/锚点，2 MB+）、`223/224`（拉怪代价/顺序）、
+  `228`（卡视野点结构）、`180/181`（台词）、`186/199`（观测与拉怪日志结构）、`190`（升降台观测结构）、
+  `203`（easy_waves，写 `dungeon_route`）、`196/197/198`（非调优数据 / 迁移脚本）。
+- **验证**：scratch 库 `bot_sql_test` 导入全库结构后**连续执行两次**：`exit=0`、47 张表 CHECKSUM 稳定；
+  再与线上库逐表 `mysqldump` 文本对比，行数一致、**0 行差异**（CHECKSUM 的差异只是物理行序，不作为判据）。
+- **执行顺序**：先 `182/183/185` → `223/224/228` → **最后 `230`**（230 是覆盖式快照）。
+  运行时表（`pull_log`、`priority_obs`）和大表（`dungeon_route`、`patrol`、`cover_spot`、`nav_block`）不在 230 内。
+
+**实验记录（12 图 × 5 组，`--no-cheats --boss 1 --equip-best 1`）**
+
+| 轮次 | 改动 | 窗口 | 结论 |
+|---|---|---|---|
+| r92 | 基线（安全点修复前） | 24h（观测 22min） | 160/1821 波、20 死、`stand_override_hold` 322 |
+| r93 | + 安全点修复 | 600s | 557 出现 3 次 BOSSKILL、hold=0；555 仍 0（另因） |
+| r95 | + 威胁门 500 | 900s | 开拉/清波每分钟翻倍，死亡 13（r92 同期 6） |
+| r97/r99 | + `[OOB]`/兜底（含误救两版） | 600s | 兜底第一版 2 分钟误救 129 次；收紧后 3 次 |
+| r100 | + 拉回 + 552 skip | 2h | 进行中（552 死 1、540 12 死） |
+| r132 | 只开 `DisableBotOptimizations=1`（验证 (25) 根因） | 240s / 547×3 | 5 死、怪 `vic=坦克`、GHOSTCOMBAT 0 ⇒ 根因确认 |
+| r133 | + 战斗中的怪强制 active（(25) 核心修） | 600s / 5 图×5 | GHOSTCOMBAT 105→2、22 死、boss 2 个 ⇒ **新基线** |
+| r135 | (25) 修复后的**全量**（12 图×5 组） | 900s | 幽灵战斗 11（r128 同窗 284）、119 死、boss 4/40、3 灭团、拦截出本 28（r128 448） |
 
 ---
 
@@ -12189,3 +12472,59 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
 **教训**：任何 `#ifdef` 会改变**类布局**的宏，必须全工程统一（放顶层 `DEFINITIONS`，不要放模块 CMakeLists）。
 部署前除了 `errors=0`，还要做一次"跨 TU 类大小一致性"探针 —— 这次事故的 7 层阻塞链（见本章 §四）
 一直没暴露，正是因为旧二进制里测试框架被整体编译掉了。
+
+## [PlayerBots] 2026-10-27~28 水中寻路 / 阶段 link / 不可选中单位 / 546 波次重建
+
+**背景**：r135 之后 546/547 卡在水里、555 卡、557 偶发卡死/崩溃，boss 击杀极低。逐项定位与修复如下。
+
+### 1) 水中寻路：bot 和 creature 不是同一条移动管线
+- 上游 `MovementActions.cpp` 里"在水里就不生成寻路"（`generatePath=false`）⇒ 直线游，撞池壁/落差停住、也上不了岸；
+- creature 的 `ChaseMovementGenerator` 一直走核心 `PathFinder`（`NAV_GROUND|NAV_WATER`、两端都可游泳才走游泳捷径），所以怪在水里正常；
+- 修法：新增 `AllowWaterPathing()`——**副本/团本内**一律允许水中 mmap 寻路（野外保持旧行为，`AiPlayerbot.WaterPath=1` 可强制全局）。
+- 验证：546 坦克 z 从 `-4` 能上到 `34`（旋转楼梯→平台）；547 队伍不再被水隔开。
+
+### 2) stage `kind=link` 的两处 bug（547 跳点从未执行）
+- `DungeonRoute.h` 的 route_link 加载原来在 stage 匹配之后 ⇒ 匹配时 `route.links` 为空，每轮都报
+  `[STAGE] … kind=link 但 … 没有 route_link ⇒ 跳过`；已把加载提前到匹配之前。
+- 走跳点起点的目标点原来用 `out.pz = bot->GetPositionZ()`；bot 一旦在平台下层（水里），就会以水面高度朝
+  anchor 的 x/y 走，永远到不了 5 码起跳圈。改为用 `lk->sz`（link src 的真实高度）。
+- 数据：547 平台→水面 link 按现场 GPS 校正 `src=(-184.79,-351.07,55.94)`；另一条重复跳点删除；
+  stage4 改为“Rokmar 后直接正常寻路打 Quagmirran”。
+- 验证：r155/r161 里 5/5 组都出现 `[STAGE] … 用连接点 stage 2：从 (-184.8,-351.1) 跳到 (-174.1,-351.7,18.7)`，
+  并有组推进到 `stage 3 -> 4`（Rokmar 已死）。
+
+### 3) “不可选中/不可交互”的单位不该算波成员
+- `DungeonRoster` 原来只按“小动物 / NpcFlags”判非敌对，`Large AOI Underbat(18409)` 被当成敌对并进波次 ⇒ 波永远清不掉；
+- 改为看 `UnitFlags`：`UNTARGETABLE | UNINTERACTIBLE | NOT_ATTACKABLE_1` ⇒ 非敌对并从波成员剔除；
+- ⚠ 不能按 faction 判（`Wastewalker Slave/Worker` 是脚本入战的，必须保留），也不能单看 `IMMUNE_TO_PLAYER`
+  （555 的 Cabal Ritualist 阶段性免疫会被误剔，实测一次误剔 67 只）。
+
+### 4) 蘑菇（Underbog Mushroom 17990）按 8 码躲
+- Hungarfen `31692` 召蘑菇；蘑菇 `34168 Spore Cloud`，`SpellRadius.dbc` index 14 = **8 码**（不是默认仇恨圈 20+）；
+- `ai_playerbot_avoid_mob` 新增 `radius` 列（0=沿用仇恨圈），546/17990 配 8；
+- `DungeonRoute::MapRoute::avoidRadius` + `ThreatRingRadius()` 优先返回自定义半径；
+- 效果：546 蘑菇伤害 206 → 84（-59%），`[REPOS] 避 Underbog Mushroom` 从几十条降到 5 条。
+
+### 5) 546 波次重建（3D 聚类）
+- 原波次是 2D 聚类，把不同楼层的怪并进同一波（17/57 波 z 跨度 >10 码，例：1 个 Bog Giant + 3 只 z=15~20 的 Underbat + 1 Shambler）；
+- 重建脚本 `_agent_tmp/rebuild_546_waves.py`：3D 距离 ≤18 码、|Δz| ≤8、单波直径 ≤30；
+  **Bog Giant(17723) 单独成组**（它没有 spawn_group，是单体）；
+- 结果：57 波 → 86 波，z 跨度最大 6.1 码，巨人 9 组；`group_id=0` 的 Fen Ray/Lykul Wasp 原样保留；
+- 546 的 `pull_timing` 用 `dev/tools/pull_cost_offline.py --maps 546` 按新 ord 重算。
+
+### 6) 稳定性（本批一并修）
+- `antispammgr` 去掉全部 `std::regex`（GCC 编译 `[[:punct:]]` 卡死 40 分钟，栈在 `_M_insert_bracket_matcher` + `strxfrm_l`）；
+  改成线性过滤，行为等价；
+- 仿真模式禁用闲聊回复（`ChatReplyAction::ChatReplyDo` 在 `simMode` 直接返回）：`PlayerbotTextMgr` 并发/堆问题会卡死或崩溃；
+- 崩溃取证已配好：`core_pattern=/tmp/core.%e.%p` + `start_server.sh` 里 `ulimit -c unlimited`，崩溃后用
+  `/root/bin_history/mangosd_<full_md5>_full` 符号化。
+
+**结果（r161，546 × 5 组 × 45 分钟）**：波次最好 23/56（重建前 9~11）、死亡 105→60、灭团 23→12、蘑菇伤害 206→84；
+**547** 跳点 5/5 执行并击杀 Rokmar；`[LURKERDMG]` 2621 条证明 Underbog Lurker 打得掉（偶发卡住，不做特殊处理）。
+
+**数据**：`dev/231_20261028_546波次重建与link修正.sql`（546 波次 / 547 link+stage / avoid_mob.radius / 546 pull_timing）。
+
+**待办**：
+- 546 boss 仍 1/4（Hungarfen 可杀，Ghaz'an 未到）；
+- 557 偶发 SIGSEGV 未定位（已具备 core 抓取条件）；
+- 546 g=1 一组仍会在蝙蝠房被巡逻 Underbat 拖散（5 组中仅 1 组，属偶发）。

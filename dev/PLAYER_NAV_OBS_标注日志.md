@@ -73,7 +73,7 @@ tile 计算（与 mmap 文件名对齐）：`tile_x = 32 - floor(y/533.3333)`，
 
 工具：`dev/tools/gen_lift_links.py`（读 `_agent_tmp/elevator_spawns.tsv` + `TransportAnimation.dbc`），
 产出 `ai_playerbot_route_link(kind=1)` 的 SQL；已导出 48 个电梯/运输平台并写入本地库与
-`dev/189_副本导航_跳点与升降台.sql`。
+`dev/230_机器人调优数据_20261027.sql`（2026-10-27 起；原 `dev/189` 已并入）。
 
 实例：
 - 548 毒蛇神殿：`183490` → (-59.1,-98.8,-52.9) ↔ (-59.1,-98.8,7.2)（dz=60）；

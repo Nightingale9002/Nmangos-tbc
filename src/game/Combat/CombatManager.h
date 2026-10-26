@@ -45,6 +45,7 @@ class CombatManager
         bool IsEvadingHome() const { return m_evadeState == EVADE_HOME; }
         bool IsEvadeRegen() const { return (m_evadeTimer > 0 && m_evadeTimer <= 5000) || m_evadeState; } // Only regen after 5 seconds, or when in permanent evade
         void StartEvadeTimer() { m_evadeTimer = 10000; } // 10 seconds after which action is taken
+        uint32 GetEvadeTimer() const { return m_evadeTimer; }   // [2026-10-26 诊断] 剩余毫秒
         void StopEvade(); // Stops either timer or evade state
         EvadeState GetEvadeState() const { return m_evadeState; }
         void SetEvadeState(EvadeState state); // Propagated to pets
@@ -75,6 +76,8 @@ class CombatManager
         uint32 m_evadeTimer; // Used for evade during combat when mob is not running home and target isnt reachable
         EvadeState m_evadeState; // Used for evade during running home
         uint32 m_combatTick;
+        // [GHOST-FIX 2026-10-27] "在战斗但 30 秒都没有 victim"的累计时长（幽灵战斗兜底，见 Update）
+        uint32 m_noVictimMs;
 
         // combat timer handling
         uint32 m_combatTimer;

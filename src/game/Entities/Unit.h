@@ -2638,6 +2638,9 @@ class Unit : public WorldObject
 
         Unit* m_attacking;
 
+        // [BOT-UPDATE-FIX 2026-10-27] 这只怪是不是"因为进战斗才被我们设成 active"的（脱战时只撤销这一次）
+        bool m_combatActivated;
+
         DeathState m_deathState;
 
         SpellAuraHolderMap m_spellAuraHolders;

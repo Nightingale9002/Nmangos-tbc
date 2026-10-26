@@ -300,8 +300,26 @@ CanCastResult UnitAI::DoCastSpellIfCan(Unit* target, uint32 spellId, uint32 cast
 
 void UnitAI::AttackStart(Unit* who)
 {
-    if (!who || HasReactState(REACT_PASSIVE))
+    if (!who)
         return;
+
+    if (HasReactState(REACT_PASSIVE))
+    {
+        // [2026-10-26 站长口径] **被动怪不该持有威胁表**：
+        //   SelectHostileTarget() 已经把目标选出来了，但它不会出手（这里直接返回）⇒
+        //   它既不攻击也不脱战，而威胁表里的引用会让玩家侧 HostileRefManager 永远非空
+        //   ⇒ 玩家一辈子脱不了战（实测：怪 threat=7547、vic=-、cb=1，玩家被钉 10+ 分钟）。
+        //   清空后：玩家侧引用同步消失（clearReferences → unlink → removeHatedBy，双向），
+        //   而它自己没有目标，SelectHostileTarget 下一 tick 会走 evadeFunc() 正常回位/脱战。
+        if (m_unit->CanHaveThreatList() && !m_unit->getThreatManager().isThreatListEmpty())
+        {
+            sLog.outDetail("[PASSIVE-REFS] %s(%u) map=%u 被动状态且持有威胁表 ⇒ 清空引用，解除玩家侧战斗钉住",
+                m_unit->GetName(), m_unit->GetEntry(),
+                m_unit->GetMap() ? m_unit->GetMap()->GetId() : 0);
+            m_unit->getThreatManager().clearReferences();
+        }
+        return;
+    }
 
     bool targetChange = m_unit->GetVictim() != nullptr && m_unit->GetVictim() != who;
     if (m_unit->Attack(who, m_meleeEnabled))

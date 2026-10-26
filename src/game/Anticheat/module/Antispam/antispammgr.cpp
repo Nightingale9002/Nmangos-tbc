@@ -21,6 +21,7 @@
 #include <vector>
 #include <regex>
 #include <algorithm>
+#include <cctype>
 #include <memory>
 #include <unordered_set>
 #include <thread>
@@ -66,11 +67,30 @@ std::string AntispamMgr::NormalizeStringInternal(const std::string &string, uint
 
     if (mask & NF_CUT_COLOR)
     {
-        static const std::regex regex1("(\\|c\\w{8})");
-        static const std::regex regex2("(\\|H[\\w|\\W]{1,}\\|h)");
-        newMsg = std::regex_replace(newMsg, regex1, "");
+        // [2026-10-27] **不用 std::regex**：GCC 的 regex 编译 `[[:punct:]]` 这类字符类会走
+        //   locale/strxfrm 的极慢路径（r141 实测 world 线程卡死 40 分钟，栈顶就是
+        //   std::__detail::_Compiler::_M_insert_bracket_matcher + strxfrm_l）。
+        //   这里改成线性扫描，行为等价（去 |cXXXXXXXX / |H...|h）。
+        std::string out;
+        out.reserve(newMsg.size());
+        for (size_t i = 0; i < newMsg.size();)
+        {
+            if (newMsg.compare(i, 2, "|c") == 0 && i + 10 <= newMsg.size())
+            {
+                bool hex = true;
+                for (size_t k = i + 2; k < i + 10; ++k)
+                    if (!isxdigit((unsigned char)newMsg[k])) { hex = false; break; }
+                if (hex) { i += 10; continue; }
+            }
+            if (newMsg.compare(i, 2, "|H") == 0)
+            {
+                size_t const e = newMsg.find("|h", i + 2);
+                if (e != std::string::npos) { i = e + 2; continue; }
+            }
+            out += newMsg[i++];
+        }
+        newMsg.swap(out);
         ReplaceAll(newMsg, "|h|r", "");
-        newMsg = std::regex_replace(newMsg, regex2, "");
     }
 
     if (mask & NF_REPLACE_WORDS)
@@ -81,26 +101,26 @@ std::string AntispamMgr::NormalizeStringInternal(const std::string &string, uint
 
     if (mask & NF_CUT_CTRL)
     {
-        static const std::regex regex4("([[:cntrl:]]+)");
-        newMsg = std::regex_replace(newMsg, regex4, "");
+        newMsg.erase(std::remove_if(newMsg.begin(), newMsg.end(),
+            [](unsigned char c) { return c < 0x20 || c == 0x7F; }), newMsg.end());
     }
 
     if (mask & NF_CUT_PUNCT)
     {
-        static const std::regex regex5("([[:punct:]]+)");
-        newMsg = std::regex_replace(newMsg, regex5, "");
+        newMsg.erase(std::remove_if(newMsg.begin(), newMsg.end(),
+            [](unsigned char c) { return c < 0x80 && ispunct(c) != 0; }), newMsg.end());
     }
 
     if (mask & NF_CUT_SPACE)
     {
-        static const std::regex regex6("(\\s+|_)");
-        newMsg = std::regex_replace(newMsg, regex6, "");
+        newMsg.erase(std::remove_if(newMsg.begin(), newMsg.end(),
+            [](unsigned char c) { return c == '_' || (c < 0x80 && isspace(c) != 0); }), newMsg.end());
     }
 
     if (mask & NF_CUT_NUMBERS)
     {
-        static std::regex regex3("(\\d+)");
-        newMsg = std::regex_replace(newMsg, regex3, "");
+        newMsg.erase(std::remove_if(newMsg.begin(), newMsg.end(),
+            [](unsigned char c) { return c < 0x80 && isdigit(c) != 0; }), newMsg.end());
     }
 
     if (mask & NF_REPLACE_UNICODE)

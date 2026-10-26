@@ -116,6 +116,16 @@ void WaypointMovementGenerator<Creature>::InitializeWaypointPath(Creature& u, in
             i_currentNode = m_currentWaypointNode->first;
         }
     }
+    else
+    {
+        // [2026-10-25 崩溃修] startPoint < 0 时以前**不初始化** m_currentWaypointNode：
+        //   它可能还是默认构造/上一次的失效迭代器，下面"fixup last reached node"会拿它和 begin()
+        //   比较并 --，`SendNextWayPointPath` 再解引用 ⇒ SIGSEGV。
+        //   实测栈：Map::UnloadGrid → FormationData::OnDeath → SetMasterMovement →
+        //            InitializeWaypointPath → SendNextWayPointPath。
+        m_currentWaypointNode = i_path->begin();
+        i_currentNode = m_currentWaypointNode->first;
+    }
 
     // fixup last reached node
     if (m_currentWaypointNode != i_path->begin())
@@ -330,6 +340,13 @@ void WaypointMovementGenerator<Creature>::SendNextWayPointPath(Creature& creatur
 
     creature.addUnitState(UNIT_STAT_ROAMING_MOVE);
     m_speedChanged = false;
+
+    // [2026-10-25 崩溃修] 防御：路径不存在或当前节点失效 ⇒ 不再解引用（宁可原地不动）
+    if (!i_path || i_path->empty() || m_currentWaypointNode == i_path->end())
+    {
+        creature.clearUnitState(UNIT_STAT_ROAMING_MOVE);
+        return;
+    }
 
     WaypointNode const* nextNode = &m_currentWaypointNode->second;
 

@@ -21,10 +21,11 @@
 #include "Entities/Pet.h"
 #include "Maps/Map.h"
 #include "World/World.h"
+#include "Log/Log.h"
 
 #define COMBAT_MANAGER_TICK 1200
 
-CombatManager::CombatManager(Unit* owner) : m_owner(owner), m_evadeTimer(0), m_evadeState(EVADE_NONE), m_combatTick(COMBAT_MANAGER_TICK), m_combatTimer(0), m_lastLeashExtension(nullptr), m_leashingDisabled(false), m_leashingCheck(nullptr)
+CombatManager::CombatManager(Unit* owner) : m_owner(owner), m_evadeTimer(0), m_evadeState(EVADE_NONE), m_combatTick(COMBAT_MANAGER_TICK), m_noVictimMs(0), m_combatTimer(0), m_lastLeashExtension(nullptr), m_leashingDisabled(false), m_leashingCheck(nullptr)
 {
 
 }
@@ -48,6 +49,39 @@ void CombatManager::Update(const uint32 diff)
 {
     if (m_owner->IsInCombat())
     {
+        // [GHOST-FIX 2026-10-27] 幽灵战斗兜底：**在战斗、却 30 秒没有 victim** ⇒ 按 WOW 语义强制脱战
+        //   （清仇恨 + 回位 + 回血）。为什么必须有这一条：
+        //   `Unit::SelectHostileTarget()` 的两条"不能行动"分支（被控 CC / 战斗脚本状态）只 return、
+        //   不脱战，而威胁表里的引用会让**整队玩家永远处于战斗中**：坦克 `ShouldDrive()` 恒假 ⇒ 路线不推进；
+        //   实测（r128 12 图 / r130 5 图）幽灵战斗里 ~56% 是"有仇恨、无 victim"，~26% 是"被控锁住、无 victim"。
+        //   为什么判据是"没有 victim"而不是"没有仇恨"：正常被控 / 剧情阶段都会保留 victim，
+        //   只有"从来没接上"或"目标全丢"才会没有 victim —— 这正是幽灵战斗的形态（有 victim 的战斗一律不碰）。
+        //   重置同时会跑 AI()->Reset()（CreatureAI::EnterEvadeMode），顺带清掉卡住的战斗脚本状态。
+        if (m_owner->IsCreature() && !m_owner->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED) &&
+            !m_owner->HasCharmer() && !m_owner->GetVictim() && m_owner->CanHaveThreatList() &&
+            !static_cast<Creature*>(m_owner)->IsTotem() &&
+            m_owner->AI() && !m_owner->getThreatManager().isThreatListEmpty())
+        {
+            m_noVictimMs += diff;
+            if (m_noVictimMs >= 30000)
+            {
+                m_noVictimMs = 0;
+                sLog.outError("[GHOSTRESET] %s(%u) map=%u 在战斗但 30 秒没有 victim（thr=%u atk=%u cane=%d "
+                              "restricted=%d script=%d cc=%d hp=%.0f%%）⇒ EnterEvadeMode 解除幽灵战斗",
+                    m_owner->GetName(), m_owner->GetEntry(), m_owner->GetMap() ? m_owner->GetMap()->GetId() : 0,
+                    uint32(m_owner->getThreatManager().getThreatList().size()),
+                    uint32(m_owner->getAttackers().size()),
+                    m_owner->AI()->CanExecuteCombatAction() ? 1 : 0,
+                    m_owner->AI()->IsTargetingRestricted() ? 1 : 0,
+                    m_owner->AI()->GetCombatScriptStatus() ? 1 : 0,
+                    m_owner->IsCrowdControlled() ? 1 : 0,
+                    m_owner->GetHealthPercent());
+                m_owner->AI()->EnterEvadeMode();
+            }
+        }
+        else
+            m_noVictimMs = 0;
+
         if (m_evadeTimer)
         {
             if (m_evadeTimer <= diff)

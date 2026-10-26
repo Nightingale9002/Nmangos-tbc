@@ -399,6 +399,7 @@ Unit::Unit() :
         m_createResistance = 0;
 
     m_attacking = nullptr;
+    m_combatActivated = false;
     m_modWeaponHitChance[BASE_ATTACK] = 0.0f;
     m_modWeaponHitChance[OFF_ATTACK] = 0.0f;
     m_modWeaponHitChance[RANGED_ATTACK] = 0.0f;
@@ -684,6 +685,69 @@ void Unit::EvadeTimerExpired()
     // Can happen for any unit with an AI
     if (!AI())
         return;
+
+    // [2026-10-26 站长口径·定稿] 脱战判据不是"仇恨列表里有几个目标"，而是：
+    //   **这只怪是否还拥有"可达 + 可攻击"的目标**。语义与 WOW 一致：
+    //     ① 当前目标可达可攻击 ⇒ 正常战斗（停掉 evade 计时），什么都不做；
+    //     ② 当前目标不可达/不可攻击，但仇恨列表里还有别的**能完整寻路到**的玩家 ⇒ 切换目标继续打；
+    //     ③ 所有仇恨目标都不可达/不可攻击 ⇒ 此时（EvadeTimer 已到期）才 EnterEvadeMode()：
+    //        清仇恨 + 回位 + 回血（boss 同样 reset —— 这是 WOW 行为，不做"只清玩家战斗"的绕过）。
+    //   注意：玩家侧 IsInCombat 是③的派生结果，不在这里手动清。
+    //   只对**非玩家控制**单位生效（玩家/宠物/召唤物不动）。
+    if (GetTypeId() == TYPEID_UNIT && !HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED))
+    {
+        // ① 当前目标还能打？
+        Unit* victim = GetVictim();
+        bool victimOk = false;
+        if (victim && victim->IsAlive() && CanAttack(victim))
+        {
+            bool const motionReachable = GetMotionMaster() && GetMotionMaster()->GetCurrent() &&
+                GetMotionMaster()->GetCurrent()->IsReachable();
+            if (motionReachable)
+                victimOk = true;
+        }
+        if (victimOk)
+        {
+            GetCombatManager().StopEvade();      // 又打得着了：恢复正常战斗
+            return;
+        }
+
+        // ② 找一个"能完整寻路走到"的仇恨目标（每 10 秒一次慢回调，寻路开销可接受）
+        Unit* alt = nullptr;
+        for (auto const& ref : getThreatManager().getThreatList())
+        {
+            Unit* t = ref->getTarget();
+            if (!t || t == victim || !t->IsAlive() || !t->IsInWorld() || !CanAttack(t))
+                continue;
+            PathFinder pf(this);
+            pf.calculate(t->GetPositionX(), t->GetPositionY(), t->GetPositionZ());
+            PathType const pt = pf.getPathType();
+            // 只认"完整路径"（NORMAL/SHORTCUT）；INCOMPLETE 只是靠近，不算能打到
+            if (pt == PATHFIND_NORMAL || pt == PATHFIND_SHORTCUT)
+            {
+                alt = t;
+                break;
+            }
+        }
+        if (alt)
+        {
+            sLog.outError("[EVADEFIX] entry=%u map=%u 当前目标不可达 ⇒ 切换目标 %s(entry=%u) 继续战斗",
+                GetEntry(), GetMap() ? GetMap()->GetId() : 0, alt->GetName(),
+                alt->GetTypeId() == TYPEID_UNIT ? alt->GetEntry() : 0);
+            if (victim)
+                getThreatManager().SetTargetSuppressed(victim);   // 旧目标暂时压掉（不是脱战）
+            AI()->AttackStart(alt);
+            return;
+        }
+
+        // ③ 一个都够不着（EvadeTimer 已到期）⇒ WOW 语义：清仇恨 + 回位 + 回血
+        sLog.outError("[EVADEFIX] entry=%u map=%u pos=(%.1f,%.1f,%.1f) 所有仇恨目标都不可达/不可攻击 ⇒ "
+                      "EnterEvadeMode（清仇恨/回位/回血）",
+            GetEntry(), GetMap() ? GetMap()->GetId() : 0,
+            GetPositionX(), GetPositionY(), GetPositionZ());
+        AI()->EnterEvadeMode();
+        return;
+    }
 
     // When there is no target to switch to, leave combat
     if (getThreatManager().getThreatList().size() == 1)
@@ -1040,6 +1104,29 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
     // [rewards 2026-10-19] 非坦克受伤：受害者是 bot 玩家 ⇒ 累计承伤（离线与坦克一起扣分）
     if (victim->GetTypeId() == TYPEID_PLAYER && !static_cast<Player*>(victim)->isRealPlayer())
         static_cast<Player*>(victim)->botDamageTaken += damage;
+
+    // [2026-10-24 站长口径] 死亡原因必须可查：bot 被打死时记录"最后一击"的来源
+    if (victim->GetTypeId() == TYPEID_PLAYER && !static_cast<Player*>(victim)->isRealPlayer() &&
+        damage > 0 && damage >= victim->GetHealth())
+    {
+        sLog.outError("[DEATHDMG] map=%u inst=%u victim=%s dealer=%s(%u) spell=%u dmg=%u type=%d",
+            victim->GetMapId(), victim->GetInstanceId(),
+            victim->GetName(),
+            dealer ? dealer->GetName() : "none",
+            dealer ? dealer->GetEntry() : 0,
+            spellInfo ? spellInfo->Id : 0,
+            damage, int(damagetype));
+    }
+
+    // [2026-10-28 诊断] 546 Underbog Lurker 卡战斗取证：
+    //   STALEFIGHT 里它 hp=99%/hpu=510s，需要确认是"没人打它"还是"打了没效果"。
+    if (victim->GetTypeId() == TYPEID_UNIT && victim->GetEntry() == 17725 && damage > 0)
+    {
+        sLog.outError("[LURKERDMG] map=%u inst=%u attacker=%s(%u) dmg=%u hp=%.0f%% spell=%u",
+            victim->GetMapId(), victim->GetInstanceId(),
+            dealer ? dealer->GetName() : "none", dealer ? dealer->GetEntry() : 0,
+            damage, victim->GetHealthPercent(), spellInfo ? spellInfo->Id : 0);
+    }
 
     // [rewards 2026-10-19] DPS 打醒控制：bot 对处于控场（眩晕/恐惧/迷惑/定身等）的生物造成伤害
     if (dealer && dealer->IsPlayer() && !static_cast<Player*>(dealer)->isRealPlayer() &&
@@ -8624,6 +8711,20 @@ void Unit::SetInCombatState(bool PvP, Unit* enemy)
     {
         Creature* creature = static_cast<Creature*>(this);
 
+        // [BOT-UPDATE-FIX 2026-10-27] **在战斗中的怪必须每 tick 更新**。
+        //   核心的 playerbots 优化（Map::Update，ENABLE_PLAYERBOTS）只在**真人玩家**附近 visit 网格，
+        //   纯机器人队伍（副本仿真 / 挂机队）附近非 active 的怪根本不会 Update ⇒ 没有 AI tick：
+        //     ① 不选目标、不还手（[GHOSTCOMBAT] r128/r131：boss thr=4 却 200+ 秒没有 victim、零攻击者）；
+        //     ② 被控（恐惧/变形/缠绕）的法术计时永不推进 ⇒ "CC 锁 300~500 秒"；
+        //     ③ 不脱战（威胁引用把整队钉在战斗里，坦克 ShouldDrive 恒假、路线不推进）。
+        //   这里进战斗就设 active，脱战在 ClearInCombat 撤销（只撤销我们自己设的那一次，
+        //   静态 ACTIVE / forceload / 脚本自己设的 active 不动）。
+        if (!isActiveObject())
+        {
+            SetActiveObjectState(true);
+            m_combatActivated = true;
+        }
+
         m_damageByOthers = 0;
 
         // clear stand state if set in addon - else script has to do it on its own
@@ -8694,6 +8795,16 @@ void Unit::ClearInCombat()
 {
     RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IN_COMBAT);
     RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PET_IN_COMBAT);
+
+    // [BOT-UPDATE-FIX 2026-10-27] 脱战：撤销"进战斗时临时设的 active"。
+    //   注意顺序：EnterEvadeMode() 里 CombatStop → ClearInCombat 之后才 MoveTargetedHome，
+    //   而 HomeMovementGenerator 会自己 SetActiveObjectState(true) 一路走回去，不影响回位。
+    if (m_combatActivated)
+    {
+        m_combatActivated = false;
+        if (GetTypeId() == TYPEID_UNIT && IsInWorld())
+            SetActiveObjectState(false);
+    }
 
     if (GetTypeId() == TYPEID_PLAYER)
         static_cast<Player*>(this)->pvpInfo.inPvPCombat = false;
@@ -9523,7 +9634,18 @@ bool Unit::SelectHostileTarget()
         for (auto m_attacker : m_attackers)
         {
             if (m_attacker->IsInMap(this) && CanAttack(m_attacker) && m_attacker->isInAccessablePlaceFor(this))
+            {
+                // [2026-10-26 站长口径·核心修] 这里原来是**无条件 return false**：
+                //   "有攻击者、但对方没造成伤害（所以没有仇恨记录）" ⇒ 本意只是**不要立刻脱战**
+                //   （例如宠物被命令攻击很远的目标）。问题是它**永远不脱战**：
+                //   攻击者只要站在"可访问位置"就一直成立 ⇒ 怪 IsInCombat + 没有 victim + 永不 evade，
+                //   队伍侧就表现为"整组在战斗、零攻击者、零推进"（[GHOSTCOMBAT] 实测 200+ 条）。
+                //   现在：仍然不立刻脱战，但**启动 EvadeTimer**；计时到期仍没有有效目标
+                //   ⇒ EvadeTimerExpired() 里按 WOW 语义脱战回位。
+                if (!GetCombatManager().IsInEvadeMode())
+                    GetCombatManager().StartEvadeTimer();
                 return false;
+            }
         }
     }
 
