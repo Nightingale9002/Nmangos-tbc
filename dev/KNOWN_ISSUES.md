@@ -12528,3 +12528,117 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
 - 546 boss 仍 1/4（Hungarfen 可杀，Ghaz'an 未到）；
 - 557 偶发 SIGSEGV 未定位（已具备 core 抓取条件）；
 - 546 g=1 一组仍会在蝙蝠房被巡逻 Underbat 拖散（5 组中仅 1 组，属偶发）。
+
+---
+
+## [PlayerBots] 2026-10-29 DPS 技能释放状态机（17 专精）+ 训练假人 DPS 场景 + 离线调优
+
+**背景（站长口径）**：DPS 不做"优先级循环表"，改成**有限状态机**；每个专精把**最高等级技能**和**饰品**都放进去；
+每次测 2 分钟、做 1 目标 / 5 目标两种场景；状态机要把**自己的血量和资源、目标血量、技能释放状态**都当转移条件；
+"自动射击时间"本身是猎人的一个重要状态；最后要能**离线自动调优**（脚本改参数 → 跑假人 → 按 DPS 择优）。
+
+### 1) 代码结构
+
+| 位置 | 作用 |
+|---|---|
+| `strategy/DpsFsm.h` → `State` / `Spec` / `Snapshot` | 状态枚举、专精枚举、一次 tick 的局面快照 |
+| `strategy/DpsFsm.cpp` → `dpsfsm::Tick()` | 唯一入口：拍快照 → 判专精 → 分派到职业 handler |
+| `DpsFsm.cpp` → `TickMage`/`TickWarrior`/`TickRogue`/`TickHunter`/`TickWarlock`/`TickShaman`/`TickDruid`/`TickPaladin`/`TickPriest` | 9 个职业 / 17 个专精的状态机 |
+| `PlayerbotAI::UpdateAIInternal` → `dpsfsm::Tick(this)` | 在 `DoNextAction()` **之前**接管本 GCD 的施法（走位/打断仍归原引擎） |
+| `PlayerbotAIConfig` → `dpsFsm` / `dpsFsmTuneFile` | 开关 `AiPlayerbot.DpsFsm`、调优参数文件 `AiPlayerbot.DpsFsmTuneFile` |
+
+**状态**：`Idle / Approach / Burn / Instant / Burst / Aoe / Weave / Recover`。
+- `Weave` 猎人专用：**自动射击还剩多少毫秒**（`Unit::getAttackTimer(RANGED_ATTACK)`）不足以读完稳固射击时就等，
+  否则会顶掉那一发自动射击（净亏伤害）；`weave_margin` 就是这个余量的可调参数。
+- `Snapshot` 的转移条件是"血量 / 资源 / 目标血量 / 施法状态"这一组：
+  `selfHp`、`power`（法力 %；怒气/能量折算 %，另存原始值）、`combo`、`targetHp`、`dist`、`moving`、
+  `casting`（`IsNonMeleeSpellCasted`）、`gcd`（`HasGCD`）、`pack10/pack30`（近身 / 30 码内敌人数）。
+- `Ready()` 走 `Unit::IsSpellReady()`：**一次覆盖**技能冷却 + 分类冷却 + 公共冷却 + 沉默封锁，不另起一套判断。
+- 所有施法都经 `TryCast()`（先 `Ready()` 再 `CastSpell(最高 rank id)`），所以不会抢 GCD、不会打断自己的读条。
+
+### 2) 三个关键判定
+
+1. **技能 id 一定顶到最高 rank**：`SpellId()` 先取引擎的 `"spell id"` 值（省蓝等级 > 1 时它给的是**最低** rank），
+   再沿 `sSpellMgr.GetNextSpellInChain()` 往上爬，只取 `bot->HasSpell()` 的最后一档。
+2. **专精判定（顺序）**：①**只开了一个专精策略 ⇒ 就是它**（假人场景会强制成唯一一个，避免"holy 天赋的圣骑士"被判成治疗而整场不放技能）；
+   ②天赋标志技能（`combustion/cold snap/presence of mind`、`bloodthirst/mortal strike/shield slam`…）；
+   ③开着的第一个专精策略；④职业默认单体循环兜底。判定结果**每 5 秒重算**（外部改策略立刻生效）。
+3. **仇恨门不能因为状态机被绕过**：`AttackAction::IsWaitingForTankThreat()` 抽成可复用静态入口
+   `AttackAction::WaitingForTankThreat(ai, bot, target)`（**同一份实现，不复制判断**），`Tick()` 里先问它；
+   门说"先别打"就把这个 GCD 交回引擎。坦/奶不进 DPS 状态机（`IsHeal`/`IsTank` 门；假人场景用 `SetBotForceDps` 临时豁免）。
+
+### 3) 饰品
+
+`Burst` 状态第一件事是 `DoSpecificAction("use trinket")`（复用 `UseTrinketAction`：它自己挑"已装备 + 使用型 + 可用"的饰品），
+30 秒内不重复尝试；用完饰品那个 GCD 直接返回，不再叠别的技能。
+
+### 4) 训练假人 DPS 场景（`.rndbot sim dummy`）
+
+```
+.rndbot sim dummy <spec> [targets=1] [seconds=120] [botGuid=0] [fsm=1]
+spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/destro/enhance/elemental/feral/balance/ret/shadow
+```
+- GM 岛（map 1）3 个测点横排（±12 码）；假人 `190014` 围 2 码一圈；召唤时**强制 100 万血 + faction 14**
+  （`dev/197` 的 SQL 血量与实际库不一致，实测只有几千 ⇒ 2 分钟就打死了）。
+- 站位由场景决定：**近战 3 码、远程 18 码**（猎人有 8 码死角），不指望 bot 自己走过去。
+- 报告：`[DUMMY] id= spec= bot= guid= targets= dur= result= fsm= incombat= victim= total= dps= casts= melee= top=`
+  （`incombat=0` / `total=0` = **无效样本**，调优脚本会丢弃；`top` 是**累计**施法次数，不是本轮增量）。
+- 增量口径：伤害/施法/平砍都取"假人就位之后"的增量（`botDamageDealt / botPetDamageDealt / botMeleeHits / botCasts`）。
+
+### 5) 离线调优（参数热加载）
+
+- 参数文件 `/root/run_local/dpsfsm_tune.conf`（`AiPlayerbot.DpsFsmTuneFile`），格式 `<scope>:<key>=<value>`，
+  `scope` = 专精名或 `*`；服务端每 5 秒看一次 mtime ⇒ **改文件即生效，不重编译不重启**。
+- 可调：`aoe_pack`（几目标进群伤）、`aoe_range`、`burst_hp`（目标血量 ≤ 多少进爆发）、`weave_margin`（猎人读条余量 ms）、`recover_power`。
+- 脚本：`_agent_tmp/tune/dps_tune2.py`（并发坐标下降：3 个专精并行、按专精分块；结果落 `dps_tune2_results.csv`）、
+  `_agent_tmp/tune/dps_batch.py`（批量 A/B，`fsm=0/1` 对照）、`_agent_tmp/tune/summarize.py`（日志汇总）。
+- 本轮调优结论（写在 `_agent_tmp/tune/dpsfsm_tune.tuned.conf`）：`fire:aoe_pack=5`、`frost:aoe_pack=2`、`combat:aoe_pack=2`、
+  `assassination:aoe_pack=2`、`elemental:aoe_pack=2`、其余多为 `aoe_pack=5`（近战群伤手段弱，硬进 Aoe 反而降 DPS）。
+
+### 6) 实测数据（本地仿真服，40~50 秒/轮，cheat 全开：mana/power/cooldown/movespeed）
+
+> 口径：`fsm=0` = 关掉状态机、完全走原引擎的**基线**；`fsm=1` = 状态机接管。1 目标与 5 目标各一轮，取**中位数**。
+> ⚠️ cheat 里带 `cooldown`，怒/能量职业的施法次数会虚高（arms 40 秒 482 次）；绝对值不代表正式服，只用于横向对比与调优。
+
+| 专精 | 基线 dps（fsm=0） | 1 目标 dps | 5 目标 dps | 备注 |
+|---|---|---|---|---|
+| fire | 58 | **611** | **1020** | 灼烧叠层 + 火球 + 燃烧/气定炎爆 |
+| frost | 0 | **481** | -（本轮样本无效） | 寒冰箭；水元素一次 |
+| arcane | 0 | 143 | **590** | 奥冲 3 层 → 飞弹/弹幕 |
+| combat | 280 | -（样本无效） | 227 | 切割常驻 + 邪恶攻击 + 剔骨 |
+| assassination | 0 | -（样本无效） | 146 | 毁伤 + 毒伤 + 冷血 |
+| fury | 234 | 80 | 363 | 嗜血 + 旋风 + 英勇 |
+| arms | 262 | -（样本无效） | **528** | 致死 + 旋风 + 压制 + 斩杀 |
+| enhancement | 111 | **1366** | **1597** | 风暴打击 + 震击（群体也强） |
+| elemental | 87 | -（样本无效） | **594** | 闪电箭/链电 + 烈焰震击 |
+| shadow | 49 | **492** | 310 | 痛/触 + 心爆 + 鞭笞 |
+| affliction | 13 | **533** | 309 | 三 DoT + 吸血 |
+| destruction | 4 | -（样本无效） | **738** | 献祭 + 暗影箭 |
+| marksmanship | 0 | 174 | -（样本无效） | 稳固/多重 + 瞄准（自动射击窗口约束） |
+| beast mastery | 21 | 145 | 110 | 稳固 + 狂野怒火 |
+| feral | 8 | 13 | 72 | 猫形态撕碎/裂伤；未变形时交回引擎 |
+| balance | 0 | 10 | 4 | 月火/虫群 + 星火；**仍偏弱**（见待办） |
+| retribution | 37 | 30 | 8 | **有问题**：审判在没有圣印时判掉（见待办） |
+
+> "样本无效"= 那一轮 bot 根本没打起来（`incombat=0`），是**场景侧**问题，不是该专精 0 输出；
+> 同一专精在另一场景/另一轮通常是正常的（例如 combat 基线 280、5 目标 227）。
+
+### 7) 踩坑记录（都是实测定位，不是猜）
+
+1. **骑乘状态 `Unit::Attack()` 直接返回 false**（`player cannot attack in mount state`）：随机 bot 常年骑坐骑，
+   假人测试会表现成"`incombat=1`、`victim=` 空、`casts=0`、只有魔杖/平砍在动"。场景里必须**先下马**，并且每轮补一次。
+2. **直接 `bot->Attack()` 会被 bot 自己的 AI 立刻清掉**：要走引擎的 `attack anything` 动作
+   （`ai->DoSpecificAction("attack anything", Event("attack anything", guid), true)`）。
+3. **近战 5.0 码判定太紧**：bot 站 5.2 码就永远进不了循环（`Approach` 空转）⇒ 放宽到 6.5 码。
+4. **猎人 8 码死角**：贴脸时远程技能全不可用，必须把 GCD 交回引擎（近战/后撤），否则整场 0 输出。
+5. **只按策略名判专精会错**（随机 bot 同时挂多套策略：druid 判成 restoration、"fury 战士"其实没学嗜血）⇒ 见 §2.2。
+6. **GM 岛很小**：测点间距 40 码会把 bot/假人放进海里（表现 `incombat=0`）⇒ 3 个测点 ±12 码。
+
+### 8) 待办
+
+1. **retribution**：`judgement` 在**没有圣印**时也会判（`seal` 没挂上就往下走），40 秒 210 次审判、只有 105 伤害。
+   修法：圣印没挂上时不判，或先判"圣印是否在自己身上"，再决定是否审判。
+2. **balance / feral**：随机 bot 常缺天赋标志技能，走的是职业兜底循环 ⇒ 要"按专精挑 bot"而不是"按职业挑 bot"。
+3. **无效样本率**：本轮约 30~40% 的假人轮次 `incombat=0`（登录/摆位/地形偶发），调优脚本只吃有效样本，但样本量仍需加大。
+4. `cooldown` cheat 让施法次数失真 ⇒ 后续调优要么关掉 `cooldown`，要么只看 `total/dps`。
+5. 还没在真实副本里跑"整队 DPS 全由状态机接管"的对照（本轮只验证单体/群伤场景与逐专精数值）。

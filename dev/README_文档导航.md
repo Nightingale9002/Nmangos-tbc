@@ -109,7 +109,7 @@
 
 ## 二、KNOWN_ISSUES.md 逐章索引（按正文行号升序；行号仅作定位提示，2026-10-10 全表重算）
 
-> 共 **33** 章（2026-10-16 站长口径「同类事项整合到一章」：178 章 → 31 章；2026-10-17 新增 `[PlayerBots]` 一章 ⇒ 32 章；2026-10-28 新增 `[PlayerBots]` 水中寻路/link/不可选中/546 波次一章 ⇒ 33 章；每章明细见正文各章章首的「本章合并自 N 章」与「⚠️ 已被取代的旧结论」小节）。`###` 是章内小节，不列入本表。
+> 共 **34** 章（2026-10-16 站长口径「同类事项整合到一章」：178 章 → 31 章；2026-10-17 新增 `[PlayerBots]` 一章 ⇒ 32 章；2026-10-28 新增 `[PlayerBots]` 水中寻路/link/不可选中/546 波次一章 ⇒ 33 章；2026-10-29 新增 `[PlayerBots]` DPS 状态机+假人+调优一章 ⇒ 34 章；每章明细见正文各章章首的「本章合并自 N 章」与「⚠️ 已被取代的旧结论」小节）。`###` 是章内小节，不列入本表。
 
 | 行号 | 章节 |
 |---|---|
@@ -147,6 +147,7 @@
 | 11526 | [PlayerBots] 机器人行为、在线名单与轮换（always / add / 躲技能 / 跑尸 / 专精权重 / 控制技能优先级）— 2026-10-16 ~ 2026-10-21（本章合并自 1 批新增条目：`add` 事件是轮换门票，`always` 角色缺 `add` 就永远不登录；`SetEventValue` 在 `value=0` 时只 DELETE 不 INSERT；方案A 三处豁免 + `dev/182` 补数据 + 两遍式登录；副本通用躲地板技（`hostile aoe incoming` → `stored hazards` → `move away from hazard`）；副本躺尸跑尸（`GroupHasLivingRezzer`）；熊德坦(30) 权重与 caps；压力测试 12→60 bot 实测表；**bot 固定专精/职责落库**（`ai_playerbot_bot_profile` + `.rndbot sim profile`：IsTank 只在策略挂载后才判真，仿真选人改读 DB；附残留 group_member 清理与 FIFO/LogLevel 运维坑））|
 | 11668 | [构建/工具] 本地编译与战斗测试：7 层阻塞链 + 死规则自动发现 — 2026-10-19（构建改 git 同步（手工 cp 漏文件 + rsync 保 mtime 让 make 跳过重编）；`PathFinder.cpp` 的 mmap 改动**从未参与编译**（`IsSwimming`/`m_sourceMapId`/`CellImpl` 三处编译错误）；`GenerateBotTests` 宏从未定义 ⇒ 测试框架全被编译掉；spawn 的 holder/账号回查/借在线机器人；`create group` 应为 `form`；场景延迟 90 秒且不得 `return` 冻结 AI；死规则 `ads` 与 `finish ready check`；治疗"非策略性中断"保护；预期仇恨闸门 `will overaggro`）|
 | 12476 | [PlayerBots] 2026-10-27~28 水中寻路 / 阶段 link / 不可选中单位 / 546 波次重建（bot 与 creature 移动管线差异：`AllowWaterPathing()`；route_link 加载顺序 + 跳点用 src z；`UnitFlags` 不可选中过滤（不按 faction、不用 IMMUNE_TO_PLAYER）；蘑菇 Spore Cloud 8 码走 `ai_playerbot_avoid_mob.radius`；546 3D 聚类重建 + `dev/231`；antispam 去 std::regex、仿真禁闲聊；附 r161 结果与 557/546 待办）|
+| 12534 | [PlayerBots] 2026-10-29 DPS 技能释放状态机（17 专精）+ 训练假人 DPS 场景 + 离线调优（`strategy/DpsFsm.cpp` 的 `State`/`Snapshot`/`Tick`；最高 rank 用 `GetNextSpellInChain` 上爬；仇恨门复用 `AttackAction::WaitingForTankThreat`；猎人 `Weave` 看 `getAttackTimer(RANGED_ATTACK)`；`.rndbot sim dummy`；`dpsfsm_tune.conf` 热加载） |
 
 ## 三、dev/ 之外的文档（同项目相关）
 
