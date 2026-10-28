@@ -162,8 +162,10 @@ class FormationSlotData
 
         CreatureGroup* GetCreatureGroup() { return m_creatureGroup; }
         FormationData* GetFormationData() { return m_creatureGroup->GetFormationData(); }
-        void SetOwner(Unit* owner) { m_owner = owner; }
-        Unit* GetOwner() { return m_owner; }
+        // [2026-10-28 crash-fix] owner 不再信任裸指针：SetOwner 记 guid+类型，GetOwner 回查世界，
+        //   身份不一致就当失效（编队成员 despawn 后旧指针悬空，曾在虚调用处崩）。
+        void SetOwner(Unit* owner);
+        Unit* GetOwner();
         uint32 GetRealOwnerGuid() const { return m_realOwnerGuid; }
         SpawnGroupFormationSlotType GetSlotType() const { return m_slotType; }
         bool IsRemovable() const
@@ -186,6 +188,8 @@ class FormationSlotData
         uint32 m_realOwnerGuid;
         CreatureGroup* m_creatureGroup;
         Unit* m_owner;
+        ObjectGuid m_ownerObjectGuid;   // [2026-10-28 crash-fix] 与 m_owner 同步，用于校验悬空
+        bool m_ownerIsPlayer = false;
         float m_realAngle;
         float m_realDistance;
         float m_angleVariation;
@@ -258,6 +262,9 @@ class FormationData
         CreatureGroup* m_groupData;
         FormationEntry m_formationEntry;
         SpawnGroupFormationType m_currentFormationShape;
+        // [2026-10-28 crash-fix] 脚本切编队时不立刻重排（会嵌在 Waypoint/Map::Update 里重入，
+        //   实测 FixSlotsPositions 段错误）；改成下一 tick 由 Update() 统一重排。
+        bool m_fixPositionsPending = false;
         FormationSlotMap m_slotsMap;
         MovementGeneratorType m_masterMotionType;
         RespawnPosition m_spawnPos;

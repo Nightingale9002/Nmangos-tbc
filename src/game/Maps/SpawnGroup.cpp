@@ -860,7 +860,9 @@ bool FormationData::SwitchFormation(SpawnGroupFormationType newShape)
 
     m_currentFormationShape = newShape;
 
-    FixSlotsPositions();
+    // [2026-10-28 crash-fix] 不在脚本/移动更新栈里直接重排（FixSlotsPositions 会读成员位置、
+    //   嵌在 MotionMaster::Update 内重入实测 SIGSEGV）；挂起，交给下一 tick 的 Update()。
+    m_fixPositionsPending = true;
     return true;
 }
 
@@ -883,8 +885,11 @@ void FormationData::Disband()
         auto& slot = slotItr.second;
 
         Unit* slotUnit = slot->GetOwner();
-        if (slotUnit)
+        // [2026-10-28 crash-fix] 编队解散时成员可能已经被移除/正在移除：
+        //   对失效 owner 调 SetFormationSlot 会写已释放内存（脚本 formation remove 时实测崩）。
+        if (slotUnit && slotUnit->IsInWorld())
             slotUnit->SetFormationSlot(nullptr);
+        slot->SetOwner(nullptr);
     }
 
     m_slotsMap.clear();
@@ -898,21 +903,26 @@ void FormationData::ClearMoveGen()
         auto& slot = slotItr.second;
 
         Unit* slotUnit = slot->GetOwner();
-        if (slotUnit && slotUnit->IsAlive())
+        // [2026-10-28 crash-fix] 只对"还在世界里、活着"的成员做 Initialize：
+        //   脚本解散编队（555 Cabal Familiar/Fel Guardhound）时会有成员已 despawn，
+        //   旧代码直接 GetMotionMaster()->Initialize() ⇒ MotionMaster::DirectClean 里 SIGSEGV。
+        if (!slotUnit || !slotUnit->IsInWorld() || !slotUnit->IsAlive())
         {
-            if (m_formationEntry.IsDynamic && slot->IsFormationMaster())
-                continue;
-            if (slot->IsFormationMaster())
-            {
-                // do not change leader movement in dynamic state, script have to handle that
-                if (m_formationEntry.IsDynamic)
-                    continue;
-
-                m_lastWP = slotUnit->GetMotionMaster()->getLastReachedWaypoint();
-                m_wpPathId = slotUnit->GetMotionMaster()->GetPathId();
-            }
-            slotUnit->GetMotionMaster()->Initialize();
+            slot->SetOwner(nullptr);
+            continue;
         }
+        if (m_formationEntry.IsDynamic && slot->IsFormationMaster())
+            continue;
+        if (slot->IsFormationMaster())
+        {
+            // do not change leader movement in dynamic state, script have to handle that
+            if (m_formationEntry.IsDynamic)
+                continue;
+
+            m_lastWP = slotUnit->GetMotionMaster()->getLastReachedWaypoint();
+            m_wpPathId = slotUnit->GetMotionMaster()->GetPathId();
+        }
+        slotUnit->GetMotionMaster()->Initialize();
     }
 }
 
@@ -1533,6 +1543,14 @@ void FormationData::SetMovementInfo(MovementGeneratorType moveType, uint32 wande
 
 void FormationData::Update()
 {
+    // [2026-10-28 crash-fix] 脚本切编队后的重排在下一 tick 做（避免嵌在移动/脚本栈里重入）；
+    //   槽位 owner 现在按 guid 校验（FormationSlotData::GetOwner），失效成员不会再把旧指针拿来虚调用。
+    if (m_fixPositionsPending)
+    {
+        m_fixPositionsPending = false;
+        FixSlotsPositions();
+    }
+
     // check if stop timer for follower is hit
     if (m_followerStopped)
     {
@@ -1896,6 +1914,40 @@ void FormationData::FixSlotsPositions()
     }
 }
 
+void FormationSlotData::SetOwner(Unit* owner)
+{
+    m_owner = owner;
+    m_ownerObjectGuid = owner ? owner->GetObjectGuid() : ObjectGuid();
+    m_ownerIsPlayer = owner ? owner->IsPlayer() : false;
+}
+
+Unit* FormationSlotData::GetOwner()
+{
+    if (!m_owner)
+        return nullptr;
+
+    // [2026-10-28 crash-fix] **只用 guid 回查，不拿旧指针做解引用/虚调用**：
+    //   编队成员 despawn 后槽位可能还留着已释放的 Unit*，旧实现直接 GetOwner()->GetCollisionWidth()
+    //   会在虚调用处 SIGSEGV（r172 core: callq *0x78(%rax)）。
+    //   这里按 guid 找当前世界对象，找到且与记录指针一致才返回，否则判定失效并清空槽位。
+    if (m_ownerIsPlayer)
+    {
+        Player* p = sObjectMgr.GetPlayer(m_ownerObjectGuid);
+        if (p == m_owner)
+            return m_owner;
+    }
+    else if (m_creatureGroup)
+    {
+        Creature* c = m_creatureGroup->GetMap().GetCreature(m_ownerObjectGuid);
+        if (c == m_owner)
+            return m_owner;
+    }
+
+    m_owner = nullptr;
+    m_ownerObjectGuid.Clear();
+    return nullptr;
+}
+
 Unit* FormationSlotData::GetMaster()
 {
     return GetFormationData()->GetMaster();
@@ -1903,7 +1955,7 @@ Unit* FormationSlotData::GetMaster()
 
 bool FormationSlotData::IsFormationMaster()
 {
-    return GetMaster() == m_owner;
+    return GetMaster() == GetOwner();
 }
 
 float FormationSlotData::GetAngle()

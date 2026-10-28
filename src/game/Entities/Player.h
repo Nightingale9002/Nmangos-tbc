@@ -2244,6 +2244,11 @@ class Player : public Unit
         //   （站长口径"用核心数据"）。判据 isRealPlayer() 来自 session 远端地址，不依赖 playerbot 模块实现。
         uint64 botDamageDealt = 0;
         uint64 botHealingDone = 0;
+        // [2026-10-29 战斗取证] 宠物/图腾伤害、平砍次数、施法次数、技能分布（用于查"技能有没有放"）
+        uint64 botPetDamageDealt = 0;
+        uint64 botMeleeHits = 0;
+        uint64 botCasts = 0;
+        std::map<uint32, uint64> botSpellCounts;
         uint64 botDamageTaken = 0;   // [rewards 2026-10-19] 奖励函数：非坦克受伤
         uint32 botBrokeCc = 0;       // [rewards 2026-10-19] 奖励函数：DPS 打醒控制
         uint32 botUnengagedHits = 0; // [rewards 2026-10-19] 奖励函数：打了还没进战斗的怪

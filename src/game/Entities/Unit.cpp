@@ -1146,7 +1146,19 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
         //   仅 playerbot 构建有 isRealPlayer()；不开模块时这段不编译。
 #ifdef ENABLE_PLAYERBOTS
         if (dealer->IsPlayer() && !static_cast<Player*>(dealer)->isRealPlayer())
+        {
             static_cast<Player*>(dealer)->botDamageDealt += damage;
+            // [2026-10-29 战斗取证] 平砍次数（spellInfo 为空 = 直接物理攻击）
+            if (!spellInfo && damage > 0)
+                ++static_cast<Player*>(dealer)->botMeleeHits;
+        }
+        // [2026-10-29 战斗取证] 宠物/图腾的伤害归到主人（原来只算 bot 玩家本体，猎/术/萨满被低估）
+        else if (dealer->GetTypeId() == TYPEID_UNIT && damage > 0)
+        {
+            Unit* owner = dealer->GetOwner();
+            if (owner && owner->IsPlayer() && !static_cast<Player*>(owner)->isRealPlayer())
+                static_cast<Player*>(owner)->botPetDamageDealt += damage;
+        }
 #endif
         // Rage from Damage made (only from direct weapon damage)
         if (cleanDamage && damagetype == DIRECT_DAMAGE && dealer != victim && dealer->GetTypeId() == TYPEID_PLAYER && (dealer->GetPowerType() == POWER_RAGE))
