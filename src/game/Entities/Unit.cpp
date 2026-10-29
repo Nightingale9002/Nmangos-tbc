@@ -4754,7 +4754,16 @@ void Unit::_UpdateAutoRepeatSpell()
                 currTarget = currSpellTarget;
         }
 
-        // some check about new target are necessary
+        // [2026-10-30] player-bot autorepeat: PlayerbotAI::CastSpellBody() restores the previous
+        //   selection guid at the end of every cast. For bots that is often the bot itself (self
+        //   buffs), so UNIT_FIELD_TARGET points at a unit that cannot be attacked and Auto Shot
+        //   was interrupted on the very next Update (log: "interrupt: target=Mospo", 41
+        //   registrations but ~0 damage). Real clients keep a valid target guid; bots need the
+        //   fallback to the registered spell target, then to the current victim.
+        if (!currTarget || !CanAttack(currTarget))
+            currTarget = currSpellTarget;
+        if (!currTarget || !CanAttack(currTarget))
+            currTarget = GetVictim();
         if (!currTarget || !CanAttack(currTarget))
         {
             // no valid target
@@ -4766,7 +4775,8 @@ void Unit::_UpdateAutoRepeatSpell()
         targets.setUnitTarget(currTarget);
 
         // we want to shoot
-        Spell* spell = new Spell(this, m_currentSpells[CURRENT_AUTOREPEAT_SPELL]->m_spellInfo, TRIGGERED_AUTOREPEAT);
+        SpellEntry const* repeatInfo = m_currentSpells[CURRENT_AUTOREPEAT_SPELL]->m_spellInfo;
+        Spell* spell = new Spell(this, repeatInfo, TRIGGERED_AUTOREPEAT);
 
         // Check if able to cast
         if (spell->SpellStart(&targets) != SPELL_CAST_OK)
@@ -4774,6 +4784,18 @@ void Unit::_UpdateAutoRepeatSpell()
             InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
             return;
         }
+
+        // [2026-10-30] Count every actual auto-repeat shot, not only the one-off slot
+        //   registration done by PlayerbotAI::CastSpellBody(). With a persistent Auto Shot slot the
+        //   old counter reported "top=75:1" while the hunter was in fact shooting ~30 times.
+#ifdef ENABLE_PLAYERBOTS
+        if (GetTypeId() == TYPEID_PLAYER && !static_cast<Player*>(this)->isRealPlayer())
+        {
+            Player* bot = static_cast<Player*>(this);
+            ++bot->botCasts;
+            ++bot->botSpellCounts[repeatInfo->Id];
+        }
+#endif
     }
 }
 

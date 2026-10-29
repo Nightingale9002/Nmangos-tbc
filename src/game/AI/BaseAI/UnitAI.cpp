@@ -382,6 +382,17 @@ void UnitAI::HandleMovementOnAttackStart(Unit* victim, bool targetChange) const
     // the charmed Death's Door Fel Cannon (quest 10911) then walked to its target instead of staying put.
     if (!m_unit->hasUnitState(UNIT_STAT_CAN_NOT_REACT) && IsCombatMovement())
     {
+        // [2026-10-30] A pacified/stunned creature cannot attack, so it must not start a melee
+        //   chase either. Training dummies (SimScenario) are summoned with
+        //   UNIT_FLAG_STUNNED|UNIT_FLAG_PACIFIED and are meant to stay put; without this guard a
+        //   hunter's first Auto Shot made the dummy run to the hunter (log excerpt:
+        //   [AI-CHASE-REPRO] unit=训练假人(普通) entry=190014 victim=Mospo dist=19.0 attackDist=0.0
+        //   pacified=1 stunned=1, then dummy pos moved 16.7 yd and dist became 2.3), parking the
+        //   hunter inside its 8-yard dead zone.
+        if (m_unit->GetTypeId() == TYPEID_UNIT &&
+            m_unit->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PACIFIED | UNIT_FLAG_STUNNED))
+            return;
+
         if (m_dismountOnAggro)
             m_unit->Unmount(); // all ais should unmount here
 
