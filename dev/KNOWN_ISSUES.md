@@ -12567,6 +12567,48 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
    `AttackAction::WaitingForTankThreat(ai, bot, target)`（**同一份实现，不复制判断**），`Tick()` 里先问它；
    门说"先别打"就把这个 GCD 交回引擎。坦/奶不进 DPS 状态机（`IsHeal`/`IsTank` 门；假人场景用 `SetBotForceDps` 临时豁免）。
 
+### 2.5) 近战找背 / 武器与专精
+
+- **近战都要找背**：`dpsfsm::GetBehind()` 取"目标背后 0.8×攻击距离"的点，用 `MovePoint` 走过去；
+  已经在背后（`Unit::IsFacingTargetsBack`）就不动。**它不占 GCD**（只走位，不 return true），
+  战士/盗贼/野性德/惩戒骑/增强萨全部接入。原因：毁伤/背刺/撕碎要求背身；其它近战站背后可避开招架/格挡。
+- **武器按专精生成**（`PlayerbotFactory::CanEquipWeapon()` → `AiFactory::GetPlayerSpecTab(bot)` = 最高天赋树）：
+  盗贼 tab0(刺杀) 只允许 **匕首**；德鲁伊 tab1(野性) 只允许 **双手锤 / 法杖**；战士 tab0(武器) 只允许双手武器。
+  `[DUMMY]` 报告里的 `wep=<主手子类>/<副手子类>` 就是校验这个，子类编号见 `ItemPrototype.h → ItemSubclassWeapon`：
+  **4=单手锤 5=双手锤 6=长柄 7=单手剑 8=双手剑 10=法杖 13=拳套 15=匕首 18=弩**。
+  实测：刺杀贼 `15/15`（双匕首）、战斗贼 `7/7`（双单手剑）、野性德 `10/-1`（法杖）、狂暴战 `4/4`（双单手锤）。
+
+### 2.6) 假人被动/不转身 · 法力药水
+
+- **假人就是被动物件**（站长口径）：数据库模板 `190013/190014/190015` 的 `UnitFlags`
+  置 `UNIT_FLAG_STUNNED(0x40000) | UNIT_FLAG_PACIFIED(0x20000)`——`STUNNED` 在本核心的注释就是
+  "turn and strafe movement disabled"（**禁用转身**），`PACIFIED` 让它不主动出手；`MovementType=0`(idle) 不巡逻。
+  见 `dev/232_20261029_测试假人_不转身.sql`。召唤出来的副本在 `SpawnDummies()` 里也补同一组标志，
+  不依赖 DB 重载；**不要在代码里每 tick 硬掰朝向**（那是多余动作）。
+- **法力药水**：法系职业在 `PlayerbotFactory` 准备阶段发 `22832`（超级法力药水）x20；
+  FSM 的 `Recover` 分支调 `dpsfsm::UseManaPotion()`：在背包里找"使用后回蓝（`SPELL_EFFECT_ENERGIZE`）"
+  的消耗品 → `bot->CastItemUseSpell(item, targets, 0, 0)`（正常消耗物品）。
+  ⚠️ **别用 `ai->DoSpecificAction("mana potion")`**：`UsePotionAction::isUseful()` 依赖 AI 自己的
+  "combat self target" 值，假人场景里会被判成不 useful ⇒ 一次都喝不到（实测 0 次）。改成直接 `CastItemUseSpell` 后
+  60 秒窗口实测能喝到 13 次，法系 dps 明显抬起来（fire 344→766、balance 565→900）。
+
+### 2.7) 猎人（bm / marks）—— 卡在"自动射击起不来"
+
+猎人先后踩了四个坑，前三个已修，第四个仍未闭环：
+
+1. **没有弹药**：没弹药时自动射击/稳固射击全部失败，整场站着不动（40 秒 1 次施法）。
+   修：准备阶段按远程武器子类发弹药并写 `PLAYER_AMMO_ID`（弓/弩 `31737 Timeless Arrow`、枪 `31735 Timeless Shell`，各 1000）。
+2. **骑乘**：`mounted=1` 时 `Unit::Attack()` 直接 false（`[DPSFSM-ENGAGE] ... mounted=1`）。
+   修：假人场景禁 `mount` 策略 + 强制下马。
+3. **用近战方式起手**：`bot->Attack(u, true)` 第二个参数是 `meleeAttack`，远程职业传 true 会走进近战位平砍
+   （实测 `melee=10`）。修：`IsMeleeSpec()` 决定传值，远程传 `false`。
+4. **堆主站在 8 码死角**：每个堆的"堆主"原来固定站堆心西侧 3 码，如果堆主是猎人就在死角里。
+   修：按各专精自己的站位距离（近战 3 / 远程 18）。
+5. **仍未闭环**：`auto shot` 必须走引擎动作 `CastAutoShotAction`（登记 `CURRENT_AUTOREPEAT_SPELL`），
+   `CastSpell("auto shot")` 不生效；现在改成"没有自动射击在跑就每 tick 试一次 `DoSpecificAction("auto shot")`"，
+   但实测 marks 仍有整场 0 伤害的 bot（同一个 bot 用 `fsm=0` 走引擎也 0 伤害）——
+   说明**是那只 bot 自己的状态问题**（不是状态机逻辑）。下一步：假人场景对"连跑两轮 0 伤害"的 bot 自动换下一只。
+
 ### 3) 饰品
 
 `Burst` 状态第一件事是 `DoSpecificAction("use trinket")`（复用 `UseTrinketAction`：它自己挑"已装备 + 使用型 + 可用"的饰品），
@@ -12581,6 +12623,26 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
   fsm=0    关掉状态机，量原引擎基线
   respec=0 不重天赋/不换装（默认 1：按目标专精 resetTalents + PlayerbotFactory::Randomize + 最好装备）
 ```
+**整队一轮跑完（推荐日常用这个）**：
+
+```
+.rndbot sim dummyall <targets=1> <seconds=60>
+```
+17 个专精在一轮里同时跑：3 堆木桩（每堆 5~6 人）、同一个堆的 bot 共用一批木桩，
+各自仍只统计自己的伤害。玩家之间**没有碰撞体积**，站一起不会互相挡（这一条是站长确认的）。
+一轮 ≈ 2.5 分钟（含登录/重天赋/换装），比"3 个一组串行"快 4~5 倍。
+
+**参数并发 A/B（调优用）**：
+
+```
+.rndbot sim arms <targets> <seconds> <spec:key=value|spec:@> [...]
+例：.rndbot sim arms 1 40 fire:@ fire:burst_hp=10 fire:burst_hp=30 fury:@ fury:hs_rage=60 fury:hs_rage=85
+```
+每一臂用**不同的 bot**、共用同一堆木桩；参数通过 `dpsfsm::SetParamOverride()` **只对那只 bot 生效**
+（`Tune()` 先查"这只 bot 的覆盖"，再查 `dpsfsm_tune.conf` 里按专精/全局的值），报告里带 `arm=` 字段归组。
+一轮能同时评 9~12 组参数，比串行快 3~5 倍；代价是**个体差异**（不同 bot 的装备/天赋不同），
+所以脚本 `_agent_tmp/tune/dps_arms.py` 默认跑多轮、用**中位数**再定值。
+
 报告字段：`pack=<10码内>/<30码内> sp=<法伤> ap=<攻强> fsm= incombat= victim= dmg= pet= total= dps= casts= melee= top=<本轮增量>`。
 `casts` 是**成功施法次数**（口径见 §6.3），`top` 是本轮增量（历史累计那个坑已修）。
 - GM 岛（map 1）3 个测点横排（±12 码）；假人 `190014` 围 2 码一圈；召唤时**强制 100 万血 + faction 14**
@@ -12697,6 +12759,114 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
    `GetCombatManager().SetEvadeState(EVADE_NONE) + StopEvade()`，出手失败时再补一次。
 17. **场景目标集会被别的 run 清掉**：同一只 bot 被复用，上一轮的收尾 `ClearScenarioTargets` 把新一轮刚登记的集清空
    ⇒ `pack=0/1`、心跳 `ticks` 定住、整场 0 输出。修法：登记带 `runId`，只清"自己那一轮"。
+
+18. **近战不会自己找背**：毁伤/背刺/撕碎要求站在目标背后，随机 bot 常正面硬打（整场 0 施法）。
+   修法：`dpsfsm::GetBehind()` 用 `MovePoint` 走"目标背后 0.8×攻击距离"的点，已在背后就不动；**不占 GCD**。
+19. **`PlayerbotFactory::EquipGearBest()` 带随机品质**（按等级段 `urand` 选品质区间）⇒ 同一只 bot 每次重换装
+   ap/sp 能差几十个百分点，A/B 全是噪声。修法：假人场景对同一 `(guid, premade)` **只准备一次**，后续复用。
+20. **调优脚本不能按固定字段顺序解析**：`[DUMMY]` 后加了 `sp/ap/wep/pack`，旧整行正则全部 MISSING。
+   改成按 `k=v` 逐字段抽取（`dps_tune2.py` / `summarize.py` 已改）。
+
+21. **共享堆收尾不能删木桩**：堆主先收尾时 `ReportDummy` 会把整批木桩 `ForcedDespawn`，
+   其余专精全部 `aborted(dummy-gone)`。修法：`d.sharedPile` 的 run 收尾不删，靠召唤时的定时消失。
+22. **刚登录、还没进世界的 bot 不能碰 `GetMap()`**：`Unmount/TeleportTo/GetMap` 都会触发核心断言
+   `GetMap(): m_currMap` 直接关服（实测崩过两次，gdb 栈 `TickDummies → WorldObject::GetMap`）。
+   所有相关调用前都要 `bot->IsInWorld()`。
+23. **"近战挤在一个木桩上"是伪问题**：WoW 里玩家之间没有碰撞体积（站长口径），
+   真正的原因是"加入共享堆的 bot 被传送到了中间那堆的坐标"——外围两堆的近战永远够不着自己的木桩。
+
+## 10) 2026-10-30 本轮：整队假人 / 静态 BIS / 优先级表 / 猎人链路
+
+### 10.1 测量基建
+
+| 能力 | 命令 / 符号 | 说明 |
+|---|---|---|
+| 一轮跑完 17 专精 | `.rndbot sim dummyall <targets> <seconds>` | 3 堆木桩、每堆 5~6 人；玩家之间无碰撞体积，站一起不挡 |
+| 参数并发 A/B | `.rndbot sim arms <targets> <seconds> <spec:key=v> ...` | 每臂一只 bot，参数经 `dpsfsm::SetParamOverride` 只对该 bot 生效；报告带 `arm=` 归组 |
+| 多轮取中位数 | `_agent_tmp/tune/dummyall_rounds.py --rounds N` | 单轮方差大，必须多轮 |
+| 假人被动不转身 | `dev/232_20261029_测试假人_不转身.sql`（`UnitFlags |= STUNNED|PACIFIED`，`MovementType=0`） | `UNIT_FLAG_STUNNED` 核心注释即"turn and strafe movement disabled" |
+
+### 10.2 静态 BIS 装备表（`ai_playerbot_bis_gear`）
+
+- 生成器 `_agent_tmp/bis/gen_bis_v4.py`：
+  - 候选来自 `item_template`（职业可穿 + 护甲/武器子类白名单 + 等级≤70 + 品质≥3）
+  - **关联 `spell_template`（`spellid_1..5`）把装备法术折成真实属性**：aura 13 = 法伤、99/124 = 攻强；
+    武器另算 `(dmg_min+dmg_max)/2*1000/delay` 的**武器 DPS**（不加这项会挑到"高属性、零伤害"的兵器）
+  - 命中 = `ITEM_MOD_HIT_RATING(31)`（另有老式 16/17/18）；**允许 1% 不足**（配额 `cap-16`），且**不允许移除命中**
+  - 贪心：先打满命中，再在约束内最大化输出分
+  - 排除测试物品、武器必须有正常延迟/伤害（`delay` 在 2000±、`dmg_min1>0`）
+- 服务端：`SimScenario` 读表 → **每 tick 穿一件**（流水）→ 穿完再练武器技能 + 刷新武器伤害 + 开始计时
+- 结论：法系 sp 从 ~900 提到 **2200~2800**，dps 从 600 提到 **1000~1700**；近战 ap 2400~6300
+
+### 10.3 状态机：优先级表（逐步取代 if/else）
+
+`dpsfsm::Entry{name,target,requireAura,minAuraRemain,auraOn,minCombo,minEnergy}` + `TryTable()`
+——"放什么技能、buff 什么时候续"由表决定，表内按优先级从上往下试：
+
+| 场景 | 表项 |
+|---|---|
+| 盗贼切割 | `{ "slice and dice", s.bot, nullptr, 2500, nullptr, sndCp }`（剩余 <2.5s 且星够就续） |
+| 圣骑士圣印 | `{ seal, s.bot, nullptr, 2000 }` + righteousness/command/blood 兜底 |
+| 法师节能施法 | `{ "fireball", nullptr, "clearcasting" }` … 有状态就把最贵的排最前 |
+
+**无 GCD 技能白名单** `NoGcd()`：`heroic strike / cleave / maul / swipe / thunder clap / auto shot /
+cold blood / presence of mind / arcane power / icy veins / tiger's fury / berserk / kill command /
+shamanistic rage / bloodlust / use trinket` —— 这些跳过 `Ready()` 的 GCD 判定，仍走 `CanCastSpell`。
+
+### 10.4 移动职责（站长架构口径）
+
+**移动归引擎，状态机只管技能。** 状态机只在"这一 tick 真放出技能"时让引擎让位：
+`skipEngine = fsmHandled && SkipEngine(guid) && DidCastThisTick(guid)`。
+
+远程不贴脸的正确做法是**引擎侧**：
+- `ReachTargetAction::GetApproachRange()`：敌对目标 + 有 `ranged` 策略 ⇒ 接近距离 = `GetRange("shoot")`（兜底 25）
+- **最后一道闸**（`RandomPlayerbotMgr::UpdateAIInternal`，`simscenario::Update()` 之后）：
+  `ForEachPlayerbot` 检查"有 ranged 策略 + 有目标 + 距离 < 射程-5" ⇒ `MoveChase(victim, keep)`
+
+### 10.5 猎人自动射击链路（gdb 取证结论）
+
+1. Auto Shot(75) 数据正常：`Attributes` 含 `SPELL_ATTR_USES_RANGED_SLOT`、`AttributesEx2` 含 `SPELL_ATTR_EX2_AUTO_REPEAT`
+2. `Player::CastSpell()` 每次施法前都 `InterruptSpell(CURRENT_AUTOREPEAT_SPELL)` ⇒ 每发技能都把自动射击顶掉
+   ⇒ 修法：**每发技能之后立刻重挂自动射击**（Auto Shot 不吃 GCD）
+3. `Unit::_UpdateAutoRepeatSpell()` 在"移动/读条中/起手窗口"会提前 return（每次重挂都有 500ms 起手）
+4. **真正的"猎人进近战"根因（gdb + 反汇编）**：不是猎人走过去，是**假人走过来**——
+   `TickDummies` 的"反向兜底" `first->AI()->AttackStart(bot)` → `UnitAI::AttackStart`（尾调用）
+   → **假人自己** `MoveChase(bot, 0)` 到 2~3 码 ⇒ 猎人距离从 19 掉进 8 码死角 ⇒ 自动射击停摆。
+   **已取消**该兜底（假人只当木桩，不主动咬人）。
+
+### 10.6 这轮踩的硬坑（都已在代码里修掉）
+
+- `Player::SetSkill(id, value, max)` 参数顺序写反（把武器技能设成 **1**）⇒ 近战全员 miss、`melee=0`。
+  修完：刺杀 405 / 狂暴 532 / 野性 607（修前 17/48/29）
+- 换装后必须 `UpdateDamagePhysical(BASE_ATTACK/OFF_ATTACK)`，否则技能与白字都打 0
+- 17 个 bot 同 tick 内"清空+穿 16 件"会穿不全 ⇒ 改**每 tick 一件**
+- 假人 `evade` 使 `Unit::Attack` 恒 false；目标集需带 `runId` 防跨轮串台
+- 未进世界的 bot 调 `GetMap()` 触发 `m_currMap` 断言直接关服 ⇒ 所有入口先判 `IsInWorld()`
+- 法力职业 60 秒撞法力墙 ⇒ 发 `22832` 超级法力药水 ×20 + `UseManaPotion()`（扫背包找 `SPELL_EFFECT_ENERGIZE` 的 on-use 物品 → `CastItemUseSpell`）；
+  `ai->DoSpecificAction("mana potion")` 在假人场景恒 not useful，别用
+
+### 10.7 当前基线（40 秒、无 combat cheat、32 点前最稳的一轮）
+
+| 法系 | dps | | 物理 | dps |
+|---|---|---|---|---|
+| fire | 1164 | | bm | 374 |
+| destro | 1083 | | arms | 122 |
+| arcane | 1040 | | assassination | 117 |
+| frost | 980 | | combat | 113 |
+| elemental | 978 | | enhance | 39 |
+| shadow | 835 | | feral | 31 |
+| balance | 760 | | ret | 23 |
+| affliction | 368 | | fury / marks | 未取到有效样本 |
+
+> 近战在**单跑隔离**测试里能到 fury 571 / feral 607 / assassination 405，batch 里偏低主因是单轮样本与相互干扰；
+> marks 猎人在"假人不再主动追人"之后仍需复测。
+
+### 11) 下一步
+
+1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
+2. 把 batch 拆成"每专精独立木桩堆"或固定 bot 集，降低方差；每专精 3 轮取中位数
+3. 用 `arms` 并发重扫 `hs_rage / snd_cp / fin_energy / scorch_stacks / weave_margin`
+4. 把剩余职业的 if/else 继续迁移到优先级表（战士/术士/猎人/萨满/德鲁伊/牧师）
 
 ### 9) 待办
 
