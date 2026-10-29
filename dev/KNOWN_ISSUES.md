@@ -13104,6 +13104,27 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 **附带发现（fury 这只 bot）**：低血木桩下 `dps=102 casts=0 melee=2` —— 又是"整场几乎不接战"的偶发，
 与 `10.14` 里记录的 dummyall 首位偶发同类，属于场景/引擎侧问题，不影响状态机结论。
 
+### 10.16 bot 法术表缺训练师技能（2026-10-30 05:15）
+
+**硬证据（直接查角色库）**：`tbccharacters.character_spell`
+- guid 92（武器战 bot = Oberio）：有 `12294`(致死)、`1680`(旋风斩)，**没有 `5308`(斩杀)**
+- guid 98（狂暴战 bot）：有 `1680`，**没有 `5308`(斩杀)、没有 `2458`(狂暴姿态)**
+
+⇒ 这是"状态机里写了却从来不施放"的一大类根因：随机 bot 是批量灌技能，**训练师技能不齐**。
+
+**修复**：假人准备阶段调用 `PlayerbotFactory::InitSpells()`（= 15 轮 `InitAvailableSpells()`，
+把本职业本等级该会的训练师技能补齐）；同时把 `InitSpells()` 从 private 提为 public。
+生效证据：修后 arms 的 `top=` 从 `12294`(致死 rank1) 变成 **`30330`(致死 rank2)**，fury 从 `23881` 变成
+**`30335`(嗜血 rank2)** —— 说明"补技能"确实改了 bot 的法术表（学到了更高 rank 的技能）。
+
+**但斩杀 `5308` 仍然 0 次**（低血木桩 12% 血、`executeWindow` 成立、斩杀已排在 Burn 首位）：
+- 说明 `InitSpells()` 没把 5308 补进来（可能 Execute 的 trainer 条目在这个库里被过滤/缺失），
+  或 `SpellId("execute")` 解析失败（`Ready()` 直接 false）。
+
+**下一步（二选一，都很快）**
+1. 准备阶段对**指定 id 白名单**直接 `bot->learnSpell(id, false)` 兜底（先放 `5308`，验证通了再扩表）；
+2. 在 `CastChecked` 对 "execute" 打一行 `SpellId/HasSpell/CanCastSpell` 结果日志，确认是哪一环。
+
 ### 11) 下一步
 
 1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
