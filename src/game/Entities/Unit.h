@@ -2533,6 +2533,7 @@ class Unit : public WorldObject
         void AddDelayedHolderDueToProc(SpellAuraHolder* holder) { m_delayedSpellAuraHolders.push_back(holder); }
 
         void ResetAutoRepeatSpells() { m_AutoRepeatFirstCast = true; }
+        bool IsAutoRepeatFirstCast() const { return m_AutoRepeatFirstCast; }
 
         // Storm shield: true while a fresh autorepeat registration is still inside its first-shot
         // window (FirstCast windup). Cancel packets within this window are ignored so the first shot
