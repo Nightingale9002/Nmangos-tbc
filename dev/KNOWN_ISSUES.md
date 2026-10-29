@@ -13217,6 +13217,45 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 下一轮按"`aoe_pack` 阈值 + AoE 技能表是否覆盖"逐个查。
 注意 5 目标场景里 `pack=` 是"10 码内/30 码内"假人数，远程站 18 码时 `pack10=0` 是正常的。
 
+### 10.20 AoE（5 目标）真根因：地面技静默失败 + 术士种子自顶 + 盗贼无 AoE 状态（2026-10-30 06:15）
+
+#### 主 bug：`TryCastAt()` 把"静默失败"当成成功
+
+`DpsFsm.cpp → TryCastAt()` 把地面目标技交给 `PlayerbotAI::CastSpell(id, x, y, z)`，而这一层只检查"能否入队"，
+`Spell::SpellStart()` 的 `CheckCast` 失败是**静默的、仍返回 true**。结果：状态机以为自己放了飓风/乱射/火雨，
+**永远不会 fall through 到下一条优先级**，整段 AoE 空转（实测平衡德 40 秒只 1 次施法、55 dps）。
+
+- 修复：`TryCastAt()` 先 `CanCastSpell(id, x, y, z, …, &res)` 全量校验；失败按资源/其它退避 1s/2s 并**返回 false**，
+  让优先级表继续往下试；成功时补 `RecordSpellCast`（这样 `top=`/`casts=` 第一次能看见地面技）。
+- 反证实验（子会话做的）：把 balance/bm 的 `aoe_pack` 临时调 99 绕开 Aoe 分支 → 平衡德 1040 dps、兽王猎 471 dps；
+  走 Aoe 分支时只有 0~88 ⇒ 黑洞确实在 Aoe 分支，不在门限。
+
+#### 另外两处
+
+- `TickWarlock()` 的 Aoe：种子(SoC) 对**同一目标反复种**，把上一颗顶掉 ⇒ 永远等不到引爆（16~18 次种子、4~17k 伤害）。
+  改成"每个目标只种一颗 → 火雨 → 暗影箭兜底"。
+- `TickRogue()` **根本没有 `State::Aoe`**（`combat:aoe_pack` 是死配置）。补了 AoE 状态（剑刃乱舞/冲动优先，
+  其余复用单体表）。**诚实说明**：TBC 盗贼没有真正的 AoE 打击（刀扇是 WLK），A/B 显示 AoE 状态本身对 dps ≈ 0 差；
+  combat 从 15.7 → 850~1330 的主因是主手武器（改前几轮 `mh=-1` 空手）。
+
+#### 5 目标修复后实测（同一把二进制，2 轮）
+
+| 专精 | 改前 | 改后 | `top=` |
+|---|---|---|---|
+| balance | 54.8 | **722~1052** | Starfire×10、Hurricane×1 |
+| bm | 216.2 | **601~765** | AutoShot×15~17、Multi-Shot×3、Volley×1 |
+| destro | 159.0 | **1074~1387** | Seed×4~8、Rain of Fire×3~4 |
+| combat | 15.7 | **852~1330**（装备变量） | SinisterStrike×16、S&D、Eviscerate、AR、BF |
+| fire（对照） | 1751 | **1889** | Flamestrike×10（地面技第一次出现在 top=） |
+
+`dpsfsm_tune.conf` 与备份逐字节一致（**没有**动 pack 门限）。
+
+#### 新发现的测试台 bug（未修，下轮处理）
+
+`SimScenario.cpp → StartDummy()` 用 `x += 14*(id%3-1)` / `y += 14*((id/3)%2)` 轮换落点，
+其中 **`y+14` 那一排（id=3~5 / 9~11 / 15~17）稳定 LOS 不通** ⇒ 落在那一排的远程专精整场 0 dps。
+这解释了一部分历史"偶发 0 样本"。修法：换落点/抬高或重选平地，并在开跑前做一次 LOS 自检。
+
 ### 11) 下一步
 
 1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
