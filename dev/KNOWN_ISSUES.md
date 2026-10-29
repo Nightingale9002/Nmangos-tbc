@@ -12636,35 +12636,29 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
 被拦下来的施法也算一次 ⇒ 出现过"arms 40 秒 621~1204 次施法"这种鬼数。现在拆成 `CastSpell`（**成功才记**）
 + `CastSpellBody`（实际逻辑），arms 同场景只剩 15 次真实施法。
 
-### 7) 实测数据（本地仿真服：无战斗 cheat + 毕业装 + 按专精重天赋，1 目标 40 秒，`pack=1/1` 已校验）
+### 7) 实测数据（本地仿真服：无战斗 cheat + **premade 天赋**（按专精固定那套）+ 最好装备，1 目标 40 秒，`pack=1/1` 已校验）
 
-> 说明：这一列数字是**同一天多轮迭代的当前值**，各专精还在收敛（每轮修一处 bug，数值会跳）。
-> `sp/ap` 取自 `[DUMMY]` 报告，用来判断"装备/天赋到位没有"。旧表（cheat 全开）不再引用。
-
-| 专精 | sp / ap | 当前 dps | 备注（下一步该修什么） |
+| 专精 | sp / ap | dps | 备注 |
 |---|---|---|---|
-| fire | sp 896 | **583** | 纯火球链；缺 Ignite/灼烧循环优化 |
-| frost | sp ~850 | 330（早前） | 待复测 |
-| arcane | sp ~850 | 464（早前） | 待复测 |
-| combat | ap 1997 | **331** | 装备够了但 DPS 低 ⇒ 能量/连击循环与天赋有问题 |
-| assassination | ap 1877 | **295** | 同上（毁伤条件不满足时退邪恶攻击） |
-| arms | ap ~1900 | 388（早前） | 待复测 |
-| fury | ap ~1900 | 235（早前） | 待复测 |
-| enhancement | — | 379（早前） | 待复测 |
-| elemental | sp 927 | **0**（未咬上去/0 施法） | 场景侧问题，见 §9.1 |
-| shadow | sp 967 | **763** | 现在最健康的一个（暗影形态+痛+触+心爆+鞭笞） |
-| affliction | sp ~900 | 492（早前） | 待复测 |
-| destruction | sp ~900 | 397（早前） | 待复测 |
-| marksmanship | ap 1715 | **110** | 自动射击窗口判定过严，稳固射击放得少 |
-| beast mastery | — | 66 ~ 145 | 同上 |
-| feral | sp 549 / ap 352 | **32** | **装备还是法系装**（respec 后没换到野性皮甲）⇒ 先修装备选择 |
-| balance | sp 0 / ap 1084 | 0（未咬上去） | 场景侧，见 §9.1 |
-| retribution | sp 819 | **73** | 随机天赋没十字军打击；只有圣印+审判 |
+| arcane | sp 913 | **604** | 奥冲 3 层 → 飞弹 |
+| frost | sp 806 | **568** | 寒冰箭 + 水元素 |
+| shadow | sp 684~840 | 725（稳定轮）/ 0（抖动轮） | 暗影形态 + 痛/触 + 心爆/鞭笞 |
+| balance | sp 969 | **514** | 月火/虫群 + 星火 |
+| feral | ap **3337** | **500** | premade `pve dps feral cat`，装备终于换成物理皮甲 |
+| fire | sp 669~896 | 539 ~ 674 | 纯火球链（10~14 发/40 秒 = 接近读条上限） |
+| enhance | sp 510 / ap 1702 | **397** | 风暴打击 + 震击 |
+| arms | ap 1766 | **383** | 致死 + 旋风 + 压制 + 斩杀（怒气账本） |
+| affliction | sp 957 | **368** | 三 DoT + 吸血 |
+| ret | ap 1932 | **359** | premade `pve dps ret`（有十字军打击了） |
+| combat | ap 1720 | **330** | 能量账本 + 切割 4 星 |
+| fury | ap 1770 | **304** | 怒气账本后嗜血 6 次（之前 1 次） |
+| assassination | ap 1678 | **193** | 毁伤不满足时退邪恶攻击 |
+| marks | ap 1550 | **165** | 稳固射击窗口仍偏严 |
+| bm / destro / elemental / shadow / fire | — | 抖动轮 0 | 见 §9.1（`ic=0`，场景侧还没完全闭环） |
 
-**结论（重要）**：现在低的不再是"状态机不放技能"（那是前几轮修的），而是三件事按影响排序：
-① 天赋树是 `PlayerbotFactory::InitTalents` **随机填**的，不是 41/20 的成体系 build；
-② `EquipBestGear` 挑的"最好装备"**不按专精**（野性德穿着法伤皮甲：`sp=549`）；
-③ 循环细节（猎人稳固窗口、火法灼烧/Ignite、盗贼能量池）。
+**这一轮最大的三个变化**：① 天赋改回 **premade 固定 build**（之前误用 `Randomize` 随机填点，等于把 build 砸了）；
+② `equip best` 之后野性德终于拿到物理皮甲（ap 352 → **3337**，dps 32 → **500**）；
+③ 怒气/能量**账本**（见过成本表决定这一手放不放）让战士/盗贼的核心技能回到了正常次数。
 
 ### 8) 踩坑记录（都是实测定位，不是猜）
 
@@ -12697,14 +12691,20 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
 15. **天赋/装备不按专精生成**：`PlayerbotFactory::InitTalents()` 随机填点、`EquipGearBest` 不按专精 ⇒
    野性德穿法伤皮甲（`sp=549/ap=352`）、惩戒骑没十字军打击。"毕业装 bot 才 500 dps"里有一大半不是循环问题。
 
-### 9) 待办（按 DPS 影响排序）
+16. **召唤出来的假人一直在 evade 状态**：`SummonCreature` 生成的怪没有 home 点，`CombatManager` 会把它标成
+   `evade`；而 `Unit::Attack()` 对 evade 目标**直接返回 false**（`victim->GetCombatManager().IsInEvadeMode()`）⇒
+   远程职业永远咬不上（`[DPSFSM-ENGAGE] attack=0(retry=0) ... evade=1`）。修法：召唤后
+   `GetCombatManager().SetEvadeState(EVADE_NONE) + StopEvade()`，出手失败时再补一次。
+17. **场景目标集会被别的 run 清掉**：同一只 bot 被复用，上一轮的收尾 `ClearScenarioTargets` 把新一轮刚登记的集清空
+   ⇒ `pack=0/1`、心跳 `ticks` 定住、整场 0 输出。修法：登记带 `runId`，只清"自己那一轮"。
 
-1. **天赋模板**：`PlayerbotFactory::InitTalents()` 是在目标树里**随机**填点，出来的不是可用 build。
-   要做"每专精一套 41/20 模板"（数据化，按 `tabpage` 选），否则任何循环调优都被天赋上限压住。
-2. **按专精选装备**：`EquipGearBest/InitEquipment` 不看专精 ⇒ 野性德拿法伤皮甲（实测 `sp=549/ap=352`）。
-   至少要按 item subclass + 属性权重过滤（法系/物理）。
-3. **场景侧仍未闭环**：elemental/balance 偶发"没咬上去"（`[DPSFSM-ENGAGE] attack=0`，已加 `CombatStop` 重试，仍有残留）；
-   猎人自动射击窗口判得过严（`weave_margin`），稳固射击放得少。
-4. 近战 bot 停在 5.5~6 码"够不着"（状态机 6.5 码放过、技能射程 5 码）。
+### 9) 待办
+
+1. **场景侧还有 5/17 抖动**（fire/bm/destro/elemental/shadow 偶发 `ic=0`）：evade 与 runId 两个根因已修，
+   仍有残留 ⇒ 下一步要在 `ApplyDummySetup` 里"召唤后先让假人咬 bot 一次"再交给状态机，彻底消掉启动竞态。
+2. **猎人（marks/bm）**：`weave_margin` 判定仍偏严，稳固射击 40 秒只放 1~3 发（应该 ~10 发），要继续调窗口。
+3. **盗贼/战士**：账本已经上线（核心技能次数正常化），但能量/怒气的**回复速率**还没进账本，
+   `fury` 嗜血只到 6 次/40 秒（理论 6~7）已经接近上限，剩下靠装备/急速。
+4. **调优脚本要重跑**：参数已参数化（`hs_rage`/`snd_cp`/`fin_cp`/`fin_energy`/`scorch_stacks`/`weave_margin`/`burst_hp`/`aoe_pack`），
+   等抖动收干净后跑 `_agent_tmp/tune/dps_tune2.py` 做坐标下降。
 5. 还没在真实副本里跑"整队 DPS 全由状态机接管"的对照。
-
