@@ -13079,6 +13079,31 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 较本轮开始时（法系 430~950、近战 16~930、多个专精 0 样本）整体上一个台阶；
 `arms` 偏低主因是"斩杀进不了窗"（见上），`ret` 受复仇之怒 3 分钟冷却影响。
 
+### 10.15 低血木桩场景（验证斩杀类技能）+ 斩杀仍未复现（2026-10-30 05:10）
+
+**新增能力**：`.rndbot sim dummy <spec> <targets> <sec> <guid> <fsm> <respec> <lowhp>`
+第 8 个参数传 `1` ⇒ 木桩 `SetMaxHealth(200000)` / `SetHealth(24000)`（**12% 血**），
+用来验证核心有"目标低血"硬门的技能（斩杀 `5308` 需要 `TargetAuraState=2`，即目标 <20% 血；
+500 万血木桩永远进不了窗）。
+
+**同时改的**：arms/fury 的 `State::Burn` 分支里，低血窗口（`executeWindow`）**先打斩杀**，
+否则怒气会被猛击/致死打击吃光。
+
+**结果：斩杀仍然 0 次**
+- `.rndbot sim dummy arms 1 40 0 1 1 1` → `dps=574 casts=12 melee=32 top=12294:6,25242:5,29707:1`
+  （致死 6、猛击 5、英勇 1，**没有 5308**）
+- 木桩确实是 12% 血、`executeWindow` 成立（burst_hp=20），所以不是窗口问题。
+
+**下一步要查的两条**（按可能性排序）
+1. **bot 法术表里根本没有 `5308`**：随机 bot 的技能是批量塞进去的，训练师技能不一定有
+   ⇒ `bot->HasSpell(5308)` 为假，`Ready()` 直接返回 false（`SpellId` 也拿不到）。
+   验证：在 `CastChecked` 里对 "execute" 打印 `SpellId(...)` 与 `HasSpell`。
+2. `SpellId("execute")` 解析失败（引擎 `"spell id"` 值对某些技能返回 0）——子会话已加
+   `ScanSpellbookByName()` 兜底，但**扫描的前提是法术表里有这个法术**，所以第 1 条更可能。
+
+**附带发现（fury 这只 bot）**：低血木桩下 `dps=102 casts=0 melee=2` —— 又是"整场几乎不接战"的偶发，
+与 `10.14` 里记录的 dummyall 首位偶发同类，属于场景/引擎侧问题，不影响状态机结论。
+
 ### 11) 下一步
 
 1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
