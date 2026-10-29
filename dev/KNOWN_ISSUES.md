@@ -12861,6 +12861,41 @@ shamanistic rage / bloodlust / use trinket` —— 这些跳过 `Ready()` 的 GC
 > 近战在**单跑隔离**测试里能到 fury 571 / feral 607 / assassination 405，batch 里偏低主因是单轮样本与相互干扰；
 > marks 猎人在"假人不再主动追人"之后仍需复测。
 
+### 10.8 猎人两个真根因（2026-10-30 子代理 gdb 取证 + 复测通过）
+
+**根因 1：不是猎人走过去，是木桩走过来。**
+Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackStart` → `UnitAI::HandleMovementOnAttackStart()`
+→ `MotionMaster::MoveChase(victim, m_attackDistance=0)`。这条路径与 `SimScenario` 里显式调用
+`first->AI()->AttackStart(bot)` 是**两条不同的路**（删掉后者并不能阻止自动反击）。
+`ChaseMovementGenerator` 会走到约 0.5×接触距离（≈2.3 码），于是把猎人顶进 8 码死角。
+
+- 修复：`UnitAI::HandleMovementOnAttackStart()` 开头直接 return ——
+  `TYPEID_UNIT` 且带 `UNIT_FLAG_PACIFIED|UNIT_FLAG_STUNNED` 的生物不发起近战追击（仍进战斗、仍可被射击）。
+- 证据：`[AI-CHASE-REPRO] entry=190014 victim=Mospo dist=19.0 attackDist=0.0 pacified=1 stunned=1`，
+  木桩坐标移动 16.7 码，而 bot 全程 `moving=0 gen=0`。
+
+**根因 2：自动射击槽丢失目标。**
+`PlayerbotAI::CastSpellBody()` 每次施法结束都会**恢复旧的选择对象**（bot 自身，自增益常用自己），
+于是 `UNIT_FIELD_TARGET` 指向自己；`Unit::_UpdateAutoRepeatSpell()` 下一 tick 判 `CanAttack(self)==false`
+直接 `InterruptSpell(CURRENT_AUTOREPEAT_SPELL)` ⇒ 反复重挂、每挂最多打一发。
+
+- 修复：`Unit::_UpdateAutoRepeatSpell()` 在目标不可攻击时**回退到已注册的自动射击目标，再回退 `GetVictim()`**；
+  并把真正打出的每一发计入 `botCasts/botSpellCounts`（`top=75:N` 这才反映真实发数）。
+- 证据：`[AUTOREPEAT-DBG] Mospo interrupt: target=Mospo guidEmpty=0 victim=训练假人` ×42。
+
+**顺带纠正的两条错误认知（写进这里避免再踩）**
+1. `MotionMaster::MoveChase(target, offset)` **不是"保持距离"**：移动目标恒为 ~0.5×接触距离，
+   `offset` 只参与"够不够得着"的判定；且 `ChaseMovementGenerator::Backpedal()` 对非玩家目标直接跳过。
+2. `MotionMaster::DistanceYourself(dist)` **仅在当前处于 `CHASE_MOTION_TYPE` 时有效**，
+   bot 处于 IDLE 时整个调用被忽略（日志：`DistanceYourself owner=Mospo dist=21.0 gen=0 IGNORED(not chase)`）。
+
+**修复后实测（40 秒、1 木桩、无 cheat）**
+
+| 专精 | 修复前 | 修复后 |
+|---|---|---|
+| marks | 106 dps / casts=3 / `75:1` / dist 2.2 | **162~237 dps / casts 15~16 / `75:13~14` / dist 18.9~19.0** |
+| bm | 255 dps（实为 2.6 码近战平砍 11 下）/ `75:1` | **167 dps / casts 18 / `75:17` / dist 19.2** |
+
 ### 11) 下一步
 
 1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
