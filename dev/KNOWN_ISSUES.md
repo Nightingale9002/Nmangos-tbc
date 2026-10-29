@@ -13125,6 +13125,28 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 1. 准备阶段对**指定 id 白名单**直接 `bot->learnSpell(id, false)` 兜底（先放 `5308`，验证通了再扩表）；
 2. 在 `CastChecked` 对 "execute" 打一行 `SpellId/HasSpell/CanCastSpell` 结果日志，确认是哪一环。
 
+### 10.17 斩杀验证通过 + 两个"假阴性"教训（2026-10-30 05:30）
+
+**结论：斩杀完全正常，之前是测量问题。**
+
+- 补学关键技能白名单（`SimScenario` 准备阶段 `learnSpell` 22 个核心输出技能）之后，
+  再加上**低血木桩第 8 个参数**，武器战实测：
+  `dps=777.6 casts=12 melee=25 top=25236:12` —— **`25236` 就是 Execute（rank 9）**，12 次。
+- 之前的 0 次是两件事叠加：
+  1. 木桩 500 万血，永远进不了 `TargetAuraState=2`（<20% 血）的窗；
+  2. **命令参数位数搞错了**：`.rndbot sim dummy <spec> <targets> <sec> <guid> <fsm> <respec> <lowhp>`
+     是 **8 个参数**，我一开始只给 7 个 ⇒ `lowHp` 恒为 false，木桩还是 500 万血。
+
+### 教训（写下来避免再犯）
+
+1. **新参数上线后，先打印一次实际生效值**再跑实验（这次就是参数位错导致"斩杀不可用"的误判，
+   浪费了一整轮）。
+2. 判断"某个技能能不能放"时，**先看它是不是 rank 变体 id**：
+   `top=` 里的 id 可能是高 rank（如 `25236` Executerank9、`30330` Mortal Strike rank2、`30335` Bloodthirst rank2），
+   拿低 rank 的 id 去比对会误判成"没放"。
+3. 低血木桩会让木桩**提前死亡**（12% × 20 万 = 2.4 万血，几秒就打空）⇒ 报告里 `victim=-`，
+   此时 dps 只统计到死亡前，**不能与 500 万血木桩的 dps 直接比较**，只能用于验证"技能是否放出"。
+
 ### 11) 下一步
 
 1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
