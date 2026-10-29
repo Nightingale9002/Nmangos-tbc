@@ -12896,6 +12896,44 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 | marks | 106 dps / casts=3 / `75:1` / dist 2.2 | **162~237 dps / casts 15~16 / `75:13~14` / dist 18.9~19.0** |
 | bm | 255 dps（实为 2.6 码近战平砍 11 下）/ `75:1` | **167 dps / casts 18 / `75:17` / dist 19.2** |
 
+### 10.9 每专精独立木桩堆 + 换装健壮性（2026-10-30 凌晨，整队测量终于可复现）
+
+**问题**：3 堆共享木桩时同一套设置下 dps 能差 2 倍（fire 818 → 453），近战/猎人经常 0 有效样本，
+参数调优出来的结论全是噪声。
+
+**改动（都在场景驱动 `SimScenario.cpp`，不动状态机/引擎）**
+1. **每专精一个独立木桩堆**：`DummyRun` 新增 `pileX/pileY/pileZ`（`x,y,z` 固定表示 bot 站位，假人放堆心），
+   `StartDummyAll` 用 `s_specPiles[17]` 表选点；GM 岛没有 30 码平地 ⇒ 改用**17 点蛇形环带** + 每堆独立 z
+   （`Map::GetHeight` 兜底校正）。**堆心最小间距 34.06 码**，任意两个假人 ≥30 码，AoE 不跨堆。
+2. **dummyall 的堆改为每个 run 私有**（`sharedPile=false`）：收尾各自 despawn 自己的木桩，
+   否则下一轮开始时上一轮 17 堆还活着 120 秒、AoE 重复命中会把 dps 顶高。`.rndbot sim arms` 仍是共享堆。
+3. **BIS 换装前清空背包**：反复换装会把旧装备堆满背包，`StoreNewItemInInventorySlot` 失败 ⇒ 槽位空着
+   （实测 combat rogue 主手 `mh=-1`、`wep=-1/13`、dps 只有 16）。现在背包/背包格/装备槽全清再逐件穿。
+4. **装备自检**：穿完检查 sp/ap 是否像本专精（猎人/增强/野性按物理判定），异常记日志便于发现"穿错专精装备"。
+
+**效果：一轮 17/17 全部有效样本**（此前长期 11~13）
+
+| 专精 | dps | | 专精 | dps |
+|---|---|---|---|---|
+| arcane | 943 | | combat | 590 |
+| balance | 940 | | bm | 541 |
+| elemental | 879 | | affliction | 532 |
+| shadow | 793 | | fury | 520 |
+| destro | 757 | | marks | 405 |
+| fire | 687 | | arms | 630 |
+| enhance | 636 | | feral | 631 |
+| frost | 627 | | ret | 251 |
+| assassination | 613 | | | |
+
+**本轮采纳的调优参数**（`dpsfsm_tune.conf`，热加载）
+- `fury:hs_rage=60`（85 → 60，实测 148 → 341）
+- `arms:hs_rage=60`（基线 193 → 657）
+- `combat: snd_cp=5`（619 → 849）；`assassination: snd_cp=5`
+- `ret:burst_hp=30`（222 → 285）
+- `bm:weave_margin=100`（412 → 718）；`marks:weave_margin` 保持默认 150（改成 100/200 都更差）
+- `fire:scorch_stacks=5`；`arcane:burst_hp=30`（738 → 753）
+- 5 目标：`fire:aoe_pack=2`（904 → 1453）、`elemental:aoe_pack=2`
+
 ### 11) 下一步
 
 1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
