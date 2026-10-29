@@ -13439,6 +13439,27 @@ dps 从 0 / 16 → **392 / 475**（`casts=7/15`、`melee=12/52`、切割与剑�
 - `arms 317`（1/3 有效）：斩杀需要目标 <20% 血，普通木桩测不到；且偶发主手兜底失败
 - `fury 356`：与 arms 同源（斩杀/姿态），但更多是"英勇打击吃怒"的循环取舍
 
+### 10.29 残留问题：arms 约四成轮次"有武器、够得着、在战斗，却零平砍"（2026-10-30 07:40）
+
+**现象**（同一只 bot guid=92，连续 6 轮 `dummyall 1 40`）：
+```
+工作轮: arms mh=28434 wep=1/-1 dps=317~392 casts=5~7 melee=9~12
+失败轮: arms mh=28434 wep=1/-1 dps=0      casts=0   melee=0     （ic=1、victim=假人、inreach=1、wtimer=100）
+```
+武器本身正常：`28434 Lunar Crescent`，`class=2 subclass=1`（双手斧）、`InventoryType=17`、`dmg 324-487`、`delay 3700`，
+武器技能已练满（`wep=1/-1` 也证明主手真的穿上了）。
+
+**已排除**：装备缺失（`mh` 非 -1）、站位/距离（`inreach=1`）、未进战斗（`ic=1`、`victim` 有值）、
+AoE 判定（1 目标）、武器技能（已 SetSkill 全满）。
+
+**下一轮该查的**（还没做，留痕避免重复）：
+1. 每秒打印 `getAttackTimer(BASE_ATTACK)` / `IsAttackReady(BASE_ATTACK)` / `GetCurrentSpell(CURRENT_MELEE_SPELL)`，
+   看是"计时器被反复重置"还是"攻击根本没启动"；
+2. 检查失败轮是否都发生在**同一 bot 的第二次及以后 run**（`s_prepared` 缓存 + 重复 `DestroyItem` 可能让攻击状态不刷新）；
+3. 怀疑点：`dmelee 攻击状态` 在"立刻穿主手 + 流水继续穿其余 14 件"期间被装备变更打断，且 40 秒窗口内没恢复。
+
+**影响**：只影响 arms 的样本有效率（3 轮里 1 轮有效），不影响其它专精（combat/fury 同轮正常：767 / 356~419）。
+
 ### 11) 下一步
 
 1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
