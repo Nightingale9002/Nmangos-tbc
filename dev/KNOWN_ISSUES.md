@@ -13509,6 +13509,39 @@ marks 752   combat 715  assassination 710  enhance 641  bm 610  affliction 616
 feral 525   arms 446 (1/2)  fury 401
 ```
 
+### 10.33 调优参数最终落盘状态（`/root/run_local/dpsfsm_tune.conf`，2026-10-30 07:55）
+
+```ini
+# 全局默认
+*:aoe_pack=3      *:aoe_range=11    *:burst_hp=20    *:weave_margin=150
+
+# 法系回蓝门槛
+fire:recover_power=10   frost:recover_power=8   arcane:recover_power=6
+
+# 斩杀/爆发窗口（目标血量百分比）
+fire:burst_hp=30  frost:burst_hp=30  arcane:burst_hp=35  combat:burst_hp=10
+assassination:burst_hp=30  fury:burst_hp=30  arms:burst_hp=30  ret:burst_hp=30
+elemental:burst_hp=30  enhance:burst_hp=30  shadow:burst_hp=30  affliction:burst_hp=30
+destro:burst_hp=30  feral:burst_hp=30  balance:burst_hp=30  bm:burst_hp=30
+
+# AoE 切换门槛（几只怪以上切 AoE）
+fire:2  frost:2  arcane:4  combat:2  arms:2  elemental:2  destro:2
+assassination:5  fury:5  enhance:5  shadow:5  affliction:5  ret:5  feral:5  balance:5  bm:5  marks:4
+
+# 职业专属
+fury:hs_rage=45  arms:hs_rage=60
+combat:snd_cp=3  assassination:snd_cp=5  fury:snd_cp=5
+assassination:fin_energy=55  combat:fin_energy=55  fury:fin_energy=55
+fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
+```
+
+**说明与已知残留**
+- 有两条**对本职业无意义**的残留（无害，不影响行为）：`assassination:hs_rage=80`、`combat:hs_rage=80`
+  （`hs_rage` 只被战士处理器读取）。新会话可顺手删掉。
+- 采纳依据：`combat:snd_cp=3` 是唯一跨 3 轮稳定优于替代值的参数（752→1034，替代值 5 只有 522）；
+  `fire:scorch_stacks`、`fury:hs_rage` 的差异在噪声内（见 §10.24），保留当前值即可。
+- 参数由 `_agent_tmp/tune/dps_arms.py` 写入，可复现；`*.conf` 不入 git（运行期文件）。
+
 ### 11) 下一步
 
 1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
