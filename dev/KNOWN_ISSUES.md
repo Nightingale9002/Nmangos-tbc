@@ -12575,9 +12575,14 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
 ### 4) 训练假人 DPS 场景（`.rndbot sim dummy`）
 
 ```
-.rndbot sim dummy <spec> [targets=1] [seconds=120] [botGuid=0] [fsm=1]
+.rndbot sim dummy <spec> [targets=1] [seconds=120] [botGuid=0] [fsm=1] [respec=1]
 spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/destro/enhance/elemental/feral/balance/ret/shadow
+  botGuid  固定某只 bot（调优要"同一只复测"）
+  fsm=0    关掉状态机，量原引擎基线
+  respec=0 不重天赋/不换装（默认 1：按目标专精 resetTalents + PlayerbotFactory::Randomize + 最好装备）
 ```
+报告字段：`pack=<10码内>/<30码内> sp=<法伤> ap=<攻强> fsm= incombat= victim= dmg= pet= total= dps= casts= melee= top=<本轮增量>`。
+`casts` 是**成功施法次数**（口径见 §6.3），`top` 是本轮增量（历史累计那个坑已修）。
 - GM 岛（map 1）3 个测点横排（±12 码）；假人 `190014` 围 2 码一圈；召唤时**强制 100 万血 + faction 14**
   （`dev/197` 的 SQL 血量与实际库不一致，实测只有几千 ⇒ 2 分钟就打死了）。
 - 站位由场景决定：**近战 3 码、远程 18 码**（猎人有 8 码死角），不指望 bot 自己走过去。
@@ -12595,35 +12600,73 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
 - 本轮调优结论（写在 `_agent_tmp/tune/dpsfsm_tune.tuned.conf`）：`fire:aoe_pack=5`、`frost:aoe_pack=2`、`combat:aoe_pack=2`、
   `assassination:aoe_pack=2`、`elemental:aoe_pack=2`、其余多为 `aoe_pack=5`（近战群伤手段弱，硬进 Aoe 反而降 DPS）。
 
-### 6) 实测数据（本地仿真服，40~50 秒/轮，cheat 全开：mana/power/cooldown/movespeed）
+### 6) 测量口径（这一节是前面所有数字的前提，别再踩）
 
-> 口径：`fsm=0` = 关掉状态机、完全走原引擎的**基线**；`fsm=1` = 状态机接管。1 目标与 5 目标各一轮，取**中位数**。
-> ⚠️ cheat 里带 `cooldown`，怒/能量职业的施法次数会虚高（arms 40 秒 482 次）；绝对值不代表正式服，只用于横向对比与调优。
+**① 战斗类 cheat 必须关掉。** `start_server.sh` 的 `--cheats` 是给"副本能不能推进"用的，对 DPS 状态机是毒药：
 
-| 专精 | 基线 dps（fsm=0） | 1 目标 dps | 5 目标 dps | 备注 |
-|---|---|---|---|---|
-| fire | 58 | **603** | **1020** | 灼烧叠层 + 火球 + 燃烧/气定炎爆 |
-| frost | 0 | **364** | 720 | 寒冰箭；水元素一次 |
-| arcane | 0 | **428** | **590** | 奥冲 3 层 → 飞弹/弹幕 |
-| combat | 280 | 983 / 28 / 0（样本波动大） | 227 | 切割 + 邪恶攻击 + 剔骨；见 §8.3 |
-| assassination | 0 | **178** | 146 | 毁伤 + 毒伤 + 冷血（`34413` 毁伤） |
-| fury | 234 | **194**（另有 771 的一轮） | 363 | 嗜血 + 旋风 + 英勇 |
-| arms | 262 | **1694** | 528 | 致死 + 旋风 + 压制 + 斩杀 |
-| enhancement | 111 | **667** | **1597** | 风暴打击 + 震击（群体更强） |
-| elemental | 87 | **1094** | 594 | 闪电箭/链电 + 烈焰震击 |
-| shadow | 49 | **422** | 310 | 痛/触 + 心爆 + 鞭笞 |
-| affliction | 13 | **528** | 309 | 三 DoT + 吸血（宠物伤害另计） |
-| destruction | 4 | **498** | **738** | 献祭 + 暗影箭 |
-| marksmanship | 0 | **125** | -（样本无效） | 稳固/多重 + 瞄准 |
-| beast mastery | 21 | 66 ~ 145 | 110 | 稳固 + 狂野怒火（受自动射击窗口约束） |
-| feral | 8 | **395** | 340 | 猫形态撕碎/裂伤；非猫形态先变形（§7.7） |
-| balance | 0 | **249** | 43 | 月火/虫群 + 星火 |
-| retribution | 37 | **419** | 37 | 圣印候选兜底 + 审判（§7.8） |
+| cheat | 代码里的作用 | 对 DPS 状态机的影响 |
+|---|---|---|
+| `mana` / `power` | 每个 AI tick 把蓝/怒/能量拉满（`PlayerbotAI::UpdateAIInternal` 的 cheat 段） | `Recover` 状态永远进不去；术士不用分流，猎人不会缺蓝 |
+| `cooldown` | 每 tick `Player::RemoveAllCooldowns()`（**不重置 GCD**） | 燃烧/冰脉/风暴打击/饰品这些"CD 好了才放"的分支永远是好的 |
+| `movespeed` | `UpdateSpeed` ×10 | 走位时间被压缩，跟状态机无关 |
+| `attackspeed` | 引擎动作时长设 1 | 引擎动作节流失效 |
 
-> "样本无效"= 那一轮 bot 根本没打起来（`incombat=0`），是**场景侧**问题，不是该专精 0 输出；
-> 同一专精在另一场景/另一轮通常是正常的（例如 combat 基线 280、5 目标 227）。
+所以假人测试一律用 `BOT_CHEATS="item,breath,taxi,repair,gold"`（只留弹药/材料/呼吸/飞行/修理这些不影响战斗的）。
 
-### 7) 踩坑记录（都是实测定位，不是猜）
+**② 多组并发必须做"测点隔离"。** 伤害是按 bot 自己的计数器取增量的（归属不会串），但状态机的 `pack10/pack30`
+（10/30 码内敌人数，用来判断单挑还是群架）会把**邻居测点的假人**算进来：
+
+```
+改前（6 组并发、1 目标）：[DUMMY] spec=fire ... pack=3/6     ← 30 码内看到 6 个，直接误判成群架
+改后（dpsfsm::SetScenarioTargets）：[DUMMY] spec=fire ... pack=1/1
+```
+
+做法：场景召唤完假人后调 `dpsfsm::SetScenarioTargets(guid, dummies)`，`CountHostilesNear()` 在有声明时**只数这些目标**；
+收尾时清空。副本里没有声明 ⇒ 行为不变。现在 1 目标稳定 `1/1`、5 目标稳定 `5/5`，可以 6 组并发。
+
+**④ 假人场景现在是"真·毕业口径"**：`EquipBestGear=1` + 开跑前按目标专精 **`Player::resetTalents` + `PlayerbotFactory::Randomize`**
+（`sRandomPlayerbotMgr` 的 `specNo` 指定天赋树 `tabpage`）⇒ 天赋树对、装备换最好。
+`[DUMMY]` 报告里直接打 `sp=`（法伤）/`ap=`（攻强），一眼能看出"这一轮到底是不是毕业装"。
+
+**⑤ 假人场景里引擎不再抢 GCD**：`dpsfsm::SkipEngine(guid)` 为真（场景声明过目标）且状态机接管时，
+`PlayerbotAI::UpdateAIInternal` **不再走 `DoNextAction()`**。原来引擎会插补 buff / 魔杖平射 / 重复挂圣印，
+把状态机的 CD 窗口吃掉一大半。副本里 `SkipEngine` 恒为 false，走位/打断/救人不受影响。
+
+**③ `casts` 的口径改过了。** 原来 `PlayerbotAI::CastSpell()` 里的 `CastRecorder` 是**作用域退出就记账**，
+被拦下来的施法也算一次 ⇒ 出现过"arms 40 秒 621~1204 次施法"这种鬼数。现在拆成 `CastSpell`（**成功才记**）
++ `CastSpellBody`（实际逻辑），arms 同场景只剩 15 次真实施法。
+
+### 7) 实测数据（本地仿真服：无战斗 cheat + 毕业装 + 按专精重天赋，1 目标 40 秒，`pack=1/1` 已校验）
+
+> 说明：这一列数字是**同一天多轮迭代的当前值**，各专精还在收敛（每轮修一处 bug，数值会跳）。
+> `sp/ap` 取自 `[DUMMY]` 报告，用来判断"装备/天赋到位没有"。旧表（cheat 全开）不再引用。
+
+| 专精 | sp / ap | 当前 dps | 备注（下一步该修什么） |
+|---|---|---|---|
+| fire | sp 896 | **583** | 纯火球链；缺 Ignite/灼烧循环优化 |
+| frost | sp ~850 | 330（早前） | 待复测 |
+| arcane | sp ~850 | 464（早前） | 待复测 |
+| combat | ap 1997 | **331** | 装备够了但 DPS 低 ⇒ 能量/连击循环与天赋有问题 |
+| assassination | ap 1877 | **295** | 同上（毁伤条件不满足时退邪恶攻击） |
+| arms | ap ~1900 | 388（早前） | 待复测 |
+| fury | ap ~1900 | 235（早前） | 待复测 |
+| enhancement | — | 379（早前） | 待复测 |
+| elemental | sp 927 | **0**（未咬上去/0 施法） | 场景侧问题，见 §9.1 |
+| shadow | sp 967 | **763** | 现在最健康的一个（暗影形态+痛+触+心爆+鞭笞） |
+| affliction | sp ~900 | 492（早前） | 待复测 |
+| destruction | sp ~900 | 397（早前） | 待复测 |
+| marksmanship | ap 1715 | **110** | 自动射击窗口判定过严，稳固射击放得少 |
+| beast mastery | — | 66 ~ 145 | 同上 |
+| feral | sp 549 / ap 352 | **32** | **装备还是法系装**（respec 后没换到野性皮甲）⇒ 先修装备选择 |
+| balance | sp 0 / ap 1084 | 0（未咬上去） | 场景侧，见 §9.1 |
+| retribution | sp 819 | **73** | 随机天赋没十字军打击；只有圣印+审判 |
+
+**结论（重要）**：现在低的不再是"状态机不放技能"（那是前几轮修的），而是三件事按影响排序：
+① 天赋树是 `PlayerbotFactory::InitTalents` **随机填**的，不是 41/20 的成体系 build；
+② `EquipBestGear` 挑的"最好装备"**不按专精**（野性德穿着法伤皮甲：`sp=549`）；
+③ 循环细节（猎人稳固窗口、火法灼烧/Ignite、盗贼能量池）。
+
+### 8) 踩坑记录（都是实测定位，不是猜）
 
 1. **骑乘状态 `Unit::Attack()` 直接返回 false**（`player cannot attack in mount state`）：随机 bot 常年骑坐骑，
    假人测试会表现成"`incombat=1`、`victim=` 空、`casts=0`、只有魔杖/平砍在动"。场景里必须**先下马**，并且每轮补一次。
@@ -12636,10 +12679,32 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
 7. **德鲁伊非猫形态不会自己变形**：假人场景里 feral bot 整场在外形平砍（13 dps）；状态机补了"非猫形态先放一次 Cat Form"，实测 13 → 508 dps。
 8. **惩戒骑的圣印是天赋技能**：随机圣骑士很多没点"命令圣印"，按名字取不到 ⇒ 一路空判（40 秒 210 次审判、只有 105 伤害）。改成圣印候选（血印/命令/正义）取第一个会的，实测 30 → 429 dps。
 
-### 8) 待办
+9. **`CastRecorder` 把失败也算一次施法**：`PlayerbotAI::CastSpell()` 里那段 RAII 是"作用域退出就记账"，
+   被 `Spell::CheckCast` 拦下的尝试全进 `botCasts/botSpellCounts` ⇒ "40 秒 1204 次施法"。已拆成
+   `CastSpell`（成功才记）+ `CastSpellBody`（逻辑）。
+10. **状态机的门用了 `IsInCombat()` 造成死锁**：本核心里"有目标但还没造成/受到伤害"不算战斗，
+   远程 bot 不挥刀就永远不进战斗 ⇒ 状态机拒绝运行 ⇒ 整场 0 输出。改成"有 victim 就进"，
+   并且"没目标"分支要 `return false` 交回引擎（原来 `return true` 把引擎也挡了）。
+11. **自身增益必须打在自己身上**：`TryCast()` 默认目标是敌人 ⇒ 圣印/蝰蛇守护/暗影形态/猫形态/闪电盾
+   全被判成"对敌人放正面法术"而失败。新增 `TryCastSelf()`。
+12. **只判 `IsSpellReady` 不够**：怒气不够（`SPELL_FAILED_NO_POWER`）、压制要求目标刚闪避、移动中读条被静默取消，
+   这些都在 `Spell::CheckCast` 里。现在 `TryCast` 先跑 `ai->CanCastSpell(...)`，失败按 2 秒退避。
+13. **大招/饰品在木桩上永远不放**：原来只在"斩杀 Burst"（目标 ≤ burst_hp）里，木桩满血 ⇒ 燃烧/冰脉/奥强/冲动/剑舞闲置。
+   现在这些"CD 好了就该放"的也放进常规 Burn。
+14. **`Unit::Attack()` 的 `m_attackers` 不对称**：bot 还挂在目标的攻击者集合里、自己的 `m_attacking` 已空时，
+   `_addAttacker` 返回 false ⇒ `Attack()` 失败且**之后每次都失败**（实测 `[DPSFSM-ENGAGE] attack=0 dist=2.0 mounted=0`）。
+   兜底：先 `CombatStopWithPets(true)` 再咬。
+15. **天赋/装备不按专精生成**：`PlayerbotFactory::InitTalents()` 随机填点、`EquipGearBest` 不按专精 ⇒
+   野性德穿法伤皮甲（`sp=549/ap=352`）、惩戒骑没十字军打击。"毕业装 bot 才 500 dps"里有一大半不是循环问题。
 
-1. **无效样本率**：本轮约 30~40% 的假人轮次 `incombat=0`（登录/摆位/地形偶发），调优脚本只吃有效样本，但样本量仍需加大。
-2. `cooldown` cheat 让施法次数失真 ⇒ 后续调优要么关掉 `cooldown`，要么只看 `total/dps`。
-3. 近战 bot 有时停在 5.5~6 码"够不着"的位置（状态机按 6.5 码放过它，但普攻打不到）⇒ 要么把移动也纳入状态机，要么让 Approach 更积极。
-4. 还没在真实副本里跑"整队 DPS 全由状态机接管"的对照（本轮只验证单体/群伤场景与逐专精数值）。
-5. 5 目标场景的 `aoe_pack` 调优只做了 2/5 两档，样本噪声大（±30~60%），需要多轮取中位数。
+### 9) 待办（按 DPS 影响排序）
+
+1. **天赋模板**：`PlayerbotFactory::InitTalents()` 是在目标树里**随机**填点，出来的不是可用 build。
+   要做"每专精一套 41/20 模板"（数据化，按 `tabpage` 选），否则任何循环调优都被天赋上限压住。
+2. **按专精选装备**：`EquipGearBest/InitEquipment` 不看专精 ⇒ 野性德拿法伤皮甲（实测 `sp=549/ap=352`）。
+   至少要按 item subclass + 属性权重过滤（法系/物理）。
+3. **场景侧仍未闭环**：elemental/balance 偶发"没咬上去"（`[DPSFSM-ENGAGE] attack=0`，已加 `CombatStop` 重试，仍有残留）；
+   猎人自动射击窗口判得过严（`weave_margin`），稳固射击放得少。
+4. 近战 bot 停在 5.5~6 码"够不着"（状态机 6.5 码放过、技能射程 5 码）。
+5. 还没在真实副本里跑"整队 DPS 全由状态机接管"的对照。
+
