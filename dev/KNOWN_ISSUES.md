@@ -12934,6 +12934,43 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 - `fire:scorch_stacks=5`；`arcane:burst_hp=30`（738 → 753）
 - 5 目标：`fire:aoe_pack=2`（904 → 1453）、`elemental:aoe_pack=2`
 
+### 10.10 近战"正好 5 码"边界 bug + 惩戒骑三处修复（2026-10-30 凌晨）
+
+**主 bug：近战 bot 被摆在距假人正好 5.00 码 = `ATTACK_DISTANCE` 边界**
+- `SimScenario::TickDummies()` 单木桩布局里 `d.pileX = d.x + d.standDist`，而假人实际生成在
+  `pileX + PILE_DUMMY_R(2.0)` ⇒ 近战 bot 到假人 **3 + 2 = 5.00 码**。
+- 核心 `Unit::CanReachWithMeleeAttack()` 是**严格 `<`**，且下界就是 `ATTACK_DISTANCE(5.0)`
+  ⇒ 5.00 码判定"够不着"：**所有近战零平砍**（`inreach=0 melee=0`），技能恒 `OUT_OF_RANGE`。
+- 报告里的 `dist=` 是**表面距离**（`DIST_CALC_BOUNDING_RADIUS`），会显示 4.5，掩盖了中心距 5.00 的事实。
+- 修复：`d.pileX = d.x + d.standDist - PILE_DUMMY_R`（换成"到 0 号假人正好 standDist"）。
+- 影响面：不止惩戒骑 —— `combat` 也从 `inreach=0 melee=0 dps=331` 变成 `inreach=1 melee=39 dps=837`，
+  `fury` 同理。所以"近战 590~700"这批历史数据是**在 bug 存在时**测的。
+
+**惩戒骑另外三处（同一轮修掉）**
+1. `TickPaladin` 的"在近战范围"判断用表面距离 `s.dist <= 6.5f` ⇒ 明明够不着却不再靠近；
+   改成 `s.bot->CanReachWithMeleeAttack(target)`，够不着就主动靠近到 0.8×近战触及（`CloseToMelee()`）。
+2. `avenging wrath` 是**自身增益**，之前用 `CastFirst`（对敌）⇒ 0 次成功；改 `TryCastSelf`。
+3. `consecration` 用 `TryCastAt(x,y,z)` 恒失败（`PlayerbotAI::CastSpell(x,y,z)` 要求 DEST/SOURCE_LOCATION，
+   对自身施放又被判 `SPELL_FAILED_TARGET_FRIENDLY`=110）⇒ 0 次；改 `CastSelfCentered()`
+   （走核心 `Unit::CastSpell(bot, id, TRIGGERED_NONE)`，自带 GCD/冷却判定 + 记账），法力门槛 40%→15%
+   （本库 Judgment/CS 的 ManaCost 为 0）。
+
+**修复后 17 专精基线（40 秒、1 木桩、无 cheat、2 轮中位数；17/17 有效）**
+
+| 专精 | dps | | 专精 | dps |
+|---|---|---|---|---|
+| combat | 923 | | enhance | 584 |
+| balance | 922 | | affliction | 561 |
+| shadow | 872 | | frost | 542 |
+| elemental | 811 | | arms | 522 |
+| fire | 786 | | marks | 513 |
+| arcane | 735 | | fury | 488 |
+| assassination | 704 | | bm | 465 |
+| destro | 691 | | ret | 450 |
+| feral | 616 | | | |
+
+惩戒骑单跑实测 427~566（波动主因：复仇之怒 3 分钟冷却跨轮复用、BIS 偶发 ap 1950 vs 2270）。
+
 ### 11) 下一步
 
 1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
