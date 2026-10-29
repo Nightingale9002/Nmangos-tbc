@@ -13031,6 +13031,54 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 **顺带发现**：`top=` 里出现过 `24355` = "Drink"（喝水）——说明有些专精在假人场景里会去喝水/回蓝，
 这一条要单独查（可能把 40 秒窗口切走一大块）。
 
+### 10.14 循环覆盖修复（10 个专精）+ BIS 穿装重试（2026-10-30 05:00）
+
+#### A. 十个专精的核心技能修复（全部在 `strategy/DpsFsm.cpp`）
+
+| 专精 | 缺失技能 | 根因（符号） | 修复 |
+|---|---|---|---|
+| bm/marks | 稳固射击 `27019` 几乎不放 | `BuildSnapshot` 里 `IsNonMeleeSpellCasted(false)` 的 `skipAutorepeat` 默认 false ⇒ **自动射击被算成"读条"** ⇒ `TickHunter` 首行就 return | casting 判定传 `skipAutorepeat=true` |
+| fire/frost/arcane 等 | 燃烧 `11129`、冰冷血脉 `12472`、水元素 `31687`、唤醒、剑刃乱舞、冲动、冷血、死亡之愿、元素掌握…**全部 0 次** | `CastChecked` 用"当前目标"施放自身增益 ⇒ 核心判 `TARGET_ENEMY(108)` / `TARGET_FRIENDLY(110)` | 遇到 108/110 时改用核心 `Unit::CastSpell(self,…)`（+`RecordSpellCast`） |
+| combat | 切割 `6774` 0 次 | `TickRogue` 的 SnD 表项 target 填成 bot 自己；连击点法术要求 `unitTarget == comboTarget` ⇒ `NO_COMBO_POINTS(73)` | SnD 表项 target 改**敌人** |
+| assassination | 毒伤 `32645` 0 次 | 毒伤 `TargetAuraState=16`（目标须中毒），bot 没上毒 ⇒ `106` | 毒伤失败时用剔骨兜底 |
+| arms | 致死打击 `12294` 0 次（只有猛击） | `TickWarrior`：猛击只要 15 怒就放，怒气永远攒不到致死所需 | 猛击门槛改为 `slamCost + coreCost`，给致死留怒 |
+| fury | 旋风斩 `1680` 0 次 | ①核心 `ONLY_SHAPESHIFT(89)`：需要狂暴姿态；②个别 bot 的 `character_spell` 里根本没有 Berserker Stance | 自动切狂暴姿态（对有 2458 的 bot 有效） |
+| feral | 凶猛撕咬 `24248`（表里没有）、割裂被饿死 | 终结技排在攒星技之后；`Tiger's Fury`(9846) 无 CD 把能量吃光 | 终结技前置（割裂→撕咬）、TF 限 `energy>=80` |
+| destro | 燃烧 `17962`（表里没有） | `TickWarlock` 只挂献祭，不接燃烧 | 献祭在场时接燃烧 |
+| enhance | 图腾全无 | `TickShaman` 没图腾项；且姿态/图腾法术被引擎 `"spell id"` 按 `IsPassiveSpell` 过滤 ⇒ 名字解析返回 0（静默失效） | 新增 `ScanSpellbookByName()` 兜底 + `TotemUpkeep()` |
+| arcane | 魔杖兜底 `5019` 占一半时间、飞弹/弹幕 0 | 唤醒也走"对敌"⇒108；奥冲叠层是独立 aura `36032`，按名字查 30451 永远 0 | Recover 改"唤醒(自放)→药水→魔杖"；叠层按 `36032` 判飞弹；补奥术弹幕 |
+
+**对照**：shadow（唯一没被改到的专精）884.9 → 825~850，噪声内无回退。
+
+**明确修不了的（记录在案，避免重复投入）**
+- **斩杀 `5308`**：核心 `spell_template.TargetAuraState=2`（目标 <20% 血）硬门，500 万血木桩永远进不了窗
+  （把 `arms:burst_hp` 临时改 100 验证过，仍只出致死）⇒ 测斩杀需要"低血木桩"专用场景。
+- **enhance 图腾** 40 秒只落地 2 个（共享图腾分类冷却）。
+- **feral 猫形态抖动**：引擎让 bot 喝水（`24355 Drink`）会取消变形 ⇒ 状态机再变回来，40 秒刷 13 次 Cat Form。
+- **bm 猎人 pet=0**（只放了一次 `883 Call Pet`），宠物管理不在状态机范围。
+
+#### B. BIS 穿装重试（`SimScenario.cpp`）
+
+主手偶发空槽（`mh=-1`、`wep=-1/13`、dps 掉到 10~20），原因是穿装偶发失败（背包/唯一性/双手冲突），
+之前没有重试。现在：失败就重排队重试最多 3 次，流水完成后**主手自检**并报警。
+
+#### C. 当前基线（40 秒、1 木桩、无 cheat、2 轮；17/17 有效）
+
+| 专精 | dps | | 专精 | dps |
+|---|---|---|---|---|
+| frost | 1332 | | balance | 779 |
+| elemental | 1057 | | feral | 769 |
+| arcane | 1033 | | shadow | 707 |
+| destro | 880 | | enhance | 680 |
+| fire | 871 | | affliction | 638 |
+| marks | 832 | | fury | 623 |
+| combat | 814 | | assassination | 546 |
+| bm | 804 | | ret | 499 |
+| | | | arms | 352 |
+
+较本轮开始时（法系 430~950、近战 16~930、多个专精 0 样本）整体上一个台阶；
+`arms` 偏低主因是"斩杀进不了窗"（见上），`ret` 受复仇之怒 3 分钟冷却影响。
+
 ### 11) 下一步
 
 1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
