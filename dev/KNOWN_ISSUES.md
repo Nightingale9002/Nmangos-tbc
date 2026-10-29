@@ -13361,6 +13361,36 @@ feral 602  arms 559  affliction 555  fury 541  ret 533
 9. 站位 LOS 不通（`y+14` 那排）⇒ 整排远程 0 dps §10.21
 10. `MoveChase(offset)` 不是"保持距离"；`DistanceYourself` 只在 CHASE 态有效 §10.5
 
+### 10.26 崩服定位：那条"远程不变量"闸门本身是祸源（2026-10-30 07:10）
+
+**现象**：整队第二轮直接 0/17 —— 服务端在跑测中途消失。
+
+**gdb 栈**：
+```
+#0 ChaseMovementGenerator::DistanceYourself(Unit&, float)
+#1 PlayerbotAI::UpdateAIInternal(uint, bool)
+#2 PlayerbotAI::UpdateAI
+#3 Player::UpdateAI → Map::Update
+```
+
+**结论**：`10.4` 里加的"远程职业绝不进近战"不变量（`bot->GetMotionMaster()->DistanceYourself(keep)`）
+在**目标失效/不是 CHASE 态**时会崩在 `ChaseMovementGenerator::DistanceYourself`；
+而且它本来就**无效**（早期实测：`DistanceYourself` 只在 CHASE 态生效，且会被引擎下一 tick 覆盖）。
+
+**处理**：`PlayerbotAI::UpdateAIInternal` 与 `RandomPlayerbotMgr::UpdateAIInternal` 里的两处闸门**整段删除**，
+只留一条注释说明原因。远程站位问题已经由引擎侧（`ReachTargetAction::GetApproachRange`）
+和场景侧（站位/后坐/钉位）解决，不需要这条危险的不变量。
+
+**修复后回归**（2 轮，17/17 与 16/17 有效，无崩溃）
+```
+shadow 1093  elemental 1026  balance 953  fire 934  combat 894  destro 842
+marks 834    enhance 754     bm 741       assassination 737  arcane 733
+feral 670    arms 595        affliction 542  ret 541  fury 508  frost 478
+```
+
+**教训**：给"防御性不变量"写移动调用时要考虑目标失效；更重要的——**无效的补丁要尽早删**，
+留着只会变成新的崩溃源。
+
 ### 11) 下一步
 
 1. 复测 marks/bm（假人已改为完全站桩），确认自动射击发数与 dps
