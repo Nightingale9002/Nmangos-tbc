@@ -13583,6 +13583,30 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
 
 **影响**：只影响 arms 这一个专精的数据可信度；其它 16 个专精的可复现性已由 §10.28/§10.34 的多轮数据支撑。
 
+### 10.36 arms 不稳定的真因：**spec 被误判成 fury**（2026-10-30 08:35）
+
+不需要加日志——状态机本来就有每秒心跳，直接把失败轮的 `[DPSFSM-HB]` 拉出来即可：
+
+```
+[DPSFSM-HB] Oberio spec=fury state=Idle incombat=0 target=- hp=100 res=0 ticks=3709 casts=47
+[DPSFSM-HB] Apoleon spec=fury state=Idle ...
+```
+
+**结论**：`.rndbot sim dummy arms ...` 选中的武器战 bot（guid 92 `Oberio`），在状态机里被判成 **`spec=fury`**
+⇒ `TickWarrior` 走狂暴战分支（先放嗜血/死亡之愿），但这只 bot 是**武器战天赋 + 双手斧**，
+嗜血要么没学要么不匹配 ⇒ 大部分施法被拒、几乎不放致死打击 ⇒ 出现"有武器、够得着、在战斗却 casts/melee 极少"。
+
+**这解释了 §10.29/§10.35 的全部现象**（不是装备、不是站位、不是攻击状态）：
+- 单跑/整队都偶发：取决于这次挑中的 bot 被误判成哪种战士；
+- 同职业的 `fury` 反而稳定：它被正确判成 fury，走的就是对应分支。
+
+**修法（下一会话，改动很小）**
+1. 给 `dpsfsm` 加一个"**场景指定专精覆盖**"：`SetSpecOverride(guid, spec)`，
+   在 `Tick` 里优先用它替代 `DetectSpec()`（假人场景本来就明确知道要测哪个专精）；
+2. 或者反过来：场景启动时校验 `DetectSpec() == 期望专精`，不一致就换一只 bot（并在日志里说明）。
+
+推荐第 1 种：一行覆盖判断，且能顺带解决"其它专精也可能被误判"的隐患（例如 balance/feral 共享德鲁伊三系）。
+
 ### 11) 待办（2026-10-30 08:20 更新）
 
 **已完成（本节之前的待办均已闭环）**
