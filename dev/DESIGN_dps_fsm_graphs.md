@@ -44,6 +44,11 @@
    这样 Optuna 调权重时不会牵动状态图。
 3. **转移条件只能引用快照字段 + 参数**，不许调用施法、不许查 CD 之外的副作用。
 4. **优先级固定为 `Off → Idle → Prep → Flee → Recover → Aoe → Burst → Execute → Approach → Weave → Maintain`**。
+5. **"等待"必须是一等公民（2026-10-31 猎人模型逼出来的）**：最优解常常是"这一手什么都不放"。
+   但现在的接口是 `Tick*()` 返回 `bool`：`true`=我出手了、`false`=交回引擎——而"交回引擎"会让引擎**立刻放它自己的技能**，
+   恰好破坏刚算好的窗口（例如平射锁定期间被塞一发稳固）。
+   ⇒ 接口要改成三态：**`Acted`（我放了技能）/ `Hold`（这一 tick 有意空着，引擎也不许动）/ `Decline`（我不处理，交回引擎）**。
+   `Hold` 在 sim 里等价于"本 tick 让位"，在线上等价于"抢到这一 GCD 但什么都不做"（依赖 `Ownership` 令牌）。
 
    现有代码里所有"顺序不一致"都是历史遗留（例如猎人把 `Recover` 放在 `Aoe` 之后），
    统一到这条链，行为差异用阈值表达（`aoe_pack` 调大就等价于"先打单体"）。
@@ -342,12 +347,29 @@ Approach: dist > 30
 | `Burst` | 饰品 → `cold blood`(刺杀)/`adrenaline rush` → `blade flurry` |
 | `Maintain` | `slice and dice`(剩余 < `snd_refresh`) → 满星(`fin_cp`)+能量够 → `envenom`(刺杀)/`eviscerate` → `mutilate`(刺杀)/`sinister strike` |
 
-### 6.4 猎人（兽王 = 生存；射击专精默认也不打瞄准，见下）
+### 6.4 猎人 —— 按"四个计时器"重写（2026-10-31 站长给的决策模型）
 
-> **2026-10-31 站长口径**：**猎人不需要瞄准射击**，除非有 boss 策略指定。
-> 所以 `aimed shot` 不进 `Maintain`/`Burst`，改成一个参数 `use_aimed`（默认 0），
-> 只有 boss 策略（`ai_playerbot_boss_strategy` 之类）点名时才置 1。现有 `TickHunter` 里
-> `mm && canAimed && aimed shot` 那条属于历史遗留，保留在 legacy 路径，不动。
+> **核心**：猎人的一切抉择都围绕四个不同步的计时器 ——
+> ① 平射隐藏施法 **0.5s**（锁定后不可取消，但读条会推后它）② 平射独立冷却 **(武器速度 − 0.5)s**
+> ③ GCD **1.5s** ④ 稳固读条 **1.5s**。
+> **稳固的 1.5s 与平射剩余时间是零和**：读稳固的瞬间，这 1.5s 内平射出不去；剩余不足就会被推后（clip）。
+> 所以 Maintain 的判断依据**不是攻速分档**，而是"**我按的这个键会不会让下一发平射迟到**"。
+
+**Maintain 动作表（按顺序，命中即停）**：
+
+| # | 守卫条件 | 动作 |
+|---|---|---|
+| 1 | `kill command` 可用（兽王） | `kill command`（GCD 外，无条件最高优先） |
+| 2 | `auto_remain <= autoshot_land`(0.5s)｜平射已锁定 | `arcane shot`；**不可用就等待**（绝不能读稳固） |
+| 3 | `autoshot_land < auto_remain < steady_window`(2.0s)｜瞬发黄金窗口 | `multi-shot` → `arcane shot` → **等待**（不读稳固） |
+| 4 | `auto_remain >= steady_window`(2.0s)｜稳固安全区 | `steady shot` |
+| 5 | 断档（多重/奥射都 CD、剩余又尴尬） | **安心等待**，不用劣质填充破坏平射轴 |
+
+**为什么这么分**：稳固的安全条件是"读条 1.5s + 平射出手 0.5s = 2.0s"；低于 2.0s 读稳固一定推后平射，
+损失的平射 ≥ 稳固本身的收益。0.5s 以下平射已经拉弓，读条直接把它推后。
+
+**需要的快照字段**：`autoRemainMs`（到下一发平射的剩余）、`multiReady` / `arcaneReady` / `killCommandReady`。
+**参数**：`autoshot_land=0.5`、`steady_window=2.0`（= 稳固读条 + 平射施法，受急速影响）、`weave_margin`（现已有）。
 
 | 状态 | 内容 |
 |---|---|
@@ -357,7 +379,7 @@ Approach: dist > 30
 | `Aoe` | `volley` → `multi-shot` → `steady shot` |
 | `Burst` | 饰品 → **`rapid fire`（已确认要加）** → `bestial wrath` → `kill command` → （`use_aimed=1` 时）`aimed shot` |
 | `Weave` | `arcane shot` → `multi-shot`（等自动射击窗口） |
-| `Maintain` | `hunter's mark` → `serpent sting` → `steady shot` → `multi-shot` → `arcane shot`；`aimed shot` **仅 `use_aimed=1`**；任何施法后**立刻重挂自动射击** |
+| `Maintain` | **见上表（计时器守卫）**。原旧表的 `hunter's mark → serpent sting → steady → multi → arcane` 顺序**作废**；`aimed shot` 仅 `use_aimed=1`（boss 策略点名）；任何施法后**立刻重挂自动射击**（这是 L6 不变量，不是状态） |
 
 ### 6.5 术士
 
