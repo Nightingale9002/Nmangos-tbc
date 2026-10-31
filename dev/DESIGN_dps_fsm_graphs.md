@@ -398,7 +398,7 @@ Approach: dist > 30
 | `Prep` | **`fel armor`（已确认）+ 召唤恶魔卫士 `summon felguard`** | 同左 | 同左（主宠 = 恶魔卫士） |
 | `Flee` | `fear` → `curse of exhaustion` → 跑 | 同左 | 同左 |
 | `Recover` | `life tap`（血 > 55%）→ 绷带/糖 ⚠ | 同左 | 同左 |
-| `Aoe` | `seed of corruption` → `rain of fire` → `shadow bolt` | 同左 | 同左 |
+| `Aoe` | **`seed of corruption` 尽量铺满多目标**（2026-11-01 站长口径：术士多目标"更简单"，就是铺种子 + 注意仇恨）→ 铺完再 `rain of fire` / `shadow bolt`；**仇恨用 `EvalThreat` 三档挡着**（`Throttle`/`Wait` 时不再铺新种子） | 同左 | 同左 |
 | `Burst` | 饰品 → `shadowburn` → `shadow bolt` | 饰品 → `shadowburn` → `shadow bolt` | 同左 |
 | `Maintain` | `curse of elements`(无诅咒位时) → `corruption` → `siphon life` → `unstable affliction` → `drain life` → `shadow bolt` | 诅咒 → `immolate` → `conflagrate` → `shadow bolt` | 诅咒 → `corruption` → `shadow bolt` |
 
@@ -442,7 +442,7 @@ Approach: dist > 30
 | `Prep` | `shadowform` → `power word: fortitude`(团队) |
 | `Flee` | `psychic scream` → `fade` → 跑 |
 | `Recover` | 蓝 < 10% → `shadowfiend`? ⚠（TBC 无，用大蓝/暗影魔是 WotLK）→ 魔杖 |
-| `Aoe` | **多目标 DoT（已确认）**：给每个目标补 `shadow word: pain` / `vampiric touch`，不切单点 |
+| `Aoe` | **多目标 DoT（已确认）**：给每个目标补 `shadow word: pain` / `vampiric touch`，不切单点。**目标选择与目标数上限按站长 2026-11-01 口径**：① **优先打血量最多的那个**（低血量单位撑不完 DoT，跳不满 = 浪费 GCD）；② **同时挂 DoT 的目标数上限 `multidot_max`（默认 3）**，因为实战里 3 目标以内才是最舒服的输出环境，超过 3 个就不再扩、回头集火血量最高的 |
 | `Burst` | 饰品 → `shadow word: death` → `mind blast` |
 | `Maintain` | **按 GCD 倍数排程（2026-11-01 站长口径）**，不是简单优先级表 —— 详见下 |
 
