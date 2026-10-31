@@ -301,14 +301,21 @@ Approach: dist > 30
 
 ### 6.1 法师
 
-| 状态 | 冰霜 Frost | 火焰 Fire | 奥术 Arcane |
+> **2026-10-31 站长提供攻略**（"两系对照速览"，按 2T5 口径）。下表按它重写，**不再从旧代码继承顺序**。
+> 关键变化：冰法 AoE 主力是**魔爆术**（仇恨安全），冰锥/烈焰风暴只在**仇恨领先**时用，暴风雪是"减速/安全"选项；
+> 奥法的恢复顺序固定为 **宝石 → 大蓝 → 唤醒**，而且**唤醒就是切 3+3 的节点**。
+> ⚠ 套装效果（如 2T5）会改变循环 ⇒ 做成参数/装备检测，不能写死。
+
+| 状态 | 冰霜 Frost | 火焰 Fire | 奥术 Arcane（2T5） |
 |---|---|---|---|
-| `Prep` | `arcane intellect`(团队) → `ice armor`/`molten armor`(按 `armor_pref`) | 同左（默认 `molten armor`） | 同左（默认 `mage armor` 续航） |
-| `Flee` | `frost nova` → `ice barrier` → `blink` → `ice lance` | `blast wave` → `dragon's breath` ⚠ → `blink` | `frost nova` → `blink` → `arcane barrage`(移动) |
-| `Recover` | `evocation` → 法力宝石/大蓝 → 魔杖 | 同左 | 同左；3+3 循环本身也是省蓝手段 |
-| `Aoe` | **对怪堆放 `blizzard` 即可**（范围减速，一次覆盖一片，**不需要逐个目标检查**）；用 `aoe_slow_rank`（默认 1 级）省蓝省仇恨；已经铺上后能站桩就继续 `blizzard`，被打断/怪散了再补 | `flamestrike`(地面) → `blizzard`(减速) ⚠ → `blast wave` | `blizzard` → `arcane explosion`(≤10 码) |
-| `Burst` | `summon water elemental` → `icy veins` → `cold snap` → `ice lance`/`frostbolt` | 饰品 → `combustion` → `presence of mind` → `pyroblast` → `fire blast` | 饰品 → `arcane power` → `arcane blast` 连发（蓝够时） |
-| `Maintain` | **常规输出 = 完整循环**：① 开怪先 `frostbolt` 上"深冬之寒/冰霜易伤"；② 之后一直 `frostbolt`；③ `clearcasting` 触发照常 `frostbolt`（免费不占额外 GCD）；④ 移动中改 `ice lance`；⑤ 目标身上易伤掉了靠 `frostbolt` 自然续，不用额外补 | **完整循环**：① `scorch` 叠到 `scorch_stacks`（叠满才有暴击加成）；② `fireball` 填充；③ `fire blast` 只在移动/收尾用（不打断读条）；④ 有 `clearcasting` 优先 `fireball` | **完整循环**：蓝够（`> burn_mana`）→ 无脑 `arcane blast`；蓝不够 → Plan **3+3**（奥冲×3 → 寒冰箭×3 → 卡 0.5 秒读下一发奥冲）；移动中 `arcane barrage` |
+| `Prep` | `arcane intellect`(团队) → `ice armor`（默认）/`molten armor`(凶险时) | 同左（默认 `molten armor`） | `arcane intellect` → `mage armor`（蓝量驱动，续航优先） |
+| `Flee` | `frost nova` → `ice barrier` → `blink` → `ice lance` | `blast wave` → `blink` | `frost nova` → `blink` → `arcane barrage`(移动) |
+| `Recover` | 宝石 → 大蓝 → `evocation`（按需，蓝压力小） | 同左 | **宝石 → 大蓝 → `evocation`；唤醒落地即切 3+3** |
+| `Aoe` | **`arcane explosion`（魔爆术，仇恨安全，近身）** → `cone of cold`（冰锥）/`flamestrike`（**仅在仇恨领先时**）→ `blizzard`（`aoe_slow_rank=1`，需要减速/远程时） | `flamestrike`(地面) → `blast wave` → `blizzard`（减速） | `arcane explosion`（近身）/ `presence of mind + flamestrike`（远程，气定烈焰风暴） |
+| `Burst` | `icy veins`（冰冷血脉）+ `summon water elemental` + 饰品 → 奥冲/寒冰箭；**`cold snap`(急冷) 冷却好就再打第三轮** | 饰品 → `combustion` → `presence of mind` → `pyroblast` → `fire blast` | `arcane power`（奥术强化）+ `icy veins` + 饰品 → **`arcane blast` 连发（全力倾泻）** |
+| `Maintain` | **深冬之寒叠层 → `frostbolt` 寒冰箭**；蓝压力小 ⇒ **寒冰箭是唯一填充**，不需要省蓝循环；移动中 `ice lance` | `scorch` 叠到 `scorch_stacks`（火球易伤）→ `fireball` 填充；`fire blast` 只在移动/收尾 | **蓝量驱动**：蓝够 → 无脑 `arcane blast`；蓝见底 → 3+3。在"泄蓝"与"省蓝"之间切换，蓝量即伤害 |
+| Plan `3+3` | 不适用 | 不适用 | **卡 debuff 最后 0.5 秒打下一发奥冲**：叠满 3 层 → `frostbolt`×3 塞满 8 秒窗口 → 窗口末尾（剩 ≈0.5s）读下一发奥冲（高速、此时叠层已回落 ⇒ 低费）；**唤醒落地后进入该循环** |
+
 
 > 奥法 3+3 是**Plan**，不是状态：状态仍是 `Maintain`，里面跑一张小有向图（叠满 3 层 debuff → 转寒冰箭 ×3 → 窗口末尾读奥冲）。
 
