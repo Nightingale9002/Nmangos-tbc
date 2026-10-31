@@ -328,7 +328,7 @@ Approach: dist > 30
 
 | 状态 | 内容 |
 |---|---|
-| `Prep` | 毒药（`instant poison`/`deadly poison`，主副手分开）⚠ 现有代码没处理 |
+| `Prep` | **主手：`adamantite sharpening stone`（精金磨刀石，物品）**；**副手：`deadly poison`（致命毒药）** —— 站长 2026-10-31 定 |
 | `Flee` | `vanish` ⚠ → `sprint` → 跑 |
 | `Recover` | 能量 < `recover_enter` → 等能量（不施法，只平砍） |
 | `Aoe` | `blade flurry` → `adrenaline rush` → 落回 `Maintain` 表 |
@@ -343,7 +343,7 @@ Approach: dist > 30
 | `Flee` | `frost trap`(地面) → `concussive shot` → `wing clip`(近身) → `aspect of the cheetah` |
 | `Recover` | 蓝 < 10% → `aspect of the viper` → 普通射击（回到 30% 换回鹰守） |
 | `Aoe` | `volley` → `multi-shot` → `steady shot` |
-| `Burst` | 饰品 → `bestial wrath` → `kill command` → (`rapid fire` ⚠ 未在现表里) → `aimed shot`(射击) |
+| `Burst` | 饰品 → **`rapid fire`（已确认要加）** → `bestial wrath` → `kill command` → `aimed shot`(射击) |
 | `Weave` | `arcane shot` → `multi-shot`（等自动射击窗口） |
 | `Maintain` | `hunter's mark` → `serpent sting` → `steady shot` → `multi-shot` → `arcane shot`；任何施法后**立刻重挂自动射击** |
 
@@ -351,7 +351,7 @@ Approach: dist > 30
 
 | 状态 | 痛苦 | 毁灭 | 恶魔（现走 else 分支） |
 |---|---|---|---|
-| `Prep` | `demon armor`/`fel armor` ⚠ → 召唤宠物 → 灵魂链接? | 同左 | `summon felguard`? ⚠（TBC 无，应为 `summon succubus`/`imp`） |
+| `Prep` | **`fel armor`（已确认）+ 召唤恶魔卫士 `summon felguard`** | 同左 | 同左（主宠 = 恶魔卫士） |
 | `Flee` | `fear` → `curse of exhaustion` → 跑 | 同左 | 同左 |
 | `Recover` | `life tap`（血 > 55%）→ 绷带/糖 ⚠ | 同左 | 同左 |
 | `Aoe` | `seed of corruption` → `rain of fire` → `shadow bolt` | 同左 | 同左 |
@@ -373,10 +373,10 @@ Approach: dist > 30
 
 | 状态 | 野性 Feral | 平衡 Balance |
 |---|---|---|
-| `Prep` | `cat form` → `mark of the wild` → `dash`? | `moonkin form` ⚠ → `mark of the wild` |
+| `Prep` | `cat form` → `mark of the wild` | **`moonkin form`（已确认需要这个门）** → `mark of the wild` |
 | `Flee` | `dash` → `bash`? → 跑 | `entangling roots` ⚠ |
 | `Recover` | —（能量自回） | 蓝 < 10% → 药水/激活? |
-| `Aoe` | `swipe`(猫)? ⚠ TBC 猫无 AoE → 只平砍 | `hurricane` → `starfire` |
+| `Aoe` | **无多目标策略（已确认）**：继续按 `Maintain` 单点，不切 AoE 状态 | `hurricane` → `starfire` |
 | `Burst` | 饰品 → `tiger's fury`(能量 ≥ 80) → `rip`/`ferocious bite` | 饰品 → `force of nature` → `starfire` |
 | `Maintain` | `mangle (cat)` → `rip`(无) → 满星 → `ferocious bite` → `shred` → `rake` | `moonfire` → `insect swarm` → `starfire` |
 
@@ -387,7 +387,7 @@ Approach: dist > 30
 | `Prep` | 圣印（按阵营：`seal of blood`/`seal of command`/`seal of righteousness`）→ 光环 |
 | `Flee` | `hammer of justice` → 跑 |
 | `Recover` | 蓝 < `recover_enter` → 停手等回蓝（`seal of wisdom` ⚠） |
-| `Aoe` | 现无群体技 → `consecration` + `hammer of wrath` ⚠ |
+| `Aoe` | **`consecration`（奉献，已确认可用）** + 保持 `Maintain` 的审判/十字军 |
 | `Burst` | 饰品 → `avenging wrath` → `hammer of wrath` → `judgement` → `crusader strike` |
 | `Maintain` | 圣印(剩余 < 2s) → `judgement` → `crusader strike` → `consecration`(蓝 > 15%) |
 
@@ -398,7 +398,7 @@ Approach: dist > 30
 | `Prep` | `shadowform` → `power word: fortitude`(团队) |
 | `Flee` | `psychic scream` → `fade` → 跑 |
 | `Recover` | 蓝 < 10% → `shadowfiend`? ⚠（TBC 无，用大蓝/暗影魔是 WotLK）→ 魔杖 |
-| `Aoe` | ⚠ 暗牧无 AoE：多目标时保持多目标 DoT |
+| `Aoe` | **多目标 DoT（已确认）**：给每个目标补 `shadow word: pain` / `vampiric touch`，不切单点 |
 | `Burst` | 饰品 → `shadow word: death` → `mind blast` |
 | `Maintain` | `shadow word: pain` → `vampiric touch` → `mind blast` → `shadow word: death` → `mind flay` |
 
@@ -408,13 +408,25 @@ Approach: dist > 30
 
 ---
 
-## 7. 这份草稿里我最没把握的 7 条（优先请站长看这几条）
+## 7. 站长已确认的口径（2026-10-31）与唯一遗留
 
-1. 术士 `Prep`：TBC 有没有 `fel armor`（还是只有 `demon armor`）；恶魔天赋主宠是什么。
-2. 萨满 `Recover`：`shamanistic rage` 是增强回蓝核心，但元素能不能用、优先级多高。
-3. 德鲁伊 `Balance` 要不要 `moonkin form` 门；猫德多目标到底怎么处理（TBC 猫没有可靠 AoE）。
-4. 猎人 `Burst` 里 `rapid fire`（急速射击）现在完全没进表，是不是该加。
-5. 盗贼 `Prep` 的毒药：现在代码完全不涂毒，影响多大（可能很大）。
-6. 圣骑 `Aoe`：TBC 惩戒几乎没有群体手段，是否干脆不给 `Aoe` 状态。
-7. 牧师多目标怎么打：保持多目标 DoT，还是就单点。
+| # | 问题 | 结论 |
+|---|---|---|
+| 1 | 术士 `Prep` 用哪种护甲 / 主宠 | **`fel armor` + 恶魔卫士（`summon felguard`）** |
+| 2 | 萨满 `shamanistic rage` 元素能不能用 | **站长也不确定 ⇒ 待实测**（先只在增强里用，元素侧跑 A/B 再定） |
+| 3 | 平衡德形态门 / 猫德多目标 | **需要 `moonkin form` 门**；**猫德没有多目标策略**（保持单点，不切 `Aoe`） |
+| 4 | 猎人 `rapid fire` | **加** |
+| 5 | 盗贼 `Prep` | **主手 `adamantite sharpening stone`（精金磨刀石，物品），副手 `deadly poison`（致命毒药）** |
+| 6 | 惩戒骑 `Aoe` | **用 `consecration`（奉献）** |
+| 7 | 暗牧多目标 | **多目标 DoT**（每个目标补痛 / 吸血鬼之触） |
+
+### 这些确认暴露出的 3 个代码能力缺口
+
+1. **物品使用**：盗贼的精金磨刀石、法师的法力宝石、术士的糖都是"用物品"，不是施法。
+   现有 FSM 只有 `CastSpell` 路线 ⇒ 需要 `UseItemAction` 一类的接口，并在 `Prep` 状态里调用。
+2. **多目标遍历**：冰法"铺满减速"、暗牧"多目标 DoT"都要**逐个目标**判断与施法，
+   而快照里只有单个 `target` + 一个计数 ⇒ 需要补"附近敌人列表 + 每个目标的状态"。
+3. **宠物控制**：术士恶魔卫士、猎人宠物、法师水元素 —— 需要"宠物在不在 / 让它打谁"的接口，
+   现在只有 `GetPet()` 判空（上次冰法试点 `pet=0` 就是召不出来）。
+
 
