@@ -13,17 +13,28 @@
 差别只在**谁先判**和**动作表内容**。所以先定一张骨架图，专精只填三样东西：
 **① 哪些状态存在 ② 转移阈值 ③ 每个状态的动作表**。
 
-| 状态 | 含义 | 进入（按优先级从上到下，命中即停） |
-|---|---|---|
-| `Off` | 本专精不接管，整 tick 交回经典引擎 | 专精 ∈ {防护战, 神圣骑, 戒律/神圣牧, 恢复德} |
-| `Idle` | 无目标 | `target == null` |
-| `Form` | 形态不对（德：非猫形态；牧：非暗影形态） | `spec==Feral && form!=CAT` / `spec==Shadow && !shadowform` |
-| `Recover` | 资源不足 | `power < recover_enter`（滞回：`power > recover_exit` 才回 `Maintain`） |
-| `Aoe` | 多目标 | `pack(aoe_span) >= aoe_pack` |
-| `Burst` | 斩杀/爆发窗口 | `targetHp <= burst_hp && cooldowns_ready`（滞回：`targetHp > burst_exit` 回 `Maintain`） |
-| `Approach` | 够不到 | `dist > range`（近战 6.5 / 远程 30~35） |
-| `Maintain` | 常规输出 | 兜底 |
-| `Weave` | 猎人专用：等自动射击窗口 | `!canSteady && autoRemain > 0`（见 §3.1） |
+| # | 状态 | 含义 | 进入（按优先级从上到下，命中即停） |
+|---|---|---|---|
+| 1 | `Off` | 本专精不接管，整 tick 交回经典引擎 | 专精 ∈ {防护战, 神圣骑, 戒律/神圣牧, 恢复德} |
+| 2 | `Idle` | 无目标 | `target == null` |
+| 3 | `Prep` | **开怪前准备**（原 3/4/5 合并）：补团队 buff、个人 buff、护甲、形态/姿态、宝石/召唤物，把资源养满 | 脱战 且 任一准备项未满足 |
+| 4 | `Flee` | **逃跑/风筝**：血太低或扛不住，后撤拉开距离 | `selfHp < flee_hp` 或 `包夹数 > flee_max && 距离 < flee_range` |
+| 5 | `Recover` | 恢复：回蓝/回血（唤醒、分流、绷带、喝水） | `power < recover_enter` 或 `selfHp < recover_hp`（滞回：`> *_exit` 才回） |
+| 6 | `Aoe` | 多目标 | `pack(aoe_span) >= aoe_pack` |
+| 7 | `Burst` | **爆发**：仇恨稳定后立刻开，早用早 CD（**不再看目标血量**） | `仇恨稳定 && 主要 CD 可用` |
+| 8 | `Execute` | 斩杀窗口（可选，多数职业作为 `Maintain` 内的技能替换即可） | `targetHp <= execute_hp` |
+| 9 | `Approach` | 够不到 | `dist > range`（近战 6.5 / 远程 30~35） |
+| 10 | `Weave` | 猎人专用：等自动射击窗口 | `!canSteady && autoRemain > 0`（见 §3.1） |
+| 11 | `Maintain` | 平稳输出期 | 兜底 |
+
+> **2026-10-31 站长口径修订**：原来的 `Form` 与 `Buff` 并进 `Prep`（"补齐 buff 和资源、切好预备的姿态，
+> 都是开怪前要做的事，可以放到一起"）；新增 `Flee`（逃跑/风筝）；
+> **`Burst` 的进入条件改成"仇恨稳定 + CD 好"，不看目标血量**——理由是"早用早 CD，爆发当资源而不是当斩杀"；
+> 血量窗口另立 `Execute`（也可只在 `Maintain` 动作表里换技能，不占状态）。
+
+**固定连招 = 独立的有向图循环（Plan）**：像奥法 3+3（奥冲×3 → 寒冰箭×3 → 卡 0.5 秒读下一发奥冲）这种
+"一串有先后、有计数的动作"，不进状态图，而是状态内的一个**子循环**（`planId + planStep`），
+本身是一张独立的小有向图。状态负责"走哪条路"，Plan 负责"这条路走到第几步"。
 
 **硬规矩**（从现有代码提炼，必须保留，否则调参没有意义）：
 
@@ -32,7 +43,8 @@
 2. **状态只决定"用哪张动作表"，不决定"这一手放哪个技能"**：技能选择留在动作表里按顺序/打分，
    这样 Optuna 调权重时不会牵动状态图。
 3. **转移条件只能引用快照字段 + 参数**，不许调用施法、不许查 CD 之外的副作用。
-4. **优先级固定为 `Off → Idle → Form → Recover → Aoe → Burst → Approach → Maintain`**。
+4. **优先级固定为 `Off → Idle → Prep → Flee → Recover → Aoe → Burst → Execute → Approach → Weave → Maintain`**。
+
    现有代码里所有"顺序不一致"都是历史遗留（例如猎人把 `Recover` 放在 `Aoe` 之后），
    统一到这条链，行为差异用阈值表达（`aoe_pack` 调大就等价于"先打单体"）。
 
