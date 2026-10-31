@@ -306,9 +306,9 @@ Approach: dist > 30
 | `Prep` | `arcane intellect`(团队) → `ice armor`/`molten armor`(按 `armor_pref`) | 同左（默认 `molten armor`） | 同左（默认 `mage armor` 续航） |
 | `Flee` | `frost nova` → `ice barrier` → `blink` → `ice lance` | `blast wave` → `dragon's breath` ⚠ → `blink` | `frost nova` → `blink` → `arcane barrage`(移动) |
 | `Recover` | `evocation` → 法力宝石/大蓝 → 魔杖 | 同左 | 同左；3+3 循环本身也是省蓝手段 |
-| `Aoe` | **`blizzard`（`aoe_slow_rank`，默认 1 级）铺减速** → 铺满后 `blizzard`/`ice lance` | `flamestrike`(地面) → `blizzard`(减速) ⚠ → `blast wave` | `blizzard` → `arcane explosion`(≤10 码) |
+| `Aoe` | **对怪堆放 `blizzard` 即可**（范围减速，一次覆盖一片，**不需要逐个目标检查**）；用 `aoe_slow_rank`（默认 1 级）省蓝省仇恨；已经铺上后能站桩就继续 `blizzard`，被打断/怪散了再补 | `flamestrike`(地面) → `blizzard`(减速) ⚠ → `blast wave` | `blizzard` → `arcane explosion`(≤10 码) |
 | `Burst` | `summon water elemental` → `icy veins` → `cold snap` → `ice lance`/`frostbolt` | 饰品 → `combustion` → `presence of mind` → `pyroblast` → `fire blast` | 饰品 → `arcane power` → `arcane blast` 连发（蓝够时） |
-| `Maintain` | `frostbolt`（全程）；`clearcasting` 触发即插一发；移动中 `ice lance` | `scorch`(叠 `scorch_stacks`) → `fireball` → `fire blast` | **Plan：3+3**（`arcane blast`×3 → `frostbolt`×3 → 卡 0.5 秒读下一发 `arcane blast`）；蓝 > `burn_mana` 切"无脑奥冲" |
+| `Maintain` | **常规输出 = 完整循环**：① 开怪先 `frostbolt` 上"深冬之寒/冰霜易伤"；② 之后一直 `frostbolt`；③ `clearcasting` 触发照常 `frostbolt`（免费不占额外 GCD）；④ 移动中改 `ice lance`；⑤ 目标身上易伤掉了靠 `frostbolt` 自然续，不用额外补 | **完整循环**：① `scorch` 叠到 `scorch_stacks`（叠满才有暴击加成）；② `fireball` 填充；③ `fire blast` 只在移动/收尾用（不打断读条）；④ 有 `clearcasting` 优先 `fireball` | **完整循环**：蓝够（`> burn_mana`）→ 无脑 `arcane blast`；蓝不够 → Plan **3+3**（奥冲×3 → 寒冰箭×3 → 卡 0.5 秒读下一发奥冲）；移动中 `arcane barrage` |
 
 > 奥法 3+3 是**Plan**，不是状态：状态仍是 `Maintain`，里面跑一张小有向图（叠满 3 层 debuff → 转寒冰箭 ×3 → 窗口末尾读奥冲）。
 
@@ -424,8 +424,10 @@ Approach: dist > 30
 
 1. **物品使用**：盗贼的精金磨刀石、法师的法力宝石、术士的糖都是"用物品"，不是施法。
    现有 FSM 只有 `CastSpell` 路线 ⇒ 需要 `UseItemAction` 一类的接口，并在 `Prep` 状态里调用。
-2. **多目标遍历**：冰法"铺满减速"、暗牧"多目标 DoT"都要**逐个目标**判断与施法，
-   而快照里只有单个 `target` + 一个计数 ⇒ 需要补"附近敌人列表 + 每个目标的状态"。
+2. **多目标遍历**（⚠ 2026-10-31 修正范围）：**范围技能不算这一类** —— 冰法的暴风雪一次覆盖一片，
+   直接对怪堆放就行，不需要逐个目标检查（站长纠正）。真正需要逐个目标处理的只有
+   **多目标上 DoT**（暗牧的痛/吸血鬼之触、痛苦术的多目标腐蚀）和"看哪只怪还没被标记"这类。
+   快照里现在只有单个 `target` + 一个计数 ⇒ 需要补"附近敌人列表 + 每个目标身上的关键 debuff"。
 3. **宠物控制**：术士恶魔卫士、猎人宠物、法师水元素 —— ✅ **2026-10-31 已实现**：
    `PetPresent()` / `CommandPetAttack()`（每 tick 让宠物咬当前目标，掉队/换目标自动重下）/
    `SummonPetIfNeeded()`（没宠物才召，失败打 `[DPSFSM-PET]` 三类原因：`not-learned` / `cast-failed` / `no-pet`），
