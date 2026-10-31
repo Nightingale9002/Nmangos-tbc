@@ -27,22 +27,30 @@
 **关键变化**：L2 是新增的显式一层。现在"下一步干什么"散落在 `Tick<Class>` 的 if-chain 里；
 重构后它只由"处于哪个状态"决定，状态由**可读的迁移条件表**决定。
 
-### 决策模式（取代 4 个布尔）
+### 决策模式（取代 4 个布尔）—— S1 已落地
 
 ```cpp
-enum class Mode { Fsm, Table, Scored, Spellbook, Legacy };
+enum class DecisionMode { Legacy = 0, Table = 1, TableScored = 2, TableScoredBook = 3, Value = 4 };
 ```
 
-| 模式 | 等价旧口径 | 用途 |
-|---|---|---|
-| `Fsm` | 无（新） | **目标形态**：每专精状态机 |
-| `Table` | `policy=1, pselect=0` | 顺序表基线 |
-| `Scored` | `policy=1, pselect=1` | 表内两遍打分基线 |
-| `Spellbook` | `value=1` / `pauto=1` | 法术书全候选上限参考 |
-| `Legacy` | 无参数（现默认） | 手写 if-chain，迁移期对照，**最终删除** |
+| `mode` | 名称 | 等价旧口径 | 用途 |
+|---|---|---|---|
+| 0 | `legacy` | 四个键都不设 | 手写 if-chain（现默认），迁移期对照，**最终删除** |
+| 1 | `table` | `policy=1` | 策略表顺序"第一条能放就放" |
+| 2 | `table_scored` | `policy=1, pselect=1` | 表内两遍打分 |
+| 3 | `table_scored_book` | `policy=1, pselect=1, pauto=1` | 2 + 法术书表外候选（`w_offtable` 打折） |
+| 4 | `value` | `value=1` | 价值引擎（`TickValue`） |
+| — | `fsm`（S2 再加） | 无 | **目标形态**：每专精显式状态机 |
 
-旧 key 保留一年兼容映射：`value=1→Spellbook`、`policy=1&pselect=0→Table`、`policy=1&pselect=1→Scored`、其余→`Legacy`。
-16 态压到 5 态。
+- **为什么只剩 5 个**：旧代码里 `pselect` 只在 `policy=1` 时被读，`pauto` 又只在 `pselect=1` 的块内被读
+  ⇒ 16 种组合里真正有差异的只有 4 种（`policy=1,pauto=1,pselect=0` 与 `table` 完全等价）。
+- **旧键兼容**：`mode` 没配时从旧四键**推导一次**并打 `[DPSFSM-MODE] … WARN`，告诉你该写哪个 `mode=N`；
+  调参脚本的 `k=v` 里常直接带旧键，所以兼容层保留到 tuner 改完再删。
+- **唯一的语义变化**：`value=1` + `policy=1` 旧口径是"value 先跑、失败落 policy"的串联，新口径只保留 `value`；
+  仓库里没有任何配置这样配过，运行时会打 WARN 留痕。
+- **单一读取点**：`ResolveMode()` 在 `Tick()` 里每 tick 解析一次并写进 `BotMem::mode`，
+  `TickPolicy()` 只读 `m->mode`，代码里不再有任何 `TP(m,"pselect"/"pauto")`。
+
 
 ---
 
