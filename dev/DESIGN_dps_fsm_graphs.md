@@ -335,7 +335,12 @@ Approach: dist > 30
 | `Burst` | 饰品 → `cold blood`(刺杀)/`adrenaline rush` → `blade flurry` |
 | `Maintain` | `slice and dice`(剩余 < `snd_refresh`) → 满星(`fin_cp`)+能量够 → `envenom`(刺杀)/`eviscerate` → `mutilate`(刺杀)/`sinister strike` |
 
-### 6.4 猎人（兽王 = 生存；射击多 `aimed shot`）
+### 6.4 猎人（兽王 = 生存；射击专精默认也不打瞄准，见下）
+
+> **2026-10-31 站长口径**：**猎人不需要瞄准射击**，除非有 boss 策略指定。
+> 所以 `aimed shot` 不进 `Maintain`/`Burst`，改成一个参数 `use_aimed`（默认 0），
+> 只有 boss 策略（`ai_playerbot_boss_strategy` 之类）点名时才置 1。现有 `TickHunter` 里
+> `mm && canAimed && aimed shot` 那条属于历史遗留，保留在 legacy 路径，不动。
 
 | 状态 | 内容 |
 |---|---|
@@ -343,9 +348,9 @@ Approach: dist > 30
 | `Flee` | `frost trap`(地面) → `concussive shot` → `wing clip`(近身) → `aspect of the cheetah` |
 | `Recover` | 蓝 < 10% → `aspect of the viper` → 普通射击（回到 30% 换回鹰守） |
 | `Aoe` | `volley` → `multi-shot` → `steady shot` |
-| `Burst` | 饰品 → **`rapid fire`（已确认要加）** → `bestial wrath` → `kill command` → `aimed shot`(射击) |
+| `Burst` | 饰品 → **`rapid fire`（已确认要加）** → `bestial wrath` → `kill command` → （`use_aimed=1` 时）`aimed shot` |
 | `Weave` | `arcane shot` → `multi-shot`（等自动射击窗口） |
-| `Maintain` | `hunter's mark` → `serpent sting` → `steady shot` → `multi-shot` → `arcane shot`；任何施法后**立刻重挂自动射击** |
+| `Maintain` | `hunter's mark` → `serpent sting` → `steady shot` → `multi-shot` → `arcane shot`；`aimed shot` **仅 `use_aimed=1`**；任何施法后**立刻重挂自动射击** |
 
 ### 6.5 术士
 
