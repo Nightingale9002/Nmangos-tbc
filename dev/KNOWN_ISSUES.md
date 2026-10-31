@@ -8066,7 +8066,11 @@ if (dataMap && !dataMap->IsLoaded(data->posX, data->posY))
 - 口径：以上是**引擎侧证据**（已进新实例网格，随后由网格加载器生成）；**客户端可见性未抓包**，等部署后实机确认（不写成“已验证”）。
 
 #### 五、待办 / 残留风险
-1. **云端未部署**（P0：只传二进制、两侧 md5 对齐、`install` 到 `/opt/mangos/bin/mangosd`；重启需站长单独指令）。部署前线上仍是故障态。
+1. **云端已部署（2026-10-31 13:00，站长当场授权重启）**：WSL 产物 `strip` 后 `451e4b05556622d4dbe2e16db247d656` → scp 到 `/root/mangosd_new_451e4b05.bin`（两侧 md5 对齐）→ `install -m 755` 到 `/opt/mangos/bin/mangosd`；旧二进制备份 `/root/bin_backup/mangosd_825e469b_20261031`。
+   重启按 §二 流程：`touch watchdog.nomangosd` → `pkill -9 -x mangosd` → 确认 `pgrep` 为空 → `screen -dmSL mangosd …` → 删 nomangosd。
+   实测：13:01 起服，13:02 `World initialized` + `:8086` 监听，`pgrep -c -x mangosd` = 1，`md5sum /proc/<pid>/exe` = 新二进制。
+   ⚠️ 期间 12 名角色在线（站长明确授权后重启，非默认允许路径）。
+   ⚠️ 同期发现：云端 `/root/.dev_sql_applied` 的内容被写成了**文件名**（`188_副本推进v2_六图数据.sql`），`apply_dev_sql.sh` 用 `tr -dc '0-9'` 解析得到 **1882** ⇒ 自那以后所有 dev SQL 都不会被自动应用（这也是 189~230 全靠手工落库的原因）。已改回纯编号 `188`。
 2. 实机验收（站长）：新开血色修道院实例 → `.gobject nearspawned 60` 应出现 **186267** 与 12 个装饰；点神龛应接到任务 11405，接任务 10 秒后 23682 刷在 1765.28 / 1347.46。
 3. 负事件号（“存在到事件 N 开始为止”）同样走这条列表，修复后一并恢复；可在任意负事件图抽查。
 4. 本次只解决**实例图**；世界图上的事件生成一直正常（那条路地图在活动开启时已存在）。
