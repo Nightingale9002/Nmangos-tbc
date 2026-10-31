@@ -390,6 +390,7 @@ Approach: dist > 30
 | `Burst` | 饰品 → **`rapid fire`（已确认要加）** → `bestial wrath` → `kill command` → （`use_aimed=1` 时）`aimed shot` |
 | `Weave` | `arcane shot` → `multi-shot`（等自动射击窗口） |
 | `Maintain` | **见上表（计时器守卫）**。原旧表的 `hunter's mark → serpent sting → steady → multi → arcane` 顺序**作废**；`aimed shot` 仅 `use_aimed=1`（boss 策略点名）；任何施法后**立刻重挂自动射击**（这是 L6 不变量，不是状态） |
+| **仇恨路线（`feign death`）** | **假死不占 GCD、CD 也短 ⇒ 可以随时放**（2026-11-01 站长口径）。所以猎人和术士一样**贴着仇恨上限跑**：接近 OT 线就假死一次把额度清掉；因为它不吃 GCD，**不需要进"每 GCD 收益"的比较**，直接作为"到线就放"的免费保护 |
 
 ### 6.5 术士
 
