@@ -350,9 +350,12 @@ Approach: dist > 30
 ### 6.4 猎人 —— 按"四个计时器"重写（2026-10-31 站长给的决策模型）
 
 > **核心**：猎人的一切抉择都围绕四个不同步的计时器 ——
-> ① 平射隐藏施法 **0.5s**（锁定后不可取消，但读条会推后它）② 平射独立冷却 **(武器速度 − 0.5)s**
-> ③ GCD **1.5s** ④ 稳固读条 **1.5s**。
-> **稳固的 1.5s 与平射剩余时间是零和**：读稳固的瞬间，这 1.5s 内平射出不去；剩余不足就会被推后（clip）。
+> ① 平射隐藏施法 **0.5s（受加速影响）**② 平射独立冷却 **(武器速度 − 0.5)s（受加速影响）**
+> ③ GCD **1.5s —— 不受加速影响**（TBC 固定）④ 稳固读条 **1.5s 基础，受加速影响**。
+> ⚠ **关键区别（站长 2026-10-31 强调）**：**GCD 不随加速缩短，稳固读条会**。
+> 所以"稳固能不能塞进这一发平射之前"的判据必须用**实际读条时间**（`1.5 / (1+急速)`），
+> 不能写死 2.0s；而"占掉一个 GCD"永远按 1.5s 算。
+> **稳固的读条与平射剩余时间是零和**：读稳固的瞬间，这段读条时间内平射出不去；剩余不足就会被推后（clip）。
 > 所以 Maintain 的判断依据**不是攻速分档**，而是"**我按的这个键会不会让下一发平射迟到**"。
 
 **Maintain 动作表（按顺序，命中即停）**：
@@ -360,16 +363,18 @@ Approach: dist > 30
 | # | 守卫条件 | 动作 |
 |---|---|---|
 | 1 | `kill command` 可用（兽王） | `kill command`（GCD 外，无条件最高优先） |
-| 2 | `auto_remain <= autoshot_land`(0.5s)｜平射已锁定 | `arcane shot`；**不可用就等待**（绝不能读稳固） |
-| 3 | `autoshot_land < auto_remain < steady_window`(2.0s)｜瞬发黄金窗口 | `multi-shot` → `arcane shot` → **等待**（不读稳固） |
-| 4 | `auto_remain >= steady_window`(2.0s)｜稳固安全区 | `steady shot` |
+| 2 | `auto_remain <= autoshot_land`（0.5s，受加速）｜平射已锁定 | `arcane shot`；**不可用就等待**（绝不能读稳固） |
+| 3 | `autoshot_land < auto_remain < steady_window`｜瞬发黄金窗口 | `multi-shot` → `arcane shot` → **等待**（不读稳固） |
+| 4 | `auto_remain >= steady_window`｜稳固安全区 | `steady shot` |
 | 5 | 断档（多重/奥射都 CD、剩余又尴尬） | **安心等待**，不用劣质填充破坏平射轴 |
 
-**为什么这么分**：稳固的安全条件是"读条 1.5s + 平射出手 0.5s = 2.0s"；低于 2.0s 读稳固一定推后平射，
-损失的平射 ≥ 稳固本身的收益。0.5s 以下平射已经拉弓，读条直接把它推后。
+其中 **`steady_window = 实际稳固读条时间 + autoshot_land`**（读条时间从核心取，受急速影响；
+急速 0 时 = 1.5 + 0.5 = 2.0s，急速越高窗口越小）。**GCD 恒 1.5s**，不参与这个加法。
 
-**需要的快照字段**：`autoRemainMs`（到下一发平射的剩余）、`multiReady` / `arcaneReady` / `killCommandReady`。
-**参数**：`autoshot_land=0.5`、`steady_window=2.0`（= 稳固读条 + 平射施法，受急速影响）、`weave_margin`（现已有）。
+**需要的快照字段**：`autoRemainMs`（到下一发平射的剩余）、`steadyCastMs`（当前急速下的稳固实际读条）、
+`multiReady` / `arcaneReady` / `killCommandReady`。
+**参数**：`autoshot_land=0.5`、`weave_margin`（现已有）；`steady_window` **不是参数**，每次由 `steadyCastMs + autoshot_land` 算。
+
 
 | 状态 | 内容 |
 |---|---|
