@@ -14230,6 +14230,27 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 - `policy=1`（价值引擎）：arms combat assassination fire frost arcane affliction destro shadow balance bm marks elemental enhance ret
 - `policy=0`（旧处理器）：**fury feral**
 
+### 10.54 `pauto` 排除控制/仇恨类法术（2026-10-31 09:25）
+
+**问题**：`pauto`（法术书全候选）会把控制技能当输出技能——实测暗牧在假人循环里放 **4 次精神控制（10912）**，
+`top=10912:4`，dps 只剩 107（另一轮 584）。
+
+**修复**：在 `dpsvalue::Rebuild()` 的候选筛选里排除控制/仇恨类法术：
+- 效果类：`SPELL_EFFECT_ATTACK_ME` / `THREAT` / `THREAT_ALL` / `DISTRACT`
+- 光环类：`MOD_CONFUSE` / `MOD_FEAR` / `MOD_STUN` / `MOD_ROOT` / `MOD_CHARM` / `MOD_POSSESS` /
+  `MOD_SILENCE` / `MOD_PACIFY` / `MOD_PACIFY_SILENCE`
+
+**实测（各 2 轮）**
+
+| 专精 | 修复后 | top= |
+|---|---|---|
+| shadow | 568 / 674 | 25387:6~7 心灵震爆、25368 暗言痛、34917 吸血之触、15473 暗影形态 ⇒ **控制技能消失** |
+| affliction | 514 / 599 | 30909:6 虚弱诅咒、27209 暗影箭、27218/27216 痛苦腐蚀 |
+| fire | 807 / 317 | 30451 奥术冲击（跨系混搭，站长已明确允许） |
+
+> 注意：跨系混搭（火法放奥术冲击）是**允许**的（站长口径"所有公共法术都应该加"），
+> 但控制类不是输出技能，必须排除。
+
 ### 11) 待办（2026-10-30 08:20 更新）
 
 **已完成（本节之前的待办均已闭环）**
