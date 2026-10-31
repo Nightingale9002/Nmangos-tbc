@@ -402,6 +402,12 @@ Approach: dist > 30
 | `Burst` | 饰品 → `shadowburn` → `shadow bolt` | 饰品 → `shadowburn` → `shadow bolt` | 同左 |
 | `Maintain` | `curse of elements`(无诅咒位时) → `corruption` → `siphon life` → `unstable affliction` → `drain life` → `shadow bolt` | 诅咒 → `immolate` → `conflagrate` → `shadow bolt` | 诅咒 → `corruption` → `shadow bolt` |
 
+> **痛苦术没有"心爆"那种 6 秒锚点（2026-11-01 站长口径）** ⇒ 排程比暗牧**更简单**：
+> 不需要 GCD 时间轮去避让"心爆的拍"，只需要 ① DoT 到期续期（剩余 < `refresh_dot` 就补）、
+> ② 剩余 GCD 用 `drain life` / `shadow bolt` 填。多目标同样用**每 GCD 收益判据**
+> （见暗牧那条）：DoT 的"剩余跳数×单跳伤害 ÷ 占用 GCD"胜过填充技才铺，否则不铺。
+> 毁灭有 `immolate → conflagrate` 的小循环，按同样方式排；恶魔最简（诅咒 + 腐蚀 + 暗影箭）。
+
 ### 6.6 萨满（元素 = 恢复）
 
 | 状态 | 增强 | 元素 |
