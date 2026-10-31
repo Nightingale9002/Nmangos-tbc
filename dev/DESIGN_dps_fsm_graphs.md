@@ -311,8 +311,8 @@ Approach: dist > 30
 | `Prep` | `arcane intellect`(团队) → `ice armor`（默认）/`molten armor`(凶险时) | 同左（默认 `molten armor`） | `arcane intellect` → `mage armor`（蓝量驱动，续航优先） |
 | `Flee` | `frost nova` → `ice barrier` → `blink` → `ice lance` | `blast wave` → `blink` | `frost nova` → `blink` → `arcane barrage`(移动) |
 | `Recover` | 宝石 → 大蓝 → `evocation`（按需，蓝压力小） | 同左 | **宝石 → 大蓝 → `evocation`；唤醒落地即切 3+3** |
-| `Aoe` | **`arcane explosion`（魔爆术，仇恨安全，近身）** → `cone of cold`（冰锥）/`flamestrike`（**仅在仇恨领先时**）→ `blizzard`（`aoe_slow_rank=1`，需要减速/远程时） | `flamestrike`(地面) → `blast wave` → `blizzard`（减速） | `arcane explosion`（近身）/ `presence of mind + flamestrike`（远程，气定烈焰风暴） |
-| `Burst` | `icy veins`（冰冷血脉）+ `summon water elemental` + 饰品 → 奥冲/寒冰箭；**`cold snap`(急冷) 冷却好就再打第三轮** | 饰品 → `combustion` → `presence of mind` → `pyroblast` → `fire blast` | `arcane power`（奥术强化）+ `icy veins` + 饰品 → **`arcane blast` 连发（全力倾泻）** |
+| `Aoe` | **减速是"一个人负责"的团队角色**（参数 `slow_role`：-1=auto ⇒ 队里没有别的法师就由自己铺；1=强制我铺；0=我不铺）。负责时先 `blizzard`（`aoe_slow_rank=1`）→ 再 `arcane explosion`（魔爆术，仇恨安全，近身）→ `cone of cold`（冰锥，仇恨领先）；**不负责时直接上伤害**：`arcane explosion` → `cone of cold` → 远程才 `blizzard` | `flamestrike`(地面) → `blast wave` → `blizzard`（减速，同样受 `slow_role` 约束） | `arcane explosion`（近身）/ `presence of mind + flamestrike`（远程，气定烈焰风暴） |
+| `Burst` | `icy veins`（冰冷血脉）+ `summon water elemental` + 饰品 → 奥冲/寒冰箭；**`cold snap`(急冷) 冷却好就再打第三轮** | 饰品 → `combustion` → `presence of mind` → `pyroblast` → `fire blast` | `arcane power`（奥术强化）+ `icy veins` + 饰品 → **`arcane blast` 连发（全力倾泻）**；**标准 40/21 天赋也点得出急冷 ⇒ 同样用 `cold snap` 打第三轮** |
 | `Maintain` | **深冬之寒叠层 → `frostbolt` 寒冰箭**；蓝压力小 ⇒ **寒冰箭是唯一填充**，不需要省蓝循环；移动中 `ice lance` | `scorch` 叠到 `scorch_stacks`（火球易伤）→ `fireball` 填充；`fire blast` 只在移动/收尾 | **蓝量驱动**：蓝够 → 无脑 `arcane blast`；蓝见底 → 3+3。在"泄蓝"与"省蓝"之间切换，蓝量即伤害 |
 | Plan `3+3` | 不适用 | 不适用 | **卡 debuff 最后 0.5 秒打下一发奥冲**：叠满 3 层 → `frostbolt`×3 塞满 8 秒窗口 → 窗口末尾（剩 ≈0.5s）读下一发奥冲（高速、此时叠层已回落 ⇒ 低费）；**唤醒落地后进入该循环** |
 
