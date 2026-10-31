@@ -444,7 +444,22 @@ Approach: dist > 30
 | `Recover` | 蓝 < 10% → `shadowfiend`? ⚠（TBC 无，用大蓝/暗影魔是 WotLK）→ 魔杖 |
 | `Aoe` | **多目标 DoT（已确认）**：给每个目标补 `shadow word: pain` / `vampiric touch`，不切单点 |
 | `Burst` | 饰品 → `shadow word: death` → `mind blast` |
-| `Maintain` | `shadow word: pain` → `vampiric touch` → `mind blast` → `shadow word: death` → `mind flay` |
+| `Maintain` | **按 GCD 倍数排程（2026-11-01 站长口径）**，不是简单优先级表 —— 详见下 |
+
+#### 暗牧主循环：以 GCD 为单位的时间轮
+
+站长给的模型：**心爆 6 秒 CD = 4 个 GCD**（GCD 1.5s），整个循环应按 **GCD 的倍数**来排：
+
+| 规则 | 内容 |
+|---|---|
+| 排程粒度 | 一切判断按 **GCD（1.5s）** 对齐；心爆 CD(6s) 正好是 4 个 GCD |
+| DoT 续期时机 | **严格等到"结束之后"再续**，不提前覆盖；触有 1.5s 读条 ⇒ 要**提前一个 GCD 起手**，让新触正好落在旧触到期的瞬间 |
+| 避让 | 两个 DoT **不要同时到期**；也**不要卡在心爆的节点**（心爆该放的那一 GCD 不能被续 DoT 占掉） |
+| 因此 | 需要**错开**触与痛的到期时间：如果发现两者将在同一 GCD 到期，就把其中一个**延后一个 GCD** 续（宁可少一跳，也不要挤掉心爆/挤在一起） |
+| 填充 | 以上都不占用的 GCD 用 `mind flay`（引导 3s，但按 GCD 计占 2 拍） |
+
+实现形态：`Maintain` 里维护 `nextMB / vtExpire / swpExpire` 三个时间点（都换算成"距现在多少个 GCD"），
+每 tick 先算"这一拍谁到期/谁 CD 好"，再决定本 GCD 的动作；不允许"刚好撞在一起"的拍出现两次以上。
 
 ### 6.10 明确标 `Off` 的专精
 
