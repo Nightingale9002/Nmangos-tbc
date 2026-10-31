@@ -442,7 +442,7 @@ Approach: dist > 30
 | `Prep` | `shadowform` → `power word: fortitude`(团队) |
 | `Flee` | `psychic scream` → `fade` → 跑 |
 | `Recover` | 蓝 < 10% → `shadowfiend`? ⚠（TBC 无，用大蓝/暗影魔是 WotLK）→ 魔杖 |
-| `Aoe` | **多目标 DoT（已确认）**：给每个目标补 `shadow word: pain` / `vampiric touch`，不切单点。**目标选择与目标数上限按站长 2026-11-01 口径**：① **优先打血量最多的那个**（低血量单位撑不完 DoT，跳不满 = 浪费 GCD）；② **同时挂 DoT 的目标数上限 `multidot_max`（默认 3）**，因为实战里 3 目标以内才是最舒服的输出环境，超过 3 个就不再扩、回头集火血量最高的 |
+| `Aoe` | **多目标 DoT（已确认）**：给每个目标补 `shadow word: pain` / `vampiric touch`，不切单点。**目标选择与目标数上限按站长 2026-11-01 口径**：① **优先打血量最多的那个**（低血量单位撑不完 DoT，跳不满 = 浪费 GCD）；② **同时挂 DoT 的目标数上限 `multidot_max = 5`**（站长 2026-11-01 定；注意"最舒服的输出环境是 3 目标以内"是**体感结论**，不当作上限），超过 5 个就不再扩、回头集火血量最高的 |
 | `Burst` | 饰品 → `shadow word: death` → `mind blast` |
 | `Maintain` | **按 GCD 倍数排程（2026-11-01 站长口径）**，不是简单优先级表 —— 详见下 |
 
