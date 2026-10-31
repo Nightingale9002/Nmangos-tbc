@@ -289,3 +289,132 @@ Approach: dist > 30
    图上是否合并成一张（省一半维护），还是保留各自的动作表只共享转移？
 4. **Off 专精**（防护战/神圣骑/戒律·神圣牧/恢复德）继续"不接管、交回经典引擎"，确认吗？
 5. **Aoe 判据统一到 `aoe_span` 之后**，近战（战/贼/萨）从 pack10 改口径会不会改变现有效果 —— 需要实测对比。
+
+---
+
+## 6. 动作表草稿（全部 17 专精）
+
+> **谁写的**：我（agent）按三条来源填的草稿 —— ① 2026-10-31 站长口述（冰法、奥法 3+3、爆发口径、状态合并）；
+> ② 现有 9 个处理器里已经过实测的先后顺序；③ TBC 通用循环常识。
+> **怎么用**：站长**不用填**，只需指出哪条不对（"冰法 Maintain 先深冬再寒冰箭"这种一句话即可）。
+> 标 ⚠ 的是我没有把握、最需要被纠正的条目。
+
+### 6.1 法师
+
+| 状态 | 冰霜 Frost | 火焰 Fire | 奥术 Arcane |
+|---|---|---|---|
+| `Prep` | `arcane intellect`(团队) → `ice armor`/`molten armor`(按 `armor_pref`) | 同左（默认 `molten armor`） | 同左（默认 `mage armor` 续航） |
+| `Flee` | `frost nova` → `ice barrier` → `blink` → `ice lance` | `blast wave` → `dragon's breath` ⚠ → `blink` | `frost nova` → `blink` → `arcane barrage`(移动) |
+| `Recover` | `evocation` → 法力宝石/大蓝 → 魔杖 | 同左 | 同左；3+3 循环本身也是省蓝手段 |
+| `Aoe` | **`blizzard`（`aoe_slow_rank`，默认 1 级）铺减速** → 铺满后 `blizzard`/`ice lance` | `flamestrike`(地面) → `blizzard`(减速) ⚠ → `blast wave` | `blizzard` → `arcane explosion`(≤10 码) |
+| `Burst` | `summon water elemental` → `icy veins` → `cold snap` → `ice lance`/`frostbolt` | 饰品 → `combustion` → `presence of mind` → `pyroblast` → `fire blast` | 饰品 → `arcane power` → `arcane blast` 连发（蓝够时） |
+| `Maintain` | `frostbolt`（全程）；`clearcasting` 触发即插一发；移动中 `ice lance` | `scorch`(叠 `scorch_stacks`) → `fireball` → `fire blast` | **Plan：3+3**（`arcane blast`×3 → `frostbolt`×3 → 卡 0.5 秒读下一发 `arcane blast`）；蓝 > `burn_mana` 切"无脑奥冲" |
+
+> 奥法 3+3 是**Plan**，不是状态：状态仍是 `Maintain`，里面跑一张小有向图（叠满 3 层 debuff → 转寒冰箭 ×3 → 窗口末尾读奥冲）。
+
+### 6.2 战士
+
+| 状态 | 武器 Arms | 狂暴 Fury |
+|---|---|---|
+| `Prep` | `battle shout` → `commanding shout`(需要血上限时) → 战斗姿态 | 同左 |
+| `Flee` | ⚠ 无逃生技：`hamstring` + 后撤 | 同左 |
+| `Recover` | 怒气 < `recover_enter` → 只平砍等怒气（不施法） | 同左 |
+| `Aoe` | `sweeping strikes` → `whirlwind` → `cleave`(怒气 ≥ `cleave_rage`) | 同左 |
+| `Burst` | 饰品 → `recklessness` ⚠ → `death wish`? (狂暴专属) → `mortal strike` | 饰品 → `death wish` → `recklessness` → `bloodthirst` |
+| `Execute` | 目标血 < 20% → `execute` | 同左 |
+| `Maintain` | `mortal strike` → `overpower` → `whirlwind` → `slam` → `heroic strike`(怒气 ≥ `rage_reserve` 时泄怒) | `bloodthirst` → `whirlwind` → `execute`(窗口) → `heroic strike` |
+
+### 6.3 盗贼（战斗 = 敏锐，同一张）
+
+| 状态 | 内容 |
+|---|---|
+| `Prep` | 毒药（`instant poison`/`deadly poison`，主副手分开）⚠ 现有代码没处理 |
+| `Flee` | `vanish` ⚠ → `sprint` → 跑 |
+| `Recover` | 能量 < `recover_enter` → 等能量（不施法，只平砍） |
+| `Aoe` | `blade flurry` → `adrenaline rush` → 落回 `Maintain` 表 |
+| `Burst` | 饰品 → `cold blood`(刺杀)/`adrenaline rush` → `blade flurry` |
+| `Maintain` | `slice and dice`(剩余 < `snd_refresh`) → 满星(`fin_cp`)+能量够 → `envenom`(刺杀)/`eviscerate` → `mutilate`(刺杀)/`sinister strike` |
+
+### 6.4 猎人（兽王 = 生存；射击多 `aimed shot`）
+
+| 状态 | 内容 |
+|---|---|
+| `Prep` | `aspect of the hawk` → 宠物召唤 → `hunter's mark`(开怪前) |
+| `Flee` | `frost trap`(地面) → `concussive shot` → `wing clip`(近身) → `aspect of the cheetah` |
+| `Recover` | 蓝 < 10% → `aspect of the viper` → 普通射击（回到 30% 换回鹰守） |
+| `Aoe` | `volley` → `multi-shot` → `steady shot` |
+| `Burst` | 饰品 → `bestial wrath` → `kill command` → (`rapid fire` ⚠ 未在现表里) → `aimed shot`(射击) |
+| `Weave` | `arcane shot` → `multi-shot`（等自动射击窗口） |
+| `Maintain` | `hunter's mark` → `serpent sting` → `steady shot` → `multi-shot` → `arcane shot`；任何施法后**立刻重挂自动射击** |
+
+### 6.5 术士
+
+| 状态 | 痛苦 | 毁灭 | 恶魔（现走 else 分支） |
+|---|---|---|---|
+| `Prep` | `demon armor`/`fel armor` ⚠ → 召唤宠物 → 灵魂链接? | 同左 | `summon felguard`? ⚠（TBC 无，应为 `summon succubus`/`imp`） |
+| `Flee` | `fear` → `curse of exhaustion` → 跑 | 同左 | 同左 |
+| `Recover` | `life tap`（血 > 55%）→ 绷带/糖 ⚠ | 同左 | 同左 |
+| `Aoe` | `seed of corruption` → `rain of fire` → `shadow bolt` | 同左 | 同左 |
+| `Burst` | 饰品 → `shadowburn` → `shadow bolt` | 饰品 → `shadowburn` → `shadow bolt` | 同左 |
+| `Maintain` | `curse of elements`(无诅咒位时) → `corruption` → `siphon life` → `unstable affliction` → `drain life` → `shadow bolt` | 诅咒 → `immolate` → `conflagrate` → `shadow bolt` | 诅咒 → `corruption` → `shadow bolt` |
+
+### 6.6 萨满（元素 = 恢复）
+
+| 状态 | 增强 | 元素 |
+|---|---|---|
+| `Prep` | 四槽图腾（大地/风/火/水）→ `water shield` ⚠/`lightning shield` | 同左（`water shield` 优先） |
+| `Flee` | `frost shock` → `earthbind totem` → 跑 | `frost shock` → `earthbind totem` |
+| `Recover` | 蓝 < 10% → `shamanistic rage` ⚠/药水 → 平砍 | 药水 → 等回蓝 |
+| `Aoe` | `magma totem` → `chain lightning` → `fire nova totem` ⚠ | `chain lightning` → `magma totem` ⚠ → `lightning bolt` |
+| `Burst` | 饰品 → `bloodlust`/`heroism` → `shamanistic rage` → `stormstrike` | 饰品 → `elemental mastery` → `chain lightning` |
+| `Maintain` | `stormstrike` → `flame shock`(无) → `earth shock` → 平砍 | `flame shock` → `lightning bolt`（`earth shock` 断条时） |
+
+### 6.7 德鲁伊
+
+| 状态 | 野性 Feral | 平衡 Balance |
+|---|---|---|
+| `Prep` | `cat form` → `mark of the wild` → `dash`? | `moonkin form` ⚠ → `mark of the wild` |
+| `Flee` | `dash` → `bash`? → 跑 | `entangling roots` ⚠ |
+| `Recover` | —（能量自回） | 蓝 < 10% → 药水/激活? |
+| `Aoe` | `swipe`(猫)? ⚠ TBC 猫无 AoE → 只平砍 | `hurricane` → `starfire` |
+| `Burst` | 饰品 → `tiger's fury`(能量 ≥ 80) → `rip`/`ferocious bite` | 饰品 → `force of nature` → `starfire` |
+| `Maintain` | `mangle (cat)` → `rip`(无) → 满星 → `ferocious bite` → `shred` → `rake` | `moonfire` → `insect swarm` → `starfire` |
+
+### 6.8 圣骑士（惩戒）
+
+| 状态 | 内容 |
+|---|---|
+| `Prep` | 圣印（按阵营：`seal of blood`/`seal of command`/`seal of righteousness`）→ 光环 |
+| `Flee` | `hammer of justice` → 跑 |
+| `Recover` | 蓝 < `recover_enter` → 停手等回蓝（`seal of wisdom` ⚠） |
+| `Aoe` | 现无群体技 → `consecration` + `hammer of wrath` ⚠ |
+| `Burst` | 饰品 → `avenging wrath` → `hammer of wrath` → `judgement` → `crusader strike` |
+| `Maintain` | 圣印(剩余 < 2s) → `judgement` → `crusader strike` → `consecration`(蓝 > 15%) |
+
+### 6.9 牧师（暗影）
+
+| 状态 | 内容 |
+|---|---|
+| `Prep` | `shadowform` → `power word: fortitude`(团队) |
+| `Flee` | `psychic scream` → `fade` → 跑 |
+| `Recover` | 蓝 < 10% → `shadowfiend`? ⚠（TBC 无，用大蓝/暗影魔是 WotLK）→ 魔杖 |
+| `Aoe` | ⚠ 暗牧无 AoE：多目标时保持多目标 DoT |
+| `Burst` | 饰品 → `shadow word: death` → `mind blast` |
+| `Maintain` | `shadow word: pain` → `vampiric touch` → `mind blast` → `shadow word: death` → `mind flay` |
+
+### 6.10 明确标 `Off` 的专精
+
+防护战 / 神圣骑 / 戒律牧 / 神圣牧 / 恢复德 —— 继续交回经典引擎（它们不是 DPS 循环问题，是治疗/坦克职责）。
+
+---
+
+## 7. 这份草稿里我最没把握的 7 条（优先请站长看这几条）
+
+1. 术士 `Prep`：TBC 有没有 `fel armor`（还是只有 `demon armor`）；恶魔天赋主宠是什么。
+2. 萨满 `Recover`：`shamanistic rage` 是增强回蓝核心，但元素能不能用、优先级多高。
+3. 德鲁伊 `Balance` 要不要 `moonkin form` 门；猫德多目标到底怎么处理（TBC 猫没有可靠 AoE）。
+4. 猎人 `Burst` 里 `rapid fire`（急速射击）现在完全没进表，是不是该加。
+5. 盗贼 `Prep` 的毒药：现在代码完全不涂毒，影响多大（可能很大）。
+6. 圣骑 `Aoe`：TBC 惩戒几乎没有群体手段，是否干脆不给 `Aoe` 状态。
+7. 牧师多目标怎么打：保持多目标 DoT，还是就单点。
+
