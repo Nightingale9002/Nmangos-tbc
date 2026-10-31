@@ -166,12 +166,21 @@ schema(JSON) ──生成采样空间──▶ Optuna study (每专精一个 / �
   ② **套装件数加成计分**（凑 2/4 件的收益要算进去，而不是选属性分最高的散件）；
   ③ 输出时记录"为什么选它"（`note` 字段），便于人工复核。
 
-- **装备阶段（三档，2026-11-01 补 141 档）**：
-  | tier | 装等 | 对应进度 |
+- **装备阶段（四档，2026-11-01 按站长实机 conf 修正）** —— 代码里**已经有一套** `GearProgressionSystem`，档位以它为准，不要再自己编：
+
+  | phase | 装等区间 | 名称（conf 注释） |
   |---|---|---|
-  | `preraid` | ≤115 | 团本前（110 / 115 Inferno） |
-  | `p3` | 128~140 | P3（需任务 10445「永恒水瓶」） |
-  | `s141` | ≥141 | 141+ 阶段（太阳井/最高档） |
+  | 0 | **100~115** | 团本前毕业 |
+  | 1 | **115~125** | P1（T4）毕业 |
+  | 2 | **125~138** | P2（T5）毕业 |
+  | 3 | **138~151** | P4（SWP）毕业 |
+
+  conf 键名（`PlayerbotAIConfig.cpp → PlayerbotAIConfig` 读取）：
+  - 区间：`AiPlayerbot.GearProgressionSystem.<phase>.MinItemLevel` / `.MaxItemLevel`
+  - 固定件：`AiPlayerbot.GearProgressionSystem.<phase>.<cls>.<spec>.<slot> = <itemId>`（`spec` 是**职业内第几系 0..3**，`slot` 0..18）
+  - 实例→阶段：`AiPlayerbot.GearProgressionSystem.InstancePhases = "mapId:phase,..."`
+  ⇒ BIS 生成器要按这 4 个区间各出一套，并**直接产出上面那两类 conf 行**（不要再单独维护一张"tier"表）；
+    仿真侧选哪一档 = 把对应 phase 的固定件喂给 bot。
 
 - **写回门**：≥5% 才进 conf；一次只改一个专精；改完在下一轮 `arms` 里做同批对照。
 - **并行度**：`arms` 一批 17 堆 ⇒ 每专精只能 1 臂/批；要扫参数就分批，或写 `armsfile`。
