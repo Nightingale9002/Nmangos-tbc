@@ -56,8 +56,10 @@ void SpawnManager::Initialize()
         for (uint32 dbGuid : *dynGuidCreatures)
         {
             auto data = sObjectMgr.GetCreatureData(dbGuid);
-            // Pooled and event-driven creatures are spawned by the pool/event system, not here
-            if (!data->IsNotPartOfPoolOrEvent())
+            // [事件刷点 2026-10-31] 只跳过池化成员（池系统负责，实例内交接见 PoolManager）。
+            // 事件成员在活动期间只由 GameEventMgr::GameEventSpawn 写进本 dynguid 列表；开新图时
+            // 必须由这里补进网格，否则"地图创建晚于活动开启"的图（尤其是副本实例）永远不生成。
+            if (data->GuidPoolId || data->EntryPoolId)
                 continue;
 
             if (m_map.GetPersistentState()->GetCreatureRespawnTime(dbGuid) < now)
@@ -75,8 +77,10 @@ void SpawnManager::Initialize()
         for (uint32 dbGuid : *dynGuidGameObjects)
         {
             auto data = sObjectMgr.GetGOData(dbGuid);
-            // Pooled and event-driven gameobjects are spawned by the pool/event system, not here
-            if (!data->IsNotPartOfPoolOrEvent())
+            // [事件刷点 2026-10-31] 只跳过池化成员（池系统负责，实例内交接见 PoolManager）。
+            // 事件成员在活动期间只由 GameEventMgr::GameEventSpawn 写进本 dynguid 列表；开新图时
+            // 必须由这里补进网格，否则"地图创建晚于活动开启"的图（尤其是副本实例）永远不生成。
+            if (data->GuidPoolId || data->EntryPoolId)
                 continue;
 
             if (m_map.GetPersistentState()->GetGORespawnTime(dbGuid) < now)
