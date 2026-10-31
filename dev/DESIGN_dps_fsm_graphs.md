@@ -381,7 +381,8 @@ Approach: dist > 30
 
 | 状态 | 内容 |
 |---|---|
-| `Prep` | `aspect of the hawk` → 宠物召唤 → `hunter's mark`(开怪前) |
+| **宠物** | **首选掠食者（Ravager）**：专属技能 **角刺 `Gore`**（几率双倍伤害）是宠物输出技能里期望最高的；刀锋山抓**裂刃剥石者**可同时学高级角刺 + 突进。**备选风蛇（Wind Serpent）**：`lightning breath` 是自然伤害，可绕高护甲、对高甲低自然抗的 boss 更强；但基础系数 107% 略低于掠食者 110%，且**会吞掉增强萨的 buff**（团队里有增强萨时慎用）。参数 `hunter_pet_entry`。 |
+| `Prep` | `aspect of the hawk` → **宠物：无则 `call pet`（失败则假人场景下按 `hunter_pet_entry` 创建）→ 死亡则 `revive pet` → 血量低于 `pet_mend_hp` 则 `mend pet`** → `hunter's mark`(开怪前) |
 | `Flee` | `frost trap`(地面) → `concussive shot` → `wing clip`(近身) → `aspect of the cheetah` |
 | `Recover` | 蓝 < 10% → `aspect of the viper` → 普通射击（回到 30% 换回鹰守） |
 | `Aoe` | `volley` → `multi-shot` → `steady shot` |
