@@ -14547,3 +14547,66 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 4. **调优脚本要重跑**：参数已参数化（`hs_rage`/`snd_cp`/`fin_cp`/`fin_energy`/`scorch_stacks`/`weave_margin`/`burst_hp`/`aoe_pack`），
    等抖动收干净后跑 `_agent_tmp/tune/dps_tune2.py` 做坐标下降。
 5. 还没在真实副本里跑"整队 DPS 全由状态机接管"的对照。
+
+
+---
+
+## 11) 2026-10-31~11-01 DPS 状态机第二轮：`mode=5` 落地 11 个专精 + 六个通用能力 + 一批核心 bug
+
+> 承接上一章（`## 10)`）。本轮把"策略表/价值引擎/手写 if"三套并存收敛成一个**可选模式**，
+> 并把**每专精显式状态图**真正跑起来。设计文档：`dev/DESIGN_dps_fsm.md`（分层/参数/Optuna/测量纪律）、
+> `dev/DESIGN_dps_fsm_graphs.md`（11 张专精图 + 治疗 + 本服核心行为）。**参数与图不在此复述**。
+
+### 一、结果总表（60 秒单目标木桩，每格 5 轮取中位数）
+
+| 专精 | `mode=5`（状态机） | `mode=3`（策略表） | 备注 |
+|---|---|---|---|
+| 冰法 frost | 1048 | 944 | 水元素 + 冰脉先手后 |
+| 奥法 arcane | **931.2**（CV 5.9%） | 708.6~931 | 3+3 + 窗口填充 + 开局重置后收敛 4 倍 |
+| 火法 fire | ~1033（+11%） | ~930 | 灼烧轴 + 三套爆发表 |
+| 兽王 hunter | 820 | 608 | 宠物修复后 |
+| 战士 fury / arms | 507.5 / 447.9 | 556.0 / 577.1 | 仍落后，原因见 §四 |
+| 盗贼 assassination | **696.3**（CV 6.8%） | 681.9 | 能量开局修正后反超 |
+| 毁灭术 destro | **839.0**（CV 8.9%） | 598.9 | +40%（含宠物） |
+
+### 二、架构（详见 `DESIGN_dps_fsm.md`）
+- **决策模式收口**：`value/policy/pselect/pauto` 四布尔 → 单个 `DecisionMode`（`ResolveMode()` 唯一解析点，写进 `BotMem::mode`）。
+- **11 状态**：`Off/Idle/Prep/Flee/Recover/Aoe/Burst/Execute/Approach/Weave/Maintain`；转移优先级固定。
+- **`Hold` 三态**：`TickResult{Acted,Hold,Decline}`——"这一 tick 有意空着、引擎也不许动"是一等公民（猎人窗口逻辑的前提）。
+- **仇恨三档**：`EvalThreat()` → `Wait/Throttle/Open`，只在副本/团本生效（野外保持旧行为）；方向是**贴着上限跑**（`threat_target_ratio`），不是越低越好。
+- **候选填充**：`FillCand/FillGate/PickFill()`——按"射程 + CD + 蓝够 + 实际读条 ≤ 窗口"筛，取权重最高；解决了火冲 20 码施法失败、1.5 秒技能（灼烧）用不上。
+
+### 三、六个通用能力（17 专精共用，不各写一套）
+| 能力 | 关键实现 | 坑 |
+|---|---|---|
+| **宠物控制** | `PetPresent/CommandPetAttack/SummonPetIfNeeded`；命令走 `CMSG_PET_ACTION`（`ACT_COMMAND\|COMMAND_ATTACK`） | 见 §四 的两个致命 bug |
+| **药水** | 法力药水按**蓝缺口 > 3000**；加速药水只给无蓝职业在 `Burst` 喝 | 旧口径 35% 百分比对高蓝量职业失真 |
+| **每轮重置** | `ResetScenarioState()`（runId 变化时清 plan/爆发/耗蓝计数）；`ResetDummyVitals()`（血/蓝/能量满、怒气归零、清有害光环） | 不重置 ⇒ 方差 CV 25%→6.1% |
+| **rank 选择** | `SpellIdAtRank()`（沿 spell_chain 回退） | 烈焰风暴 7/6 级交替可叠两层地面火池 |
+| **读条时间** | `CastMsWithMod()`（`ApplySpellMod(SPELLMOD_CASTING_TIME)` + `UNIT_MOD_CAST_SPEED`） | 不补 SPELLMOD ⇒ 寒冰箭被算成 3000ms、窗口判断整体偏移 |
+| **多目标** | `[DPSFSM-DMG]` per-spell 伤害（待做）+ `NearbyEnemy` 列表（待做，需带每目标双方仇恨） | 见 §五 |
+
+### 四、本轮修掉的核心 bug（按影响面排序）
+1. **程序化创建的宠物拿到 `GuardianAI` 而不是 `PetAI`**：`UNIT_FLAG_PLAYER_CONTROLLED` 设在 `AIM_Initialize()` **之后** ⇒ `CreatureAISelector::selectAI()` 选错 AI；GuardianAI 只在主人被打时出手、且不重发追击。修复后宠物伤害 1054→6778、距离 17→1.3 码。
+2. **`InitPetCreateSpells()` 学了技能但没开自动施法**：它把动作条全写 `ACT_DISABLED`、`addSpell()` 也不写条，而 `PetAI` 的自动施法读动作条 ⇒ 角刺/突进永不释放。两个建宠路径都补 `ToggleAutocast()`（真玩家靠 `LoadPetFromDB` 恢复动作条，没这问题）。
+3. **怒气 ×10 存储**：`POWER_RAGE_DEFAULT=1000`、`RewardRage` 里 `*10` ⇒ 拿真实阈值比较会让 fury 60 秒只出 1 次嗜血、却刷 78 次英勇。加 `RageReal()` 局部换算，不动 `Snapshot`/legacy。
+4. **`Hold` 冻结朝向 ⇒ 白字全 `BAD_FACING`**：整 tick 跳过引擎就没人替 bot 转向，战士永远攒不到怒、永久 Recover 死锁。FSM 里自己 `SetFacingToObject()`。
+5. **`getAttackTimer(RANGED_ATTACK)` 在本核心不递减**（`Unit::Update` 只推 BASE/OFF）⇒ 不能用它当"下一发平射剩余"；改用 `botSpellCounts[75]` 反推节奏。另：本服自动射击冷却固定 **2000ms**，不是"武器速度 − 0.5"。
+6. **`Burst` 一个 GCD 只放得出第一手**（水元素永远召不出来 ⇒ `pet=0`）：加 `burst_window` 后才正常。
+
+### 五、测量纪律（本轮血的教训，已写进 `DESIGN_dps_fsm.md` §4）
+1. 单轮 dps 噪声 **±12%**（同一二进制 5 轮：988.8/827.7/757.1/999.6/840.0）⇒ **任何 A/B 至少 5 轮取中位数**，报"中位数 + 区间"，差值落在区间内记为"未观测到差异"。
+2. **有蓝职业必须同时报 DPM**（`dmg/spent`），只看 dps 会调出"疯狂泄蓝"的假最优。
+3. **装备必须钉死**：`BOT_EQUIP_BEST_GEAR` 每次重启重摇装备（实测同一法师 `sp 1065→1093`、武器变化）——这是跨重启 A/B 的独立方差源。
+4. **每轮开始必须重置 FSM 记忆与血蓝/能量**，否则轮间携带 `planId/planStep/lastBurst` 让 CV 翻倍。
+
+### 六、未完成 / 下一步
+1. **剩余专精**：惩戒骑、萨满三系、痛苦术、恶魔术、暗牧（时间轮模型已在 `DESIGN_dps_fsm_graphs.md` §10.7 定稿）。
+2. **治疗 FSM**：一个 `HealCore` + 四套配置（神牧/奶骑/恢复萨共内核，奶德单独 HoT 模型），口径见 §11。
+3. **BIS 四档重算**：`ai_playerbot_bis_gear` 缺 **slot 14（披风）**、且只有一套；要按 `GearProgressionSystem` 的四档（100~115 / 115~125 / 125~138 / 138~151）各出一套，
+   套装按**技能伤害占比 × 提升幅度**计分（不是拍脑袋加分），并保留"奥法 2T5 保底 / 猫德狼头"这类跨档覆盖件。
+4. **per-spell 伤害日志**（`[DPSFSM-DMG]`）——套装占比与技能占比都依赖它。
+5. **`NearbyEnemy` 列表**（hp + 距离 + **双方仇恨** + DoT 剩余）——多目标 DoT 与 AoE 选牌的前提。
+
+> ⚠ **本服自定义行为（勿当 bug 修）**：被吸收的物理伤害**仍然给怒气**（`Unit::DealDamage` 的 `if (!damage)` 分支）；
+> 圣印切换保留 **300ms** 窗口（`Unit::AddSpellAuraHolder` 的 `[SEALTWIST]`）；低等级 HoT **不会**覆盖高等级 HoT。
