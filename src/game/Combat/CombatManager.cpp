@@ -159,6 +159,25 @@ void CombatManager::Update(const uint32 diff)
                 }
             }
 
+            // [2026-11-02 脱战死锁] **副本内**上面整段 leash/退战检查被跳过
+            //   （`if (!IsDungeon() || PLAYER_CONTROLLED)`），于是副本怪只要"有目标但打不着"，
+            //   就既不 evade、也不释放威胁引用 ⇒ 玩家侧 `ClearInCombat` 永远等不到
+            //   `getHostileRefManager().getSize() == 0` ⇒ 整队挂在战斗里，路线驱动 `ShouldDrive()`
+            //   因 `IsInCombat` 恒假而全程不工作（`driver=(-)`、`[PULLED]` 恒 0）。
+            //   这里给"副本里的怪"补一条窄口径兜底：**15 秒没有伤害交换（m_combatTimer 归零）
+            //   + 近战够不到当前目标 + 不是被控状态** ⇒ 视为卡住，回位脱战。
+            //   正常战斗每 ~2 秒就有伤害交换，计时器会被刷新，不会误触发。
+            if (!m_leashingDisabled && m_owner->GetMap()->IsDungeon() &&
+                     m_owner->IsCreature() && !m_owner->IsPlayerControlled() &&
+                     m_owner->GetVictim() && !m_combatTimer &&
+                     !m_owner->IsCrowdControlled() &&
+                     !m_owner->CanReachWithMeleeAttack(m_owner->GetVictim()))
+            {
+                sLog.outError("[EVADEFIX] %s entry=%u map=%u 副本内 15s 零伤害交换且够不到目标 ⇒ EnterEvadeMode",
+                    m_owner->GetName(), m_owner->GetEntry(), m_owner->GetMap()->GetId());
+                m_owner->AI()->EnterEvadeMode();
+            }
+
             if (m_owner->IsCreature() && !m_owner->HasCharmer()) // charmer should have leashing check or leash set
             {
                 Creature* creatureOwner = static_cast<Creature*>(m_owner);

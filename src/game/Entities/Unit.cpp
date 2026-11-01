@@ -708,6 +708,45 @@ void Unit::EvadeTimerExpired()
         }
         if (victimOk)
         {
+            // [EVADEFIX-ZERODMG 2026-11-02] "motion 说可达" != "真能交换伤害"。
+            //   死锁形态：怪**有 victim**、寻路也回 NORMAL/SHORTCUT（所以上面 ① 为真、CombatManager 的
+            //   30 秒幽灵兜底又因为"有 victim"每 tick 归零），但它其实打不着/打不出（隔墙隔层、
+            //   卡在不可达的落点、被脚本状态锁住），玩家侧 threat ref 因此永远不释放 ⇒ 全队挂战斗。
+            //   这里在"已确认当前目标可达(①)"之后、"换目标(②)/脱战(③)"之前，补一条窄口径：
+            //   （可达 ⇒ 正常打 仍然是 ① 的第一判断；只有"可达但零交换伤害"的单位才会被这条分走）
+            //   **副本内 + 非玩家控制 + 有 victim + 最近 ≥10s 零伤害交换 ⇒ EnterEvadeMode()**。
+            //   时间来源（全部是既有字段，没有新增成员、没有 static map）：
+            //     ① GetCombatManager().GetCombatTimer()（uint32 毫秒倒计时）：每次"真正交换伤害"都会被
+            //        TriggerCombatTimer 重置，递减到 0 表示 ≥GetPursuit()(默认 15000ms) 没有任何交换事件。
+            //        刷新点：Unit::HandleDamageDealt（打到**能持有仇恨表的目标**时转发到挨打方 manager ⇒
+            //        "受到伤害"）、Unit::AttackerStateUpdate 的 resetLeashFunc（站定挥击 ⇒ "造成伤害"）、
+            //        Spell 的延迟命中、Unit::SetInCombatState。被控/被脚本禁用 leash 时它不递减 ⇒ 天然豁免。
+            //     ② GetCombatManager().GetLastLeashExtension()（time_t，1s 精度，联动小队共享同一 ptr）：
+            //        与①同一批刷新点。用它给出**明确的 10 秒墙钟**判断，并兼作日志节流时钟。
+            //   有效阈值 = max(15s, 10s) = 15s，比要求的 10s 更保守（宁可少误杀，不漏掉长期卡死的）。
+            //   最坏情况推演：正常战斗的单位每 2s 左右挨打或挥击一次，①每 tick 被重置，永远 != 0 ⇒ 到不了这里。
+            if (GetMap() && GetMap()->IsDungeon() && !IsCrowdControlled() &&
+                !hasUnitState(UNIT_STAT_CAN_NOT_REACT) && !GetCombatManager().IsLeashingDisabled())
+            {
+                CombatManager& combatMgr = GetCombatManager();
+                time_t const now = time(nullptr);
+                time_t const lastExchange = combatMgr.GetLastLeashExtension();
+                // "打不着"：连近战距离都没有（近战距离内还在挥的单位不会被这条踢走；施法中的也跳过）。
+                bool const cannotStrike = !CanReachWithMeleeAttack(victim) && !IsNonMeleeSpellCasted(false);
+                if (!combatMgr.GetCombatTimer() && now - lastExchange >= 10 && cannotStrike)
+                {
+                    sLog.outError("[EVADEFIX] %s entry=%u map=%u 零交换伤害 10s（有目标但打不到）⇒ EnterEvadeMode "
+                                  "victim=%s thr=%u ct=%u lastExchange=%lds",
+                        GetName(), GetEntry(), GetMap()->GetId(), victim->GetName(),
+                        uint32(getThreatManager().getThreatList().size()), combatMgr.GetCombatTimer(),
+                        long(now - lastExchange));
+                    // 节流（每单位/每联动小队）：把共享时钟推到现在 ⇒ 同一单位最快 10s 后才会再记一条
+                    // （不进副本时 CombatManager 的 leash 分支被 IsDungeon() 门挡掉，写它没有别的副作用）。
+                    combatMgr.UpdateLeashExtension();
+                    AI()->EnterEvadeMode();
+                    return;
+                }
+            }
             GetCombatManager().StopEvade();      // 又打得着了：恢复正常战斗
             return;
         }
