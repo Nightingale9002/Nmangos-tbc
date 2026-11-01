@@ -3295,7 +3295,7 @@ framework 两个新 API 用独立小测试逐条验过（`_agent_tmp/ref_detache
 **本地冒烟未做**：11:19 起本机 mangosd（PID 45652）正在跑且有客户端连着 8086，未擅自重启打断，等站长给窗口。
 
 ##### 11.5 仍未解决 / 下一步
-1. ~~**写坏 `i_path` 的那次写到底是谁**：尚未锁定~~ → **已定案，见 11.6**（站长追问"到底是谁"后，用本地 MSVC **ASan** 构建一次跑就抓到写入者）；
+1. **已定案，见 11.6**（站长追问"到底是谁"后，用本地 MSVC **ASan** 构建一次跑就抓到写入者）；
 2. **为什么本地同样操作不复现（站长实测）**：这是"悬垂指针写"型问题，依赖堆内存复用时序；Windows/MSVC 与 Linux/GCC 的分配器、对象尺寸取整、vtable 位置都不同，同一处坏写在本机可能落在无害内存上或该复用序列压根不出现 ⇒ **非确定性，不是"这个操作必崩"**。**ASan 的 quarantine 恰好把"本来落在无害内存上"的坏写毒化，所以它在本地能抓到** —— 这就是最终破案手段。
 3. **覆盖范围（诚实版）**：现有 `[SOCKDIAG]/[DOOR]/[DEADHIT]/[REVIVE]/[GRIDLOAD]/[MEMSTAT]/[MEMLOCK]/[PATHCORRUPT]/[HOLDER-UAF]` 都是**针对已知 bug 家族的点状诊断**，不是通用内存污染探测器；坏写若落在别的字段/别的对象上，**只有它最终导致崩溃才有记录**（core + 符号化），沉默发生则无记录 —— 11.4-D 的 `MALLOC_CHECK_=1` 是"glibc 元数据层"的兜底，**看不见"写进活对象体内"这类**（本案就属这类，靠 ASan 才现形）。
 4. 部署顺序建议：本地先冒烟 → 再等云端夜间窗口（本轮已按此执行）；
@@ -4186,7 +4186,7 @@ if (remaining > sizeof(sAuthLogonChallengeBody))
   `dev/078` / `080` / `081` 已并入并**移出 dev/**（留档 `_agent_tmp/merged_sources/`）。本地已应用 + **幂等复跑 0 错误** ✓；
   抽查：`715 赫米特・奈辛瓦里二世` / `18180 赫米特・奈辛瓦里` ✓、`9853 侵占者古罗克` ✓、`8331 奥蕾尔・金叶` ✓；
   残留"戈隆克" = 0 ✓、残留半角中点 = 0 ✓。
-- **新规则（本次定）**：~~**中文人名/地名里的中点一律用全角 `・`(U+30FB)**，半角 `·`(U+00B7) 视为错；~~
+- **新规则（本次定，已作废）**：
   ⚠️ **该规则已于 2026-09-17 晚作废**（站长游戏内实测：客户端字体**没有 U+30FB 字形**，全角点显示成"方块"）：
   **正确写法是半角 `·`(U+00B7)**。回退脚本：`dev/080_中文中点回退为半角点.sql`（9,960 行 / 12 列，
   必须排在 079 之后执行；本地已应用、残留全角 = 0）。核对脚本仍要做全半角归一化，但基准值改成半角 `·`。
@@ -5106,7 +5106,7 @@ UPDATE `spawn_group` SET `MaxCount` = 13 WHERE `Id` = 21032 AND `MaxCount` <> 13
   ⚠️ 口径说明：这是"**同刻可存在点数**"上限；实际场上数量还受刷新 CD（采集后 600s / 组覆盖 300s）与玩家采集影响。
   其中 **6,154 个成员是 `gameobject.id = 0` 的占位点**（运行时按 `gameobject_spawn_entry` 的权重抽矿种）⇒
   "点位全开"**不会**让稀有矿变多，稀有度仍由权重与点位数量决定。
-- **回滚**：`~~dev/rollback/101_回滚_刷点上限还原.sql~~（2026-09-22 删：验收通过的 SQL 不留回滚件）`（同样是全静态、写死**改前**值：刺叶 15、21032 → 2 …，共 1,536 条）。
+- **回滚**：该回滚件已于 2026-09-22 按约定删除（验收通过的 SQL 不留回滚件）（同样是全静态、写死**改前**值：刺叶 15、21032 → 2 …，共 1,536 条）。
   ⚠️ 放在 `dev/rollback/` 子目录 —— `apply_dev_sql.sh` 只扫 `dev/[0-9][0-9][0-9]_*.sql`（**不递归**），**不会被自动执行**（干跑实测仍只列 099 → 101）。
 - **只改 `MaxCount`**（设为该组成员数 = 全刷）；组成员、模板、刷新时间、组的世界状态/旗标**一律不动**，代码不改。
   ⚠️ 口径说明：`spawn_group.Type = 1` 共 **1,536 组**，其中 **22 组没有任何 `spawn_group_spawn` 成员（空组）**，
@@ -5234,7 +5234,7 @@ UPDATE `spawn_group` SET `MaxCount` = 13 WHERE `Id` = 21032 AND `MaxCount` <> 13
   全库 `MaxCount = 2` 的 GO 组 **517 组 / 3,129 个成员**（含灵翼蛋、Ragveil 泵站等）。
   → 本脚本把它们一律抬到成员数（该范围 936 → **3,149**），**是 051 的延续与终极版，不是回退**；
   站长确认"矿脉一并全刷，不保留 `MaxCount = 2` 的档位"（不再单独排除任何组）。
-- **回滚**：`~~dev/rollback/101_回滚_刷点上限还原.sql~~（2026-09-22 删：验收通过的 SQL 不留回滚件）`（**全静态**，写死改前值 1,536 条；见 6.2）。
+- **回滚**：该回滚件已于 2026-09-22 按约定删除（**全静态**，写死改前值 1,536 条；见 6.2）。
   ⚠️ 早先版本曾用"建快照表 `spawn_group_bak_maxcount_20260922` + JOIN 还原"的写法，因站长定规
   「**SQL 里不用逻辑查询、一律写死值**」已改掉（云端从未执行过那版，本地那张表已删）。
 - **本地与云端的一致性**：本地库已应用（`MaxCount` 全为成员数；静态回滚文件在手）；
@@ -5458,7 +5458,7 @@ UPDATE `spawn_group` SET `MaxCount` = 13 WHERE `Id` = 21032 AND `MaxCount` <> 13
 
 - 效果：击杀工头/奴隶主 → 40 码内（含巡逻全圈）的奴隶**立刻脱战 + 立刻变友善**（不再依赖"下一秒换模板"），
   随后原有链路仍跑（换 `Fleeing Dreghood` 模板 + 清仇恨 + 9 秒后消失）。
-- 回滚：`~~dev/rollback/103_回滚_工头与奴隶主解放奴隶.sql~~（2026-09-22 删：验收通过的 SQL 不留回滚件）`（一次还原全部五项）。
+- 回滚：该回滚件已于 2026-09-22 按约定删除（一次还原全部五项）。
 - ⚠️ 教训：**"事件广播半径"必须对照"刷点的移动方式"验算** —— 静止刷点用生成点距离就够，
   巡逻怪必须用**整条路径**逐点验算，否则会漏掉"最远处永远够不着"这一类失败。
 
@@ -5495,7 +5495,7 @@ UPDATE `spawn_group` SET `MaxCount` = 13 WHERE `Id` = 21032 AND `MaxCount` <> 13
 | Zaxxis Raider | `1887502` 的 `event_inverse_phase_mask` 由 `3` 改成 `2`（允许在相位 0 起跑） | 表情循环 `相位0→2→1→2…` 正常运转 | ✅ **已改（`dev/105`）** |
 | Kronkrider | 不修（发送侧根本没抛事件）或改掩码 `3→1` 只做数据整洁 | 场上无差别 | ⏸ 不改 |
 
-- **`dev/105_修两处相位死行.sql`**（+ 回滚 `~~dev/rollback/105_回滚_两处相位死行还原.sql~~（2026-09-22 删：验收通过的 SQL 不留回滚件）`）：站长 2026-09-22 定案修前两项。
+- **`dev/105_修两处相位死行.sql`**（+ 回滚件已于 2026-09-22 按约定删除）：站长 2026-09-22 定案修前两项。
   本地验证：`1922801` p3 `1→3`、`1887502` 掩码 `3→2`；复跑 0 行；回滚可还原；再应用成功；
   **复算后全库死行 47 → 5**（残留：Kronkrider 2 行 + 16424/16425/-5320412 三个 guid 残留行，均已判定为无影响）。
 - 复用手法：以后凡"某段 EventAI 行为在游戏里从来不出现"，**先用相位可达性工具扫一遍**（比在游戏里试快得多）。
@@ -5524,7 +5524,7 @@ UPDATE `spawn_group` SET `MaxCount` = 13 WHERE `Id` = 21032 AND `MaxCount` <> 13
 | **17959 Coilfang Slavehandler** | 盘牙水库·**奴隶围栏**（map 547 = CoilfangDraenei） | ✅ 完整（仇恨抛事件 5 → 奴隶改阵营 16；死亡抛事件 6 → 奴隶 EVADE + 中继 + 清仇恨） | On Aggro → Set Data 2 2；On Death → Set Data 1 1（解放） |
 | **17805 Coilfang Slavemaster** | 盘牙水库·**蒸汽地窟**（map 545 = CoilfangPumping，站长 2026-09-22 点名"这里也有一个类似事件"） | ❌ **断链**（17799 奴隶监听事件 5/7，但 17805 从不抛事件、也没有 dbscripts）⇒ 打死它奴隶照旧打你 | **On Just Died → Set Data 2 2（"Free Stored Slaves"）**；On Aggro → "Assist me slaves!" ⇒ 本题成立 |
 
-- **`dev/103_工头与奴隶主死亡解放奴隶.sql`**（一份文件覆盖上表 17058 + 17805 的全部改动；回滚 `~~dev/rollback/103_回滚_工头与奴隶主解放奴隶.sql~~（2026-09-22 删：验收通过的 SQL 不留回滚件）`）：
+- **`dev/103_工头与奴隶主死亡解放奴隶.sql`**（一份文件覆盖上表 17058 + 17805 的全部改动；回滚件已于 2026-09-22 按约定删除）：
   站长 2026-09-22 定案，并按要求把同类改动**合并成一份**（原 103/104/106 三份已删）。文件内含五项：
   ① 17058 接收动作 `FLEE+EMOTE` → `EVADE+SET_FACTION(35)`；② 17058 死亡广播半径 15 → 40；
   ③ `1780511` = 17805 死亡时抛事件 6 / 半径 30；
@@ -7582,7 +7582,7 @@ if (m_respawnTime > time(nullptr) && m_respawnTime - time(nullptr) < 366LL * 24 
   **71 行 ilvl 40-59**（Mageweave / Mithril Ore / Dreamfoil / Golden Sansam / 各种附魔与裁缝图纸…）、仅 13 行 ilvl 60-79；
   它用的 6 个参考组（60008/60198/60274/60334/60445/60446）也都是 **ilvl 51~65** 档。
 - **三方一致**（本库 = `tbcmangos_orig` = `tbcdb_ref`）⇒ **上游 DB 的历史遗留错误**，不是我们改的。
-- ~~修法（待批，纯静态数据）：把 181798 换成同级结构（参照 `22342` 或 `22984`）~~ ← **已被下面的"根因/修法"取代**：不需要重写表，把线接回 `9933` 即可（低档行是当年抄表抄坏的产物）。
+- **已被下面的"根因/修法"取代**：不需要重写表，把线接回 `9933` 即可（低档行是当年抄表抄坏的产物）。
 
   > ⚠️ 2026-10-16 合章标注（章内自纠，已保留）：上面划掉的“把 181798 换成同级结构”是**废弃方案**；最终修法＝一行接线 `181798 → 9933`（`dev/102`），以此为准。
 - 次要可疑（待复核）：`184716 Coilskar Chest`（中位 70、23% 低档）、`187892/188124 Ice Chest`（含 ilvl 1 行）。
@@ -7606,7 +7606,7 @@ if (m_respawnTime > time(nullptr) && m_respawnTime - time(nullptr) < 366LL * 24 
 UPDATE `gameobject_template` SET `data1` = 9933 WHERE `entry` = 181798 AND `data1` = 181798;
 ```
 
-- 一行、全静态、幂等（带 `AND data1 = 181798`）；回滚 `~~dev/rollback/102_回滚_FelIron宝箱接线还原.sql~~（2026-09-22 删：验收通过的 SQL 不留回滚件）`。
+- 一行、全静态、幂等（带 `AND data1 = 181798`）；回滚件已于 2026-09-22 按约定删除。
 - 本地验证：改前 `181798→181798` → 应用后 `181798→9933` → 复跑无变化 → 回滚回 `181798` → 再接线 `9933` ✓。
 - 生效：`gameobject_template` / 掉落表在 mangosd 启动时载入 ⇒ **需重启**（云端干跑 `would apply 102`，随 04:06 nightly 应用并重启生效）。
 - 效果：魔铁宝箱变成"**必出一件食物 + 一件草药/锭 + 一件绿装 + 一件武器 + 独立概率的药水/布/稀有图纸**"，与站长给的清单吻合。
@@ -11740,11 +11740,77 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 
 ---
 
-## [PlayerBots] 机器人行为、在线名单与轮换（always / add / 躲技能 / 跑尸 / 专精权重 / 控制技能优先级）— 2026-10-16 ~ 2026-10-21
+## [PlayerBots] 机器人与副本 AI 总账（名单/轮换 → 副本行为 → 寻路 → DPS 状态机 → 假人测量 → 调优 → 构建）— 2026-10-16 ~ 2026-11-02
+
+> **本章合并自 8 块**（2026-11-02，站长口径：「关于 playerbot 的文档都收进 KNOWN_ISSUES 一章，归类总结」）：
+> ① `[PlayerBots] 机器人行为、在线名单与轮换`（10-16~21）② `[构建/工具] 本地编译与战斗测试`（10-19）
+> ③ `[PlayerBots] 水中寻路 / 阶段 link / 不可选中单位 / 546 波次重建`（10-27~28）
+> ④ `[PlayerBots] DPS 技能释放状态机 + 训练假人 + 离线调优`（10-29）
+> ⑤ 散章 `## 10)`（10-30）⑥ `## 11)`（10-31~11-01）⑦ `## 12)`（11-01~02）
+> ⑧ 原在①章内的 `### 副本拉怪/推进调优`（10-25）—— 提为独立阶段 C。
+>
+> **正文一字未删**（唯一删掉的是那行重复标题；合并只做三处结构手术，均已在此声明）：
+> 1. 7 个二级标题（3 个 `[PlayerBots]` + `[构建/工具]` + 3 个散章）重排为「阶段 A/B/D~H」，章内小节相应下沉一级（阶段 C 是原在①章内的 H3，已提级）；
+> 2. 删掉**重复出现**的 `### 11) 待办（2026-10-30 08:20 更新）` 其中一行（原文连续写了两遍）；
+> 3. 两处错位小标题改名：`11) 待办` → 「本阶段待办」、`9) 待办` → 「阶段 E 的遗留待办」（内容不动）。
+>
+> 旧的 `[PlayerBots/内存] 20 bot 配置…` 仍留在 `[内存]` 章（与内存总账互为索引），本章只给指针。
+
+### 〇、导读：三张表（先看这里，再进阶段）
+
+#### 〇-1 阶段索引（时间顺序，A → H）
+
+| 阶段 | 日期 | 主题 | 关键符号 / 命令 |
+|---|---|---|---|
+| **A** | 10-16 ~ 10-21 | 在线名单与轮换（`add` 是轮换门票）、副本通用躲地板技、躺尸跑尸、熊德坦权重、压力测试、控制技能优先级、仿真流程 | `RandomPlayerbotMgr::GetEventValue/ProcessBot`、`HazardsValue`、`GroupHasLivingRezzer`、`ai_playerbot_bot_profile`、`.bot prio`、`.rndbot sim profile` |
+| **B** | 10-19 | 本地编译链（手工 cp + mtime ⇒ 改了等于没改）、`PathFinder` 改动从未参与编译、死规则自动发现、战斗测试 7 层阻塞、`GenerateBotTests` 的 **ODR 事故** | `wsl_git_build_pb8.sh`、`extract_strategy_inventory.ps1`、`GenerateBotTests`、`[BOSSSTRAT]` |
+| **C** | 10-25 | 副本拉怪/推进调优：安全拉怪点死锁、越界兜底、拉回、卡视野、552 Protean | `DungeonRoutePullAction`、`[PULLSAFE]`、`ai_playerbot_pullback`、`ai_playerbot_cover_spot`、`ai_playerbot_pull_timing/pull_order` |
+| **D** | 10-27 ~ 28 | 水中寻路（bot 与 creature 两条管线）、stage `kind=link` 两处 bug、不可选中单位不该算波成员、蘑菇 8 码、546 波次 3D 聚类重建 | `AllowWaterPathing()`、`TryRouteLink()`、`ai_playerbot_avoid_mob.radius`、`DungeonRoster` |
+| **E** | 10-29 | DPS 有限状态机 v0（17 专精）、训练假人场景、离线调优热加载、测量口径 | `dpsfsm::Tick()`、`TickMage`…`TickPriest`、`.rndbot sim dummy`、`dpsfsm_tune.conf` |
+| **F** | 10-30 | 整队假人测量台（`dummyall`/`arms`）、静态 BIS 表、优先级表、猎人自动射击链路；`10.1 ~ 10.59` 逐条实证 | `ai_playerbot_bis_gear`、`SetParamOverride`、`ReachTargetAction::GetApproachRange`、`[DUMMY]`/`[DPSFSM]` |
+| **G** | 10-31 ~ 11-01 | `mode=5`（显式状态图）落地 11 专精 + 六个通用能力 + 6 个核心 bug；测量纪律（5 轮中位数 / DPM / 装备钉死） | `ResolveMode()`、`BotMem::mode`、`DecisionMode`、`TickResult{Hold}`、`EvalThreat()` |
+| **H** | 11-01 ~ 02 | `mode=5` 扩到四类角色：20 DPS 专精 + 四治疗（`HealCore`）+ 三坦克；`NearbyEnemy`、分阶段 BIS（`dev/234`） | `HealCore`、`NearbyEnemy`、`AuraStacks`/`TargetAuraRemain`、`bis_phase` |
+
+> 想按主题跳，而不是按时间：**名单/轮换** → A；**副本跑位与寻路** → C + D；**DPS/治疗/坦克的数字** → G + H；
+> **数字可信度（怎么测才算数）** → F §6 + G §五 + H §六。
+
+#### 〇-2 ⚠️ 过时 / 已被取代清单（2026-11-02 逐条复核，先看这张表再信任何旧文）
+
+> 规则沿用本章程：**旧结论不删，但必须标「已被谁取代」**，否则后人照旧结论反向修错。
+
+| 文档 / 段落 | 状态 | 复核证据 | 现在以哪里为准 |
+|---|---|---|---|
+| `dev/DESIGN_dps_fsm.md` **§1「决策模式」表** | **已过时** | 表里只到 `mode=0~4`，并写「`fsm`（S2 再加）」；代码已到 **`mode=5`**（`DpsFsm.h` 的 `[2026-11-01 站长口径] mode=5 …` 注释） | 阶段 G / H 的实测与覆盖表；该文其余章节（分层 L0~L7、参数 schema、Optuna、测量纪律）**仍有效** |
+| `dev/DESIGN_dps_fsm_graphs.md` 首段「17 张显式状态图」 | 部分过时 | 文内已扩到 §10（剩余专精）/§11（治疗）/§12（本服核心行为）/§13（萨满）/§14（坦克） | 以文内 §10~§14 为准（阶段 G/H 的实现依据） |
+| `dev/SIM_SCENARIO_设计.md`（已删）的「实现状态」表 | **已删除（2026-11-02）** | 该文状态表是 10-18 快照（DungeonRoute/跑位当时 ⏳），10-25 后有阶段 C、10-29 后有 `dummy/dummyall/arms` | 命令面已收进本章**阶段 A §十二 的「命令面速查」**；副本仿真行为看 `SimScenario.cpp`，测量看阶段 E/F |
+| `dev/ROADMAP_副本AI_下一步.md`（已删） | **已删除（2026-11-02）** | §〇 记的云端 md5 `01ed9a5a…`、`priority_obs 等部署时一起建` 都是 10-18/19 快照 | 落地记录全在**阶段 C / D / F**，原文已无保留价值 |
+| `dev/patches/README.md`「我们的提交 `2c8ed963` → `c54ecb01`」 | **已过时** | 子模块当前 HEAD **`d369dff4`（2026-11-02）**，与清单差 20+ 提交 | 子模块 `git log`；该文只作「fork/重放补丁/上游升级」的流程参考 |
+| `dev/PLAYER_NAV_OBS_标注日志.md` §4 部署记录 | 历史快照 | 记的是 `md5=a82908df…` 那一次部署 | §1~§3、§5 的采集口径与表结构**仍现行** |
+| `D:\Game\cmangos\dev\下一步_旅行图离线预计算与懒加载.md`（已删） | **已删除（2026-11-02）** | 该文 §十四 自己已证伪「旅行图是内存主凶」；§十六 又把 TalentSpecs 划掉 | **内存口径以 `[内存]` 章为准** |
+| `codex_workspace/06_docs/无家可归公会_调研与接触路径.md` 的「方案 A：启用 PlayerBots」**整节已删（2026-11-02）** | 原本写「编译时 `BUILD_PLAYERBOTS=OFF`、部署二进制里 `PlayerbotAI` 符号数 = 0」；现 `build1/CMakeCache.txt` 为 `BUILD_PLAYERBOTS:BOOL=ON` | 本章全篇（bot 早已在跑） |
+| `_agent_tmp/`（`触发器动作清单.md`、`裸英文清单.md` 等） | 临时产物 | 不提交 git，随代码漂移；2026-11-02 已删掉其中 3 份过时报告（收敛盘点/ BOSS 策略校验/ 待办_下一批） | 其结论已并入的正文章节；需要时重跑脚本 |
+| 阶段 E/F 里的两处「待办」 | 部分被覆盖 | §10.51/§10.52 已定位「5/17 抖动」的两个真根因；§10.8 给出猎人两个真根因；BIS 四档在阶段 H | 同一条目**以更晚的阶段为准** |
+
+#### 〇-3 外部文档索引（playerbot 相关；正文不重复，只指路）
+
+| 文档 | 里有什么 | 状态 | 与本章关系 |
+|---|---|---|---|
+| `dev/DESIGN_dps_fsm.md` | DPS 决策重构**规范**：分层 L0~L7、`DecisionMode`、参数 schema、Optuna 环路、测量纪律 | 现行（§1 过时） | 阶段 E~H 的规范底座 |
+| `dev/DESIGN_dps_fsm_graphs.md` | 每专精**状态图**：骨架 7 状态、固定迁移优先级、每状态动作表、滞回阈值、专有参数表；§10~§14 含治疗/坦克/萨满 | 现行 | 阶段 G/H 的实现依据 |
+| `dev/PLAYER_NAV_OBS_标注日志.md` | 真人跳跃/电梯观测口径 + `ai_playerbot_jump_obs`/`lift_obs` 标注流程 | 现行 | 阶段 D 的 `route_link` 数据来源 |
+| `dev/patches/README.md` | 子模块 fork、补丁重放、上游升级、代理 | 流程现行，提交清单过时 | 外层仓库维护（阶段 B 之外） |
+| `dev/功能更新手册_卡布魔兽.md` 的 BOSS 策略节 | `BossStrategyHook.h`、`ai_playerbot_boss_ability`、加新 BOSS 的取证/落地/验收流程 | 现行 | 与阶段 A 的 `boss_<entry>` 规则同源 |
+| `dev/tbc五人本攻略.md` | 五人本攻略 + 自定义策略引擎（`ai_playerbot_custom_strategy`）说明 | 现行 | 拉怪/波次数据的上游文本 |
+| `dev/tools/`（`boss_ability_scan` / `boss_rule_check` / `pull_cost_offline` / `peel_order` / analyzers） | 离线取证与推演工具 | 现行 | 阶段 C / E / F 的工具箱 |
+| `_agent_tmp/tune/`（`runs.csv`、`autotune.py`、`dummyall_rounds.py`） | 调优台账与自动化脚本 | 临时（不提交） | 阶段 F 所有数字的来源 |
+
+### 阶段 A｜2026-10-16 ~ 10-21　在线名单与轮换 / 副本行为 / 控制技能优先级
+
+> 原章：`[PlayerBots] 机器人行为、在线名单与轮换（always / add / 躲技能 / 跑尸 / 专精权重 / 控制技能优先级）— 2026-10-16 ~ 2026-10-21`
 
 （本章合并自 1 批新增条目：站长 2026-10-17 明确「HANDOFF 只放铁律+索引，细节进 KNOWN_ISSUES」，故把当天写在 HANDOFF 里的 7 段细节全部搬到这里，HANDOFF 只留指针。）
 
-### 一、核心机制：`add` 事件是"轮换门票"，`always` 只是名单标记
+#### 一、核心机制：`add` 事件是"轮换门票"，`always` 只是名单标记
 
 **判据（代码事实）**：`RandomPlayerbotMgr::GetBots()` 的候选池口径是
 `SELECT bot FROM ai_playerbot_random_bots WHERE owner=0 AND event='add'`
@@ -11765,7 +11831,7 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 **实测表现**：云端 12 只 `always=1` 会随运行时间慢慢掉到 **10/12、7/12**；
 `205 Lorineri`、`211 Elyndria` 就是这样掉的（`add_rows=0`、日志里 0 次登录尝试）。
 
-### 二、修法（方案A，站长 2026-10-17 拍板"最小改动"）
+#### 二、修法（方案A，站长 2026-10-17 拍板"最小改动"）
 
 三处，全部在 `RandomPlayerbotMgr`：
 
@@ -11781,7 +11847,7 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 并清掉 `always` 角色身上**陈旧的 `login` 事件**（否则循环只计数、不真的登录它）。
 （提交：子模块 `c7ca2d97`。）
 
-### 三、⚠️ 代码修复只防"再掉"，不重建已删的 `add` 行
+#### 三、⚠️ 代码修复只防"再掉"，不重建已删的 `add` 行
 
 历史缺口必须**补数据**：`dev/196_常在线角色补add事件.sql`（原 182，已重新编号）（幂等，做两件事）
 
@@ -11799,13 +11865,13 @@ FROM ai_playerbot_random_bots r JOIN characters c ON c.guid=r.bot
 WHERE r.event='always' AND r.value=1;
 ```
 
-### 四、验证判据
+#### 四、验证判据
 
 - `always_online == always_total`（12/12）且 `missing_add == 0`；
 - `add_rows` 总量**保持恒定**（本次实测恒为 65）；
 - **连续观察 ≥10 分钟不下降**（本次 12 分钟 × 7 次采样全部 12/12、零崩溃）。
 
-### 五、副本通用「躲地板技」（方案A，站长 2026-10-17 拍板）
+#### 五、副本通用「躲地板技」（方案A，站长 2026-10-17 拍板）
 
 **为什么原来躲不掉（根因）**：`HazardsValue::Calculate()` **只读 `stored hazards`、自己不做任何检测**；
 而 `stored hazards` 原先只有 `DungeonTriggers.cpp → CloseToHazardTrigger::IsActive()` 会写，
@@ -11829,7 +11895,7 @@ WHERE r.event='always' AND r.value=1;
 
 提交：子模块 `c7ca2d97`。
 
-### 六、副本躺尸 → 没有复活职业就跑尸（站长 2026-10-17 口径）
+#### 六、副本躺尸 → 没有复活职业就跑尸（站长 2026-10-17 口径）
 
 **上游原版行为**（`ReleaseSpiritAction.h`，来自上游 `de538e09`）：副本/团本里只要"主人（真人）同地图"就**不释放灵魂**、原地等复活。
 **问题**：四条自救路径在副本里**全被堵死** ⇒ 真人同地图又不给复活时，bot **无限躺尸**：
@@ -11844,7 +11910,7 @@ WHERE r.event='always' AND r.value=1;
 **修法**：新增 `GroupHasLivingRezzer()`（队伍里有没有**活着的、能复活的职业** = 牧师/骑士/萨满，**且同地图**）；
 那条副本守卫改为「**队里没有活着的复活职业 ⇒ 放行释放灵魂**」（→ 跑尸 → 复生）。
 
-### 七、专精权重：熊德坦（`weightscale` id=30）
+#### 七、专精权重：熊德坦（`weightscale` id=30）
 
 **根因**：`dev/178` 把注释里那段「熊德坦」权重**误挂到了 32（feraldps）**上，
 而 **30（feraltank）一直停留在旧导入数据**（缺 `armor`、`sta` 仅 62）；且 `dev/178` 的 `DELETE ... WHERE id IN (...)`
@@ -11870,7 +11936,7 @@ WHERE r.event='always' AND r.value=1;
 `caps` 总量 36 → **41**、`data` 276 → **277**。两个脚本都是整表重建 / 幂等，**已在云端 `tbcmangos` 执行**
 （执行前备份 `_bak_wscale_caps_20261017b`、`_bak_wscale_data_20261017b`）。
 
-### 八、压力测试实测：加 bot 到内存上限（2026-10-17 04:1x，云端 1870MB + 2047MB swap）
+#### 八、压力测试实测：加 bot 到内存上限（2026-10-17 04:1x，云端 1870MB + 2047MB swap）
 
 手法照 `/root/cloud_apply_botcount.sh`：改 `Min/MaxRandomBots` → `touch /opt/mangos/logs/watchdog.nomangosd`
 暂停 watchdog → `bash /root/restart_now.sh` → 每 30 秒采样 → 删掉 watchdog 标记。
@@ -11890,7 +11956,7 @@ WHERE r.event='always' AND r.value=1;
 
 **测完必须把 `Min/MaxRandomBots` 改回生产值（12）并重启**（本次已回滚，见 §九）。
 
-### 九、一次完整"部署 + 验证"的执行记录（2026-10-17 01:30 ~ 05:00）
+#### 九、一次完整"部署 + 验证"的执行记录（2026-10-17 01:30 ~ 05:00）
 
 顺序（可复用）：
 1. WSL 编 `mangosd`（`make -j16`，`errors=0`，记 md5）→ `gzip -9`（53MB → 17MB）→ scp 到云端 `/root`；
@@ -11904,7 +11970,7 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 **若安装源里的二进制 md5 与它要装的一致，会打印 `[info] no update, skip install` 直接起服**
 ⇒ 想让它"重启后就生效"，**在 04:06 前把新二进制装进两处**即可。
 
-### 十、⚠️ 与本章相关的两条待办
+#### 十、⚠️ 与本章相关的两条待办
 
 1. **躲技能 / 跑尸 只做了代码与编译验证，未做游戏内实战验证**（需要在副本里实际观察 bot 是否走出 AOE 圈、是否真的跑尸回来）。
 2. **换嘲按具体 BOSS 做**（站长 2026-10-17 定调）。全量扫过动作/触发器词表（**2627 个名字**，含各职业文件里的 `creators[...]`，注意只扫 `ActionContext.h` 会得出"全都没有"的错误结论）：
@@ -11916,14 +11982,14 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 
 ---
 
-### 十一、控制技能优先级：按战斗情况动态 + `.bot prio <0-5>` 手动档位（2026-10-20 站长口径）
+#### 十一、控制技能优先级：按战斗情况动态 + `.bot prio <0-5>` 手动档位（2026-10-20 站长口径）
 
 > 口径原文（2026-10-20）：
 > ① "（变羊/放逐这类控制的优先级）**应该能根据战斗情况动态调整**"；
 > ② "`.bot prio <数字1-5>` 指定**当前目标**的优先级，并且**实时生效**。骷髅头标记也要**随时生效**"；
 > ③ "`.bot prio` 让 **GM 和非 GM 都能用**，但是**保留日志记录**"。
 
-#### ① 动态控制优先级（全职业共用一处注册）
+##### ① 动态控制优先级（全职业共用一处注册）
 
 - 实现：`playerbot/strategy/generic/ClassStrategy.cpp → CcRelevanceMultiplier`（`Multiplier`），由
   `ClassStrategy.cpp → CcStrategy::InitCombatMultipliers()` 注册。各职业的 `…CcStrategy`（`MageCcStrategy`/`WarlockCcStrategy`/…）
@@ -11950,7 +12016,7 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 - **人工标记豁免**：`rti cc target` 或**星星标记**（队伍标记 index 0 = 控制标记）存在 ⇒ **不降级**，保持策略里写的原优先级。
 - 效果：单怪/队伍安全 ⇒ 变羊放逐排到普通输出之后（基本不控）；多怪同时打/有人快死 ⇒ 抬到打断~驱散附近（积极控场）。
 
-#### ② `.bot prio <0-5>`（恢复丢失过的命令）
+##### ② `.bot prio <0-5>`（恢复丢失过的命令）
 
 - 用法：**选中一只怪**后 `.bot prio`（查询：表档位 + 威胁等级）或 `.bot prio <0-5>`（改档，`0` = 清除）。
   不用写 bot 名字（holder 级命令，走 `PlayerbotMgr.cpp → m_holderHandlers["prio"]`）。
@@ -11972,7 +12038,7 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 - **骷髅修正**：`PossibleAttackTargetsValue.cpp → PossibleAttackTargetsValue::ThreatTier()` 里把骷髅判定
   提到"表优先级"**之前** ⇒ 骷髅由人工即时指定，永远压过表档位（修前：表里已有档位的怪被标骷髅也不生效）。
 
-#### 验证
+##### 验证
 
 - 本地 WSL `make -j16 mangosd`：`rc=0`、`error:` 0、`[100%] Built target mangosd`（本次头文件改动触发首次 497 TU，之后增量 1 TU）；
   strip 产物里能看到 `.bot prio` 文案。
@@ -11981,7 +12047,7 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 - **待做**：游戏内验收（选中怪 `.bot prio 4` → 看 `[BOTCMD]` / `[PRIO-CHANGE]` 日志 + bot 是否立刻转去控它；
   骷髅标记怪是否立刻被集火；变羊/放逐是否明显变少）。
 
-#### 残留风险 / 待办
+##### 残留风险 / 待办
 
 - `.bot prio` 是**全服全局**改档（按 entry），非 GM 也能用 ⇒ 只能靠 `[BOTCMD]` 日志事后追责；若以后要按玩家/队伍隔离，需要在 `SetPriorityRank()` 上加 owner 维度。
 - 动态优先级只调了"动作 relevance"；控制目标怎么挑仍由 `values/CcTargetValue.cpp → FindTargetForCcStrategy`（按普通输出/优先级 4 排序）决定，两处口径要一起看。
@@ -11999,7 +12065,7 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
   ⚠️ 残留：云端 44 行的 `facing_mode` 现在**全是默认 `away_group`**（= 沿用旧行为）；要真正用上
   `fixed/open/wall` 得按攻略往表里填行（填完 ≤5 分钟自动生效）。
 
-#### bot 固定专精/职责必须落库（2026-10-21：仿真“没有真正的坦克”根因）
+##### bot 固定专精/职责必须落库（2026-10-21：仿真“没有真正的坦克”根因）
 
 **现象**：仿真 `sim start` 后组队阶段反复 `角色不足（没有真正的坦克（候选： paladin,heal / warrior,dps …））`，连试 21 次失败；全量 0 组进本。
 
@@ -12047,7 +12113,7 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 
 **验证**：`[SIM] … 候选 8 人： … (<class>,tank)` 出现、`用真坦/真奶组队` 增长、组进入 `map=… instance=…` 且 `status cleared` 开始上涨。
 
-#### 2026-10-21 仿真全量结果与副本推进（8 图 × 5 组，约 40 分钟）
+##### 2026-10-21 仿真全量结果与副本推进（8 图 × 5 组，约 40 分钟）
 
 | 图 | 最高清波 | BOSS 总数 | 最好击杀 | 结束原因 |
 |---|---|---|---|---|
@@ -12066,7 +12132,7 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 - 543/545/553 的 BOSS 已经全部击杀（`probe bosses alive=0/N`），但组在写 `done error=cleared` 前因 stuck/解散收尾，所以历史统计里没有 cleared 记录；
 - 540 从长期 0/32 提升到 29/32。
 
-#### 2026-10-21 本轮新增/修复（仿真侧）
+##### 2026-10-21 本轮新增/修复（仿真侧）
 
 1. **不再用“15s 无伤害”直接跳波**：先持续 `MoveChase`；只有“追击 45s 距离无缩短”或“近战 30s 完全无伤害”才跳；
 2. **队友在战斗时其余人去帮**：坦克无目标时优先打队友当前目标（`去帮队友打 <entry>`），不再自己开下一波、不再 15s 无目标跳波；
@@ -12079,7 +12145,13 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 
 **验证**：`[SIM] … 离本检测` 不再出现；`[DUNGEONROUTE] 波 N 的怪重新刷出 ⇒ 重新打开` 在召唤波出现；540 第一波目标为 16700（碎手军团士兵）。
 
-### 十二、仿真测试流程与工具清单（2026-10-22）
+#### 十二、仿真测试流程与工具清单（2026-10-22）
+
+> **命令面速查**（原 `dev/SIM_SCENARIO_设计.md`，2026-11-02 该文已删）：
+> `.bot sim start <mapId> [groups=N] [partySize=5] [policy=reset|continue] [attempts=N] [seed=N]` / `stop [runId|all]` / `status` / `prepare <n>`；
+> 控制台等价入口 `.rndbot sim …`（`PlayerbotHolder::HandleSim`）；权限 `SEC_GAMEMASTER` 且 **必须** `AiPlayerbot.SimMode=1`；
+> `policy=reset` = 灭团重开（记 attempt），`continue` = 死即复活续推；灭团/通关/卡死/45 分钟硬上限的判据都在 `SimScenario.cpp`。
+> ⚠️ 之后 10-29 起的 `dummy` / `dummyall` / `arms` 是**另一套测量台**（见阶段 E/F），与这里的副本仿真不是同一个入口分支。
 
 **目标**：改完代码/数据后，用**一条命令**跑 8 图 × 5 组（1+1+3），出指标、离线复盘；不靠"感觉变了"。
 
@@ -12116,7 +12188,138 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 **当前状态**：`c541a77d` 已是"进本换装（忽略装等）"版本，但换装过程中服务端 SIGABRT（日志停在
 `possible items for slot N`），待用最新 dump 做 gdb 回溯定位；定位前不要把这版当稳定版。
 
-### 副本拉怪/推进调优 — 2026-10-25（安全拉怪点死锁 / 越界兜底 / 拉回 / 卡视野 / 552 Protean）
+---
+
+### 阶段 B｜2026-10-19　本地编译与战斗测试：7 层阻塞链 + 死规则自动发现
+
+> 原章：`[构建/工具] 本地编译与战斗测试：7 层阻塞链 + 死规则自动发现 — 2026-10-19`
+
+站长 2026-10-19 定调：**「KPI 实际上就是奖励函数」** —— 副本里推进进度是好的、灭团是坏的、自己死是坏的；
+各职责再有自己的项（有效输出/有效治疗高是好的，保住队友不死是好的）。
+
+为了把它变成"改参数 → 奖励分变化"的闭环，本轮先搭测量装置，结果撞上一整条阻塞链。
+本章把**已经查清的部分**固化下来；场景本身**尚未跑通**（停在"在线机器人只有 2 个"，见 §四）。
+
+#### 一、构建链：手工同步 + mtime ⇒ 改了等于没改（已改为 git）
+
+**症状**：本地改的 `AuctionHouseMgr.cpp`（AHBot 重复 itemguid 容错）没进二进制，
+起服仍然在 `Loading Auctions...` 撞 `AddAItem(): mAitems.find(...) == mAitems.end()`。
+
+**两层原因**：
+1. 构建脚本是"手工挑几个文件 `cp`" ⇒ `AuctionHouseMgr.cpp`、`WorldModel.cpp`、`PathFinder.cpp`
+   **从来没被同步过**；
+2. 后来改 `rsync -a`（保留源 mtime）⇒ 源文件时间比构建树里的 `.o` 还旧，`make` 认为"没变过"直接跳过。
+
+**修法**：`/root/Nmangos-tbc` 改为 **git clone**（子模块 URL 指向 Windows 仓库同一路径，离线可拉），
+脚本 `_agent_tmp/wsl_git_build_pb8.sh`：`git fetch → checkout -f <ref> → submodule update → make`。
+`checkout` 出来的 mtime 一定是新的，且二进制天生对应一个 commit SHA。
+
+**纪律**：只能编译**已提交**的代码 ⇒ 改成"先 commit，再跑构建脚本"。
+
+**顺带一个坑**：模块 CMakeLists 用 `file(GLOB)` 收源文件，**新增 `.cpp` 时 `git checkout` 不会让 GLOB 重新求值**
+⇒ 新文件被静默忽略。脚本里因此每次都重跑一次 `cmake .`。
+
+#### 二、`PathFinder.cpp` 的 mmap 改动**从未参与编译**（已修）
+
+同上的同步问题 + 该文件本身三处编译错误：
+- `Unit::IsSwimming()` 是 **`Player`** 的方法 ⇒ 改 `Unit::IsInWater()`；
+- 成员 `m_sourceMapId` **不存在** ⇒ 改 `m_defaultMapId`；
+- 缺 `Grids/CellImpl.h` ⇒ 链接期 `undefined reference to Cell::Cell(CoordPair<1024u> const&)`。
+
+**结论**：云端在跑的二进制里**一直没有**"正常陆地寻路必走 mmap"这个改动（之前"编译通过"用的是陈旧 `.o`）。
+另外 `[PATH-NOMMAP]` 日志改为**每张图只报一次**（感知值会每 2 秒调用一次寻路）。
+
+#### 三、死规则：靠工具发现，别靠名字猜
+
+站长指出："不能因为名字就判断它是什么策略"。于是写了
+`_agent_tmp/extract_strategy_inventory.ps1`，从源码提取 **2799 条** `(策略, 状态, 触发器, 动作, 优先级)`，
+并检查每个名字是否真的有 `creators[...]` 注册（含 `ActionNodeFactory` 里的注册表）。第一批抓到：
+
+| 死规则 | 证据 | 处置 |
+|---|---|---|
+| `PossibleAdsStrategy`（注册名 `"ads"`）整条策略从未生效 | 它绑的触发器 `"possible ads"` 全模块**没有任何注册**，只有那一处引用；等价功能已由 `"flee from adds"`（`"has nearest adds"`）提供 | 删除策略（声明 + 定义 + 注册） |
+| `finish ready check` 动作查不到 | 动作内部名是 `"finish ready check"`，却只按 `"ready check finished"` 注册 | 补注册（保留旧 key） |
+
+剩余 25 处多为字符串拼接出来的动态名字（`say::aoe`、`set glyph::…`），属工具误报。
+
+#### 四、战斗测试框架：7 层阻塞（前 7 层已修，停在"在线机器人不够"）
+
+`BOT_SCENARIO=<场景>` 让 bot 自动跑场景并产出 `bot_events.csv`。逐层：
+
+| # | 阻塞 | 证据 | 修法 |
+|---|---|---|---|
+| 1 | `GenerateBotTests` **从未定义** ⇒ 整个测试框架被 `#ifdef` 编译掉 | `StartTest()` 照常打印 `[BM] auto-start scenario`，但 `"+test::<场景>"` 策略根本不存在 ⇒ 静默失败 | 模块 CMakeLists 加 `add_definitions(-DGenerateBotTests)` |
+| 2 | 主机 bot 无 holder ⇒ `spawn` 第一步 IMPOSSIBLE | `CommandPartySpawnBot` 只认 `ai->GetHolder()`；既非随机机器人又无 master 的 bot 拿到 nullptr | 兜底 `sRandomPlayerbotMgr` |
+| 3 | 账号在 DB 存在、`AccountMgr` 缓存查不到 ⇒ `CreateAccount` 报"名字已存在" | 本地 bot 账号是外部脚本导入的 | 创建失败后**按 username 回查 DB** 复用 id |
+| 4 | 账号角色槽位全满（20 账号 × 9 角色 = 180） | 启动日志 `Unable to create all requested fixed class/race bots due to account character limits` | 按站长口径**改为借用在线机器人**（`FindBorrowableBot`：同图+同职业 → 跨图+同职业 → 任意；借来的只退队不删号） |
+| 5 | 场景脚本里 `create group` 是**不存在的命令**（真名 `form`） | `[TestAction] … FAIL: Command create group failed`（命令查不到时 message 为空，只打通用句） | `RegisterInstance.cpp` 两处改 `"form"` |
+| 6 | 场景在"第一个 bot 的 AI 第一帧"就开跑，世界只有它自己 | `online bots=1` 时借不到任何队友 | 改为延迟 90 秒开跑 |
+| 7 | 第 6 步的"按在线数量判断"版本 `return` 直接把 **AI 冻住** | 所有 bot 不动，`bm_rule`/csv 一行都没有 | 只跳过"开场景"，**绝不 return** |
+
+**当前卡点（不是代码问题）**：
+
+```
+[BM] auto-start scenario 'combat_single_target' on host bot Stancy (online bots=2)
+[BOTTEST] borrowed online bot Ymehm (class=2) for test party
+[BOTTEST] spawn failed: … class=paladin … | reason: Failed to create account
+```
+
+本地启动 90 秒后**只有 2 个 bot 在线**（早几轮 95 秒能有 20 个，波动很大），凑不齐 5 人 ⇒ 退回新建角色 ⇒ 撞账号上限。
+已注册一个**不依赖组队**的最小场景 `combat_smoke`（`pull 190013` 自带 summon，只用主机 bot 打），尚未验证。
+
+#### 五、顺带已落地的两项（本轮代码）
+
+- **治疗不被"非策略性中断"掐断**：`HealInterruptStrategy` 是**预读打断**（`HealTargetFullHealthTrigger`
+  只在"目标已满 / 这一发过半溢出"时才成立，并会算省下的蓝），优先级与判据**一律不动**；
+  真正该修的是 `SetState() → ReInitCurrentEngine() → InterruptSpell()` 与反应引擎的**无条件**中断 ⇒
+  新增 `PlayerbotAI::IsCurrentHealUseful()` + `InterruptSpell(withMeleeAndAuto, keepUsefulHeals)`，
+  只在这两处传 true；`interrupt current spell` 动作走的仍是默认 false ⇒ 预读打断不受影响。
+- **预期仇恨闸门**：新触发器 `will overaggro` 绑 `wait for attack keep safe distance`（优先级 20），
+  判据在值 `will overaggro`（自己仇恨 + 窗口内单发最大增量 × 1.15 vs 坦克仇恨），坦克恒 false。
+
+#### 六、待办
+
+1. **`combat_smoke` 未验证** —— 下次先跑它，确认 `bm_dmg/bm_heal/bm_kills/bm_deaths/bm_rule` 与 `role` 列；
+2. 本地"在线机器人只有 2 个"需要单独查（账号被清理？登录节流？）；
+3. 想按角色算奖励分，`bot_events.csv` 的 `role` 列已加，但**按职责加权**的权重还没定。
+
+#### 七、⚠️ ODR 事故：`GenerateBotTests` 只在模块里定义 ⇒ 核心与模块看到的类大小不一致，二进制上线即崩（已修）
+
+**现象**：改完模块并部署后，云端 mangosd 起来约 1 分钟就在**同一地址**段错误循环
+（`segfault at 807`，ip 每次相同），栈是 `WorldSocket::ProcessIncomingData()` 的 lambda 读
+`WorldSocket::m_packetCooldowns[493]`（`begin=0x53`，明显是被踩坏的容器指针）。
+
+**根因（ODR 违规，不是业务逻辑）**：`PlayerbotHolder` 里有三个成员只在 `#ifdef GenerateBotTests`
+时存在（`testResultsMutex / pendingTests / testResults`，共 **0x58** 字节）。当时这个宏只写在
+`src/modules/PlayerBots/CMakeLists.txt` ⇒ **同一份头文件在核心 TU 与模块 TU 里解析出两种布局**：
+
+| 视角 | `sizeof(RandomPlayerbotMgr)` | 谁分配 / 谁构造 |
+|---|---|---|
+| 核心 TU（`WorldSocket` 等，没有宏） | **0x610** | `PlayerbotHolder::instance()` 内联在这里分配 **0x610** |
+| 模块 TU（有宏） | **0x668** | 模块里的 ctor 按 0x668 写字段 |
+
+⇒ ctor 从 0x660 起写越界，把**紧邻 BSS 的 `m_packetCooldowns`** 整个踩坏。业务代码一行没错。
+
+**证据链**：
+- 用 `sizeof` 探针把全部 54 个 `.o` 都测一遍：修复前核心 .o = 0x610、模块 .o = 0x668；
+  修复后 **54/54 = 0x668**；
+- 修复后 `m_packetCooldowns` 的符号地址移到 `0x2c361b0`，容器指针是合法堆指针；
+- `addr2line` 解不出时要用 `ip - text 段映射基址`（本例 `0x1278c5f`）再查 `nm -n`。
+
+**修法**：把 `GenerateBotTests` 放进**顶层 `CMakeLists.txt` 的 `DEFINITIONS`**（全局生效）。
+⚠️ 关键坑：必须放在 `set(DEFINITIONS "")` 之后、`set_directory_properties(PROPERTIES
+COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGenerateBotTests)` 放在前面
+**完全无效**，因为后一处 `set_directory_properties` 会把属性整个覆盖掉。
+
+**教训**：任何 `#ifdef` 会改变**类布局**的宏，必须全工程统一（放顶层 `DEFINITIONS`，不要放模块 CMakeLists）。
+部署前除了 `errors=0`，还要做一次"跨 TU 类大小一致性"探针 —— 这次事故的 7 层阻塞链（见本章 §四）
+一直没暴露，正是因为旧二进制里测试框架被整体编译掉了。
+
+---
+
+### 阶段 C｜2026-10-25　副本拉怪与推进调优（安全拉怪点 / 越界兜底 / 拉回 / 卡视野 / 552 Protean）
+
+> 原节：`### 副本拉怪/推进调优 — 2026-10-25`（原在阶段 A 章内，2026-11-02 提为独立阶段）
 
 > 全部是**本地仿真**（WSL `Ubuntu-20.04` + `mangosd_pb8_all`）的改动，云端未部署。实验脚本在 `_agent_tmp/tune/`，
 > 台账 `_agent_tmp/tune/ISSUES.md`、`runs.csv`。引用代码请按**符号名** grep。
@@ -12401,140 +12604,19 @@ boss/免疫默认值 1000/1500 未动。效果：`hold fire` 反而由 8573 涨�
 
 ---
 
-## [构建/工具] 本地编译与战斗测试：7 层阻塞链 + 死规则自动发现 — 2026-10-19
+### 阶段 D｜2026-10-27 ~ 28　水中寻路 / 阶段 link / 不可选中单位 / 546 波次重建
 
-站长 2026-10-19 定调：**「KPI 实际上就是奖励函数」** —— 副本里推进进度是好的、灭团是坏的、自己死是坏的；
-各职责再有自己的项（有效输出/有效治疗高是好的，保住队友不死是好的）。
-
-为了把它变成"改参数 → 奖励分变化"的闭环，本轮先搭测量装置，结果撞上一整条阻塞链。
-本章把**已经查清的部分**固化下来；场景本身**尚未跑通**（停在"在线机器人只有 2 个"，见 §四）。
-
-### 一、构建链：手工同步 + mtime ⇒ 改了等于没改（已改为 git）
-
-**症状**：本地改的 `AuctionHouseMgr.cpp`（AHBot 重复 itemguid 容错）没进二进制，
-起服仍然在 `Loading Auctions...` 撞 `AddAItem(): mAitems.find(...) == mAitems.end()`。
-
-**两层原因**：
-1. 构建脚本是"手工挑几个文件 `cp`" ⇒ `AuctionHouseMgr.cpp`、`WorldModel.cpp`、`PathFinder.cpp`
-   **从来没被同步过**；
-2. 后来改 `rsync -a`（保留源 mtime）⇒ 源文件时间比构建树里的 `.o` 还旧，`make` 认为"没变过"直接跳过。
-
-**修法**：`/root/Nmangos-tbc` 改为 **git clone**（子模块 URL 指向 Windows 仓库同一路径，离线可拉），
-脚本 `_agent_tmp/wsl_git_build_pb8.sh`：`git fetch → checkout -f <ref> → submodule update → make`。
-`checkout` 出来的 mtime 一定是新的，且二进制天生对应一个 commit SHA。
-
-**纪律**：只能编译**已提交**的代码 ⇒ 改成"先 commit，再跑构建脚本"。
-
-**顺带一个坑**：模块 CMakeLists 用 `file(GLOB)` 收源文件，**新增 `.cpp` 时 `git checkout` 不会让 GLOB 重新求值**
-⇒ 新文件被静默忽略。脚本里因此每次都重跑一次 `cmake .`。
-
-### 二、`PathFinder.cpp` 的 mmap 改动**从未参与编译**（已修）
-
-同上的同步问题 + 该文件本身三处编译错误：
-- `Unit::IsSwimming()` 是 **`Player`** 的方法 ⇒ 改 `Unit::IsInWater()`；
-- 成员 `m_sourceMapId` **不存在** ⇒ 改 `m_defaultMapId`；
-- 缺 `Grids/CellImpl.h` ⇒ 链接期 `undefined reference to Cell::Cell(CoordPair<1024u> const&)`。
-
-**结论**：云端在跑的二进制里**一直没有**"正常陆地寻路必走 mmap"这个改动（之前"编译通过"用的是陈旧 `.o`）。
-另外 `[PATH-NOMMAP]` 日志改为**每张图只报一次**（感知值会每 2 秒调用一次寻路）。
-
-### 三、死规则：靠工具发现，别靠名字猜
-
-站长指出："不能因为名字就判断它是什么策略"。于是写了
-`_agent_tmp/extract_strategy_inventory.ps1`，从源码提取 **2799 条** `(策略, 状态, 触发器, 动作, 优先级)`，
-并检查每个名字是否真的有 `creators[...]` 注册（含 `ActionNodeFactory` 里的注册表）。第一批抓到：
-
-| 死规则 | 证据 | 处置 |
-|---|---|---|
-| `PossibleAdsStrategy`（注册名 `"ads"`）整条策略从未生效 | 它绑的触发器 `"possible ads"` 全模块**没有任何注册**，只有那一处引用；等价功能已由 `"flee from adds"`（`"has nearest adds"`）提供 | 删除策略（声明 + 定义 + 注册） |
-| `finish ready check` 动作查不到 | 动作内部名是 `"finish ready check"`，却只按 `"ready check finished"` 注册 | 补注册（保留旧 key） |
-
-剩余 25 处多为字符串拼接出来的动态名字（`say::aoe`、`set glyph::…`），属工具误报。
-
-### 四、战斗测试框架：7 层阻塞（前 7 层已修，停在"在线机器人不够"）
-
-`BOT_SCENARIO=<场景>` 让 bot 自动跑场景并产出 `bot_events.csv`。逐层：
-
-| # | 阻塞 | 证据 | 修法 |
-|---|---|---|---|
-| 1 | `GenerateBotTests` **从未定义** ⇒ 整个测试框架被 `#ifdef` 编译掉 | `StartTest()` 照常打印 `[BM] auto-start scenario`，但 `"+test::<场景>"` 策略根本不存在 ⇒ 静默失败 | 模块 CMakeLists 加 `add_definitions(-DGenerateBotTests)` |
-| 2 | 主机 bot 无 holder ⇒ `spawn` 第一步 IMPOSSIBLE | `CommandPartySpawnBot` 只认 `ai->GetHolder()`；既非随机机器人又无 master 的 bot 拿到 nullptr | 兜底 `sRandomPlayerbotMgr` |
-| 3 | 账号在 DB 存在、`AccountMgr` 缓存查不到 ⇒ `CreateAccount` 报"名字已存在" | 本地 bot 账号是外部脚本导入的 | 创建失败后**按 username 回查 DB** 复用 id |
-| 4 | 账号角色槽位全满（20 账号 × 9 角色 = 180） | 启动日志 `Unable to create all requested fixed class/race bots due to account character limits` | 按站长口径**改为借用在线机器人**（`FindBorrowableBot`：同图+同职业 → 跨图+同职业 → 任意；借来的只退队不删号） |
-| 5 | 场景脚本里 `create group` 是**不存在的命令**（真名 `form`） | `[TestAction] … FAIL: Command create group failed`（命令查不到时 message 为空，只打通用句） | `RegisterInstance.cpp` 两处改 `"form"` |
-| 6 | 场景在"第一个 bot 的 AI 第一帧"就开跑，世界只有它自己 | `online bots=1` 时借不到任何队友 | 改为延迟 90 秒开跑 |
-| 7 | 第 6 步的"按在线数量判断"版本 `return` 直接把 **AI 冻住** | 所有 bot 不动，`bm_rule`/csv 一行都没有 | 只跳过"开场景"，**绝不 return** |
-
-**当前卡点（不是代码问题）**：
-
-```
-[BM] auto-start scenario 'combat_single_target' on host bot Stancy (online bots=2)
-[BOTTEST] borrowed online bot Ymehm (class=2) for test party
-[BOTTEST] spawn failed: … class=paladin … | reason: Failed to create account
-```
-
-本地启动 90 秒后**只有 2 个 bot 在线**（早几轮 95 秒能有 20 个，波动很大），凑不齐 5 人 ⇒ 退回新建角色 ⇒ 撞账号上限。
-已注册一个**不依赖组队**的最小场景 `combat_smoke`（`pull 190013` 自带 summon，只用主机 bot 打），尚未验证。
-
-### 五、顺带已落地的两项（本轮代码）
-
-- **治疗不被"非策略性中断"掐断**：`HealInterruptStrategy` 是**预读打断**（`HealTargetFullHealthTrigger`
-  只在"目标已满 / 这一发过半溢出"时才成立，并会算省下的蓝），优先级与判据**一律不动**；
-  真正该修的是 `SetState() → ReInitCurrentEngine() → InterruptSpell()` 与反应引擎的**无条件**中断 ⇒
-  新增 `PlayerbotAI::IsCurrentHealUseful()` + `InterruptSpell(withMeleeAndAuto, keepUsefulHeals)`，
-  只在这两处传 true；`interrupt current spell` 动作走的仍是默认 false ⇒ 预读打断不受影响。
-- **预期仇恨闸门**：新触发器 `will overaggro` 绑 `wait for attack keep safe distance`（优先级 20），
-  判据在值 `will overaggro`（自己仇恨 + 窗口内单发最大增量 × 1.15 vs 坦克仇恨），坦克恒 false。
-
-### 六、待办
-
-1. **`combat_smoke` 未验证** —— 下次先跑它，确认 `bm_dmg/bm_heal/bm_kills/bm_deaths/bm_rule` 与 `role` 列；
-2. 本地"在线机器人只有 2 个"需要单独查（账号被清理？登录节流？）；
-3. 想按角色算奖励分，`bot_events.csv` 的 `role` 列已加，但**按职责加权**的权重还没定。
-
-### 七、⚠️ ODR 事故：`GenerateBotTests` 只在模块里定义 ⇒ 核心与模块看到的类大小不一致，二进制上线即崩（已修）
-
-**现象**：改完模块并部署后，云端 mangosd 起来约 1 分钟就在**同一地址**段错误循环
-（`segfault at 807`，ip 每次相同），栈是 `WorldSocket::ProcessIncomingData()` 的 lambda 读
-`WorldSocket::m_packetCooldowns[493]`（`begin=0x53`，明显是被踩坏的容器指针）。
-
-**根因（ODR 违规，不是业务逻辑）**：`PlayerbotHolder` 里有三个成员只在 `#ifdef GenerateBotTests`
-时存在（`testResultsMutex / pendingTests / testResults`，共 **0x58** 字节）。当时这个宏只写在
-`src/modules/PlayerBots/CMakeLists.txt` ⇒ **同一份头文件在核心 TU 与模块 TU 里解析出两种布局**：
-
-| 视角 | `sizeof(RandomPlayerbotMgr)` | 谁分配 / 谁构造 |
-|---|---|---|
-| 核心 TU（`WorldSocket` 等，没有宏） | **0x610** | `PlayerbotHolder::instance()` 内联在这里分配 **0x610** |
-| 模块 TU（有宏） | **0x668** | 模块里的 ctor 按 0x668 写字段 |
-
-⇒ ctor 从 0x660 起写越界，把**紧邻 BSS 的 `m_packetCooldowns`** 整个踩坏。业务代码一行没错。
-
-**证据链**：
-- 用 `sizeof` 探针把全部 54 个 `.o` 都测一遍：修复前核心 .o = 0x610、模块 .o = 0x668；
-  修复后 **54/54 = 0x668**；
-- 修复后 `m_packetCooldowns` 的符号地址移到 `0x2c361b0`，容器指针是合法堆指针；
-- `addr2line` 解不出时要用 `ip - text 段映射基址`（本例 `0x1278c5f`）再查 `nm -n`。
-
-**修法**：把 `GenerateBotTests` 放进**顶层 `CMakeLists.txt` 的 `DEFINITIONS`**（全局生效）。
-⚠️ 关键坑：必须放在 `set(DEFINITIONS "")` 之后、`set_directory_properties(PROPERTIES
-COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGenerateBotTests)` 放在前面
-**完全无效**，因为后一处 `set_directory_properties` 会把属性整个覆盖掉。
-
-**教训**：任何 `#ifdef` 会改变**类布局**的宏，必须全工程统一（放顶层 `DEFINITIONS`，不要放模块 CMakeLists）。
-部署前除了 `errors=0`，还要做一次"跨 TU 类大小一致性"探针 —— 这次事故的 7 层阻塞链（见本章 §四）
-一直没暴露，正是因为旧二进制里测试框架被整体编译掉了。
-
-## [PlayerBots] 2026-10-27~28 水中寻路 / 阶段 link / 不可选中单位 / 546 波次重建
+> 原章：`[PlayerBots] 2026-10-27~28 水中寻路 / 阶段 link / 不可选中单位 / 546 波次重建`
 
 **背景**：r135 之后 546/547 卡在水里、555 卡、557 偶发卡死/崩溃，boss 击杀极低。逐项定位与修复如下。
 
-### 1) 水中寻路：bot 和 creature 不是同一条移动管线
+#### 1) 水中寻路：bot 和 creature 不是同一条移动管线
 - 上游 `MovementActions.cpp` 里"在水里就不生成寻路"（`generatePath=false`）⇒ 直线游，撞池壁/落差停住、也上不了岸；
 - creature 的 `ChaseMovementGenerator` 一直走核心 `PathFinder`（`NAV_GROUND|NAV_WATER`、两端都可游泳才走游泳捷径），所以怪在水里正常；
 - 修法：新增 `AllowWaterPathing()`——**副本/团本内**一律允许水中 mmap 寻路（野外保持旧行为，`AiPlayerbot.WaterPath=1` 可强制全局）。
 - 验证：546 坦克 z 从 `-4` 能上到 `34`（旋转楼梯→平台）；547 队伍不再被水隔开。
 
-### 2) stage `kind=link` 的两处 bug（547 跳点从未执行）
+#### 2) stage `kind=link` 的两处 bug（547 跳点从未执行）
 - `DungeonRoute.h` 的 route_link 加载原来在 stage 匹配之后 ⇒ 匹配时 `route.links` 为空，每轮都报
   `[STAGE] … kind=link 但 … 没有 route_link ⇒ 跳过`；已把加载提前到匹配之前。
 - 走跳点起点的目标点原来用 `out.pz = bot->GetPositionZ()`；bot 一旦在平台下层（水里），就会以水面高度朝
@@ -12544,26 +12626,26 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
 - 验证：r155/r161 里 5/5 组都出现 `[STAGE] … 用连接点 stage 2：从 (-184.8,-351.1) 跳到 (-174.1,-351.7,18.7)`，
   并有组推进到 `stage 3 -> 4`（Rokmar 已死）。
 
-### 3) “不可选中/不可交互”的单位不该算波成员
+#### 3) “不可选中/不可交互”的单位不该算波成员
 - `DungeonRoster` 原来只按“小动物 / NpcFlags”判非敌对，`Large AOI Underbat(18409)` 被当成敌对并进波次 ⇒ 波永远清不掉；
 - 改为看 `UnitFlags`：`UNTARGETABLE | UNINTERACTIBLE | NOT_ATTACKABLE_1` ⇒ 非敌对并从波成员剔除；
 - ⚠ 不能按 faction 判（`Wastewalker Slave/Worker` 是脚本入战的，必须保留），也不能单看 `IMMUNE_TO_PLAYER`
   （555 的 Cabal Ritualist 阶段性免疫会被误剔，实测一次误剔 67 只）。
 
-### 4) 蘑菇（Underbog Mushroom 17990）按 8 码躲
+#### 4) 蘑菇（Underbog Mushroom 17990）按 8 码躲
 - Hungarfen `31692` 召蘑菇；蘑菇 `34168 Spore Cloud`，`SpellRadius.dbc` index 14 = **8 码**（不是默认仇恨圈 20+）；
 - `ai_playerbot_avoid_mob` 新增 `radius` 列（0=沿用仇恨圈），546/17990 配 8；
 - `DungeonRoute::MapRoute::avoidRadius` + `ThreatRingRadius()` 优先返回自定义半径；
 - 效果：546 蘑菇伤害 206 → 84（-59%），`[REPOS] 避 Underbog Mushroom` 从几十条降到 5 条。
 
-### 5) 546 波次重建（3D 聚类）
+#### 5) 546 波次重建（3D 聚类）
 - 原波次是 2D 聚类，把不同楼层的怪并进同一波（17/57 波 z 跨度 >10 码，例：1 个 Bog Giant + 3 只 z=15~20 的 Underbat + 1 Shambler）；
 - 重建脚本 `_agent_tmp/rebuild_546_waves.py`：3D 距离 ≤18 码、|Δz| ≤8、单波直径 ≤30；
   **Bog Giant(17723) 单独成组**（它没有 spawn_group，是单体）；
 - 结果：57 波 → 86 波，z 跨度最大 6.1 码，巨人 9 组；`group_id=0` 的 Fen Ray/Lykul Wasp 原样保留；
 - 546 的 `pull_timing` 用 `dev/tools/pull_cost_offline.py --maps 546` 按新 ord 重算。
 
-### 6) 稳定性（本批一并修）
+#### 6) 稳定性（本批一并修）
 - `antispammgr` 去掉全部 `std::regex`（GCC 编译 `[[:punct:]]` 卡死 40 分钟，栈在 `_M_insert_bracket_matcher` + `strxfrm_l`）；
   改成线性过滤，行为等价；
 - 仿真模式禁用闲聊回复（`ChatReplyAction::ChatReplyDo` 在 `simMode` 直接返回）：`PlayerbotTextMgr` 并发/堆问题会卡死或崩溃；
@@ -12582,13 +12664,15 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
 
 ---
 
-## [PlayerBots] 2026-10-29 DPS 技能释放状态机（17 专精）+ 训练假人 DPS 场景 + 离线调优
+### 阶段 E｜2026-10-29　DPS 状态机 v0（17 专精）+ 训练假人场景 + 离线调优
+
+> 原章：`[PlayerBots] 2026-10-29 DPS 技能释放状态机（17 专精）+ 训练假人 DPS 场景 + 离线调优`
 
 **背景（站长口径）**：DPS 不做"优先级循环表"，改成**有限状态机**；每个专精把**最高等级技能**和**饰品**都放进去；
 每次测 2 分钟、做 1 目标 / 5 目标两种场景；状态机要把**自己的血量和资源、目标血量、技能释放状态**都当转移条件；
 "自动射击时间"本身是猎人的一个重要状态；最后要能**离线自动调优**（脚本改参数 → 跑假人 → 按 DPS 择优）。
 
-### 1) 代码结构
+#### 1) 代码结构
 
 | 位置 | 作用 |
 |---|---|
@@ -12607,7 +12691,7 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
 - `Ready()` 走 `Unit::IsSpellReady()`：**一次覆盖**技能冷却 + 分类冷却 + 公共冷却 + 沉默封锁，不另起一套判断。
 - 所有施法都经 `TryCast()`（先 `Ready()` 再 `CastSpell(最高 rank id)`），所以不会抢 GCD、不会打断自己的读条。
 
-### 2) 三个关键判定
+#### 2) 三个关键判定
 
 1. **技能 id 一定顶到最高 rank**：`SpellId()` 先取引擎的 `"spell id"` 值（省蓝等级 > 1 时它给的是**最低** rank），
    再沿 `sSpellMgr.GetNextSpellInChain()` 往上爬，只取 `bot->HasSpell()` 的最后一档。
@@ -12618,7 +12702,7 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
    `AttackAction::WaitingForTankThreat(ai, bot, target)`（**同一份实现，不复制判断**），`Tick()` 里先问它；
    门说"先别打"就把这个 GCD 交回引擎。坦/奶不进 DPS 状态机（`IsHeal`/`IsTank` 门；假人场景用 `SetBotForceDps` 临时豁免）。
 
-### 2.5) 近战找背 / 武器与专精
+#### 2.5) 近战找背 / 武器与专精
 
 - **近战都要找背**：`dpsfsm::GetBehind()` 取"目标背后 0.8×攻击距离"的点，用 `MovePoint` 走过去；
   已经在背后（`Unit::IsFacingTargetsBack`）就不动。**它不占 GCD**（只走位，不 return true），
@@ -12629,7 +12713,7 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
   **4=单手锤 5=双手锤 6=长柄 7=单手剑 8=双手剑 10=法杖 13=拳套 15=匕首 18=弩**。
   实测：刺杀贼 `15/15`（双匕首）、战斗贼 `7/7`（双单手剑）、野性德 `10/-1`（法杖）、狂暴战 `4/4`（双单手锤）。
 
-### 2.6) 假人被动/不转身 · 法力药水
+#### 2.6) 假人被动/不转身 · 法力药水
 
 - **假人就是被动物件**（站长口径）：数据库模板 `190013/190014/190015` 的 `UnitFlags`
   置 `UNIT_FLAG_STUNNED(0x40000) | UNIT_FLAG_PACIFIED(0x20000)`——`STUNNED` 在本核心的注释就是
@@ -12643,7 +12727,7 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
   "combat self target" 值，假人场景里会被判成不 useful ⇒ 一次都喝不到（实测 0 次）。改成直接 `CastItemUseSpell` 后
   60 秒窗口实测能喝到 13 次，法系 dps 明显抬起来（fire 344→766、balance 565→900）。
 
-### 2.7) 猎人（bm / marks）—— 卡在"自动射击起不来"
+#### 2.7) 猎人（bm / marks）—— 卡在"自动射击起不来"
 
 猎人先后踩了四个坑，前三个已修，第四个仍未闭环：
 
@@ -12660,12 +12744,12 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
    但实测 marks 仍有整场 0 伤害的 bot（同一个 bot 用 `fsm=0` 走引擎也 0 伤害）——
    说明**是那只 bot 自己的状态问题**（不是状态机逻辑）。下一步：假人场景对"连跑两轮 0 伤害"的 bot 自动换下一只。
 
-### 3) 饰品
+#### 3) 饰品
 
 `Burst` 状态第一件事是 `DoSpecificAction("use trinket")`（复用 `UseTrinketAction`：它自己挑"已装备 + 使用型 + 可用"的饰品），
 30 秒内不重复尝试；用完饰品那个 GCD 直接返回，不再叠别的技能。
 
-### 4) 训练假人 DPS 场景（`.rndbot sim dummy`）
+#### 4) 训练假人 DPS 场景（`.rndbot sim dummy`）
 
 ```
 .rndbot sim dummy <spec> [targets=1] [seconds=120] [botGuid=0] [fsm=1] [respec=1]
@@ -12703,7 +12787,7 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
   （`incombat=0` / `total=0` = **无效样本**，调优脚本会丢弃；`top` 是**累计**施法次数，不是本轮增量）。
 - 增量口径：伤害/施法/平砍都取"假人就位之后"的增量（`botDamageDealt / botPetDamageDealt / botMeleeHits / botCasts`）。
 
-### 5) 离线调优（参数热加载）
+#### 5) 离线调优（参数热加载）
 
 - 参数文件 `/root/run_local/dpsfsm_tune.conf`（`AiPlayerbot.DpsFsmTuneFile`），格式 `<scope>:<key>=<value>`，
   `scope` = 专精名或 `*`；服务端每 5 秒看一次 mtime ⇒ **改文件即生效，不重编译不重启**。
@@ -12713,7 +12797,7 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
 - 本轮调优结论（写在 `_agent_tmp/tune/dpsfsm_tune.tuned.conf`）：`fire:aoe_pack=5`、`frost:aoe_pack=2`、`combat:aoe_pack=2`、
   `assassination:aoe_pack=2`、`elemental:aoe_pack=2`、其余多为 `aoe_pack=5`（近战群伤手段弱，硬进 Aoe 反而降 DPS）。
 
-### 6) 测量口径（这一节是前面所有数字的前提，别再踩）
+#### 6) 测量口径（这一节是前面所有数字的前提，别再踩）
 
 **① 战斗类 cheat 必须关掉。** `start_server.sh` 的 `--cheats` 是给"副本能不能推进"用的，对 DPS 状态机是毒药：
 
@@ -12749,7 +12833,7 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
 被拦下来的施法也算一次 ⇒ 出现过"arms 40 秒 621~1204 次施法"这种鬼数。现在拆成 `CastSpell`（**成功才记**）
 + `CastSpellBody`（实际逻辑），arms 同场景只剩 15 次真实施法。
 
-### 7) 实测数据（本地仿真服：无战斗 cheat + **premade 天赋**（按专精固定那套）+ 最好装备，1 目标 40 秒，`pack=1/1` 已校验）
+#### 7) 实测数据（本地仿真服：无战斗 cheat + **premade 天赋**（按专精固定那套）+ 最好装备，1 目标 40 秒，`pack=1/1` 已校验）
 
 | 专精 | sp / ap | dps | 备注 |
 |---|---|---|---|
@@ -12773,7 +12857,7 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
 ② `equip best` 之后野性德终于拿到物理皮甲（ap 352 → **3337**，dps 32 → **500**）；
 ③ 怒气/能量**账本**（见过成本表决定这一手放不放）让战士/盗贼的核心技能回到了正常次数。
 
-### 8) 踩坑记录（都是实测定位，不是猜）
+#### 8) 踩坑记录（都是实测定位，不是猜）
 
 1. **骑乘状态 `Unit::Attack()` 直接返回 false**（`player cannot attack in mount state`）：随机 bot 常年骑坐骑，
    假人测试会表现成"`incombat=1`、`victim=` 空、`casts=0`、只有魔杖/平砍在动"。场景里必须**先下马**，并且每轮补一次。
@@ -12826,9 +12910,13 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
 23. **"近战挤在一个木桩上"是伪问题**：WoW 里玩家之间没有碰撞体积（站长口径），
    真正的原因是"加入共享堆的 bot 被传送到了中间那堆的坐标"——外围两堆的近战永远够不着自己的木桩。
 
-## 10) 2026-10-30 本轮：整队假人 / 静态 BIS / 优先级表 / 猎人链路
+---
 
-### 10.1 测量基建
+### 阶段 F｜2026-10-30　整队假人 / 静态 BIS / 优先级表 / 猎人链路（10.1 ~ 10.59）
+
+> 原章：`## 10) 2026-10-30 本轮：整队假人 / 静态 BIS / 优先级表 / 猎人链路`（原为无标签散章）
+
+#### 10.1 测量基建
 
 | 能力 | 命令 / 符号 | 说明 |
 |---|---|---|
@@ -12837,7 +12925,7 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
 | 多轮取中位数 | `_agent_tmp/tune/dummyall_rounds.py --rounds N` | 单轮方差大，必须多轮 |
 | 假人被动不转身 | `dev/232_20261029_测试假人_不转身.sql`（`UnitFlags |= STUNNED|PACIFIED`，`MovementType=0`） | `UNIT_FLAG_STUNNED` 核心注释即"turn and strafe movement disabled" |
 
-### 10.2 静态 BIS 装备表（`ai_playerbot_bis_gear`）
+#### 10.2 静态 BIS 装备表（`ai_playerbot_bis_gear`）
 
 - 生成器 `_agent_tmp/bis/gen_bis_v4.py`：
   - 候选来自 `item_template`（职业可穿 + 护甲/武器子类白名单 + 等级≤70 + 品质≥3）
@@ -12849,7 +12937,7 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
 - 服务端：`SimScenario` 读表 → **每 tick 穿一件**（流水）→ 穿完再练武器技能 + 刷新武器伤害 + 开始计时
 - 结论：法系 sp 从 ~900 提到 **2200~2800**，dps 从 600 提到 **1000~1700**；近战 ap 2400~6300
 
-### 10.3 状态机：优先级表（逐步取代 if/else）
+#### 10.3 状态机：优先级表（逐步取代 if/else）
 
 `dpsfsm::Entry{name,target,requireAura,minAuraRemain,auraOn,minCombo,minEnergy}` + `TryTable()`
 ——"放什么技能、buff 什么时候续"由表决定，表内按优先级从上往下试：
@@ -12864,7 +12952,7 @@ spec = fire/frost/arcane/arms/fury/combat/assassination/bm/marks/affliction/dest
 cold blood / presence of mind / arcane power / icy veins / tiger's fury / berserk / kill command /
 shamanistic rage / bloodlust / use trinket` —— 这些跳过 `Ready()` 的 GCD 判定，仍走 `CanCastSpell`。
 
-### 10.4 移动职责（站长架构口径）
+#### 10.4 移动职责（站长架构口径）
 
 **移动归引擎，状态机只管技能。** 状态机只在"这一 tick 真放出技能"时让引擎让位：
 `skipEngine = fsmHandled && SkipEngine(guid) && DidCastThisTick(guid)`。
@@ -12874,7 +12962,7 @@ shamanistic rage / bloodlust / use trinket` —— 这些跳过 `Ready()` 的 GC
 - **最后一道闸**（`RandomPlayerbotMgr::UpdateAIInternal`，`simscenario::Update()` 之后）：
   `ForEachPlayerbot` 检查"有 ranged 策略 + 有目标 + 距离 < 射程-5" ⇒ `MoveChase(victim, keep)`
 
-### 10.5 猎人自动射击链路（gdb 取证结论）
+#### 10.5 猎人自动射击链路（gdb 取证结论）
 
 1. Auto Shot(75) 数据正常：`Attributes` 含 `SPELL_ATTR_USES_RANGED_SLOT`、`AttributesEx2` 含 `SPELL_ATTR_EX2_AUTO_REPEAT`
 2. `Player::CastSpell()` 每次施法前都 `InterruptSpell(CURRENT_AUTOREPEAT_SPELL)` ⇒ 每发技能都把自动射击顶掉
@@ -12885,7 +12973,7 @@ shamanistic rage / bloodlust / use trinket` —— 这些跳过 `Ready()` 的 GC
    → **假人自己** `MoveChase(bot, 0)` 到 2~3 码 ⇒ 猎人距离从 19 掉进 8 码死角 ⇒ 自动射击停摆。
    **已取消**该兜底（假人只当木桩，不主动咬人）。
 
-### 10.6 这轮踩的硬坑（都已在代码里修掉）
+#### 10.6 这轮踩的硬坑（都已在代码里修掉）
 
 - `Player::SetSkill(id, value, max)` 参数顺序写反（把武器技能设成 **1**）⇒ 近战全员 miss、`melee=0`。
   修完：刺杀 405 / 狂暴 532 / 野性 607（修前 17/48/29）
@@ -12896,7 +12984,7 @@ shamanistic rage / bloodlust / use trinket` —— 这些跳过 `Ready()` 的 GC
 - 法力职业 60 秒撞法力墙 ⇒ 发 `22832` 超级法力药水 ×20 + `UseManaPotion()`（扫背包找 `SPELL_EFFECT_ENERGIZE` 的 on-use 物品 → `CastItemUseSpell`）；
   `ai->DoSpecificAction("mana potion")` 在假人场景恒 not useful，别用
 
-### 10.7 当前基线（40 秒、无 combat cheat、32 点前最稳的一轮）
+#### 10.7 当前基线（40 秒、无 combat cheat、32 点前最稳的一轮）
 
 | 法系 | dps | | 物理 | dps |
 |---|---|---|---|---|
@@ -12912,7 +13000,7 @@ shamanistic rage / bloodlust / use trinket` —— 这些跳过 `Ready()` 的 GC
 > 近战在**单跑隔离**测试里能到 fury 571 / feral 607 / assassination 405，batch 里偏低主因是单轮样本与相互干扰；
 > marks 猎人在"假人不再主动追人"之后仍需复测。
 
-### 10.8 猎人两个真根因（2026-10-30 子代理 gdb 取证 + 复测通过）
+#### 10.8 猎人两个真根因（2026-10-30 子代理 gdb 取证 + 复测通过）
 
 **根因 1：不是猎人走过去，是木桩走过来。**
 Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackStart` → `UnitAI::HandleMovementOnAttackStart()`
@@ -12947,7 +13035,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 | marks | 106 dps / casts=3 / `75:1` / dist 2.2 | **162~237 dps / casts 15~16 / `75:13~14` / dist 18.9~19.0** |
 | bm | 255 dps（实为 2.6 码近战平砍 11 下）/ `75:1` | **167 dps / casts 18 / `75:17` / dist 19.2** |
 
-### 10.9 每专精独立木桩堆 + 换装健壮性（2026-10-30 凌晨，整队测量终于可复现）
+#### 10.9 每专精独立木桩堆 + 换装健壮性（2026-10-30 凌晨，整队测量终于可复现）
 
 **问题**：3 堆共享木桩时同一套设置下 dps 能差 2 倍（fire 818 → 453），近战/猎人经常 0 有效样本，
 参数调优出来的结论全是噪声。
@@ -12985,7 +13073,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 - `fire:scorch_stacks=5`；`arcane:burst_hp=30`（738 → 753）
 - 5 目标：`fire:aoe_pack=2`（904 → 1453）、`elemental:aoe_pack=2`
 
-### 10.10 近战"正好 5 码"边界 bug + 惩戒骑三处修复（2026-10-30 凌晨）
+#### 10.10 近战"正好 5 码"边界 bug + 惩戒骑三处修复（2026-10-30 凌晨）
 
 **主 bug：近战 bot 被摆在距假人正好 5.00 码 = `ATTACK_DISTANCE` 边界**
 - `SimScenario::TickDummies()` 单木桩布局里 `d.pileX = d.x + d.standDist`，而假人实际生成在
@@ -13022,7 +13110,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 
 惩戒骑单跑实测 427~566（波动主因：复仇之怒 3 分钟冷却跨轮复用、BIS 偶发 ap 1950 vs 2270）。
 
-### 10.11 参数扫第三轮（1 目标 burst_hp / 5 目标 aoe_pack，2026-10-30 04:00）
+#### 10.11 参数扫第三轮（1 目标 burst_hp / 5 目标 aoe_pack，2026-10-30 04:00）
 
 | 专精 | 参数 | 基线 | 候选（中位数） | 结论 |
 |---|---|---|---|---|
@@ -13037,7 +13125,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 **经验**：`aoe_pack` 是"几只怪以上切 AoE"，不同专精差很多（arcane/marks 要 4，combat 要 2）；
 `burst_hp` 只在猎人身上有效（bm 30），战士/增强改了反而更差 —— 说明它们是持续性输出来源，不是斩杀型。
 
-### 10.12 站位修复后的近战参数复扫 + shadow 5 目标复核（2026-10-30 04:20）
+#### 10.12 站位修复后的近战参数复扫 + shadow 5 目标复核（2026-10-30 04:20）
 
 **shadow 5 目标其实没问题**：直接单跑 `.rndbot sim dummy shadow 5 40 0 1 1` →
 `dps=827.4 casts=20 pack=0/5 ic=1`（`pack=` 是"10 码内/30 码内"的假人数，暗牧站 18 码外 ⇒ 0/5 正确）。
@@ -13057,7 +13145,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 单参数比较（候选 vs 同轮基线）比"跨轮绝对值"可信；要判断"某个参数到底有没有用"，
 应看 3 轮以上中位数，且候选与基线**同轮同环境**。
 
-### 10.13 17 专精循环覆盖体检（2026-10-30 04:40）
+#### 10.13 17 专精循环覆盖体检（2026-10-30 04:40）
 
 方法：整队跑一轮，把每行报告里的 `top=`（本次运行各法术的**成功次数**）解析出来 → 用
 `spell_template` 反查法术名 → 与各专精应有的核心循环比对。这比看 dps 更能定位"少了整块输出"。
@@ -13082,9 +13170,9 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 **顺带发现**：`top=` 里出现过 `24355` = "Drink"（喝水）——说明有些专精在假人场景里会去喝水/回蓝，
 这一条要单独查（可能把 40 秒窗口切走一大块）。
 
-### 10.14 循环覆盖修复（10 个专精）+ BIS 穿装重试（2026-10-30 05:00）
+#### 10.14 循环覆盖修复（10 个专精）+ BIS 穿装重试（2026-10-30 05:00）
 
-#### A. 十个专精的核心技能修复（全部在 `strategy/DpsFsm.cpp`）
+##### A. 十个专精的核心技能修复（全部在 `strategy/DpsFsm.cpp`）
 
 | 专精 | 缺失技能 | 根因（符号） | 修复 |
 |---|---|---|---|
@@ -13108,12 +13196,12 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 - **feral 猫形态抖动**：引擎让 bot 喝水（`24355 Drink`）会取消变形 ⇒ 状态机再变回来，40 秒刷 13 次 Cat Form。
 - **bm 猎人 pet=0**（只放了一次 `883 Call Pet`），宠物管理不在状态机范围。
 
-#### B. BIS 穿装重试（`SimScenario.cpp`）
+##### B. BIS 穿装重试（`SimScenario.cpp`）
 
 主手偶发空槽（`mh=-1`、`wep=-1/13`、dps 掉到 10~20），原因是穿装偶发失败（背包/唯一性/双手冲突），
 之前没有重试。现在：失败就重排队重试最多 3 次，流水完成后**主手自检**并报警。
 
-#### C. 当前基线（40 秒、1 木桩、无 cheat、2 轮；17/17 有效）
+##### C. 当前基线（40 秒、1 木桩、无 cheat、2 轮；17/17 有效）
 
 | 专精 | dps | | 专精 | dps |
 |---|---|---|---|---|
@@ -13130,7 +13218,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 较本轮开始时（法系 430~950、近战 16~930、多个专精 0 样本）整体上一个台阶；
 `arms` 偏低主因是"斩杀进不了窗"（见上），`ret` 受复仇之怒 3 分钟冷却影响。
 
-### 10.15 低血木桩场景（验证斩杀类技能）+ 斩杀仍未复现（2026-10-30 05:10）
+#### 10.15 低血木桩场景（验证斩杀类技能）+ 斩杀仍未复现（2026-10-30 05:10）
 
 **新增能力**：`.rndbot sim dummy <spec> <targets> <sec> <guid> <fsm> <respec> <lowhp>`
 第 8 个参数传 `1` ⇒ 木桩 `SetMaxHealth(200000)` / `SetHealth(24000)`（**12% 血**），
@@ -13155,7 +13243,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 **附带发现（fury 这只 bot）**：低血木桩下 `dps=102 casts=0 melee=2` —— 又是"整场几乎不接战"的偶发，
 与 `10.14` 里记录的 dummyall 首位偶发同类，属于场景/引擎侧问题，不影响状态机结论。
 
-### 10.16 bot 法术表缺训练师技能（2026-10-30 05:15）
+#### 10.16 bot 法术表缺训练师技能（2026-10-30 05:15）
 
 **硬证据（直接查角色库）**：`tbccharacters.character_spell`
 - guid 92（武器战 bot = Oberio）：有 `12294`(致死)、`1680`(旋风斩)，**没有 `5308`(斩杀)**
@@ -13176,7 +13264,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 1. 准备阶段对**指定 id 白名单**直接 `bot->learnSpell(id, false)` 兜底（先放 `5308`，验证通了再扩表）；
 2. 在 `CastChecked` 对 "execute" 打一行 `SpellId/HasSpell/CanCastSpell` 结果日志，确认是哪一环。
 
-### 10.17 斩杀验证通过 + 两个"假阴性"教训（2026-10-30 05:30）
+#### 10.17 斩杀验证通过 + 两个"假阴性"教训（2026-10-30 05:30）
 
 **结论：斩杀完全正常，之前是测量问题。**
 
@@ -13188,7 +13276,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
   2. **命令参数位数搞错了**：`.rndbot sim dummy <spec> <targets> <sec> <guid> <fsm> <respec> <lowhp>`
      是 **8 个参数**，我一开始只给 7 个 ⇒ `lowHp` 恒为 false，木桩还是 500 万血。
 
-### 教训（写下来避免再犯）
+#### 教训（写下来避免再犯）
 
 1. **新参数上线后，先打印一次实际生效值**再跑实验（这次就是参数位错导致"斩杀不可用"的误判，
    浪费了一整轮）。
@@ -13198,7 +13286,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 3. 低血木桩会让木桩**提前死亡**（12% × 20 万 = 2.4 万血，几秒就打空）⇒ 报告里 `victim=-`，
    此时 dps 只统计到死亡前，**不能与 500 万血木桩的 dps 直接比较**，只能用于验证"技能是否放出"。
 
-### 10.18 穿装顺序 bug：武器技能必须在穿装**之前**练（2026-10-30 05:25）
+#### 10.18 穿装顺序 bug：武器技能必须在穿装**之前**练（2026-10-30 05:25）
 
 **现象**：combat 贼连续多轮 `dps=10~16`、`mh=-1`、`wep=-1/13`（主手空、副手有拳套）。
 
@@ -13232,9 +13320,9 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 - `arms 373`：受"斩杀需要目标 <20% 血"限制（普通木桩测不到），本身单目标持续输出弱于狂暴战属正常；
 - `affliction 602`：DOT 专精在 40 秒窗口吃亏（DOT 未跳完），需要更长窗口或按"完整周期"评估。
 
-### 10.19 测量口径：DOT 专精用长窗口；5 目标 AoE 基线首测（2026-10-30 05:35）
+#### 10.19 测量口径：DOT 专精用长窗口；5 目标 AoE 基线首测（2026-10-30 05:35）
 
-#### A. DOT 专精（40 秒 vs 90 秒）
+##### A. DOT 专精（40 秒 vs 90 秒）
 
 | 专精 | 40 秒 | 90 秒 | 说明 |
 |---|---|---|---|
@@ -13245,7 +13333,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 **口径结论**：DOT/流血专精（affliction、feral、shadow 的持续伤害部分）用 **90 秒窗口**评估；
 40 秒窗口只用于同一专精"改前 vs 改后"的相对比较，不能与爆发型专精横向比。
 
-#### B. 5 目标 AoE 基线（`.rndbot sim dummyall 5 40`，一轮）
+##### B. 5 目标 AoE 基线（`.rndbot sim dummyall 5 40`，一轮）
 
 | 专精 | dps | 备注 |
 |---|---|---|
@@ -13268,9 +13356,9 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 下一轮按"`aoe_pack` 阈值 + AoE 技能表是否覆盖"逐个查。
 注意 5 目标场景里 `pack=` 是"10 码内/30 码内"假人数，远程站 18 码时 `pack10=0` 是正常的。
 
-### 10.20 AoE（5 目标）真根因：地面技静默失败 + 术士种子自顶 + 盗贼无 AoE 状态（2026-10-30 06:15）
+#### 10.20 AoE（5 目标）真根因：地面技静默失败 + 术士种子自顶 + 盗贼无 AoE 状态（2026-10-30 06:15）
 
-#### 主 bug：`TryCastAt()` 把"静默失败"当成成功
+##### 主 bug：`TryCastAt()` 把"静默失败"当成成功
 
 `DpsFsm.cpp → TryCastAt()` 把地面目标技交给 `PlayerbotAI::CastSpell(id, x, y, z)`，而这一层只检查"能否入队"，
 `Spell::SpellStart()` 的 `CheckCast` 失败是**静默的、仍返回 true**。结果：状态机以为自己放了飓风/乱射/火雨，
@@ -13281,7 +13369,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 - 反证实验（子会话做的）：把 balance/bm 的 `aoe_pack` 临时调 99 绕开 Aoe 分支 → 平衡德 1040 dps、兽王猎 471 dps；
   走 Aoe 分支时只有 0~88 ⇒ 黑洞确实在 Aoe 分支，不在门限。
 
-#### 另外两处
+##### 另外两处
 
 - `TickWarlock()` 的 Aoe：种子(SoC) 对**同一目标反复种**，把上一颗顶掉 ⇒ 永远等不到引爆（16~18 次种子、4~17k 伤害）。
   改成"每个目标只种一颗 → 火雨 → 暗影箭兜底"。
@@ -13289,7 +13377,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
   其余复用单体表）。**诚实说明**：TBC 盗贼没有真正的 AoE 打击（刀扇是 WLK），A/B 显示 AoE 状态本身对 dps ≈ 0 差；
   combat 从 15.7 → 850~1330 的主因是主手武器（改前几轮 `mh=-1` 空手）。
 
-#### 5 目标修复后实测（同一把二进制，2 轮）
+##### 5 目标修复后实测（同一把二进制，2 轮）
 
 | 专精 | 改前 | 改后 | `top=` |
 |---|---|---|---|
@@ -13301,13 +13389,13 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 
 `dpsfsm_tune.conf` 与备份逐字节一致（**没有**动 pack 门限）。
 
-#### 新发现的测试台 bug（未修，下轮处理）
+##### 新发现的测试台 bug（未修，下轮处理）
 
 `SimScenario.cpp → StartDummy()` 用 `x += 14*(id%3-1)` / `y += 14*((id/3)%2)` 轮换落点，
 其中 **`y+14` 那一排（id=3~5 / 9~11 / 15~17）稳定 LOS 不通** ⇒ 落在那一排的远程专精整场 0 dps。
 这解释了一部分历史"偶发 0 样本"。修法：换落点/抬高或重选平地，并在开跑前做一次 LOS 自检。
 
-### 10.21 站位 LOS 自检（修掉"整排远程 0 dps"）+ 一次崩服教训（2026-10-30 06:40）
+#### 10.21 站位 LOS 自检（修掉"整排远程 0 dps"）+ 一次崩服教训（2026-10-30 06:40）
 
 **问题**：`StartDummy()` 的落点轮换 `x += 14*(id%3-1)` / `y += 14*((id/3)%2)` 里，
 **`y+14` 那一排（id=3~5 / 9~11 / 15~17）稳定没有视线** ⇒ 落在那一排的远程专精整场 0 dps。
@@ -13334,7 +13422,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 | enhance | 756 | | fury | 541 |
 | | | | ret | 533 |
 
-### 10.22 5 目标（AoE）基线（干净落点 + AoE 修复后，2026-10-30 06:50）
+#### 10.22 5 目标（AoE）基线（干净落点 + AoE 修复后，2026-10-30 06:50）
 
 `.rndbot sim dummyall 5 40`，一轮 17 专精（`pack=` 是"10 码内/30 码内"假人数，远程站 18 码时 `0/5` 正常）：
 
@@ -13368,7 +13456,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 **结论**：远程法系 AoE 收益 1.25~2.6 倍，符合 TBC 常识；近战 AoE（fury/combat/arms）受职业机制限制，
 `arms` 的 `casts=0` 需要单独排查（可能是 BIS 主手武器/姿态导致整个 Aoe 分支不可用）。
 
-### 10.23 arms 在 5 目标 `casts=0` 的真相：主手空槽（不是 AoE 逻辑）（2026-10-30 07:00）
+#### 10.23 arms 在 5 目标 `casts=0` 的真相：主手空槽（不是 AoE 逻辑）（2026-10-30 07:00）
 
 - 现象：`arms` 5 目标 `dps=0 casts=0 melee=0`，而同轮单目标正常（2816 ap、`mh=22736`）。
 - 查报告行：失败轮 `mh=-1 wtimer=100 delay=-1 wep=-1/0` ⇒ **主手空槽**（BIS 流水偶发穿装失败，
@@ -13377,7 +13465,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
   再把各类武器技能刷一遍、重算武器伤害。
 - 验证：两轮 `arms 5 40` 均 `mh=22736 wep=7/0`、伤害 26635/28572（dps ≈ 660~715），不再是 0。
 
-### 10.24 参数最终复核（3 轮）+ 结论：只有 snd_cp 站得住（2026-10-30 07:00）
+#### 10.24 参数最终复核（3 轮）+ 结论：只有 snd_cp 站得住（2026-10-30 07:00）
 
 | 专精 | 参数 | 基线（3 轮中位数） | 候选 | 结论 |
 |---|---|---|---|---|
@@ -13389,7 +13477,7 @@ Auto Shot 第一次造成伤害后，木桩自动反击：`CreatureAI::AttackSta
 要真正把这些参数量化，需要**固定 bot**（同一只 bot 跑两个臂不行）或**提高采样到 5 轮以上**，
 成本高于收益。因此后续不再细扫，把精力放在"结构性 bug"上（本次会话的收益全部来自这类修复）。
 
-### 10.25 本次会话最终基线（速查）
+#### 10.25 本次会话最终基线（速查）
 
 **单目标 40 秒、无 cheat、BIS 装备、17/17 有效**（§10.21 两轮）
 ```
@@ -13412,7 +13500,7 @@ feral 602  arms 559  affliction 555  fury 541  ret 533
 9. 站位 LOS 不通（`y+14` 那排）⇒ 整排远程 0 dps §10.21
 10. `MoveChase(offset)` 不是"保持距离"；`DistanceYourself` 只在 CHASE 态有效 §10.5
 
-### 10.26 崩服定位：那条"远程不变量"闸门本身是祸源（2026-10-30 07:10）
+#### 10.26 崩服定位：那条"远程不变量"闸门本身是祸源（2026-10-30 07:10）
 
 **现象**：整队第二轮直接 0/17 —— 服务端在跑测中途消失。
 
@@ -13442,7 +13530,7 @@ feral 670    arms 595        affliction 542  ret 541  fury 508  frost 478
 **教训**：给"防御性不变量"写移动调用时要考虑目标失效；更重要的——**无效的补丁要尽早删**，
 留着只会变成新的崩溃源。
 
-### 10.27 主手必须"立刻"穿：流水排队来不及（2026-10-30 07:20）
+#### 10.27 主手必须"立刻"穿：流水排队来不及（2026-10-30 07:20）
 
 **现象**：3 轮回归里 `arms` 三战全空（`mh=-1`、`wep=-1/0`、`casts=0`），`combat` 只有 16 dps，
 而且**之前的"主手仍为空"兜底日志一次都没出现** —— 说明那段落根本没被走到。
@@ -13457,7 +13545,7 @@ feral 670    arms 595        affliction 542  ret 541  fury 508  frost 478
 **验证**：`arms mh=28434 wep=1/-1`（双手斧，delay 3700）、`combat mh=28189 wep=7/13`，
 dps 从 0 / 16 → **392 / 475**（`casts=7/15`、`melee=12/52`、切割与剑刃乱舞都出来了）。
 
-### 10.28 最终基线（3 轮中位数，2026-10-30 07:25 收尾版）
+#### 10.28 最终基线（3 轮中位数，2026-10-30 07:25 收尾版）
 
 单目标 40 秒、无 cheat、BIS 装备、每专精独立木桩堆（LOS 自检）、**17/17、16/17 有效样本**：
 
@@ -13490,7 +13578,7 @@ dps 从 0 / 16 → **392 / 475**（`casts=7/15`、`melee=12/52`、切割与剑�
 - `arms 317`（1/3 有效）：斩杀需要目标 <20% 血，普通木桩测不到；且偶发主手兜底失败
 - `fury 356`：与 arms 同源（斩杀/姿态），但更多是"英勇打击吃怒"的循环取舍
 
-### 10.29 残留问题：arms 约四成轮次"有武器、够得着、在战斗，却零平砍"（2026-10-30 07:40）
+#### 10.29 残留问题：arms 约四成轮次"有武器、够得着、在战斗，却零平砍"（2026-10-30 07:40）
 
 **现象**（同一只 bot guid=92，连续 6 轮 `dummyall 1 40`）：
 ```
@@ -13511,7 +13599,7 @@ AoE 判定（1 目标）、武器技能（已 SetSkill 全满）。
 
 **影响**：只影响 arms 的样本有效率（3 轮里 1 轮有效），不影响其它专精（combat/fury 同轮正常：767 / 356~419）。
 
-### 10.30 修掉 arms 零平砍：装备流水没走完之前不许交战（2026-10-30 07:40）
+#### 10.30 修掉 arms 零平砍：装备流水没走完之前不许交战（2026-10-30 07:40）
 
 **根因**：`TickDummies()` 里"交战"（清 evade → attack anything → 直接 Attack）与"BIS 流水穿装"在同一个脉冲里并行执行。
 边穿边打会让攻击状态被装备变更反复打断，于是出现"有武器（`mh=28434`）、在战斗（`ic=1`）、够得着（`inreach=1`），
@@ -13529,7 +13617,7 @@ mh=28434 dps=382.9 casts=7  melee=12
 ```
 （`melee=12` 三轮完全一致 ⇒ 攻击节奏稳定；此前失败轮是 0）
 
-### 10.31 dummyall 下的 arms 有效率：单跑 3/3、整队 1/3（2026-10-30 07:50）
+#### 10.31 dummyall 下的 arms 有效率：单跑 3/3、整队 1/3（2026-10-30 07:50）
 
 - **单专精** `.rndbot sim dummy arms 1 40`：连续 3 轮全部 `mh=28434`、`melee=12`、dps 300~484 ⇒ **稳定**。
 - **整队** `.rndbot sim dummyall 1 40`：arms 仍只有 1/3 有效。
@@ -13543,7 +13631,7 @@ mh=28434 dps=382.9 casts=7  melee=12
 - 整队 `dummyall` 适合看"全体是否都能打出量级"（本轮 15~17 有效、无 0 样本），不适合给 arms/低分专精定档；
 - 后续若要提升整队效率：把"每脉冲一件"改成"每脉冲 2~3 件"或准备阶段一次性穿完（但要防之前踩过的背包/唯一性失败）。
 
-### 10.32 尝试过并回退的改动（记录，避免重复踩）
+#### 10.32 尝试过并回退的改动（记录，避免重复踩）
 
 **把"每脉冲穿 1 件"改成"每脉冲 3 件"**（想缩短整队 17 人的穿装时间）：
 - 动机见 §10.31（整队里 arms 有效窗口只剩 ~26 秒）
@@ -13560,7 +13648,7 @@ marks 752   combat 715  assassination 710  enhance 641  bm 610  affliction 616
 feral 525   arms 446 (1/2)  fury 401
 ```
 
-### 10.33 调优参数最终落盘状态（`/root/run_local/dpsfsm_tune.conf`，2026-10-30 07:55）
+#### 10.33 调优参数最终落盘状态（`/root/run_local/dpsfsm_tune.conf`，2026-10-30 07:55）
 
 ```ini
 # 全局默认
@@ -13593,7 +13681,7 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
   `fire:scorch_stacks`、`fury:hs_rage` 的差异在噪声内（见 §10.24），保留当前值即可。
 - 参数由 `_agent_tmp/tune/dps_arms.py` 写入，可复现；`*.conf` 不入 git（运行期文件）。
 
-### 10.34 5 目标复测（一整队，2026-10-30 08:00）
+#### 10.34 5 目标复测（一整队，2026-10-30 08:00）
 
 | 专精 | dps | | 专精 | dps |
 |---|---|---|---|---|
@@ -13615,7 +13703,7 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
 **结论**：5 目标场景用于"验证 AoE 分支是否工作"，不适合给单个专精定档；
 要定档请用单跑 + 2~3 轮中位数。
 
-### 10.35 修正上一条：arms 单跑也会偶发低分（诚实记录，2026-10-30 08:30）
+#### 10.35 修正上一条：arms 单跑也会偶发低分（诚实记录，2026-10-30 08:30）
 
 之前 §10.30/§10.31 记的是"arms 单跑 3/3 稳定、整队才 0"，但再抽查时出现反例：
 
@@ -13634,7 +13722,7 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
 
 **影响**：只影响 arms 这一个专精的数据可信度；其它 16 个专精的可复现性已由 §10.28/§10.34 的多轮数据支撑。
 
-### 10.36 arms 不稳定的真因：**spec 被误判成 fury**（2026-10-30 08:35）
+#### 10.36 arms 不稳定的真因：**spec 被误判成 fury**（2026-10-30 08:35）
 
 不需要加日志——状态机本来就有每秒心跳，直接把失败轮的 `[DPSFSM-HB]` 拉出来即可：
 
@@ -13658,7 +13746,7 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
 
 推荐第 1 种：一行覆盖判断，且能顺带解决"其它专精也可能被误判"的隐患（例如 balance/feral 共享德鲁伊三系）。
 
-### 10.37 职业"技能空间"+ 按专精策略（policy 引擎，2026-10-30 12:35）
+#### 10.37 职业"技能空间"+ 按专精策略（policy 引擎，2026-10-30 12:35）
 
 **站长口径**：每个专精并不是只能放自己专精的技能，而是法术书里的全部技能；
 所以「职业 = 一个技能空间，专精 = 从空间里挑一套策略，分别优化」。
@@ -13697,9 +13785,9 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
 2. **DoT/buff 类步骤要加"最小间隔"**（现在 8 秒）：`SpellId` 取"已学会最高 rank"，和实际 aura id 可能对不上，
    只靠 aura 判断会反复重放（实测武器战 Rend 40 秒放 14 次）。
 
-### 10.38 找背归移动层 + 连击点三件套 + policy 模式"少了平砍"的未解问题（2026-10-30 13:00）
+#### 10.38 找背归移动层 + 连击点三件套 + policy 模式"少了平砍"的未解问题（2026-10-30 13:00）
 
-#### 按站长口径做的三处修正
+##### 按站长口径做的三处修正
 
 1. **找背是移动层的职责，不是技能策略的**
    - `DpsPolicy` 里不再 `MovePoint`（策略层只声明"这一手需要背后"）；
@@ -13722,7 +13810,7 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
 4. **毁伤兜底**：刺杀贼的攒星技后面补了邪悪攻击兜底（毁伤要求双匕首+背后，随机 bot 经常不满足 ⇒
    旧处理器专门为此留了兜底，策略版第一版漏掉了，会直接掉到 0 伤害）。
 
-#### 仍未解决：`policy=1` 的白字平砍莫名变少
+##### 仍未解决：`policy=1` 的白字平砍莫名变少
 
 3 轮 A/B（40 秒、1 木桩）：
 
@@ -13744,9 +13832,9 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
 **结论**：`policy=1` 目前在盗贼上**还不能用**（战斗贼 tune 已回落到 policy=0）。
 引擎化之后，策略表本身的质量要靠"每 tick 的动作统计"来调，不能只看最终 dps。
 
-### 10.39 白字缺口是假象 + 调优改为"固定算法脚本"（2026-10-30 13:10）
+#### 10.39 白字缺口是假象 + 调优改为"固定算法脚本"（2026-10-30 13:10）
 
-#### 一、"policy 模式白字少 30%" 被推翻
+##### 一、"policy 模式白字少 30%" 被推翻
 
 之前用并发 `arms` 得出"policy=1 平砍 74→52、46→34"，据此怀疑引擎被让位导致丢白字。
 改为**钉住同一只 bot**（同武器同挥速 `delay=1400`、同 GS）串行对比后：
@@ -13765,7 +13853,7 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
 - **任何定案必须"同 bot 同装备串行比较"**，否则会把 700 判成 516；
 - 对比时必须核对 `delay=`/`wep=`/`ap=`/`sp=` 是否一致。
 
-#### 二、调优改成固定算法脚本 `_agent_tmp/tune/optimize.py`
+##### 二、调优改成固定算法脚本 `_agent_tmp/tune/optimize.py`
 
 不再"每轮从对话里分析"，判据写死在脚本里：
 
@@ -13783,11 +13871,11 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
 - **分析可以并行**：3~4 个 analysis 子代理各领一份落盘数据（物理近战 / 读法系 / 猎人 / 测量基建），
   只读数据、只出结论；由**唯一一个 integrator** 汇总改代码，避免多人同时改 `DpsPolicy.inc` 冲突。
 
-### 10.40 无人值守自动优化器 `autotune.py`（2026-10-30 13:40）
+#### 10.40 无人值守自动优化器 `autotune.py`（2026-10-30 13:40）
 
 **口径**：有了自动优化脚本就不要"每轮对话分析"，也不必调模型——调参是搜索问题，算法即可闭环。
 
-#### 设计（`_agent_tmp/tune/autotune.py`，不提交 git）
+##### 设计（`_agent_tmp/tune/autotune.py`，不提交 git）
 
 | 环节 | 做法 | 为什么 |
 |---|---|---|
@@ -13799,7 +13887,7 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
 | 容错 | 服务端挂了自动 `pkill` + 拉起并等 `WORLD_READY`；无效样本跳过 | 可通宵跑 |
 | 落盘 | `results/autotune-<ts>.log`、`autotune_state.json`（断点续跑）、`results/report-<ts>.md` | 可审计 |
 
-#### 首轮实测（combat，2 轮/值，串行同 bot guid=103）
+##### 首轮实测（combat，2 轮/值，串行同 bot guid=103）
 
 | 旋钮 | 基线 | 最佳 | 增益 | 轮次领先 | 结论 |
 |---|---|---|---|---|---|
@@ -13808,7 +13896,7 @@ fire:scorch_stacks=5  bm:weave_margin=100  marks:weave_margin=150
 | `fin_energy` | 55 → 825.4 | **35 → 900.0** | **+9.0%** | 2/2 | 采纳 35 |
 | `hold_energy` | 30 → 783.3 | 45 → 790.7 | +0.9% | 1/2 | 保持 |
 
-#### 用法
+##### 用法
 
 ```bash
 # 全量无人值守（17 专精 × 各专精旋钮 × 2 轮；挂后台，可通宵）
@@ -13831,11 +13919,11 @@ cat results/report-<时间戳>.md
   要扩展就把它变成"策略变体 id"（每变体一张表），再交给同一个脚本扫。
 - 结构性 bug（占位/目标选错/姿态不对）不是调参能解决的，仍要读代码与日志。
 
-### 10.41 表内价值驱动 + 吞吐类技能自动纳入（2026-10-30 18:40）
+#### 10.41 表内价值驱动 + 吞吐类技能自动纳入（2026-10-30 18:40）
 
 **站长口径**：继续**表驱动**，但**表内做价值驱动**；并且"等资源（能量/冷却/怒气）"本身是一个状态。
 
-#### 实现（`DpsValue.inc` + `DpsPolicy.inc`）
+##### 实现（`DpsValue.inc` + `DpsPolicy.inc`）
 
 1. **表内打分（`pselect=1`）**：不再"第一条能放就放"，而是对表里所有"当前可执行"的步骤打分取最大：
    `score = 期望伤害 / 行动成本 × 类别权重`；资源不够的步骤不参与。
@@ -13851,7 +13939,7 @@ cat results/report-<时间戳>.md
 5. **候选来自法术书**：`dpsvalue::Rebuild()` 扫 `GetSpellMap()`，按"最高 rank + 有伤害效果或吞吐 aura"生成候选
    （实测 combat bot：法术书 397 条 → 候选 19 个）。
 
-#### 实测（钉住同一只 bot guid=90，2 轮/值）
+##### 实测（钉住同一只 bot guid=90，2 轮/值）
 
 | 模式 | 轮1 | 轮2 | 中位数 | 平砍 |
 |---|---|---|---|---|
@@ -13860,11 +13948,11 @@ cat results/report-<时间戳>.md
 
 **+17.8%，2/2 轮领先**，脚本自动采纳。`top=` 里切割(6774)始终在放（2~4 次），说明吞吐类没有被价值化弄丢。
 
-### 10.42 boss 身上 debuff 的互斥性分析 + 认领表（2026-10-30 18:50）
+#### 10.42 boss 身上 debuff 的互斥性分析 + 认领表（2026-10-30 18:50）
 
 **站长修正**：① 同类 debuff **不一定互斥**（破甲与精灵之火就叠）；② 槽位要**实际检查**，不是假定 16 格。
 
-#### 一、"实际检查槽位"的结论：服务端**没有** 16 格硬限
+##### 一、"实际检查槽位"的结论：服务端**没有** 16 格硬限
 
 - `SpellAuraDefines.h` 里 `MAX_AURAS=56`、`MAX_POSITIVE_AURAS=40`，但 **全代码库除了定义没有任何引用**
   ⇒ 服务端不按 16 槽裁剪（16 是客户端显示上限的概念）
@@ -13872,21 +13960,21 @@ cat results/report-<时间戳>.md
   单目标身上只有 **0~6 条** aura（affliction 5、shadow 4、destro 3、其余 0~2）
 - ⇒ **槽位不是单 bot 场景的瓶颈**；真正的风险是"同类顶掉"和"队友重复刷"
 
-#### 二、互斥判定只做"可证明"的部分
+##### 二、互斥判定只做"可证明"的部分
 
 `dpsvalue::DebuffSuperseded(target, myId)`：
 - 判据 = **同 aura 类型 + 同 `EffectMiscValue`（同一效果槽）+ 目标已有幅度 ≥ 我的**
 - 不同效果槽（破甲 vs 精灵之火）**不判互斥**，允许叠加
 - 判不了的组合**不猜**，只计数（`dup`），交给实测数据决定后续规则
 
-#### 三、队友重复：认领表
+##### 三、队友重复：认领表
 
 - `SlotSignature(id) = auraType × 100000 + miscValue`
 - 认领表键 `(目标 guidLow, 效果槽)` → `{ownerGuid, expireAt}`
 - 施放成功 ⇒ `ClaimSlot(..., 15000ms)`；其它 bot 发现同槽被他人认领且未过期 ⇒ 跳过
 - 心跳里加 `dup=` 计数（"被占住仍施放"的次数）
 
-#### 四、实测（整队一轮，战斗中心跳）
+##### 四、实测（整队一轮，战斗中心跳）
 
 | 专精 | 目标 aura 数 | 重复 debuff |
 |---|---|---|
@@ -13900,9 +13988,9 @@ cat results/report-<时间戳>.md
 
 **下一步**：用 `.rndbot sim arms`（共享木桩）跑"两个同专精 bot 抢同一个目标"，验证竞争下的 `dup` 也为 0。
 
-### 10.43 法术书清洗 + 覆盖率断言 + pauto（全法术书候选）+ 吞吐量纲修正（2026-10-30 19:55）
+#### 10.43 法术书清洗 + 覆盖率断言 + pauto（全法术书候选）+ 吞吐量纲修正（2026-10-30 19:55）
 
-#### 一、法术书污染清理（站长口径：法术书是唯一来源）
+##### 一、法术书污染清理（站长口径：法术书是唯一来源）
 
 之前为了解决"武器战缺斩杀"，我加过一个 **22 条不分类别的 `learnSpell` 白名单**，结果给每只 bot 的
 法术书里塞进了别职业的技能：战士会"会" Mangle、术士会"会" Slice and Dice、盗贼会"会" Hurricane。
@@ -13914,7 +14002,7 @@ cat results/report-<时间戳>.md
   备份表 `character_spell_polluted_bak_20261030`；复查剩余污染 = 0。
 - 效果：候选数量骤降（术士 28→17、战士 29→17、盗贼 18→9、猎人 18→7）。
 
-#### 二、覆盖率断言（`[DPSCOVER]`）
+##### 二、覆盖率断言（`[DPSCOVER]`）
 
 每只 bot 每次运行打一条：
 ```
@@ -13922,12 +14010,12 @@ cat results/report-<时间戳>.md
 ```
 作用：**漏配立刻可见**。实测第一版就抓到了"战斗贼表里没有割裂"，也抓到了法术书污染。
 
-#### 三、pauto：法术书里所有可用法术都进候选（跨系混搭也允许）
+##### 三、pauto：法术书里所有可用法术都进候选（跨系混搭也允许）
 
 `pauto=1` 时，策略表**不再是候选清单**，只是"约束 + 权重"；表外候选按 `Cand` 字段推导权重类别
 （dot/upkeep/aoe/strike/finisher/nuke），走同一套价值公式。用不用跨系技能由权重（Optuna 可调）与实测决定。
 
-#### 四、吞吐类技能的量纲修正（关键 bug）
+##### 四、吞吐类技能的量纲修正（关键 bug）
 
 原写法 `value = Vmax × 幅度` ⇒ 切割（30%）只有 0.3×Vmax，**永远抢不过攒星技**，
 于是 pauto/pselect 模式下切割与剔骨全丢：
@@ -13947,7 +14035,7 @@ dps=686.2 casts=20 melee=67 top=26862:14,6774:2,26865:2,13750:1,13877:1
 ```
 切割(6774)、剔骨(26865)、冲动/剑刃乱舞都回来了。
 
-### 10.44 形态过滤（pauto 在形态职业上的修正）+ 猫德 mangle 修复（2026-10-30 22:45）
+#### 10.44 形态过滤（pauto 在形态职业上的修正）+ 猫德 mangle 修复（2026-10-30 22:45）
 
 **背景**：`pauto`（法术书全候选）在纯技能选择类专精上有效（combat 940 / ret 875 / fury 513 / arms 474，
 均高于 §10.28 基线），但在**形态职业**上崩坏：`feral` 的最优只有 **189**（基线 624）。
@@ -13982,12 +14070,12 @@ dps=686.2 casts=20 melee=67 top=26862:14,6774:2,26865:2,13750:1,13877:1
 2. 萨满图腾/前置增益同理：不进价值比较，作为前置动作先做（`enhance` 从 585 掉到 ~400 就是这个原因）。
 3. 修完再 `load_if_exists` 续跑 Optuna（已完成的 8 个 study 保留，不重跑）。
 
-### 10.45 猫德 power-shift（狼头之盔变形换能量）成本建模（2026-10-30 23:25）
+#### 10.45 猫德 power-shift（狼头之盔变形换能量）成本建模（2026-10-30 23:25）
 
 **站长口径**：猫德的最优解是狼头之盔变形 + 只放裂伤/撕碎/割裂；变形会清空能量、耗时间与法力。
 **关键修正**：变形**不吃公共冷却**（只有 1 秒形态冷却），所以成本只有法力。
 
-#### 实现的三步（每步都用实测否掉/确认一个假设）
+##### 实现的三步（每步都用实测否掉/确认一个假设）
 
 | 版本 | 实现 | feral 实测 | 结论 |
 |---|---|---|---|
@@ -13995,7 +14083,7 @@ dps=686.2 casts=20 melee=67 top=26862:14,6774:2,26865:2,13750:1,13877:1
 | v2 单 tick 原子 | 取消 + 立即变猫（同一调用） | 635（6 次）vs 709（0 次） | 仍然占掉一个动作槽 ⇒ 每变形一次约亏 12 dps |
 | **v3 GCD-free** | 原子变形后**同一 tick 继续选技能**（不吃 GCD） | **691.6（8 次）/ 661 / 708.9** | ✅ 变形不再损失输出，中位数 **~692**（基线 624，+11%） |
 
-#### 猫德最终形态
+##### 猫德最终形态
 
 - 形态在**外层**（人形只允许变猫；猫形态内才有输出循环）
 - 循环精简为：`裂伤(维持 debuff) → 割裂(≥4 星) → 撕碎(填充)`
@@ -14005,7 +14093,7 @@ dps=686.2 casts=20 melee=67 top=26862:14,6774:2,26865:2,13750:1,13877:1
 **教训**：把"真实引擎里不占 GCD 的动作"实现成"占一个 tick/动作"，会让最优策略在测量里变成亏本策略。
 凡是这类动作（变形、姿态切换、瞬发开关）都要在**同一 tick 内完成后继续决策**。
 
-### 10.46 萨满"前置动作"不进价值打分（2026-10-30 23:35）
+#### 10.46 萨满"前置动作"不进价值打分（2026-10-30 23:35）
 
 **问题**：`pauto` 上线后 `enhance` 从 585 掉到 ~400。原因：图腾（召唤型法术）与萨满之怒
 不产生"伤害/吞吐 aura 幅度"，在价值打分里比不过输出技能，于是**被永久挤掉**。
@@ -14027,9 +14115,9 @@ dps=686.2 casts=20 melee=67 top=26862:14,6774:2,26865:2,13750:1,13877:1
 **规律补充**：凡"召唤型/自身增益型"的前置动作（图腾、萨满之怒、姿态），都不能交给伤害分数，
 必须作为前置；而"有伤害数值的技能 + 有 aura 幅度的吞吐修正"才可以参与价值比较。
 
-### 10.47 按角色实际属性估值（法伤/暴击）+ 法系前置动作（2026-10-31 00:35）
+#### 10.47 按角色实际属性估值（法伤/暴击）+ 法系前置动作（2026-10-31 00:35）
 
-#### 一、估值改成"角色实际属性"，不再只看技能基础伤害
+##### 一、估值改成"角色实际属性"，不再只看技能基础伤害
 
 站长口径：**应该按每个角色实际的属性来，而不是技能本身的基础伤害。**
 
@@ -14043,7 +14131,7 @@ dps=686.2 casts=20 melee=67 top=26862:14,6774:2,26865:2,13750:1,13877:1
 - **暴击**用 `CalculateSpellCritChance(victim, 学派, 法术)`
 - `Cand` 新增 `schoolMask` / `coeff` 字段
 
-#### 二、法系前置动作（召唤/大招不能被价值打分挤掉）
+##### 二、法系前置动作（召唤/大招不能被价值打分挤掉）
 
 实测冰法掉 30% 的原因之一：**水元素没召**（旧处理器召了，宠物伤害占一大块）。
 召唤/大招这类"没有伤害数值也没有 aura 幅度"的法术既不是候选、也进不了打分 ⇒
@@ -14053,7 +14141,7 @@ dps=686.2 casts=20 melee=67 top=26862:14,6774:2,26865:2,13750:1,13877:1
 - 奥法：`奥术强化`
 - 火法：`燃烧` + `气定神闲`
 
-#### 三、新发现的问题（下一步修）
+##### 三、新发现的问题（下一步修）
 
 前置动作目前**占掉整个 tick**，于是出现：冰法一轮里只放了 3 个前置法术、**完全没进战斗**
 （`incombat=0 casts=3`，3 轮里 2 轮无效）。原因是前置不造成伤害 ⇒ 不触发战斗 ⇒ 状态机"以为在处理"
@@ -14063,7 +14151,7 @@ dps=686.2 casts=20 melee=67 top=26862:14,6774:2,26865:2,13750:1,13877:1
 1. 前置施放后**在同一 tick 继续选伤害技能**（与 power-shift 的 GCD-free 处理一致）；
 2. 状态机接管前显式确保 `bot->Attack(victim)` 已发起（远程也一样），避免"只放 buff 不开怪"。
 
-### 10.48 修掉"前置动作饿死整个 tick"（2026-10-31 00:47）
+#### 10.48 修掉"前置动作饿死整个 tick"（2026-10-31 00:47）
 
 **问题**：前置动作（冰冷血脉/召唤水元素/图腾）施放后 `return true`，让出整个 tick。
 它们不造成伤害 ⇒ 不进战斗 ⇒ 引擎也没机会开怪 ⇒ 冰法 3 轮里 2 轮 `incombat=0 casts=3`（只放了前置 buff）。
@@ -14084,7 +14172,7 @@ dps=686.2 casts=20 melee=67 top=26862:14,6774:2,26865:2,13750:1,13877:1
   1. 水元素是 **2 分钟冷却**，跨轮复用时会因冷却未好而召不出（跑测应每轮重置冷却/或固定足够间隔）
   2. 仍有约 1/3 的轮次整轮无效（`incombat=0 casts=0`）—— 与之前记录的"偶发不接战"同源，需要单独排查
 
-### 10.49 爆发技独立成类（Burst），修掉"卡读条整轮 0 伤害"（2026-10-31 01:30）
+#### 10.49 爆发技独立成类（Burst），修掉"卡读条整轮 0 伤害"（2026-10-31 01:30）
 
 **站长修正**：冰冷血脉/奥强/燃烧/召唤水元素/萨满之怒这些**不是"前置"**，而是**爆发技能**（冷却驱动）。
 
@@ -14112,7 +14200,7 @@ dps=686.2 casts=20 melee=67 top=26862:14,6774:2,26865:2,13750:1,13877:1
 剩余问题：① 仍有约 1/3 轮次整轮无效（`incombat=0 casts=0`，与长期记录的"偶发不接战"同源）；
 ② 水元素不是每轮都能召出（需确认冷却/宠物存活状态）。
 
-### 10.50 代码审查：我改出来的 4 个 bug（2026-10-31 02:45）
+#### 10.50 代码审查：我改出来的 4 个 bug（2026-10-31 02:45）
 
 站长要求"检查改出来的代码哪些有问题"。逐个查，确认 4 个真 bug 并修复：
 
@@ -14133,7 +14221,7 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 | feral | **655 / 694 / 737**（3/3 有效） | 中位 694，基线 624 ⇒ +11%；`top=` 里裂伤/割裂/变形都在 |
 | frost | 983 / 903 / 0 / 0 | 有效轮接近/超过基线 1063，但仍有 2/4 无效轮 |
 
-#### 重要澄清：无效轮**不是**我的改动造成的
+##### 重要澄清：无效轮**不是**我的改动造成的
 
 同一把二进制、同一个 bot，切回**旧路径**（`pselect=0, pauto=0`）跑 5 轮：
 **904 / 1112 / 672 / 0 / 0** —— 旧路径同样有 **2/5 轮整轮 0 伤害**。
@@ -14144,12 +14232,12 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 **下一步**：单独查这个老问题（在 run start 记录 `bot in world / dummy exists / canattack`，
 开跑 5 秒无伤害则打一行现场快照——`[ENGAGE-STUCK]` 已加，但失败轮没有输出，说明失败发生在其之前）。
 
-### 10.51 假人测量台的两个真根因：vmap 视线 与 "无伤害法术无限重放"（2026-10-31 06:35）
+#### 10.51 假人测量台的两个真根因：vmap 视线 与 "无伤害法术无限重放"（2026-10-31 06:35）
 
 > 这一节是 §10.47~§10.50 那一长串"猜—改—测"的收尾。前面那几个假设（仇恨门 / heal 门 / 卡读条 /
 > 朝向 / 假人 evade / 假人免疫 / pauto 开关）**全部被实验证伪**，真正的根因只有两个，且都由 gdb/DB 实测确认。
 
-#### 根因 1：落点网格第二排被 vmap 地形挡住视线
+##### 根因 1：落点网格第二排被 vmap 地形挡住视线
 
 - 单专精场景落点公式 `d.y = DUMMY_SPOT_Y + 14 * ((id/3)%2)`，`(id/3)%2` 序列是 `000111…`
   ⇒ 现象看起来像"随机一半轮次失败"，实际**完全按行分布**
@@ -14170,7 +14258,7 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 
 **实测**：frost 单专精 **6/6 有效**（963 / 1051 / 981 / 1046 / 993 / 1199），`los=1` 6/6。
 
-#### 根因 2：无伤害法术被"维持类"判定无限重放
+##### 根因 2：无伤害法术被"维持类"判定无限重放
 
 `pauto` 把法术书里所有法术当候选，配合"维持价值 = 覆盖时间"的估值，出现三类死循环（DB 实测 id）：
 
@@ -14191,15 +14279,15 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 | affliction | **0**（`30909:24`） | **559 / 450 / 611**（`30909:6`，暗影箭+DoT 正常） | 从零伤害恢复到基线 544 附近 |
 | frost | 约一半轮次 0 | **918 / 1150 / 931**（3/3，pet 5992~6836） | 稳定有效 |
 
-#### 测量台现状（供后续调优使用）
+##### 测量台现状（供后续调优使用）
 - **可信**：单专精 `.rndbot sim dummy <spec> 1 <sec> <guid> 1 1` 串行跑（已 6/6、3/3 有效）
 - **不可信**：`dummyall` —— 17 个专精各自一圈堆在 GM 岛上放不下（shadow 假人落 30 码外 `pack=0/0`）；
   曾尝试"所有专精共用一堆"，实测 17 人抢同一个木桩导致数字失真（assassination 169/264、ret 1764），已回退
 - 结论：**每专精一条串行跑、取多轮中位数**，不要用 dummyall 的每专精数字做结论
 
-### 10.52 固定 bot 基线（17 专精 × 2 轮，51 样本全部有效）（2026-10-31 08:15）
+#### 10.52 固定 bot 基线（17 专精 × 2 轮，51 样本全部有效）（2026-10-31 08:15）
 
-#### 方法学修正：bot 选取是最大混淆源
+##### 方法学修正：bot 选取是最大混淆源
 
 同一构建、同一专精、不同 bot 差到 10 倍：
 
@@ -14210,7 +14298,7 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 
 ⇒ 结论：**每专精必须固定一个已验证可用的 bot guid**，否则"退步"多数是 bot 差异。
 
-#### 基线表（每专精指定 bot，25 秒 × 2 轮）
+##### 基线表（每专精指定 bot，25 秒 × 2 轮）
 
 | 专精 | 两轮 dps | §10.28 基线 | 判断 |
 |---|---|---|---|
@@ -14232,7 +14320,7 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 | shadow | 584 / 107 | 948 | 波动大（见下） |
 | feral | 80 / 140 | 624 | 波动大（见下） |
 
-#### 遗留问题清单（按证据排序）
+##### 遗留问题清单（按证据排序）
 
 1. **元素萨 −59%**：25 秒只有 13 次施法（闪电箭 6~7 + 震击），**没有图腾前置**
    （图腾前置目前只加在 enhance 表里，elemental 表里没有）⇒ 缺少 5~10% 增伤与爆发衔接。
@@ -14243,9 +14331,9 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 4. **`fury` / `assassination` / `feral` / `ret` 没有 `policy=1`**（走旧处理器），
    与其余 13 个专精不同路径 ⇒ 后续调参前应先统一，否则 A/B 不可比。
 
-### 10.53 统一路径与图腾前置：两处证伪、一处保留（2026-10-31 09:15）
+#### 10.53 统一路径与图腾前置：两处证伪、一处保留（2026-10-31 09:15）
 
-#### 1. 统一 `policy=1`（让 4 个走旧处理器的专精改用价值引擎）—— 部分证伪
+##### 1. 统一 `policy=1`（让 4 个走旧处理器的专精改用价值引擎）—— 部分证伪
 
 | 专精 | 改动前 | 改后 | 结论 |
 |---|---|---|---|
@@ -14257,7 +14345,7 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 ⇒ 结论：**不是所有专精都适合价值引擎**。物理系里 `fury`/`feral` 的旧处理器（手写优先级）反而更稳；
 把它们强拉到价值引擎会引入"单一技能刷屏"和"跨系乱选"。当前配置：`policy=1` 15 个专精，`fury`/`feral` 保持 0。
 
-#### 2. 元素萨图腾前置 —— 证伪（回退）
+##### 2. 元素萨图腾前置 —— 证伪（回退）
 
 尝试把图腾（法力之泉/愤怒图腾/灼热/大地之力）作为 `Prereq` 挂在 `kEle` 表头，结果：
 
@@ -14276,12 +14364,12 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 后续要做图腾前置，正确做法是：**先修图腾召唤的槽位登记**（或直接从图腾 spell 的 `TotemCategory` 反查槽位），
 再用"槽为空 + 60 秒兜底"双保险；不要靠技能名字符串判断。
 
-#### 3. 当前各专精路径状态（调参前必须知道）
+##### 3. 当前各专精路径状态（调参前必须知道）
 
 - `policy=1`（价值引擎）：arms combat assassination fire frost arcane affliction destro shadow balance bm marks elemental enhance ret
 - `policy=0`（旧处理器）：**fury feral**
 
-### 10.54 `pauto` 排除控制/仇恨类法术（2026-10-31 09:25）
+#### 10.54 `pauto` 排除控制/仇恨类法术（2026-10-31 09:25）
 
 **问题**：`pauto`（法术书全候选）会把控制技能当输出技能——实测暗牧在假人循环里放 **4 次精神控制（10912）**，
 `top=10912:4`，dps 只剩 107（另一轮 584）。
@@ -14302,7 +14390,7 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 > 注意：跨系混搭（火法放奥术冲击）是**允许**的（站长口径"所有公共法术都应该加"），
 > 但控制类不是输出技能，必须排除。
 
-### 10.55 模块边界：控制法术不进 DPS 引擎（2026-10-31 12:10）
+#### 10.55 模块边界：控制法术不进 DPS 引擎（2026-10-31 12:10）
 
 **站长口径**：控制法术应该是**单独的模块**，和 DPS 这套分开做。
 
@@ -14325,19 +14413,19 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 | `nodmg_interval` | 10 秒 | 无伤害法术的最小间隔（0=不限） |
 | `w_nuke/w_dot/w_strike/w_finisher/w_aoe/w_buff/w_debuff` | 1.0 | 七维伤害类型权重 |
 
-### 10.56 并行测量台（`arms`）与"引擎抢施法"：一次实测把三件事钉死了（2026-10-31 14:40）
+#### 10.56 并行测量台（`arms`）与"引擎抢施法"：一次实测把三件事钉死了（2026-10-31 14:40）
 
 **结论先说**：并行测量台的三个硬约束都只是**工具**问题，已修好；但**引擎自己的职业策略会抢施法**，
 这条不解决，法系/术士的权重调优**测不出东西**——这是当前唯一的真阻碍。
 
-#### (1) 命令长度：`arms` 一行最多 255 字符
+##### (1) 命令长度：`arms` 一行最多 255 字符
 
 `.rndbot sim arms` 走 `CliRunnable` 的 `fgets(commandbuf[256])`。一个臂带 10 组 `k=v` 约 200 字符，
 17 臂 = 3.4KB ⇒ **实测只解析到 2 个臂、第二个 label 还被砍掉一半**（`[DUMMY] arms 开跑：2 臂`）。
 修法：新增 `.rndbot sim armsfile <targets> <seconds> <file>`，文件每行 `spec|guid|k=v,...`（`#` 注释），
 `guid` 可选（0=自动挑）——这样同时把"跨批固定 bot"做进了同一份文件。
 
-#### (2) 每臂必须独占一堆木桩
+##### (2) 每臂必须独占一堆木桩
 
 `arms` 原来强制 `sharedPile=true`（所有臂抢同一堆）。17 臂 × N 组参数时 AoE 跨臂重叠、伤害互抢，
 与 `dummyall` 那个已被证伪的老坑同源。现在 `arms` 用**与 `dummyall` 同一张 17 点场地表**
@@ -14345,13 +14433,13 @@ C 给 Burst 加门（要求有存活目标且"已进战斗或已造成伤害"）
 代价：场地只有 17 堆 ⇒ **一批里每专精只能有一个臂**，重复专精直接跳过并报出来。
 实测：17 专精一批、各自独立桩，**17/17 全部出伤害**（60 秒预热 73 秒跑完）。
 
-#### (3) 开跑前清冷却（所有路径统一）
+##### (3) 开跑前清冷却（所有路径统一）
 
 原来只有单专精 `StartDummy` 清冷却，`arms/dummyall` 不清 ⇒ 2 分钟级大招从上一条臂继承
 （同配置跨批差 30%+）。现在 `TickDummies` 里"假人到位、开始计时"之前统一
 `bot->RemoveAllCooldowns(false)`（参数必须是 `false`：`true` 只是 sendOnly，服务端冷却不清）。
 
-#### (4) 真阻碍：引擎职业策略仍在放技能
+##### (4) 真阻碍：引擎职业策略仍在放技能
 
 `PlayerbotAI::DoNextAction` 的仲裁是
 `skipEngine = fsmHandled && SkipEngine(guid) && DidCastThisTick(guid)`：
@@ -14367,7 +14455,7 @@ casts=43  top=27209:15(暗影箭)  27215:9(献祭)  30912:8(燃烧)  27216:5(腐
 这些来自**引擎自己的术士策略**。推论（对所有法系成立）：**权重再怎么调，引擎都会混进它自己的一套**，
 所以之前法系"扫 `w_dot` 没差异 / 数字乱飘"很大一部分不是噪声，是两套循环在打架。
 
-#### (5) 牺牲暗（`kDestro`）的落地状态
+##### (5) 牺牲暗（`kDestro`）的落地状态
 
 - 表已改成：召唤魅魔 → 恶魔牺牲（都是 `PKind::Prereq`，**开战前准备**）→ 暗影箭。
   诅咒**不进 DPS 循环**（站长口径：诅咒按团队需求分配）。
@@ -14376,14 +14464,14 @@ casts=43  top=27209:15(暗影箭)  27215:9(献祭)  30912:8(燃烧)  27216:5(腐
 - **未验证**：`demonic sacrifice`(18788) 的目标是**自己的宠物**，对着自己放会 `BAD_TARGETS`；
   需要给它一条"以宠物为目标"的施法路径（`TryCastPet`），这一步还没做，所以实测里 18788 **一次都没放出来**。
 
-#### (6) 测量噪声（必须先解决再谈调参）
+##### (6) 测量噪声（必须先解决再谈调参）
 
 同一套参数、同一个 bot：enhance 828→365、frost 967→627。离散度 50%~2 倍 ⇒
 任何"提升 5%"的结论都是噪声。**先量本底噪声（同配置 3 轮）再调参**。
 
-### 10.57 两个真根因：参数前缀对不上 + `pauto` 把诅咒当输出；牺牲暗实测 820.9（2026-10-31 15:05）
+#### 10.57 两个真根因：参数前缀对不上 + `pauto` 把诅咒当输出；牺牲暗实测 820.9（2026-10-31 15:05）
 
-#### 根因 A：5 个专精的 conf 参数**从来没生效过**
+##### 根因 A：5 个专精的 conf 参数**从来没生效过**
 
 `TuneForBot()` 用 `SpecName(m->spec)` 当前缀去查 conf，而 `SpecName()` 返回**长名**：
 
@@ -14401,7 +14489,7 @@ casts=43  top=27209:15(暗影箭)  27215:9(献祭)  30912:8(燃烧)  27216:5(腐
 修法：`Tune()` 里加 `TuneAlias()`（长名 → 短名）再查一次，两个名字都能命中。
 修后毁灭术 `pol=1`，走 `TickPolicy` + `kDestro`。
 
-#### 根因 B：`pauto` 会把诅咒当输出技能放
+##### 根因 B：`pauto` 会把诅咒当输出技能放
 
 `pol=1` 之后毁灭术仍在放**痛苦诅咒 14 次**。查下来是 `pauto=1` 的第三遍打分：
 候选来自 `dpsvalue::Rebuild()` 的**技能空间**（bot 学会的全部技能），权重类走
@@ -14410,7 +14498,7 @@ casts=43  top=27209:15(暗影箭)  27215:9(献祭)  30912:8(燃烧)  27216:5(腐
 **站长口径：诅咒按团队需求分配，不属于 DPS 循环。**
 处理：`destro:pauto=0`（参数，不改代码）——表里显式写的技能照旧可用（表走名字解析，与候选空间无关）。
 
-#### 牺牲暗的最终结果（90 秒单桩，`destro`）
+##### 牺牲暗的最终结果（90 秒单桩，`destro`）
 
 ```
 dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔牺牲)
@@ -14423,18 +14511,18 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 同名修好的还有 4 个专精（首次吃到自己的 conf）：marks 598.2、enhance 505.7、ret 482.0、bm 267.4。
 **bm 明显偏低，待查**（`kBM` 表 vs 兽王 1:1 编织）。
 
-#### 顺带修好的：恶魔牺牲的目标
+##### 顺带修好的：恶魔牺牲的目标
 
 `demonic sacrifice`(18788) 目标是**自己的恶魔**，原来 `PKind::Prereq` 一律走 `TryCastSelf` ⇒ BAD_TARGETS、
 90 秒一次都没放出来。新增 `TryCastPet()`，`TryStep` 里 `Prereq` 且名字含 `sacrifice` 走它。
 
-### 10.58 估值重做：改用核心伤害函数（2026-10-31 16:10）
+#### 10.58 估值重做：改用核心伤害函数（2026-10-31 16:10）
 
 **站长口径**：① 只用一套机制（价值引擎），候选来自**整个法术书**；② 每个技能用**同一套权重**，
 选不选只看它自己的效果；③ 估值要按**本次施法 + 当前状态 + 当前目标**算，不能离线套常数；
 ④ 估值必须与实际伤害匹配。
 
-#### 改了什么
+##### 改了什么
 
 - `EstDamage()` 不再自己拼 `基础 + 法伤×系数`，直接调核心两步：
   `SpellDamageBonusDone`（天赋/增益/法伤/法术家族修正）+ `SpellDamageBonusTaken`（目标易伤/诅咒/破甲）。
@@ -14449,19 +14537,19 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
   （原来"痛苦诅咒=降敌人攻强"被当成给我们加攻强 ⇒ 痛苦术 90 秒上 20 次诅咒，现已降到 0）。
 - 点燃（火系暴击 → proc 12654，40% 暴击伤害转 DoT）按期望折进暴击乘数（1 + 1.4c）。
 
-#### 还没解决的（下一步）
+##### 还没解决的（下一步）
 
 **火法已修好**（表内/表外统一评分后，火球恢复使用：`Fireball:22`，dps 278→583）。
 
 **奥法 3+3 已按"整条链"定价**（详见 §10.59），但还没达到干净的比例。
 
-### 10.59 奥法 3+3：把"三发奥冲 + 卡秒那发"当一个整体定价（2026-10-31 16:55）
+#### 10.59 奥法 3+3：把"三发奥冲 + 卡秒那发"当一个整体定价（2026-10-31 16:55）
 
 **站长口径**：奥术冲击的 debuff 只改**读条时间**和**蓝耗**，不改伤害；"3+3"是
 `3 发奥冲 → 3 发寒冰箭填满 8 秒窗口 → 窗口只剩不到一发读条时起手那发奥冲`，
 这一发享受 3 层速度、却只付 0 层蓝费。
 
-#### 数据来源（不猜，全从库里读）
+##### 数据来源（不猜，全从库里读）
 `36032`（奥术冲击 debuff）两个 spellmod：
 
 | 效果 | op | 幅度 | 含义 |
@@ -14471,7 +14559,7 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 
 > ⚠️ mangos 的 `EffectBasePoints` 是"实际值 − 1"，所以是 75% / -334ms，不是 74 / -335。
 
-#### 实现（`dpsvalue::EffectiveCost()` + `dpspolicy::ScoreCand()`）
+##### 实现（`dpsvalue::EffectiveCost()` + `dpspolicy::ScoreCand()`）
 - 蓝耗：直接遍历 `SPELL_AURA_ADD_PCT_MODIFIER` 里 `36032` 的 `SPELLMOD_COST` 幅度累加，
   不写死倍数；读不到 aura 才用 75×层数兜底。
 - 卡秒：3 层且 `debuff 剩余 < 本次（加速后）读条` ⇒ 按**基础蓝耗**结算。
@@ -14480,7 +14568,7 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 - 链条定价：`stacks < 3` 时，奥冲的分数 = **剩余链条（补满 3 层 + 卡秒那发）的平均 DPS**，
   而不是单发 DPS。这样第 1 发就把后面的收益算进来，链条才能启动。
 
-#### 实测（120 秒单桩，同一只奥法 bot）
+##### 实测（120 秒单桩，同一只奥法 bot）
 | 版本 | 奥冲 | 寒冰箭 | dps |
 |---|---|---|---|
 | 单发定价 | 10 | 74 | 803 |
@@ -14493,12 +14581,12 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 把整条链平均进一发 = 用最贵的几发拖累当前决策（实测 dps 803→659→647）。
 另外"窗口末段让路"的规则也会造成空转（站长：**等太多一样是亏**），已撤。
 
-#### 估值与实际的一致性（已核对一处）
+##### 估值与实际的一致性（已核对一处）
 `[DPS-EST-D]` 实测：奥术冲击 `base=648, 学派法伤=1065, 修正后=1450`
 （648 + 1065×0.714 ≈ 1409，加天赋 ≈ 1450）⇒ **估值链路本身是对的**，
 之前"1188 vs 2346"的差异来自不同 bot/不同专精，不是公式错。
 
-#### "卡秒"到底省了什么（2026-10-31 17:20 重新审视）
+##### "卡秒"到底省了什么（2026-10-31 17:20 重新审视）
 实测 `[DPS-AB-RESET]` 命中 **0 次**。本来以为漏了"便宜的一发"，但算清楚后发现：
 **debuff 到期后层数归零，下一发奥冲本来就是基础蓝耗（195）** ⇒ 卡秒省的**不是蓝**，是
 **读条时间**（加速 1.5s vs 到期后 2.5s），每 8 秒窗口约省 1 秒，≈2% 总收益。
@@ -14506,9 +14594,7 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 因此**不加"别起手"的规则**：为 2% 的收益引入可能空转的启发式，风险更大
 （站长原话：**等太多一样是亏**）。`[DPS-AB-RESET] = 0` 是正常现象，不是 bug。
 
-### 11) 待办（2026-10-30 08:20 更新）
-
-### 11) 待办（2026-10-30 08:20 更新）
+#### 本阶段待办（原标 §11，2026-10-30 08:20 更新）
 
 **已完成（本节之前的待办均已闭环）**
 - 每专精独立木桩堆 + LOS 自检 + 装备流水/闸门（§10.9/§10.21/§10.27/§10.30）
@@ -14537,7 +14623,7 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 - 用 `TryCastAt` 不校验 CheckCast：地面 AoE 静默失败被当成功（§10.20）
 
 
-### 9) 待办
+#### 附）阶段 E 的遗留待办（原标 §9）
 
 1. **场景侧还有 5/17 抖动**（fire/bm/destro/elemental/shadow 偶发 `ic=0`）：evade 与 runId 两个根因已修，
    仍有残留 ⇒ 下一步要在 `ApplyDummySetup` 里"召唤后先让假人咬 bot 一次"再交给状态机，彻底消掉启动竞态。
@@ -14548,16 +14634,17 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
    等抖动收干净后跑 `_agent_tmp/tune/dps_tune2.py` 做坐标下降。
 5. 还没在真实副本里跑"整队 DPS 全由状态机接管"的对照。
 
-
 ---
 
-## 11) 2026-10-31~11-01 DPS 状态机第二轮：`mode=5` 落地 11 个专精 + 六个通用能力 + 一批核心 bug
+### 阶段 G｜2026-10-31 ~ 11-01　mode=5 落地 11 专精 + 六个通用能力 + 一批核心 bug
+
+> 原章：`## 11) 2026-10-31~11-01 DPS 状态机第二轮 …`（原为无标签散章）
 
 > 承接上一章（`## 10)`）。本轮把"策略表/价值引擎/手写 if"三套并存收敛成一个**可选模式**，
 > 并把**每专精显式状态图**真正跑起来。设计文档：`dev/DESIGN_dps_fsm.md`（分层/参数/Optuna/测量纪律）、
 > `dev/DESIGN_dps_fsm_graphs.md`（11 张专精图 + 治疗 + 本服核心行为）。**参数与图不在此复述**。
 
-### 一、结果总表（60 秒单目标木桩，每格 5 轮取中位数）
+#### 一、结果总表（60 秒单目标木桩，每格 5 轮取中位数）
 
 | 专精 | `mode=5`（状态机） | `mode=3`（策略表） | 备注 |
 |---|---|---|---|
@@ -14569,14 +14656,14 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 | 盗贼 assassination | **696.3**（CV 6.8%） | 681.9 | 能量开局修正后反超 |
 | 毁灭术 destro | **839.0**（CV 8.9%） | 598.9 | +40%（含宠物） |
 
-### 二、架构（详见 `DESIGN_dps_fsm.md`）
+#### 二、架构（详见 `DESIGN_dps_fsm.md`）
 - **决策模式收口**：`value/policy/pselect/pauto` 四布尔 → 单个 `DecisionMode`（`ResolveMode()` 唯一解析点，写进 `BotMem::mode`）。
 - **11 状态**：`Off/Idle/Prep/Flee/Recover/Aoe/Burst/Execute/Approach/Weave/Maintain`；转移优先级固定。
 - **`Hold` 三态**：`TickResult{Acted,Hold,Decline}`——"这一 tick 有意空着、引擎也不许动"是一等公民（猎人窗口逻辑的前提）。
 - **仇恨三档**：`EvalThreat()` → `Wait/Throttle/Open`，只在副本/团本生效（野外保持旧行为）；方向是**贴着上限跑**（`threat_target_ratio`），不是越低越好。
 - **候选填充**：`FillCand/FillGate/PickFill()`——按"射程 + CD + 蓝够 + 实际读条 ≤ 窗口"筛，取权重最高；解决了火冲 20 码施法失败、1.5 秒技能（灼烧）用不上。
 
-### 三、六个通用能力（17 专精共用，不各写一套）
+#### 三、六个通用能力（17 专精共用，不各写一套）
 | 能力 | 关键实现 | 坑 |
 |---|---|---|
 | **宠物控制** | `PetPresent/CommandPetAttack/SummonPetIfNeeded`；命令走 `CMSG_PET_ACTION`（`ACT_COMMAND\|COMMAND_ATTACK`） | 见 §四 的两个致命 bug |
@@ -14586,7 +14673,7 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 | **读条时间** | `CastMsWithMod()`（`ApplySpellMod(SPELLMOD_CASTING_TIME)` + `UNIT_MOD_CAST_SPEED`） | 不补 SPELLMOD ⇒ 寒冰箭被算成 3000ms、窗口判断整体偏移 |
 | **多目标** | `[DPSFSM-DMG]` per-spell 伤害（待做）+ `NearbyEnemy` 列表（待做，需带每目标双方仇恨） | 见 §五 |
 
-### 四、本轮修掉的核心 bug（按影响面排序）
+#### 四、本轮修掉的核心 bug（按影响面排序）
 1. **程序化创建的宠物拿到 `GuardianAI` 而不是 `PetAI`**：`UNIT_FLAG_PLAYER_CONTROLLED` 设在 `AIM_Initialize()` **之后** ⇒ `CreatureAISelector::selectAI()` 选错 AI；GuardianAI 只在主人被打时出手、且不重发追击。修复后宠物伤害 1054→6778、距离 17→1.3 码。
 2. **`InitPetCreateSpells()` 学了技能但没开自动施法**：它把动作条全写 `ACT_DISABLED`、`addSpell()` 也不写条，而 `PetAI` 的自动施法读动作条 ⇒ 角刺/突进永不释放。两个建宠路径都补 `ToggleAutocast()`（真玩家靠 `LoadPetFromDB` 恢复动作条，没这问题）。
 3. **怒气 ×10 存储**：`POWER_RAGE_DEFAULT=1000`、`RewardRage` 里 `*10` ⇒ 拿真实阈值比较会让 fury 60 秒只出 1 次嗜血、却刷 78 次英勇。加 `RageReal()` 局部换算，不动 `Snapshot`/legacy。
@@ -14594,13 +14681,13 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 5. **`getAttackTimer(RANGED_ATTACK)` 在本核心不递减**（`Unit::Update` 只推 BASE/OFF）⇒ 不能用它当"下一发平射剩余"；改用 `botSpellCounts[75]` 反推节奏。另：本服自动射击冷却固定 **2000ms**，不是"武器速度 − 0.5"。
 6. **`Burst` 一个 GCD 只放得出第一手**（水元素永远召不出来 ⇒ `pet=0`）：加 `burst_window` 后才正常。
 
-### 五、测量纪律（本轮血的教训，已写进 `DESIGN_dps_fsm.md` §4）
+#### 五、测量纪律（本轮血的教训，已写进 `DESIGN_dps_fsm.md` §4）
 1. 单轮 dps 噪声 **±12%**（同一二进制 5 轮：988.8/827.7/757.1/999.6/840.0）⇒ **任何 A/B 至少 5 轮取中位数**，报"中位数 + 区间"，差值落在区间内记为"未观测到差异"。
 2. **有蓝职业必须同时报 DPM**（`dmg/spent`），只看 dps 会调出"疯狂泄蓝"的假最优。
 3. **装备必须钉死**：`BOT_EQUIP_BEST_GEAR` 每次重启重摇装备（实测同一法师 `sp 1065→1093`、武器变化）——这是跨重启 A/B 的独立方差源。
 4. **每轮开始必须重置 FSM 记忆与血蓝/能量**，否则轮间携带 `planId/planStep/lastBurst` 让 CV 翻倍。
 
-### 六、未完成 / 下一步
+#### 六、未完成 / 下一步
 1. **剩余专精**：惩戒骑、萨满三系、痛苦术、恶魔术、暗牧（时间轮模型已在 `DESIGN_dps_fsm_graphs.md` §10.7 定稿）。
 2. **治疗 FSM**：一个 `HealCore` + 四套配置（神牧/奶骑/恢复萨共内核，奶德单独 HoT 模型），口径见 §11。
 3. **BIS 四档重算**：`ai_playerbot_bis_gear` 缺 **slot 14（披风）**、且只有一套；要按 `GearProgressionSystem` 的四档（100~115 / 115~125 / 125~138 / 138~151）各出一套，
@@ -14613,19 +14700,21 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 
 ---
 
-## 12) 2026-11-01 第二轮：治疗/坦克接入 + 底层数据 + 分阶段 BIS（`mode=5` 覆盖全部角色）
+### 阶段 H｜2026-11-01 ~ 02　治疗 / 坦克接入 + 分阶段 BIS（mode=5 覆盖全角色）
+
+> 原章：`## 12) 2026-11-01 第二轮：治疗/坦克接入 + 底层数据 + 分阶段 BIS（mode=5 覆盖全部角色）`（原为无标签散章）
 
 > 承接上一章。本轮把 `mode=5` 从"DPS 专用"扩到**四类角色全覆盖**，并补上两块被卡住的底层数据。
 > 设计口径：`dev/DESIGN_dps_fsm_graphs.md`（§10 本轮定稿、§11 治疗、§12 本服核心行为、§13 萨满、§14 坦克）。
 
-### 一、覆盖率
+#### 一、覆盖率
 | 角色 | 已接 `mode=5` | 仍走 legacy |
 |---|---|---|
 | **DPS** | 20 个专精：法 3 / 猎 3 / 战 2 / 贼 3 / 术 3 / 惩戒骑 / 元素萨 / 增强萨 / 暗牧 / 猫德 / 鸟德 | — |
 | **治疗** | 神圣牧 / 神圣骑 / 恢复萨 / 恢复德 | 戒律牧 |
 | **坦克** | 防护战 / 熊德 / 防护骑 | — |
 
-### 二、结果（45 秒 × 3 轮，`mode=5` vs `mode=3`，同 bot 同场景）
+#### 二、结果（45 秒 × 3 轮，`mode=5` vs `mode=3`，同 bot 同场景）
 | 专精 | mode=5 | mode=3 | 结论 |
 |---|---|---|---|
 | 火法 | 1033 | 930 | +11%（灼烧轴 + 三套爆发表） |
@@ -14646,7 +14735,7 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 | 恢复萨 | hps 272~354 | **整轮 0 治疗** | legacy 完全不会治 |
 | 恢复德 | lb=3 常驻，主坦 97~100% | **整轮 0 治疗** | HoT 模型生效 |
 
-### 三、本轮新增的能力
+#### 三、本轮新增的能力
 | 能力 | 要点 | 坑 |
 |---|---|---|
 | **HealCore**（四治疗一套内核） | 血量% 目标 + 受伤速率窗口预读 + 按缺口降级 + 蓝量门 | 见下面"假象 1/2" |
@@ -14657,7 +14746,7 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 | **`NearbyEnemy`** | 绝对血量 + 距离 + **双方仇恨** + DoT 剩余，上限 8 | 只给多目标专精填充 |
 | **分阶段 BIS**（`dev/234`） | 四档 + 补 slot 14 + 套装按"占比×提升"计分 | 读取端必须按 phase 过滤 |
 
-### 四、本轮修掉的核心 bug（按影响面）
+#### 四、本轮修掉的核心 bug（按影响面）
 1. **威胁读反了（最严重）**：`bot->getThreatManager().getThreat(target)` 是"我自己的威胁表"（玩家侧恒空）⇒ `myThreat/tankThreat` **双双为 0** ⇒ `EvalThreat` 恒 `Open` ⇒ **整套仇恨纪律一直是空转**。正确读法是从**怪的**表读（`target->getThreatManager().getThreat(bot)`）。木桩场景没有坦克，"恰好"和 bug 表现一致，骗过了此前所有 DPS 测试。
 2. **`Hold` 把引擎完全挡住**：一拍什么都不放时返回 `Hold` ⇒ 引擎连补 buff/走位都做不了 ⇒ **45 秒 0 施法 0 伤害**。改为派发层兜底：只有 GCD 真锁才 Hold，其余降级 `Decline`；30 处 Hold 全部审过。
 3. **`BotMem::ids` 负缓存**：一次解析失败缓存成 0 ⇒ **整轮不放那个技能**。改为 5 秒轮转体检 + 命中 0 立即重解析。
@@ -14667,11 +14756,11 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 7. **法术链读不到真 buff**（三个）：光之优雅真 buff=**31834**、治疗之道=**29203**、大地之盾=974/32593/32594 ⇒ 一律改成按固定 id 读，不要走 `SpellId()` 链。
 8. **传送途中召唤崩服**：`GetMap(): m_currMap` 空指针（gdb 栈 `SummonCreature ← simscenario::Update`）。入口判 `!IsInWorld() || IsBeingTeleported()`。
 
-### 五、两处必须记住的"假象"
+#### 五、两处必须记住的"假象"
 1. **引擎在偷偷工作**：假人场景里 `SkipEngine()` 只有"注册了场景目标"的 bot 才真，治疗/坦克的 `Decline` 会把引擎放进来。
 2. **测试通道自带自愈**：`BOT_CHEATS=item` 让主坦无限绷带/药水（~200~340 HP/s）⇒ **hps 不能与 heal_dps 直接相减**。
 
-### 六、测量协议（提速，2026-11-01 定）
+#### 六、测量协议（提速，2026-11-01 定）
 | 场景 | 轮数 | 单轮 |
 |---|---|---|
 | 开发中快速验证 | 3 | **45 秒** |
@@ -14680,9 +14769,1349 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 
 装备必须钉死：`dev/234` 分阶段 BIS + `bis_phase` 参数 + **每轮打装备指纹**（`[DUMMY] … 装备=18件 sig=72060661`），三轮同指纹才算"装备没变"。`sp=` 仍会因 buff/触发波动，**不要拿它判断装备**。
 
-### 七、未完成
+#### 七、未完成
 1. **Optuna 调参**（参数表已在 `DESIGN_dps_fsm.md`；本轮把装备/日志/方差都压住了，才具备调参前提）。
 2. **副本实战验证**（现在是木桩；`SkipEngine` 在副本里恒假，FSM 与引擎抢 GCD 的问题会显现）。
 3. 元素萨/猫德两个"账面落后"的专精：需要**长局**（≥2 分钟）重测才能下结论。
 4. 治疗：戒律牧；`lay on hands` 始终没落地（未定位）。
 5. 防骑 `righteous defense` 的 direct 路径仍会偶发 `BAD_TARGETS`（三级回退已兜）。
+
+
+---
+
+## 13) DPS 状态机：分层 / 参数 schema / Optuna 环路 / 性能与并发 / 工作纪律 — 2026-10-31 ~ 2026-11-02
+
+> 合并自 dev/DESIGN_dps_fsm.md（2026-11-02 并入；按"同一主题只保留一章"的纪律，原文件已删除）。
+
+# DPS 决策：分层、每专精状态机、Optuna 参数（2026-10-31）
+
+> ⚠️ **2026-11-02 复核（先读这条）**：**§1「决策模式」表已过时** —— 表里只到 `mode=0~4` 并写「`fsm`（S2 再加）」，
+> 而 `mode=5`（显式状态图）已经落地，并覆盖 20 个 DPS 专精 + 四治疗 + 三坦克（代码事实：`DpsFsm.h` 的
+> `[2026-11-01 站长口径] mode=5 …` 注释；实测见 `KNOWN_ISSUES.md` → `[PlayerBots]` 章 **阶段 G / H**）。
+> 本文其余章节（分层 L0~L7、参数 schema、Optuna 环路、§4 测量纪律）**仍有效**。
+> 过时清单总表：`KNOWN_ISSUES.md` → `[PlayerBots]` → `#### 〇-2`。
+
+> 本文是 `src/modules/PlayerBots/playerbot/strategy/DpsFsm.cpp` 这一摊的重构**规范**。
+> 定位：**每专精一个显式有限状态机**，状态从先验知识（现有 `Tick<Class>` 里的实战结论）提取，
+> 阈值/权重交给 Optuna 搜索。目标不是"再写一套 if"，而是把决策压成"**状态（数据）+ 动作表（数据）+ 参数（数据）**"。
+>
+> 现状（2026-10-31 只读核查）：`DpsFsm.cpp` 117 KB / `DpsPolicy.inc` 68 KB / `DpsValue.inc` 44 KB，
+> 内部并存 **3 套决策引擎**（`TickValue` / `TickPolicy` / 手写 `Tick<Class>`），
+> 由 4 个布尔（`value/policy/pselect/pauto`）拼出 16 种组合，其中 12 种无意义。
+> 手写分支 716~1902 行 ≈ **1186 行** if-chain，与策略表**同一份知识写了两遍半**。
+
+---
+
+### 1. 分层（修订版）
+
+| 层 | 名称 | 职责 | 入口 | 可变性 |
+|---|---|---|---|---|
+| L0 | 闸门 | 生死/未进世界/disabled/无目标/被控/坦奶/仇恨门 | `dpsfsm::Tick()` 前段 | 无参数 |
+| L1 | 快照 | 血量/资源/连击点/目标血量/距离/读条/目标数 | `BuildSnapshot()` | 无参数 |
+| **L2** | **状态判定（新）** | `State = Evaluate(snapshot, params)`，**纯函数** | `SpecFsm::Evaluate()` | 阈值参数 |
+| L3 | 候选生成 | 当前状态对应的有序动作表 | `SpecFsm::Actions(state)` | 表数据 |
+| L4 | 打分（可选） | 同状态内多候选排序 | `ScoreCand()` | `w_*` |
+| L5 | 选择 | 取第一个可用 / 最高分 | `Select()` | 模式 |
+| L6 | 执行 | Ready→退避→CanCast→Cast | `CastChecked()` | 无参数 |
+| L7 | 记账 | castCount / castThisTick / RecordSpellCast | `Tick()` 尾段 | 无参数 |
+
+**关键变化**：L2 是新增的显式一层。现在"下一步干什么"散落在 `Tick<Class>` 的 if-chain 里；
+重构后它只由"处于哪个状态"决定，状态由**可读的迁移条件表**决定。
+
+### 决策模式（取代 4 个布尔）—— S1 已落地
+
+```cpp
+enum class DecisionMode { Legacy = 0, Table = 1, TableScored = 2, TableScoredBook = 3, Value = 4 };
+```
+
+| `mode` | 名称 | 等价旧口径 | 用途 |
+|---|---|---|---|
+| 0 | `legacy` | 四个键都不设 | 手写 if-chain（现默认），迁移期对照，**最终删除** |
+| 1 | `table` | `policy=1` | 策略表顺序"第一条能放就放" |
+| 2 | `table_scored` | `policy=1, pselect=1` | 表内两遍打分 |
+| 3 | `table_scored_book` | `policy=1, pselect=1, pauto=1` | 2 + 法术书表外候选（`w_offtable` 打折） |
+| 4 | `value` | `value=1` | 价值引擎（`TickValue`） |
+| — | `fsm`（S2 再加） | 无 | **目标形态**：每专精显式状态机 |
+
+- **为什么只剩 5 个**：旧代码里 `pselect` 只在 `policy=1` 时被读，`pauto` 又只在 `pselect=1` 的块内被读
+  ⇒ 16 种组合里真正有差异的只有 4 种（`policy=1,pauto=1,pselect=0` 与 `table` 完全等价）。
+- **旧键兼容**：`mode` 没配时从旧四键**推导一次**并打 `[DPSFSM-MODE] … WARN`，告诉你该写哪个 `mode=N`；
+  调参脚本的 `k=v` 里常直接带旧键，所以兼容层保留到 tuner 改完再删。
+- **唯一的语义变化**：`value=1` + `policy=1` 旧口径是"value 先跑、失败落 policy"的串联，新口径只保留 `value`；
+  仓库里没有任何配置这样配过，运行时会打 WARN 留痕。
+- **单一读取点**：`ResolveMode()` 在 `Tick()` 里每 tick 解析一次并写进 `BotMem::mode`，
+  `TickPolicy()` 只读 `m->mode`，代码里不再有任何 `TP(m,"pselect"/"pauto")`。
+
+
+---
+
+### 2. 每专精状态机的契约
+
+### 2.1 通用状态集（所有专精共享骨架）
+
+| 状态 | 进入条件（先验，参数化） | 动作表含义 |
+|---|---|---|
+| `Idle` | 无目标 / 不在战斗 | 自我 buff、坐地回蓝（交回引擎） |
+| `Opening` | 刚接战且目标无本方 debuff | 起手：上易伤/破甲/割裂 |
+| `Maintain` | 任一关键 debuff 剩余 < `refresh_*` | 补 DoT / 补 buff |
+| `Burst` | 冷却齐 + 目标血量 > `burst_hp` 且不在爆发中 | 开饰品/大招/爆发循环 |
+| `Fill` | 以上都不满足 | 填充技能 |
+| `AoE` | `packNN >= aoe_pack` | 群体循环 |
+| `Recover` | 资源 < `min_resource` 或血量 < `min_hp` | 续资源（换形态/喝药/等待） |
+
+专精可加**特有态**（示例）：
+- 猫德：`PowerShift`（能量 < `shift_energy` 且蓝 > `shift_mana`）
+- 奥法：`Burn`（蓝 > `burn_mana`）/ `Conserve`（否则）
+- 术士：`LifeTap`（血 > `lifetap_hp` && 蓝 < `lifetap_mana`）
+
+### 2.2 迁移 = 数据，不是代码
+
+```yaml
+# 只描述"什么条件下进什么状态"，顺序即优先级（先命中先返回）
+frost_mage:
+  - {to: Recover,  when: "mana_pct < min_resource"}
+  - {to: AoE,      when: "pack10 >= aoe_pack"}
+  - {to: Maintain, when: "aura_remain('frostbolt debuff') < refresh_dot"}
+  - {to: Burst,    when: "cooldowns_ready && target_hp > burst_hp && !bursting"}
+  - {to: Fill,     when: "true"}
+```
+
+**硬规矩**：`Evaluate()` 里不许施法、不许读世界、不许打日志（纯函数），
+这样它能被单元测试和离线回放（拿 `[DPSFSM-HB]` 日志里的快照复算状态）。
+
+### 2.3 动作表
+
+```yaml
+frost_mage.Burst:
+  - {spell: "icy veins",  kind: Self}
+  - {spell: "cold snap",  kind: Self}
+  - {spell: "frostbolt",  kind: Target}
+```
+
+`kind` 沿用现有 `PKind`（Target/Self/Ground/Swing/Burst/Prereq/PowerShift/Hold，共 8 值）。
+**不要再往里加枚举**——新的"意图"用参数表达，不加类型。
+
+---
+
+### 3. 参数 schema：唯一事实源
+
+现状：20 个 `TP(m,key)` 键散落在 3 个文件里，代码有默认值、conf 有覆盖、Optuna 有第三份空间，
+**三处会漂**。改为一份 schema，代码/tuner/文档都从它生成：
+
+```json
+{
+  "burst_hp":     {"type": "float", "range": [0, 100],  "default": 20,  "scope": "global",
+                   "doc": "目标血量高于该值才进 Burst"},
+  "aoe_pack":     {"type": "int",   "range": [2, 8],     "default": 3,   "scope": "global"},
+  "w_nuke":       {"type": "float", "range": [0.2, 3],   "default": 1.0, "scope": "global"},
+  "refresh_dot":  {"type": "float", "range": [0, 6],     "default": 2.0, "scope": "global"},
+  "min_resource": {"type": "float", "range": [0, 60],    "default": 15,  "scope": "global"},
+  "feral.shift_energy": {"type": "float", "range": [0, 80], "default": 25, "scope": "feral"}
+}
+```
+
+- 代码：启动时读 schema 校验 conf（未知键告警、类型错误拒绝启动），`TP()` 只从这一张表取值。
+- tuner：`pipeline_combo.py` / `optuna_par.py` 直接从 schema 生成采样空间（含 conditional：只有 `mode==Burst` 的专精才采 `burst_hp`）。
+- 文档：本文 §2/§3 与 schema 同源，不再手抄参数表。
+
+**原则**：参数只允许三类——阈值（进/出状态的界）、权重（同状态内排序）、资源门（够不够）。
+"我认为应该先打 X 再打 Y"这类规则**一律不许硬编码**，要么进动作表顺序，要么变成权重。
+
+---
+
+### 4. Optuna 环路
+
+```
+schema(JSON) ──生成采样空间──▶ Optuna study (每专精一个 / 每职业一组)
+        ▲                              │ trial = 一组参数
+        │                              ▼
+   conf 写回（≥5% 才写）        .rndbot sim arms（17 专精并行、每臂独立木桩、固定 guid）
+        ▲                              │
+        └──── 同窗口 A/B 复核 ◀──── dps 中位数（120s、N≥3、剔除无效轮）
+```
+
+- **测量单元**必须是"同 bot、同木桩、120 秒、高血量"（现行纪律），跨轮比较前先做同批 `arms` 基线。
+- **无效轮剔除**：`incombat=0 && dps=0 && casts=0 && melee=0` 一律丢弃，不能进中位数。
+- **⚠ 单轮不可作结论（2026-10-31 站长确认）**：本机单轮 dps 噪声约 **±12%**
+  （同一二进制实测 5 轮：988.8 / 827.7 / 757.1 / 999.6 / 840.0）。因此：
+  1. 任何 A/B 至少 **5 轮取中位数**，报数必须给"**中位数 + 波动区间**"，不给单点；
+  2. 同批对照用 `arms` 让新旧参数**同轮并行**（同机同场景，抵消大部分漂移）；
+  3. 差值小于该区间的一律记为"未观测到差异"，**不能当回归也不能当提升**；
+  4. 单轮数字只能用于"是否崩溃/是否 0 dps"这类定性判断。
+- **⚠ 有蓝职业必须同时报 DPM（2026-10-31 站长口径）**：dps 只说明"打得多快"，不说明"划不划算"。
+  法系（法师/术士/牧师/萨满/德/骑）每次对比都要给 **DPM = 总伤害 / 总耗蓝**：
+  - FSM 侧累计每次成功施法的 `SpellCost()`，日志 `[DPSFSM-MANA] spent=<n> pct=<n>`（10 秒一条 + 结束一条）；
+  - DPM 用 `[DUMMY]` 的 `dmg=` 除以 `spent=` 得到，与 dps 一起进对比表；
+  - 只看 dps 会调出"疯狂泄蓝、续航崩溃"的假最优（奥法尤其明显）。
+- **⚠ 装备必须钉死（2026-11-01）**：`BOT_EQUIP_BEST_GEAR` 会在**每次重启时重摇装备**
+  （实测同一只法师 `sp 1065→1093`、武器 `15/0→10/-1`），是跨重启 A/B 的独立方差源。
+  现有静态 BIS（`ai_playerbot_bis_gear`，`dev/233`）已经会把 bot 穿成同一套，但**缺 slot 14（披风）**
+  ⇒ 那件回落到随机；且它只有"一套"，没有按**装备阶段**分档。
+  **要求**：① 补 slot 14；② 按阶段各出一套（见下）；③ 仿真按参数选档（`bis_gear_tier = preraid|p3|s141`），跨重启对比必须同档同套。
+
+- **⚠ BIS 不是"装等越高越好"（2026-11-01 站长口径）**：三档之外还要吃**套装与特殊件**，否则生成器会给出错误的 BIS：
+  - **奥法 2T5**：T5 两件套的加成（奥冲/奥弹相关）比同部位的高装等散件更值钱；
+  - **猫德狼头（Wolfshead Helm，40 级蓝装）**：变形回能量的机制件，装等极低但不可替代；
+  - 其它同类：惩戒骑的圣印相关件、暗牧的 T5 两件套等。
+  ⇒ 生成器不能只按"装等 + 命中 + 属性分"排序，必须支持：① **每专精的固定覆盖件**（手工清单：这是 BIS 就算装等低）；
+  ② **套装加成必须按"实际套装属性"计分**（2026-11-01 站长口径）——不是给"凑齐 2 件 +10 分"这种拍脑袋的加分：
+  - 数据来源：**`dbc/ItemSet.dbc`**（本机 `x64_Debug/dbc/ItemSet.dbc` 存在，85 KB）解析出
+    `setID → 成员物品[]` 与 `setID → (件数 → 加成 spellId)`；
+  - 再用 `spell_template` 把该加成法术的**实际效果**折算成同一套评分（法伤/攻强/命中/急速/暴击/百分比增伤都以同口径换算），
+    算出来的才是这 2/4 件的真实价值；
+  - **直接技能增伤类（"+X% 某技能伤害"）要按"技能伤害占比 × 提升比例"折算**（2026-11-01 站长口径）：
+    ```
+    套装价值(等效 %DPS) = Σ(受影响技能的伤害占比 × 该技能提升幅度)
+    例：4T6 让暗影箭/烧尽 +6%，这两个技能占总伤害 60% ⇒ 等效 3.6% 总伤害
+    例：奥法 2T5 让奥冲 +20%，奥冲占 70% ⇒ 等效 14% 总伤害（所以它是"根基"）
+    ```
+    ⇒ 需要**每专精的技能伤害占比**：从实测日志里取（`[DUMMY]` 的 `top=` 只给次数，
+    **要新增 per-spell 伤害记录**：`[DPSFSM-DMG] <bot> spell=<id> dmg=<n>`，10 秒一条 + 结束一条），
+    不能拍脑袋给"这件值多少分"。
+    **站长给的那张取舍表只是参考/兜底**，真正的数值以占比×提升为准；两者冲突时以计算为准、并在 `note` 里注明。
+  - **机制型**（改变循环节奏、资源、形态）：无法折算成分，走覆盖清单直接钉死。
+  - 只有当"套装件组合的总分 > 同槽位最优散件组合的总分"时，才选套装——即**套装与散件放在同一个分数里比**，不做特权。
+  ③ 输出时记录"为什么选它"（`note` 字段），便于人工复核。
+
+- **套装取舍清单（2026-11-01 站长给的实战口径，生成器必须照这个钉死）**：
+
+  | 专精 | 值得凑 | 明确不凑 / 注意 |
+  |---|---|---|
+  | **奥法** | **2T5 是保底线**（奥冲 +20%，贯穿整个 TBC，进 T6 阶段仍保留）、4T5（P2 毕业） | **T6 是负提升**（加成加在奥术飞弹上，与奥冲流脱节）⇒ 绝不为了 T6 破坏 2T5 |
+  | **鸟德** | **4T5 用到太阳井**（星火对月火/虫群目标 +10%）；后期 **4T5 + 4T6 混搭** | T6 单独不超越 4T5 |
+  | **盗贼** | T4 阶段 **2T4**（切割 +3 秒，神级）；T5 之后 **4T5** | 4T5+散件比 2T4 路线约 +100 dps |
+  | **猎人（兽王）** | **2T5 优先于 T6**（直到 4T6 成型）；T4 阶段用 **4D3（地穴套）** 过渡 | **T4 直接跳过**（套装差、单件也没命中暴击） |
+  | **术士（暗毁）** | **4T6 必出**（暗影箭/烧尽 +6%）；4T5 有条件（要求腐蚀覆盖率高） | 覆盖不住 ⇒ 改 **2T4（肩手）+ 工程头** |
+  | **元素萨** | **4T6**（2T6 ≈ 多一件饰品：15 法力/5s + 35 法爆 + 45 法伤） | **T5 清一色拉垮** |
+  | **增强萨** | T6 一般（★★） | 2T6 震击省蓝价值低、4T6 只有 70 攻强 |
+  | **防骑** | **4T6**（奉献 +10%，群拉核心） | — |
+  | **神牧** | **4T5**（P3 仍以它为核心） | T6 平平（省蓝/强效 +5%） |
+  | **惩戒骑** | — | **不凑 T6**（★★→★：愤怒之锤在循环外、回蓝有别人管） |
+  | **奶德** | — | **不凑 T6**（与团本定位不符） |
+  | **输出战士** | — | **不凑 4T6**（嗜血占比 10~15% ⇒ 总提升 <1%）；单件破甲尚可 |
+  | **暗牧** | — | T6 收益被分散（★★★），不如属性集中的散件 |
+
+  **实现要点**：这张表是**硬约束**，优先于"分数最优"。尤其注意**跨阶段保留**（如奥法在 138~151 档仍要穿 2 件 133 的 T5），
+  所以生成器必须允许"低装等的套装件压过高装等散件"，并允许覆盖件来自更低档位。
+
+- **装备阶段（四档，2026-11-01 按站长实机 conf 修正）** —— 代码里**已经有一套** `GearProgressionSystem`，档位以它为准，不要再自己编：
+
+  | phase | 装等区间 | 名称（conf 注释） |
+  |---|---|---|
+  | 0 | **100~115** | 团本前毕业 |
+  | 1 | **115~125** | P1（T4）毕业 |
+  | 2 | **125~138** | P2（T5）毕业 |
+  | 3 | **138~151** | P4（SWP）毕业 |
+
+  conf 键名（`PlayerbotAIConfig.cpp → PlayerbotAIConfig` 读取）：
+  - 区间：`AiPlayerbot.GearProgressionSystem.<phase>.MinItemLevel` / `.MaxItemLevel`
+  - 固定件：`AiPlayerbot.GearProgressionSystem.<phase>.<cls>.<spec>.<slot> = <itemId>`（`spec` 是**职业内第几系 0..3**，`slot` 0..18）
+  - 实例→阶段：`AiPlayerbot.GearProgressionSystem.InstancePhases = "mapId:phase,..."`
+  ⇒ BIS 生成器要按这 4 个区间各出一套，并**直接产出上面那两类 conf 行**（不要再单独维护一张"tier"表）；
+    仿真侧选哪一档 = 把对应 phase 的固定件喂给 bot。
+
+- **写回门**：≥5% 才进 conf；一次只改一个专精；改完在下一轮 `arms` 里做同批对照。
+- **并行度**：`arms` 一批 17 堆 ⇒ 每专精只能 1 臂/批；要扫参数就分批，或写 `armsfile`。
+
+
+---
+
+### 5. 迁移计划（每步独立可回退）
+
+| 步 | 内容 | 风险 | 验收 |
+|---|---|---|---|
+| **S1** | `Mode` 枚举 + 旧 key 兼容映射 + schema 落地（只读校验） | 低 | 17 专精 `arms` 同参数前后 dps 差 <2% |
+| **S2** | `SpecFsm` 接口（`Evaluate/Actions`）+ 2 个试点专精（frost、feral） | 中 | 试点专精三模式（Fsm/Table/Legacy）同批对照，Fsm 不低于 Legacy |
+| **S3** | 逐专精迁移 17 个；`Tick<Class>` 保留为 `Legacy` 对照 | 中 | 每迁一个跑一次 `arms`，记录 delta 进 KNOWN_ISSUES §10.5x |
+| **S4** | 让位协议收口 `Ownership`（`SkipEngine`/`m_fsmCastLock`/`castThisTick`/`EngineCastGuardListener` 四处合一）+ `[DECIDE]` 统一日志 | 低 | 0 dps 场景能一句话归因 |
+| **S5** | 删 `Legacy` 与旧 4 键；tuner 全面接 schema | 中 | 全量回归 |
+
+**顺序要求**：S4 必须在 S3 之前做完一半——否则迁移中出问题分不清是"状态判错"还是"引擎抢了施法"。
+
+---
+
+### 6. 观测口径
+
+- `[DECIDE] owner=fsm|engine mode=fsm|table|... state=Maintain reason=...`（每 tick 一条，env `DPS_TRACE=1` 才打）
+- `[DPS-EST]`：候选估值（已有）
+- `[DPS-OFFTABLE] castable=`：表外候选（已有）
+- `[FSM-BAIL]`：闸门驳回（已有，保持只在 L0）
+- **新增必须项**：`TickPolicy`/`SpecFsm` 内部零 bail 的盲点要补——`Recover` 必须区分
+  `wait-resource` / `all-candidates-failed` / `no-candidate`，否则 0 dps 只能靠猜。
+
+---
+
+### 7. 当前阻塞（2026-10-31 18:00）
+
+工作树里有另一路未提交改动（6 个文件 / +884 行，`DpsPolicy.inc` 最后修改 17:44），
+本文件的 S1 起所有代码步骤**必须等它落定并提交**，否则改的是同一批文件。
+
+### 4.1 测试时长协议（2026-11-01 站长确认，**为提速**）
+
+| 场景 | 轮数 | 单轮时长 | 判据 |
+|---|---|---|---|
+| **开发中快速验证** | **3 轮** | **45 秒** | 中位数非 0、无崩溃、关键日志出现（够不够格看下一档） |
+| **正式对比**（进文档 / 调参前） | 5 轮 | 60 秒 | 中位数 + CV；差值要超过噪声 |
+| **全专精回归** | `arms` 分批 | 45 秒 × 3 | 只判"有无回归"，不逐专精看绝对值 |
+
+**批量方式（关键提速点）**：`arms` 一批里放 **N 个专精**（同一配置），
+下一批换另一个配置 ⇒ 17 专精一轮 ≈ 5~6 分钟，而不是逐个排队（每次起跑/传送/假人就位的开销被摊薄）。
+限制：**同一批里一个专精只能有一个臂**（17 堆木桩），所以只能"按配置分批"。
+
+**基线缓存**：`mode=3` 基线不随 FSM 改动变化（除非改了策略表）⇒ 每个专精只测一次并存表，之后只测 `mode=5`。
+### 4.2 Optuna 的现实边界（2026-11-01 实测结论，**重要**）
+
+**并行 A/B 已可用**（`arms` 支持同专精多臂、各占独立木桩）：同参双臂配对差 **+1.67%**（漂移被抵消）。
+**但轮间抖动没解决**：150 秒单 bot 的 sd ≈ **10.7pp**（同一 bot 同参数可跑 790 / 926 / 896）。
+
+| 样本量 | 配对中位 95% CI 半宽 |
+|---|---|
+| 6 轮 × 150 秒 | **±10.9pp**（实测） |
+| 15 轮 | 约 ±5pp（80% 功效） |
+| 29~71 轮 | ±2.5pp |
+
+⇒ **5% 门槛在 150 秒轮次下不可达**。实测案例：`arcane:fill_margin=400` 首批 +6.82%、第二批 +2.59%、
+6 轮轮转（臂位精确抵消）配对中位 **0.9919（净效应 −0.81%）**，四种统计口径全围绕 0 ⇒ **无效应**。
+
+**结论（2026-11-01 站长确认方向）**：
+1. **只认 ≥10~12% 的效应**才写 conf；1% 级微调不做（成本 > 收益）；
+2. 真正的大收益来自**结构性修复**（本轮：惩戒骑 +28.8%、增强 +44%、暗牧 +19%、元素萨崩尾消除），不是参数微调；
+3. Optuna 的定位是"**粗搜索大效应区域**"，不是抠 2%；
+4. 若要提高分辨率，优先**加长单轮时长**（600 秒）或**同臂多 bot**，而不是堆轮数。
+---
+
+### 5. 性能与并发（2026-11-02 站长口径）
+
+**瓶颈事实**：bot AI 全在 **mangosd 世界线程**里跑；`BuildSnapshot` 原本每 tick 至少 4 次 `CountHostilesNear`
+（`pack10` / `pack30` / `nearby` / AoE 判据），每次都要重新取 `possible targets`。
+实测：**5 组（25 bot）正常**（543 图 600 秒死 2~3 次），**50 组（250 bot）崩坏**（同图 900 秒死 365 次）——
+同样的 FSM、同样的代码，只是并发不同，**每组死亡率恶化约 20 倍**（决策延迟从 ~0.5s 涨到数秒 ⇒ 治疗/坦克反应不过来）。
+
+### 5.1 目标设计
+| 项 | 设计 |
+|---|---|
+| **敌对扫描** | **每个副本实例共享一份**（key = `mapId << 32 \| instanceId`），**300ms** 刷新；一批里第一个 bot 抢到刷新权，其余读缓存 |
+| **决策粒度（站长 2026-11-02 澄清）** | **100ms 是"这段时间什么都做不了就立刻返回"**，不是"每 100ms 全量扫一遍"：<br>① **第一道（最便宜）：`s.casting \|\| HasGCD()` ⇒ 直接 return**，连快照都不建（读条/GCD 期间本来就不能出手）；<br>② 第二道：`now - lastDecision < 100` ⇒ return；<br>③ 只有 GCD 空出来时，才看缓存/建快照；缓存没过期就**复用**（300ms），过期才扫 |
+| **快速返回** | 一拍"什么都放不出"（射程/CD/资源全不满足）时**直接 Decline**，不做全量快照 |
+| **所有缓存统一 300ms** | 敌对列表 / `possible targets` / 目标 DoT 剩余 / 自身 buff 与形态 / 威胁值 —— **300ms 与真人反应时间同量级**（站长口径） |
+| **救急例外** | 低血、敌方近身等"必须立刻反应"的检查走**独立高频轻量路径**，不受 300ms 缓存限制 |
+| **日志** | `[DPSFSM-HB]` 10s → **30s**（250 bot 时 25 行/秒的 I/O 也在世界线程里） |
+| **度量** | 新增 `[DPSFSM-PERF] avg_us=<n> max_us=<n> scans=<n>`（30 秒一条），用于验收"同组数下耗时是否下降" |
+
+### 5.2 并行档位（实测得出，不是拍脑袋）
+| 用途 | 规模 |
+|---|---|
+| A/B 对照 | **≤5 组**（25 bot），窗口 600~900 秒 |
+| 全图回归 | 分轮次，每轮 1~2 图 × 5 组 |
+| 大并发 | 只有性能优化落地并用 `[DPSFSM-PERF]` 验证后才推高 |
+
+> 推论：**并行要"并行到不崩为止"**。50 组跑出来的数字不可用（它测的是服务器过载，不是状态机）。
+---
+
+### 6. 工作纪律（2026-11-02 站长明确要求，写死）
+
+1. **提问轮次不跑测试**：需要澄清/讨论时，只提问、只给判断，**不要顺手跑一轮测试**。
+2. **测试轮次不做额外检查**：说好跑测试就只跑测试，**结束后直接汇报结果**（数字 + 日志原文），
+   不要在同一个轮次里追加诊断、翻日志、改代码。
+3. 想追加检查时**单独开一轮**，并说明这一轮要查什么、为什么。
+4. 汇报格式：先给结论数字（表格），再给证据（日志原文），最后给"未解决/待确认"。
+
+---
+
+## 14) DPS 状态机：专精状态图与各职业口径（DPS/治疗/坦克）— 2026-10-31 ~ 2026-11-02
+
+> 合并自 dev/DESIGN_dps_fsm_graphs.md（2026-11-02 并入；按"同一主题只保留一章"的纪律，原文件已删除）。
+
+# DPS 每专精状态图（2026-10-31）
+
+> ⚠️ **2026-11-02 复核**：首段「17 张显式状态图」是 10-31 的口径；本文后面已扩到
+> §10（剩余专精）/ §11（治疗）/ §12（本服核心行为）/ §13（萨满）/ §14（坦克）⇒ **以文内章节为准**。
+> 落地与实测见 `KNOWN_ISSUES.md` → `[PlayerBots]` 章 **阶段 G / H**。
+
+> 配套 `dev/DESIGN_dps_fsm.md`（分层 / 参数 schema / Optuna）。本文只干一件事：
+> **把 9 个手写处理器里的 if 链，画成 17 张显式状态图**，好让 S2/S3 照着实现、让 Optuna 只调阈值。
+> 素材来源：`DpsFsm.cpp` 的 `TickMage/TickWarrior/TickRogue/TickHunter/TickWarlock/TickShaman/TickDruid/TickPaladin/TickPriest`
+> 逐块抽取（2026-10-31 只读核查），不是凭印象写的循环。
+
+---
+
+### 0. 统一骨架：7 个状态 + 固定转移优先级
+
+现有 9 个处理器的转移链顺序高度一致（资源 → 群 → 斩杀/爆发 → 距离 → 常规），
+差别只在**谁先判**和**动作表内容**。所以先定一张骨架图，专精只填三样东西：
+**① 哪些状态存在 ② 转移阈值 ③ 每个状态的动作表**。
+
+| # | 状态 | 含义 | 进入（按优先级从上到下，命中即停） |
+|---|---|---|---|
+| 1 | `Off` | 本专精不接管，整 tick 交回经典引擎 | 专精 ∈ {防护战, 神圣骑, 戒律/神圣牧, 恢复德} |
+| 2 | `Idle` | 无目标 | `target == null` |
+| 3 | `Prep` | **开怪前准备**（原 3/4/5 合并）：补团队 buff、个人 buff、护甲、形态/姿态、宝石/召唤物，把资源养满 | 脱战 且 任一准备项未满足 |
+| 4 | `Flee` | **逃跑/风筝**：血太低或扛不住，后撤拉开距离 | `selfHp < flee_hp` 或 `包夹数 > flee_max && 距离 < flee_range` |
+| 5 | `Recover` | 恢复：回蓝/回血（唤醒、分流、绷带、喝水） | `power < recover_enter` 或 `selfHp < recover_hp`（滞回：`> *_exit` 才回） |
+| 6 | `Aoe` | 多目标 | `pack(aoe_span) >= aoe_pack` |
+| 7 | `Burst` | **爆发**：仇恨稳定后立刻开，早用早 CD（**不再看目标血量**） | `仇恨稳定 && 主要 CD 可用` |
+| 8 | `Execute` | 斩杀窗口（可选，多数职业作为 `Maintain` 内的技能替换即可） | `targetHp <= execute_hp` |
+| 9 | `Approach` | 够不到 | `dist > range`（近战 6.5 / 远程 30~35） |
+| 10 | `Weave` | 猎人专用：等自动射击窗口 | `!canSteady && autoRemain > 0`（见 §3.1） |
+| 11 | `Maintain` | 平稳输出期 | 兜底 |
+
+> **2026-10-31 站长口径修订**：原来的 `Form` 与 `Buff` 并进 `Prep`（"补齐 buff 和资源、切好预备的姿态，
+> 都是开怪前要做的事，可以放到一起"）；新增 `Flee`（逃跑/风筝）；
+> **`Burst` 的进入条件改成"仇恨稳定 + CD 好"，不看目标血量**——理由是"早用早 CD，爆发当资源而不是当斩杀"；
+> 血量窗口另立 `Execute`（也可只在 `Maintain` 动作表里换技能，不占状态）。
+
+**固定连招 = 独立的有向图循环（Plan）**：像奥法 3+3（奥冲×3 → 寒冰箭×3 → 卡 0.5 秒读下一发奥冲）这种
+"一串有先后、有计数的动作"，不进状态图，而是状态内的一个**子循环**（`planId + planStep`），
+本身是一张独立的小有向图。状态负责"走哪条路"，Plan 负责"这条路走到第几步"。
+
+**硬规矩**（从现有代码提炼，必须保留，否则调参没有意义）：
+
+1. **滞回**：`Recover`/`Burst` 进和出用**两个参数**（`recover_enter` / `recover_exit`、`burst_hp` / `burst_exit`），
+   单阈值会让状态每 tick 抖动。现在代码里 `lowMana` → `lowMana+20` 就是这个，只是硬编码。
+2. **状态只决定"用哪张动作表"，不决定"这一手放哪个技能"**：技能选择留在动作表里按顺序/打分，
+   这样 Optuna 调权重时不会牵动状态图。
+3. **转移条件只能引用快照字段 + 参数**，不许调用施法、不许查 CD 之外的副作用。
+4. **优先级固定为 `Off → Idle → Prep → Flee → Recover → Aoe → Burst → Execute → Approach → Weave → Maintain`**。
+5. **"等待"必须是一等公民（2026-10-31 猎人模型逼出来的）**：最优解常常是"这一手什么都不放"。
+   但现在的接口是 `Tick*()` 返回 `bool`：`true`=我出手了、`false`=交回引擎——而"交回引擎"会让引擎**立刻放它自己的技能**，
+   恰好破坏刚算好的窗口（例如平射锁定期间被塞一发稳固）。
+   ⇒ 接口要改成三态：**`Acted`（我放了技能）/ `Hold`（这一 tick 有意空着，引擎也不许动）/ `Decline`（我不处理，交回引擎）**。
+   `Hold` 在 sim 里等价于"本 tick 让位"，在线上等价于"抢到这一 GCD 但什么都不做"（依赖 `Ownership` 令牌）。
+
+   现有代码里所有"顺序不一致"都是历史遗留（例如猎人把 `Recover` 放在 `Aoe` 之后），
+   统一到这条链，行为差异用阈值表达（`aoe_pack` 调大就等价于"先打单体"）。
+
+---
+
+### 1. 快照字段（现有 `BuildSnapshot` + 需补的 4 个）
+
+已有的：`selfHp` `power` `rage` `energy` `combo` `targetHp` `dist` `moving` `casting` `silenced` `pack10` `pack30`。
+
+需要补（都是现有硬编码逻辑需要、但没进快照的）：
+
+| 字段 | 用途 | 现状 |
+|---|---|---|
+| `autoRemainMs` | 猎人自动射击剩余时间 | 代码里 `GetAttackTimer(RANGED_ATTACK)` 现算 |
+| `formId` | 德/牧形态（猫、熊、旅行、暗影…） | 各处理器各自 `GetShapeshiftForm()` |
+| `sealAuraRemain` | 骑：圣印剩余 | 圣印块里 `AuraRemain(<2s)` 现算 |
+| `totemSlotEmpty[4]` | 萨：四槽图腾 | `TickShaman` 里 `GetTotemGuid` 现算 |
+
+---
+
+### 2. 17 张状态图
+
+记号：`S={...}` 状态集；转移只写**非默认**边（默认边 = 上一条都不命中时去 `Maintain`）；
+参数名列在 §4。**同一行的专精共用一张图，动作表按技能可得性分叉**。
+
+### 2.1 法师（Fire / Frost / Arcane）— 同一张图
+
+```
+S = {Idle, Recover, Aoe, Burst, Approach, Maintain}
+转移: Idle: 无目标
+      Recover: power < recover_enter        (exit: power > recover_exit)
+      Aoe:     pack30 >= aoe_pack
+      Burst:   targetHp <= burst_hp
+      Approach: dist > 30
+      Maintain: 兜底
+```
+| 状态 | 动作表（顺序，截断即停） |
+|---|---|
+| Recover | 唤醒 → 法力药水(power≤`potion_mana`) → 魔杖/普通攻击 |
+| Aoe | 烈焰风暴/暴风雪(地面) → 奥爆/近身 ≤10 |
+| Burst | 饰品 → 燃烧/冰冷血脉/奥术强化 → 气定神闲 → 炎爆 → 火冲；寒冰箭/奥冲填充 |
+| Maintain | 饰品 → 循环技能（火球/寒冰箭/奥冲）；`clearcasting` 触发时插一发（**不是状态**，是 Maintain 内的最高优先动作） |
+
+> 注意：代码里 `clearcasting` 是**每条转移之前**的前置判断，画图后它就是 Maintain（及各状态）
+> 动作表的第一行，不再单独占一个状态。
+
+### 2.2 战士（Arms / Fury）— 同一张图（Protection 是 `Off`）
+
+```
+S = {Off, Idle, Recover, Aoe, Burst, Approach, Maintain}
+Off: spec == Protection
+Recover: rage < core_cost（这是推测项，见 §5 待确认）
+Aoe: pack10 >= aoe_pack && dist <= 6.5
+Burst: targetHp <= burst_hp
+Approach: dist > 6.5
+```
+| 状态 | 动作表 |
+|---|---|
+| Aoe | 横扫 → 旋风斩 → 顺劈(怒气≥`cleave_rage`) |
+| Burst | 饰品 → 鲁莽/死亡之愿(fury) → 处决(execute 窗口) → 血怒/致死 |
+| Maintain | 饰品 → 处决窗口→处决 → 死亡之愿 → 战斗姿态 → 核心技 → 旋风 → 压制 → 猛击 → 英勇打击(`rage_reserve`) |
+
+### 2.3 盗贼（Assassination / Combat / Subtlety）— 一张图（后两者完全等价）
+
+```
+S = {Idle, Aoe, Burst, Approach, Maintain}
+Aoe: pack10 >= aoe_pack && dist<=6.5
+Burst: targetHp <= burst_hp
+Approach: dist > 6.5
+```
+| 状态 | 动作表 |
+|---|---|
+| Aoe | 饰品 → 冲动/剑刃乱舞 → 落回 Maintain 表 |
+| Burst | 饰品 → 冷血(mutilate)/冲动 → 剑刃乱舞 |
+| Maintain | 饰品 → 冲动/剑刃乱舞/冷血 → 切割(剩余<`snd_refresh`) → 满星(`fin_cp`)+能量(`fin_energy`)→毒伤/剔骨 → 毁伤/邪恶攻击 |
+
+> 有一条**硬性"停手"边**：`combo >= fin_cp` 且能量不足以放终结技时，代码直接 `break`（等能量，不攒星）。
+> 画图后它是 Maintain 内的一个**守卫**（`if combo>=fin_cp && energy<fin_energy: return`），不是状态。
+
+### 2.4 猎人（BM / Survival 等价，MM 多一个瞄准）— 唯一需要 `Weave` 状态
+
+```
+S = {Idle, Recover, Aoe, Burst, Approach, Weave, Maintain}
+Recover: power < 10 (exit > 30)
+Aoe: pack30 >= aoe_pack
+Burst: targetHp <= burst_hp
+Approach: dist > 35
+Weave: autoRemainMs > 0 && !canSteady
+```
+| 状态 | 动作表 |
+|---|---|
+| Recover | 蝰蛇守护(self) → 普通射击 |
+| Aoe | 乱射(地面) → 多重 → 稳固 |
+| Burst | 饰品 → 狂野怒火 → 杀戮命令 → [MM]瞄准 → 稳固 |
+| Maintain | 饰品 → 狂野怒火 → 杀戮命令 → 印记 → 毒蛇钉刺 → [MM]瞄准 → 稳固 → 多重 → 奥射 |
+| Weave | 奥射 → 多重（等自动射击窗口） |
+
+**自动射击**不是状态：`!moving && 无 CURRENT_AUTOREPEAT_SPELL` 时**先挂自动射击再进任何状态**，
+是一条 L0/L6 级不变量（任何施法都会打断它，所以每个动作后都要重挂）。
+
+### 2.5 术士（Affliction / Destruction / Demonology）
+
+```
+S = {Idle, Recover, Aoe, Burst, Approach, Maintain}
+Recover: power < 12 && selfHp > 55     (exit: power > 40)
+Aoe: pack30 >= aoe_pack
+Burst: targetHp <= burst_hp
+Approach: dist > 30
+```
+| 状态 | 动作表 |
+|---|---|
+| Recover | 生命分流（唯一动作） |
+| Aoe | 种子(无种子时) → 火雨(地面) → 暗影箭 |
+| Burst | 饰品 → 暗影灼烧 → 暗影箭 |
+| Maintain | 饰品 → 诅咒位(元素/痛苦) → 腐蚀 → 虹吸/无常(aff) → 献祭/燃烧(dest) → 吸取生命(aff) → 暗影箭 |
+
+> 现有代码的 DoT 判断是"**有没有**"而不是"**还剩多久**"。进图后应改成 `AuraRemain < refresh_*`，
+> 这是把隐式状态显式化最直接的收益（补 DoT 的时机变成参数）。
+
+### 2.6 萨满（Enhancement / Elemental，Restoration 等同 Elemental）
+
+```
+S = {Idle, Recover, Aoe, Burst, Approach, Maintain}
+Recover: power < 10 (exit > 30)
+Aoe: pack10 >= aoe_pack && spec==Enhancement
+Burst: targetHp <= burst_hp
+Approach: dist > (enhance ? 5 : 25)
+```
+| 状态 | 动作表 |
+|---|---|
+| Recover | 法力药水 → 普通攻击 |
+| Aoe | 闪电链 → 岩浆图腾 → 水之护盾(self) |
+| Burst | 饰品 → 图腾补齐(4 槽) → 嗜血/英勇 → 萨满之怒 → 风暴打击 / 元素掌握 → 闪电链 |
+| Maintain | 饰品 → 图腾补齐 → 嗜血 → 萨满之怒 → 风暴打击 → 火震(无) → 大地震击（enh）；元素掌握 → 火震 → 闪电链 → 闪电箭 |
+
+**图腾补齐**是 `Form` 类的**前置守卫**：四槽任一为空且技能可用 → 放一个 → 本 tick 结束。
+画图后建议单独列成 `Totems` 状态（优先于所有战斗状态），而不是塞在 Burst/Maintain 里各写一遍。
+
+### 2.7 德鲁伊（Feral / Balance）— 两条几乎无关的子图，建议拆成两个 spec
+
+```
+Feral:   S = {Idle, Form, Burst, Approach, Maintain}
+         Form: shape != CAT          (动作: 猫形态; 已有 aura 但形态错 ⇒ 保持不动，防刷)
+         Burst: targetHp <= burst_hp
+         Approach: dist > 6.5
+Balance: S = {Idle, Form, Recover, Aoe, Burst, Approach, Maintain}
+         Form: !moonkin（推测，见 §5）
+         Recover: power < 10 (exit > 30)
+         Aoe: pack30 >= aoe_pack
+```
+| 状态 | Feral 动作表 | Balance 动作表 |
+|---|---|---|
+| Recover | — | 法力药水 → 普通攻击 |
+| Aoe | — | 飓风(地面) → 星火 |
+| Burst | 饰品 → 猛虎之怒(能量≥80) → 割裂/凶猛撕咬(满星) → 裂伤 → 撕碎 | 饰品 → 自然之力 → 星火 |
+| Maintain | 饰品 → 猛虎之怒 → 割裂(无) → 满星→凶猛撕咬/撕裂 → 裂伤 → 斜掠 → 撕碎 | 饰品 → 自然之力 → 月火(无) → 虫群(无) → 月火/星火 |
+
+### 2.8 圣骑士（Retribution；Holy / Protection 是 `Off`）
+
+```
+S = {Off, Idle, Seal, Approach, Burst, Maintain}
+Off: spec != Retribution
+Seal: sealAuraRemain < 2s 或 无圣印     (动作: 挂圣印 → 本 tick 结束)
+Approach: !CanReachWithMeleeAttack
+Burst: targetHp <= burst_hp
+```
+| 状态 | 动作表 |
+|---|---|
+| Seal | 挂当前阵营/天赋可用的圣印 |
+| Burst | 饰品 → 复仇之怒 → 愤怒之锤 → 审判 → 十字军打击 |
+| Maintain | 饰品 → 复仇之怒 → 审判 → 十字军打击 → 奉献(power>`consecration_mana`) |
+
+> 圣印从"状态机之外的抢占前置"变成**最高优先状态**，是这次重构对圣骑最大的简化：
+> 原来它在转移链之前 `return true`，把一整维从状态图里挖掉了。
+
+### 2.9 牧师（Shadow；Discipline / Holy 是 `Off`）
+
+```
+S = {Off, Idle, Form, Recover, Burst, Approach, Maintain}
+Off: spec != Shadow
+Form: !shadowform
+Recover: power < 10
+Burst: targetHp <= burst_hp
+Approach: dist > 30
+```
+| 状态 | 动作表 |
+|---|---|
+| Recover | 普通攻击 |
+| Burst | 饰品 → 暗言术：灭 → 心灵震爆 |
+| Maintain | 饰品 → 暗影形态 → 痛 → 吸血鬼之触 → 心灵震爆 → 灭 → 精神鞭笞 |
+
+---
+
+### 3. 三个硬骨头：怎么塞进图里
+
+### 3.1 猎人的自动射击时间轴（最难）
+
+它不是状态，是**三个叠加的时钟约束**：
+`autoRemain`（本次自动射击还剩多久）+ `weave_margin`（稳固能塞几发）+ 每次施法都会打断自动射击、放完必须重挂。
+
+进图方案：
+- 快照加 `autoRemainMs`；
+- `Weave` 是一个**短驻留状态**（只做瞬发：奥射/多重），转移条件 `autoRemainMs > 0`；
+- **重挂自动射击**降级为 L6 不变量：任何施法成功后立刻重挂（不进图）；
+- 硬编码的 1500 / 3000 / 700 全部变成参数：`weave_margin`（已有）、`aimed_window`、`instant_window`。
+
+### 3.2 战士的怒气账本
+
+不是状态，是**转移条件里的联立约束**：`rage - cost >= next_cost_reserve`。
+建议：把 `core_cost / ww_cost / hs_cost / slam_cost` 作为**运行时计算量**留在动作表里，
+只把"预留多少"暴露成参数 `rage_reserve`（现在硬编码 75）。这样 Optuna 调的是"敢不敢花"，而不是"技能多少钱"。
+
+### 3.3 圣骑士的圣印前置
+
+见 §2.8：提升为最高优先状态 `Seal`。注意两个坑要保留：
+- 选哪个圣印取决于**阵营 + 天赋**（候选表取第一个 `SpellId != 0`）——这是数据，不是参数；
+- 挂不上时**不能死等**（现有代码是软失败继续往下走），图里表现为 `Seal` 状态的动作失败后**落回 Maintain**，不是卡死。
+
+---
+
+### 4. 参数表（状态图专有，其余见 DESIGN_dps_fsm.md §3）
+
+| 参数 | 含义 | 现在是什么 |
+|---|---|---|
+| `recover_enter` / `recover_exit` | Recover 进/出 | 代码里 `lowMana` / `lowMana+20` 硬编码（法师 10/8/6 三套） |
+| `burst_hp` / `burst_exit` | Burst 进/出 | 已有 `burst_hp`，但德/牧回退写死 `>20.0f` |
+| `aoe_pack` + `aoe_span` | 群的目标数与统计半径 | 现在一半用 pack10、一半用 pack30，**不统一** |
+| `refresh_dot` / `snd_refresh` / `seal_refresh` | DoT/切割/圣印的续期阈值 | 现在是"有没有"或硬编码 2000/2500ms |
+| `range_melee` / `range_caster` | 接近阈值 | 硬编码 6.5 / 30 / 35 |
+| `weave_margin` / `aimed_window` / `instant_window` | 猎人窗口 | 只有 `weave_margin` 是参数 |
+| `rage_reserve` | 战士预留 | 硬编码 75 |
+| `totem_range` | 图腾补铺距离 | 已是参数 |
+
+---
+
+### 5. 待确认（不编造）
+
+1. **战士 Recover 的阈值**：现有代码没有"怒气不足 → Recover"这条边（只是 `break` 等普攻），
+   图里我按"资源不足"理解；要不要真的建一个 Recover 状态，还是把"等普攻"当 Maintain 的守卫？
+2. **德鲁伊 Balance 的 Form**：代码只对 Feral 判形态，Balance 没有 `!moonkin` 门 —— 是否要加？
+3. **合并等价专精**：Combat≡Subtlety、BM≡Survival、Elemental≡Restoration 现在完全同路。
+   图上是否合并成一张（省一半维护），还是保留各自的动作表只共享转移？
+4. **Off 专精**（防护战/神圣骑/戒律·神圣牧/恢复德）继续"不接管、交回经典引擎"，确认吗？
+5. **Aoe 判据统一到 `aoe_span` 之后**，近战（战/贼/萨）从 pack10 改口径会不会改变现有效果 —— 需要实测对比。
+
+---
+
+### 6. 动作表草稿（全部 17 专精）
+
+> **谁写的**：我（agent）按三条来源填的草稿 —— ① 2026-10-31 站长口述（冰法、奥法 3+3、爆发口径、状态合并）；
+> ② 现有 9 个处理器里已经过实测的先后顺序；③ TBC 通用循环常识。
+> **怎么用**：站长**不用填**，只需指出哪条不对（"冰法 Maintain 先深冬再寒冰箭"这种一句话即可）。
+> 标 ⚠ 的是我没有把握、最需要被纠正的条目。
+
+### 6.1 法师
+
+> **2026-10-31 站长提供攻略**（"两系对照速览"，按 2T5 口径）。下表按它重写，**不再从旧代码继承顺序**。
+> 关键变化：冰法 AoE 主力是**魔爆术**（仇恨安全），冰锥/烈焰风暴只在**仇恨领先**时用，暴风雪是"减速/安全"选项；
+> 奥法的恢复顺序固定为 **宝石 → 大蓝 → 唤醒**，而且**唤醒就是切 3+3 的节点**。
+> ⚠ 套装效果（如 2T5）会改变循环 ⇒ 做成参数/装备检测，不能写死。
+
+| 状态 | 冰霜 Frost | 火焰 Fire | 奥术 Arcane（2T5） |
+|---|---|---|---|
+| `Prep` | `arcane intellect`(团队) → `ice armor`（默认）/`molten armor`(凶险时) | 同左（默认 `molten armor`） | `arcane intellect` → `mage armor`（蓝量驱动，续航优先） |
+| `Flee` | `frost nova` → `ice barrier` → `blink` → `ice lance` | `blast wave` → `blink` | `frost nova` → `blink` → `arcane barrage`(移动) |
+| `Recover` | 宝石 → 大蓝 → `evocation`（按需，蓝压力小） | 同左 | **宝石 → 大蓝 → `evocation`；唤醒落地即切 3+3**。⚠ **唤醒要卡在冰脉（`icy veins`）尾巴上放**（2026-10-31 站长口径）：冰脉快结束时才开唤醒，让唤醒的引导吃在冰脉窗口里 ⇒ 引导更快、回蓝更早到位；不要在冰脉刚开时唤醒（浪费冰脉的输出时间） |
+| `Aoe` | **减速是"一个人负责"的团队角色**（参数 `slow_role`：-1=auto ⇒ 队里没有别的法师就由自己铺；1=强制我铺；0=我不铺）。负责时先 `blizzard`（`aoe_slow_rank=1`）→ 再 `arcane explosion`（魔爆术，仇恨安全，近身）→ `cone of cold`（冰锥，仇恨领先）；**不负责时直接上伤害**：`arcane explosion` → `cone of cold` → 远程才 `blizzard` | `flamestrike`(地面) → `blast wave` → `blizzard`（减速，同样受 `slow_role` 约束） | `arcane explosion`（近身）/ `presence of mind + flamestrike`（远程，气定烈焰风暴） |
+| `Burst` | **顺序（站长 2026-10-31 修正）：`summon water elemental` → 饰品 → `icy veins`（冰冷血脉）** → 奥冲/寒冰箭；**`cold snap`(急冷) 冷却好就再打第三轮** | 饰品 → `combustion` → `presence of mind` → `pyroblast` → `fire blast` | **顺序：`arcane power`（奥术强化）→ `icy veins`（冰脉，学会了才放）→ 全程 `arcane blast` 连发**；饰品按可用插入；标准 40/21 顺带点出急冷 ⇒ 同样用 `cold snap` 打第三轮 |
+| `Maintain` | **深冬之寒叠层 → `frostbolt` 寒冰箭**；蓝压力小 ⇒ **寒冰箭是唯一填充**，不需要省蓝循环；移动中 `ice lance` | `scorch` 叠到 `scorch_stacks`（火球易伤）→ `fireball` 填充；`fire blast` 只在移动/收尾 | **蓝量驱动**：蓝够 → 无脑 `arcane blast`；蓝见底 → 3+3。在"泄蓝"与"省蓝"之间切换，蓝量即伤害 |
+| Plan `3+3` | 不适用 | 不适用 | **卡 debuff 最后 0.5 秒打下一发奥冲**：叠满 3 层 → `frostbolt`×3 塞满 8 秒窗口 → 窗口末尾（剩 ≈0.5s）读下一发奥冲（高速、此时叠层已回落 ⇒ 低费）；**唤醒落地后进入该循环** |
+
+
+> 奥法 3+3 是**Plan**，不是状态：状态仍是 `Maintain`，里面跑一张小有向图（叠满 3 层 debuff → 转寒冰箭 ×3 → 窗口末尾读奥冲）。
+
+#### 火法细则（2026-11-01 站长给的完整口径）
+
+**平稳期 = 围绕一个 30 秒 debuff（强化灼烧）做轴**：
+
+| 项 | 规则 |
+|---|---|
+| 起手 | **`scorch` ×5** 叠满"强化灼烧"（每层 +5% 火焰伤害、5 层 = 25%、持续 30s、**全团火法共享**） |
+| 填充 | 叠满后 **`fireball` 是唯一填充**，占火法约 95% 总伤害 |
+| 维护节奏 | 叠满后**约每 8~9 个火球补一次灼烧**（≈24 秒，留容错余量；不要卡最后 2 秒才补） |
+| 抵抗处理 | 补灼烧**被抵抗** ⇒ 立刻再补一次（计时器没刷新），不要等发现断档 |
+| 移动 | `fire blast`（瞬发，不破坏维护节奏） |
+| 法术连击 | 炎爆变瞬发时**不要打断当前火球读条**，读完再打瞬发炎爆 |
+
+**爆发（按战斗时长分三种，这是火法的核心决策）**：
+
+| 战斗时长 | 打法 |
+|---|---|
+| **≤3 分钟** | 起手叠满 5 层 → 冰冷血脉 + 饰品打一轮 → 血量约 25% 用**急速冷却**重置冰冷血脉 → 进 20% 斩杀（熔岩之怒火球翻倍）再开冰冷血脉 + 燃烧 + 饰品（全场最高窗口） |
+| **3~3.5 分钟** | 起手**直接**开冰冷血脉 + 燃烧，再叠灼烧打火球；结尾约 20 秒时第二轮自然转好，再打一轮完整爆发（用"前置燃烧"换整场两次覆盖） |
+| **>3.5 分钟** | 起手叠满 → 冰冷血脉 + 饰品 + 燃烧一起开；之后冰冷血脉**单独**按 CD 开（不绑燃烧）；**燃烧留给 20% 斩杀**，配合熔岩之怒 + 急速冷却的第二次冰冷血脉 |
+
+> **预计战斗时长从哪来（2026-11-01 站长口径）：留给 boss 策略（数据），FSM 不自己猜。**
+> 即 FSM 读一个外部输入 `fightLengthEst`（来源：boss 策略表 / 已知 boss 血量与团队 DPS 估算），
+> 读不到就用默认 `fight_length_default`（默认 180 秒 = 走"≤3 分钟"那套）。
+> 这条和仇恨档位、debuff 分配、`slow_role` 一样，属于**团队/副本协调输入**：
+> 数据从外面来，FSM 只负责按它选爆发表。
+
+**燃烧机制与对齐**：每次火焰暴击 +10% 燃烧暴击率（最多 3 层），叠满即消耗并进 3 分钟 CD ⇒ 要在"能连续暴击的窗口"开。**优先级：燃烧自己打满 4 次 > 等饰品只覆盖 3 次**。
+
+**AOE**（火法仇恨系数差，**没有奥法魔爆那种 40% 减仇恨** ⇒ **起手先等坦克建立仇恨**）：
+- 静止目标：**`flamestrike` 交替用 7 级和 6 级**——两者的地面火池**互不覆盖**，可以叠两层地面 DoT，且不受 AOE 目标数限制；
+- 近身：`blast wave` / `dragon's breath`（伤害更高但仇恨更高，适合收尾）；
+- `blizzard`：最后选择，只用于减速/低仇恨。
+
+**恢复**：火法比冰法耗蓝高（火球单价高 + 急速提频）。顺序 `宝石 → 大蓝 → 唤醒`；
+**唤醒不改变循环**（与奥法不同：奥法的唤醒是切 3+3 的节点）。外部依赖暗牧/智慧审判。
+
+### 6.2 战士
+
+| 状态 | 武器 Arms | 狂暴 Fury |
+|---|---|---|
+| `Prep` | `battle shout` → `commanding shout`(需要血上限时) → 战斗姿态 | 同左 |
+| `Flee` | ⚠ 无逃生技：`hamstring` + 后撤 | 同左 |
+| `Recover` | 怒气 < `recover_enter` → 只平砍等怒气（不施法） | 同左 |
+| `Aoe` | `sweeping strikes` → `whirlwind` → `cleave`(怒气 ≥ `cleave_rage`) | 同左 |
+| `Burst` | 饰品 → `recklessness` ⚠ → `death wish`? (狂暴专属) → `mortal strike` | 饰品 → `death wish` → `recklessness` → `bloodthirst` |
+| `Execute` | 目标血 < 20% → `execute` | 同左 |
+| `Maintain` | `mortal strike` → `overpower` → `whirlwind` → `slam` → `heroic strike`(怒气 ≥ `rage_reserve` 时泄怒) | `bloodthirst` → `whirlwind` → `execute`(窗口) → `heroic strike` |
+
+### 6.3 盗贼（战斗 = 敏锐，同一张）
+
+| 状态 | 内容 |
+|---|---|
+| `Prep` | **主手：`adamantite sharpening stone`（精金磨刀石，物品）**；**副手：`deadly poison`（致命毒药）** —— 站长 2026-10-31 定 |
+| `Flee` | `vanish` ⚠ → `sprint` → 跑 |
+| `Recover` | 能量 < `recover_enter` → 等能量（不施法，只平砍） |
+| `Aoe` | `blade flurry` → `adrenaline rush` → 落回 `Maintain` 表 |
+| `Burst` | 饰品 → `cold blood`(刺杀)/`adrenaline rush` → `blade flurry` |
+| `Maintain` | `slice and dice`(剩余 < `snd_refresh`) → 满星(`fin_cp`)+能量够 → `envenom`(刺杀)/`eviscerate` → `mutilate`(刺杀)/`sinister strike` |
+
+### 6.4 猎人 —— 按"四个计时器"重写（2026-10-31 站长给的决策模型）
+
+> **核心**：猎人的一切抉择都围绕四个不同步的计时器 ——
+> ① 平射隐藏施法 **0.5s（受加速影响）**② 平射独立冷却 **(武器速度 − 0.5)s（受加速影响）**
+> ③ GCD **1.5s —— 不受加速影响**（TBC 固定）④ 稳固读条 **1.5s 基础，受加速影响**。
+> ⚠ **关键区别（站长 2026-10-31 强调）**：**GCD 不随加速缩短，稳固读条会**。
+> 所以"稳固能不能塞进这一发平射之前"的判据必须用**实际读条时间**（`1.5 / (1+急速)`），
+> 不能写死 2.0s；而"占掉一个 GCD"永远按 1.5s 算。
+> **稳固的读条与平射剩余时间是零和**：读稳固的瞬间，这段读条时间内平射出不去；剩余不足就会被推后（clip）。
+> 所以 Maintain 的判断依据**不是攻速分档**，而是"**我按的这个键会不会让下一发平射迟到**"。
+> **不做急速挡位表**（站长 2026-10-31）：普通玩家会靠配装把急速压到 11% 这种简单挡位、
+> 或者干脆"每发平射后放一个技能"，那是人工简化；算法能算实际读条，就**按实际值算**，不引入挡位常量。
+> 急速 0 时模型会自然退化成"每发平射后一个稳固"，与玩家经验一致 —— 不需要特例代码。
+
+**Maintain 动作表（按顺序，命中即停）**：
+
+| # | 守卫条件 | 动作 |
+|---|---|---|
+| 1 | `kill command` 可用（兽王） | `kill command`（GCD 外，无条件最高优先） |
+| 2 | `auto_remain <= autoshot_land`（0.5s，受加速）｜平射已锁定 | `arcane shot`；**不可用就等待**（绝不能读稳固） |
+| 3 | `autoshot_land < auto_remain < steady_window`｜瞬发黄金窗口 | `multi-shot` → `arcane shot` → **等待**（不读稳固） |
+| 4 | `auto_remain >= steady_window`｜稳固安全区 | `steady shot` |
+| 5 | 断档（多重/奥射都 CD、剩余又尴尬） | **安心等待**，不用劣质填充破坏平射轴 |
+
+其中 **`steady_window = 实际稳固读条时间 + autoshot_land`**（读条时间从核心取，受急速影响；
+急速 0 时 = 1.5 + 0.5 = 2.0s，急速越高窗口越小）。**GCD 恒 1.5s**，不参与这个加法。
+
+**需要的快照字段**：`autoRemainMs`（到下一发平射的剩余）、`steadyCastMs`（当前急速下的稳固实际读条）、
+`multiReady` / `arcaneReady` / `killCommandReady`。
+**参数**：`autoshot_land=0.5`、`weave_margin`（现已有）；`steady_window` **不是参数**，每次由 `steadyCastMs + autoshot_land` 算。
+
+
+| 状态 | 内容 |
+|---|---|
+| **宠物** | **首选掠食者（Ravager）**：专属技能 **角刺 `Gore`**（几率双倍伤害）是宠物输出技能里期望最高的；刀锋山抓**裂刃剥石者**（entry `22123`）可同时学高级角刺 + 突进。**备选风蛇（Wind Serpent）**：`lightning breath` 是自然伤害，可绕高护甲、对高甲低自然抗的 boss 更强；但基础系数 107% 略低于掠食者 110%，且**会吞掉增强萨的 buff**（团队里有增强萨时慎用）。参数 `hunter_pet_entry`。 |
+| **宠物两个已踩的坑** | ① **学了不一定会放**：`Pet::InitPetCreateSpells()` 会把动作条全写 `ACT_DISABLED`、`addSpell()` 也不写条，而 `PetAI` 的自动施法读动作条 ⇒ 程序化创建的宠物**永远不放技能**（只剩平砍）。修法：建宠后遍历家族技能逐个 `ToggleAutocast(id,true)`（真玩家靠 `LoadPetFromDB` 恢复动作条，没这问题）。② **不贴身**：建出来的宠物 60 秒里离目标 17 码，只偶尔够一下（≈25 dps）；查 `CharmInfo` 的 `COMMAND_*` 与 `REACT_*` 是否压住追击。 |
+| `Prep` | `aspect of the hawk` → **宠物：无则 `call pet`（失败则假人场景下按 `hunter_pet_entry` 创建）→ 死亡则 `revive pet` → 血量低于 `pet_mend_hp` 则 `mend pet`** → `hunter's mark`(开怪前) |
+| `Flee` | `frost trap`(地面) → `concussive shot` → `wing clip`(近身) → `aspect of the cheetah` |
+| `Recover` | 蓝 < 10% → `aspect of the viper` → 普通射击（回到 30% 换回鹰守） |
+| `Aoe` | `volley` → `multi-shot` → `steady shot` |
+| `Burst` | 饰品 → **`rapid fire`（已确认要加）** → `bestial wrath` → `kill command` → （`use_aimed=1` 时）`aimed shot` |
+| `Weave` | `arcane shot` → `multi-shot`（等自动射击窗口） |
+| `Maintain` | **见上表（计时器守卫）**。原旧表的 `hunter's mark → serpent sting → steady → multi → arcane` 顺序**作废**；`aimed shot` 仅 `use_aimed=1`（boss 策略点名）；任何施法后**立刻重挂自动射击**（这是 L6 不变量，不是状态） |
+| **仇恨路线（`feign death`）** | **假死不占 GCD、CD 也短 ⇒ 可以随时放**（2026-11-01 站长口径）。所以猎人和术士一样**贴着仇恨上限跑**：接近 OT 线就假死一次把额度清掉；因为它不吃 GCD，**不需要进"每 GCD 收益"的比较**，直接作为"到线就放"的免费保护 |
+
+### 6.5 术士
+
+| 状态 | 痛苦 | 毁灭 | 恶魔（现走 else 分支） |
+|---|---|---|---|
+| `Prep` | **`fel armor`（已确认）+ 召唤恶魔卫士 `summon felguard`** | 同左 | 同左（主宠 = 恶魔卫士） |
+| `Flee` | `fear` → `curse of exhaustion` → 跑 | 同左 | 同左 |
+| `Recover` | `life tap`（血 > 55%）→ 绷带/糖 ⚠ | 同左 | 同左 |
+| `Aoe` | **`seed of corruption` 尽量铺满多目标**（2026-11-01 站长口径：术士多目标"更简单"，就是铺种子 + 注意仇恨）→ 铺完再 `rain of fire` / `shadow bolt`；**仇恨用 `EvalThreat` 三档挡着**（`Throttle`/`Wait` 时不再铺新种子） | 同左 | 同左 |
+| `Burst` | 饰品 → `shadowburn` → `shadow bolt` | 饰品 → `shadowburn` → `shadow bolt` | 同左 |
+| `Maintain` | `curse of elements`(无诅咒位时) → `corruption` → `siphon life` → `unstable affliction` → `drain life` → `shadow bolt` | 诅咒 → `immolate` → `conflagrate` → `shadow bolt` | 诅咒 → `corruption` → `shadow bolt` |
+
+> **痛苦术没有"心爆"那种 6 秒锚点（2026-11-01 站长口径）** ⇒ 排程比暗牧**更简单**：
+> 不需要 GCD 时间轮去避让"心爆的拍"，只需要 ① DoT 到期续期（剩余 < `refresh_dot` 就补）、
+> ② 剩余 GCD 用 `drain life` / `shadow bolt` 填。多目标同样用**每 GCD 收益判据**
+> （见暗牧那条）：DoT 的"剩余跳数×单跳伤害 ÷ 占用 GCD"胜过填充技才铺，否则不铺。
+> **三系的复杂度排序（2026-11-01 站长口径）：毁灭最简 < 恶魔 < 痛苦**。
+> **毁灭**：主输出只有 `shadow bolt`，其余都是 upkeep（诅咒 + 腐蚀；`immolate → conflagrate` 有就顺手用）；
+> **恶魔**：多一层宠物与自身增益维护；
+> **痛苦**：DoT 最多（腐蚀/虹吸/无常/诅咒），续期负担最重——但如上面说的，**它不需要时间轮**。
+
+#### 术士的三类特殊动作（2026-11-01 站长口径）
+
+| 动作 | 用法 |
+|---|---|
+| **腐蚀等 DoT** | **只有"每 GCD 预期收益 > 暗影箭"时才上**（与暗牧同一把尺子）；低于就不上，直接暗影箭 |
+| **分流（`life tap`）** | 当作**资源填充**：蓝缺口大且血安全时，用一个 GCD 换蓝，比硬打暗影箭划算（具体阈值 `lifetap_hp` / `lifetap_deficit` 交给 Optuna） |
+| **灵魂碎裂（`soul shatter`）** | 当作**消仇恨填充**（⚠ 术士没有"渐隐"，那是牧师的）：**在爆发之前交**，把爆发那段仇恨"腾出来"；**每场战斗只放一次**，不能开局就交 |
+
+#### 术士的仇恨路线（2026-11-01 站长口径，这条决定了他的开局与爆发时机）
+
+```
+开场：先等坦克建立仇恨，不要一上来就爆发
+  ↓
+平稳期：贴着坦克跑（不追求"低仇恨"，追求"刚好不 OT"）
+  ↓
+爆发前：先交灵魂碎裂，把这一段的仇恨额度腾出来
+  ↓
+收尾：**理想情况是 boss 倒地那一刻，自己的仇恨刚好接近 OT 线**
+```
+
+⇒ 所以术士的仇恨判据**不是"越低越好"，而是"贴着上限跑"**：
+
+- `threat_target_ratio`（默认 0.95）：平稳期就往这个比例贴，不要因为怕 OT 而白白少打；
+- 爆发前做**预判**：`当前仇恨 + 这段爆发的预计仇恨 > 危险线` ⇒ 先 `soul shatter` 再爆发；
+- 唯一硬红线是**不能真的 OT**（`> 1.0` 或坦克死亡时溢出）。
+
+### 6.6 萨满（元素 = 恢复）
+
+| 状态 | 增强 | 元素 |
+|---|---|---|
+| `Prep` | 四槽图腾（大地/风/火/水）→ `water shield` ⚠/`lightning shield` | 同左（`water shield` 优先） |
+| `Flee` | `frost shock` → `earthbind totem` → 跑 | `frost shock` → `earthbind totem` |
+| `Recover` | 蓝 < 10% → `shamanistic rage` ⚠/药水 → 平砍 | 药水 → 等回蓝 |
+| `Aoe` | `magma totem` → `chain lightning` → `fire nova totem` ⚠ | `chain lightning` → `magma totem` ⚠ → `lightning bolt` |
+| `Burst` | 饰品 → `bloodlust`/`heroism` → `shamanistic rage` → `stormstrike` | 饰品 → `elemental mastery` → `chain lightning` |
+| `Maintain` | `stormstrike` → `flame shock`(无) → `earth shock` → 平砍 | `flame shock` → `lightning bolt`（`earth shock` 断条时） |
+
+### 6.7 德鲁伊
+
+| 状态 | 野性 Feral | 平衡 Balance |
+|---|---|---|
+| `Prep` | `cat form` → `mark of the wild` | **`moonkin form`（已确认需要这个门）** → `mark of the wild` |
+| `Flee` | `dash` → `bash`? → 跑 | `entangling roots` ⚠ |
+| `Recover` | —（能量自回） | 蓝 < 10% → 药水/激活? |
+| `Aoe` | **无多目标策略（已确认）**：继续按 `Maintain` 单点，不切 AoE 状态 | `hurricane` → `starfire` |
+| `Burst` | 饰品 → `tiger's fury`(能量 ≥ 80) → `rip`/`ferocious bite` | 饰品 → `force of nature` → `starfire` |
+| `Maintain` | `mangle (cat)` → `rip`(无) → 满星 → `ferocious bite` → `shred` → `rake` | `moonfire` → `insect swarm` → `starfire` |
+
+### 6.8 圣骑士（惩戒）
+
+| 状态 | 内容 |
+|---|---|
+| `Prep` | 圣印（按阵营：`seal of blood`/`seal of command`/`seal of righteousness`）→ 光环 |
+| `Flee` | `hammer of justice` → 跑 |
+| `Recover` | 蓝 < `recover_enter` → 停手等回蓝（`seal of wisdom` ⚠） |
+| `Aoe` | **`consecration`（奉献，已确认可用）** + 保持 `Maintain` 的审判/十字军 |
+| `Burst` | 饰品 → `avenging wrath` → `hammer of wrath` → `judgement` → `crusader strike` |
+| `Maintain` | 圣印(剩余 < 2s) → `judgement` → `crusader strike` → `consecration`(蓝 > 15%) |
+
+### 6.9 牧师（暗影）
+
+| 状态 | 内容 |
+|---|---|
+| `Prep` | `shadowform` → `power word: fortitude`(团队) |
+| `Flee` | `psychic scream` → `fade` → 跑 |
+| `Recover` | 蓝 < 10% → `shadowfiend`? ⚠（TBC 无，用大蓝/暗影魔是 WotLK）→ 魔杖 |
+| `Aoe` | **多目标 DoT（已确认）**：给每个目标补 `shadow word: pain` / `vampiric touch`，不切单点。**目标选择与目标数上限按站长 2026-11-01 口径**：① **优先打血量最多的那个**（低血量单位撑不完 DoT，跳不满 = 浪费 GCD）；② **同时挂 DoT 的目标数上限 `multidot_max = 5`**（站长 2026-11-01 定；注意"最舒服的输出环境是 3 目标以内"是**体感结论**，不当作上限），超过 5 个就不再扩、回头集火血量最高的 |
+| `Burst` | 饰品 → `shadow word: death` → `mind blast` |
+| **多目标的取舍判据** | **按"每 GCD 能产出多少伤害"比（2026-11-01 站长口径）**：给新目标上 DoT 前，先算 `DoT 剩余跳数 × 单跳伤害 ÷ 这次施法占用的 GCD（触是读条 1.5s=1 GCD、痛是瞬发=1 GCD）`，再和"把这些 GCD 用在单体循环上（心爆/鞭/灭）的每 GCD 伤害"比。**DoT 的每 GCD 收益更高才铺**，否则不铺、继续单体。**唯一的例外：所有目标都已经挂上 DoT** ⇒ 不用再比，直接维持（续期优先级按到期时间）。 |
+| `Maintain` | **按 GCD 倍数排程（2026-11-01 站长口径）**，不是简单优先级表 —— 详见下 |
+
+#### 暗牧主循环：以 GCD 为单位的时间轮
+
+站长给的模型：**心爆 6 秒 CD = 4 个 GCD**（GCD 1.5s），整个循环应按 **GCD 的倍数**来排：
+
+| 规则 | 内容 |
+|---|---|
+| 排程粒度 | 一切判断按 **GCD（1.5s）** 对齐；心爆 CD(6s) 正好是 4 个 GCD |
+| DoT 续期时机 | **严格等到"结束之后"再续**，不提前覆盖；触有 1.5s 读条 ⇒ 要**提前一个 GCD 起手**，让新触正好落在旧触到期的瞬间 |
+| 避让 | 两个 DoT **不要同时到期**；也**不要卡在心爆的节点**（心爆该放的那一 GCD 不能被续 DoT 占掉） |
+| 因此 | 需要**错开**触与痛的到期时间：如果发现两者将在同一 GCD 到期，就把其中一个**延后一个 GCD** 续（宁可少一跳，也不要挤掉心爆/挤在一起） |
+| 填充 | 剩余拍**先用 `shadow word: death`（灭）填**（2026-11-01 站长补充），CD 没好再用 `mind flay`（引导 3s，按 GCD 计占 2 拍） |
+| 灭的守卫 | 灭对**没死的目标会反伤自己** ⇒ 只在"自身血量安全（> `swd_min_self_hp`，默认 50%）"或"目标血量低于灭的单发伤害（能打死）"时才放；否则跳过、交给 `mind flay` |
+| **消仇恨填充（`fade` / 渐隐）** | **暗牧同样是仇恨大户（2026-11-01 站长口径）** ⇒ `fade` 也是候选填充动作：仇恨档位到 `Throttle`/`Wait` 时，用一个空 GCD 放 `fade` 比硬打一下更值（按"每 GCD 收益"同一把尺子衡量：省下的仇恨 = 后面能多打的 GCD） |
+
+实现形态：`Maintain` 里维护 `nextMB / vtExpire / swpExpire` 三个时间点（都换算成"距现在多少个 GCD"），
+每 tick 先算"这一拍谁到期/谁 CD 好"，再决定本 GCD 的动作；不允许"刚好撞在一起"的拍出现两次以上。
+
+### 6.10 明确标 `Off` 的专精
+
+防护战 / 神圣骑 / 戒律牧 / 神圣牧 / 恢复德 —— 继续交回经典引擎（它们不是 DPS 循环问题，是治疗/坦克职责）。
+
+---
+
+### 7. 站长已确认的口径（2026-10-31）与唯一遗留
+
+| # | 问题 | 结论 |
+|---|---|---|
+| 1 | 术士 `Prep` 用哪种护甲 / 主宠 | **`fel armor` + 恶魔卫士（`summon felguard`）** |
+| 2 | 萨满 `shamanistic rage` 元素能不能用 | **站长也不确定 ⇒ 待实测**（先只在增强里用，元素侧跑 A/B 再定） |
+| 3 | 平衡德形态门 / 猫德多目标 | **需要 `moonkin form` 门**；**猫德没有多目标策略**（保持单点，不切 `Aoe`） |
+| 4 | 猎人 `rapid fire` | **加** |
+| 5 | 盗贼 `Prep` | **主手 `adamantite sharpening stone`（精金磨刀石，物品），副手 `deadly poison`（致命毒药）** |
+| 6 | 惩戒骑 `Aoe` | **用 `consecration`（奉献）** |
+| 7 | 暗牧多目标 | **多目标 DoT**（每个目标补痛 / 吸血鬼之触） |
+
+### 这些确认暴露出的 3 个代码能力缺口
+
+1. **物品使用**：盗贼的精金磨刀石、法师的法力宝石、术士的糖都是"用物品"，不是施法。
+   现有 FSM 只有 `CastSpell` 路线 ⇒ 需要 `UseItemAction` 一类的接口，并在 `Prep` 状态里调用。
+2. **多目标遍历**（⚠ 2026-10-31 修正范围）：**范围技能不算这一类** —— 冰法的暴风雪一次覆盖一片，
+   直接对怪堆放就行，不需要逐个目标检查（站长纠正）。真正需要逐个目标处理的只有
+   **多目标上 DoT**（暗牧的痛/吸血鬼之触、痛苦术的多目标腐蚀）和"看哪只怪还没被标记"这类。
+   快照里现在只有单个 `target` + 一个计数 ⇒ 需要补 **`NearbyEnemy` 列表**（2026-11-01 站长确认），
+   每项至少包含：`guid`、**剩余血量（绝对值 + 百分比）**、距离、**我对它的仇恨**、**坦克对它的仇恨**、
+   以及关键 DoT 的剩余时间（痛 / 触 / 腐蚀 / 献祭 …）。
+   **仇恨必须一起读**（站长 2026-11-01）：多目标时"该不该给它上 DoT / 铺种子"要按仇恨判，
+   否则会出现"铺得最凶的那只正是我快 OT 的那只"。数据来源同 `EvalThreat`（`ThreatManager` + 队里坦克）。
+3. **宠物控制**：术士恶魔卫士、猎人宠物、法师水元素 —— ✅ **2026-10-31 已实现**：
+   `PetPresent()` / `CommandPetAttack()`（每 tick 让宠物咬当前目标，掉队/换目标自动重下）/
+   `SummonPetIfNeeded()`（没宠物才召，失败打 `[DPSFSM-PET]` 三类原因：`not-learned` / `cast-failed` / `no-pet`），
+   另有 10 秒一条 `[DPSFSM-PET] pet=… victim=… dist=…`。冰法实测：水元素**召出来了**（`pet=有`，宠物伤害 9251），
+   `mode=5` 从 801 → **903.5 dps**（同机 `mode=3` 基线 944）。
+
+---
+
+### 8. 通用能力：药水（2026-10-31 已实现）
+
+| 能力 | 规则 | 参数 | 用在哪 |
+|---|---|---|---|
+| **法力药水** | **蓝缺口 > 3000** 就喝（瞬发，不打断输出）；按物品"使用后回蓝（`SPELL_EFFECT_ENERGIZE`）"识别，遍历背包 | `potion_mana_deficit=3000` | 所有有蓝职业的 `Recover` |
+| **加速药水** | **没有蓝的职业**（战士/盗贼）把它当**爆发消耗品**，只在 `Burst` 状态喝 | `haste_potion_item`（0 = 按名字 `Haste Potion` 匹配） | 战/贼的 `Burst` |
+
+两条都做了"不重复尝试"节流（3 秒内不重试）和 `IsSpellReady` 判冷却；喝到会打
+`[DPSFSM] xxx 喝法力药水 / 喝加速药水` 日志，方便验收。
+
+> 按百分比判断法力药水的旧口径（`potion_mana=35%`）降级成"没有蓝上限信息时的兜底"——
+> 因为 35% 对 8000 蓝的号是缺 5200、对 14000 蓝的号是缺 9100，绝对值差太多。
+
+---
+
+### 9. 仇恨管理（跨职业，2026-11-01 站长口径汇总）
+
+**总原则**：仇恨**不是越低越好，而是贴着上限跑** —— 理想状态是 boss 倒地那一刻自己刚好接近 OT。
+差别只在"腾额度的成本"：成本越低，就越敢贴着跑。
+
+| 职业 | 技能 | 是否占 GCD | CD | 额外收益 | 用法 |
+|---|---|---|---|---|---|
+| **猎人** | `feign death` 假死 | **不占** | 短 | — | **到线就放**，不用犹豫（成本≈0） |
+| **盗贼** | `vanish` 消失 | 占 | 长 | **可接 `garrote` 锁喉**（潜行起手技能 ⇒ 消失本身也变成一段输出） | 快到线时放，**顺手补一发锁喉**；等于"消仇恨 + 打伤害"二合一 |
+| **术士** | `soul shatter` 灵魂碎裂 | 占 | 长（每场一次） | — | **压在爆发之前**，把这段的额度腾出来 |
+| **暗牧** | `fade` 渐隐 | 占 | 短 | — | 进"每 GCD 收益"比较，到线就放 |
+| **法师** | `invisibility` 隐身 | 占（**有读条**） | 中 | — | 成本最高：只在"仇恨已高且接下来能安全读完条"时用；不是紧急手段 |
+
+**推论**：
+- 猎人的 `threat_target_ratio` 可以开到最高（0.98+），盗贼次之（消失还倒赚一发锁喉），
+  术士要用"预判爆发仇恨"的方式提前交，法师要留出读条时间窗口。
+- 所有"消仇恨"都要**释放后校验仇恨真的降了**（假死会失败、消失可能被打断），
+  否则会出现"以为清了额度、结果继续超量输出"的二次 OT。
+
+
+
+
+
+
+---
+
+### 10. 2026-11-01 讨论定稿（一次写入；与前文冲突时以本节为准）
+
+### 10.1 三条通用修正
+1. **火法灼烧的维护阈值按"3 次施法的容错"算**：`scorch_refresh_ms ≈ 3 × 灼烧读条 ≈ 4500~5000ms`（30 秒轴，剩 5 秒开始补）。
+   理由是它**是 debuff 不是 DoT**：提前覆盖不吃最后一跳，而一次抵抗就要从 0 重叠 5 层 ⇒ 宁可早补；连续三次全抵抗概率可忽略。
+2. **预计战斗时长来自 boss 策略**（数据），FSM 不猜；读不到用 `fight_length_default=180s`。整场只在开场确定一次，仅当实际时长超过估计 1.2 倍时才允许切换到长战斗档。
+3. **装备**：四档（100~115 / 115~125 / 125~138 / 138~151）+ 补 slot 14 + 套装按**占比×提升**折分 + 站长取舍表作为否决/兜底。
+
+### 10.2 猫德（Feral）：围绕"能量 tick 相位"的排程
+**核心状态不是能量值，而是"距离下一跳回能还有多久"**（能量 2 秒一跳、20 点、受天赋影响）。
+```
+循环 = 变身（Furor 给 40 能量）→ 在回能第一秒把技能打出去 → 下一跳回能前完成下一次变身
+```
+| 情况 | 处理 |
+|---|---|
+| **撕碎（42 能量）** | 差 2 点也要等**两跳**才够 ⇒ **不值得等，直接变身**（变身立刻给 40） |
+| **割裂（30 能量）** | 能量接近 30 ⇒ **可以多等一跳**把它打出去（比变身省一次蓝） |
+| **节能施法（免费技能）** | 多打这一发会与 2 秒相位**错开** ⇒ **多等一跳对齐**（不是白赚） |
+| **裂伤** | 队里有熊坦 ⇒ 熊坦的裂伤已在，**自己不补**；没有 ⇒ 自己补 |
+| **变身蓝耗** | 只要"还够一次变身"就继续变；不够就靠法力药水回蓝（`powershift_min_mana` 只作可行性判断） |
+| 都不行 | `Hold` 等 tick（记得 `SetFacingToObject`，否则白字 BAD_FACING） |
+
+### 10.3 惩戒骑（Retribution）：**平砍计时驱动**，不是 6 秒周期
+**圣印舞是最高优先，高于十字军打击。**
+| 项 | 规则 |
+|---|---|
+| 机制 | 挂**命令**时切**鲜血**（联盟=正义），命令会多留 **0.3~0.4 秒**；平砍若落在窗口内 ⇒ **一刀双印**（约 +10%） |
+| 等级 | **命令用 1 级**（平砍触发与等级无关，只影响审判；舞不用它审判 ⇒ 省蓝）；**鲜血用满级** |
+| 节奏 | **2 刀 1 舞**（`twist_every_swings=2`）；急速越高舞越密 |
+| 优先级 | 圣印舞 > 十字军打击 > 审判 > 奉献/驱邪 |
+| 审判禁区 | **绝不在平砍前审判**（会吃掉当前圣印让这刀落空）；放在两次平砍之间，放完立刻补下一轮圣印 |
+| 填充 | 奉献：单体 1 级、**翅膀期间满级**；驱邪仅对亡灵/恶魔；蓝紧时最先舍弃它们 |
+| 爆发 | 复仇之怒 + 饰品 + 加速药水同步；**≤2 分钟**等嗜血后半段再开，**>2 分钟**开场就开（要第二次） |
+| AOE | 3 目标以上奉献优先，但蓝会抽干 ⇒ 蓝紧退回 1 级甚至放弃；神圣愤怒仅亡灵/恶魔 |
+| 回蓝 | 智慧审判/祝福、大蓝/黑暗符文、**碰瓷**（吃可预测伤害→被治疗→灵魂协调回蓝）；最后才用智慧圣印替换鲜血 |
+| ⚠ 风险 | **触发型急速会打乱平砍计时**（龙脊类）⇒ 舞窗口错位；配装优先固定急速，或触发时把 `twist_every_swings` +1 |
+| 定位 | **公认垫底**：做到"舞能触发、十字军/审判不断、奉献按蓝降级"即达标，不投入极限调参 |
+
+### 10.4 萨满：图腾是**给队伍配的**
+**实现前提（手册 §10.53 实证）**：契放后 `GetTotemGuid(slot)` **仍为空**（召唤走 `SPELL_EFFECT_SUMMON` 不登记槽位）⇒ **不能查槽位**，
+必须自己记账：`totemCastAt[slot]` + 施放坐标 + 图腾时长 ⇒ 判据三条：**到期前补** / **跑出 `totem_range` 补** / **换图腾组**。
+战栗/根基等动作名可直接复用经典引擎（`tremor totem` / `grounding totem` / `totem of wrath` / `wrath of air totem` / `windfury totem`）。
+
+| 专精 | 大地 | 火焰 | 水 | 空气 |
+|---|---|---|---|---|
+| **增强** | 大地之力 | **熔岩**（常规/多目标）/ **灼热**（单体/移动）/ 火元素（Boss 爆发，长 CD） | 法力之泉（特定毒/疾病才净化） | **风怒**；队里已有多名增强时改**空气之怒**；进阶**图腾舞**（风怒 10 秒 → 立刻换风之优雅，两种增益并存） |
+| **元素** | 石肤/战栗/地缚（功能性优先，进攻性最低） | **天怒图腾**（3% 命中 + 3% 法爆，法系核心）/ 火元素（极限爆发） | 法力之泉 | **空气之怒**（法术强度）；自保/打断时换**根基** |
+| **恢复** | 按队伍需要 | 按队伍需要 | 治疗之泉/法力之泉 | 按队伍需要 |
+
+### 10.5 痛苦术
+- **没有"心爆"式 6 秒锚点** ⇒ 不需要时间轮：`DoT 到期续期` + `剩余 GCD 用 吸取生命/暗影箭 填`。
+- DoT 上不上，用**每 GCD 收益**判据（剩余跳数 × 单跳 ÷ 占用 GCD > 填充技）。
+- 多目标：**优先血多的目标**，同时挂 DoT 的目标数上限 **5**；超过就不再扩、回头集火血最多的。
+- 特殊动作：`life tap` = 资源填充；`soul shatter` = 每场一次的消仇恨（爆发前预判着交）；**仇恨贴着上限跑**（`threat_target_ratio≈0.95`，理想是 boss 倒地时刚好接近 OT）。
+
+### 10.6 恶魔术
+- 复杂度介于毁灭与痛苦之间：**宠物 + 自身增益维护**是额外负担。
+- `Prep`：`fel armor` + 召唤恶魔卫士（未学会则退到小鬼）。
+- 循环同毁灭（诅咒/腐蚀 upkeep + 暗影箭），差别在宠物与增益；`kill command` 类只有在宠物体系里有意义（猎人的那套不能直接套）。
+
+### 10.7 暗牧（时间轮，最复杂）
+- 沿用前文"GCD 时间轮"：`nextMB / vtExpire / swpExpire`，**心爆 6s = 4 GCD**；DoT **严格到期后再续**，触因有 1.5s 读条要**提前一个 GCD 起手**；两个 DoT 不许同时到期、也不许卡心爆的拍。
+- 填充：**灭**（有守卫：自身血量 > `swd_min_self_hp` 或目标能被打死）→ **精神鞭笞**。
+- **渐隐（fade）是暗牧的消仇恨填充**（短 CD、占 GCD，进"每 GCD 收益"比较）；暗牧是仇恨大户。
+- 多目标：目标数上限 **5**、优先血多；用**每 GCD 收益**判据决定铺不铺。
+
+### 10.8 实现顺序（2026-11-01 定）
+1. **火法**（无新能力，复用 FillCand/rank/时间轴）
+2. **惩戒骑**（新能力：平砍计时 + 圣印舞窗口）
+3. **萨满三系**（新能力：图腾自记账 + 图腾舞）
+4. **痛苦术 / 恶魔术**（复用毁灭术 + 每 GCD 收益）
+5. **暗牧**（时间轮，最复杂，最后）
+低优先：惩戒骑不做极限调参（见 10.3 定位）。
+---
+
+### 11. 治疗 FSM（2026-11-01 站长确认三项：预读 ✓ 降级 ✓ 职责分配 ✓）
+
+> 目标**不是更高 HPS**，而是 **更低的溢出 + 更省蓝 + 更稳的驱散 + 更少死亡**。
+> 经典引擎的"给血最少的加血"HPS 不差，差在：溢出高、不挑等级、驱散被淹没。
+
+### 11.1 状态
+```
+Idle → Prep(自身 buff/油)
+  → Dispel   (分配的驱散职责，优先级最高)
+  → Emergency(有人 < emergency_hp，开大 CD，不省蓝)
+  → Tank     (主坦维护：预读 / HoT / 续盾)
+  → Raid     (团队补血，选血最少的)
+  → Recover  (蓝 < recover_mana，只放最省的)
+```
+
+### 11.2 三个已确认的核心能力
+| 能力 | 做法 |
+|---|---|
+| **预读（pre-cast）** | 用目标**最近 N 秒的受伤速率**外推：`预计落地时血量 = hp - rate × castTime`；若落地时会低于阈值 ⇒ **现在起手**，让它正好在伤害到达时落地。速率用滑动窗口（`heal_rate_window_ms` 默认 3000）估算，读不到就退化为"掉血才加" |
+| **治疗术降级（rank）** | 按缺口选等级：从**最小的能覆盖缺口的等级**开始往上试（超大缺口才用顶级）；用 `SpellIdAtRank` + 每等级的实际治疗量（`spell_template` 的 EffectBasePoints × 系数）。参数 `rank_safety`（默认 1.0，留多少余量） |
+| **职责分配** | 显式表 `ai_playerbot_heal_assignment(group, role/class/spec) → tank \| raid \| dispel`；没配置时按专精回退（神圣骑→主坦、恢复德→团队、神圣/戒律牧→团队+驱散、恢复萨→团队） |
+
+### 11.3 判据与参数
+- `emergency_hp`（默认 35%）、`tank_hp`（默认 85%）、`raid_hp`（默认 80%）
+- `recover_mana`（默认 20%）
+- `rank_safety`、`heal_rate_window_ms`、`precast_lead_ms`（起手提前量）
+- 驱散：只要**我负责的 debuff 类型**存在就排最前（占一个 GCD，但不能拖过 `dispel_delay_ms` 默认 500ms）
+
+### 11.4 验收指标（与 dps 那套对应）
+| 指标 | 目标 |
+|---|---|
+| HPS | 基线参考，不作唯一目标 |
+| **overheal%** | 越低越好（需新增：有效治疗 / 总治疗） |
+| **HPM**（每点蓝治疗量） | 越高越好 |
+| 驱散延迟 | 从"可驱散"到"实际驱散"的时间 |
+| **团队死亡数** | 硬指标 |
+
+> 要算 overheal% 必须记录每次治疗的**实际治疗量 vs 有效治疗量**（与给 dps 加 `[DPSFSM-DMG]` 同类工作），
+> 日志 `[DPSFSM-HEAL] <bot> spell=<id> heal=<n> eff=<n> over=<n>`。
+
+### 11.5 实现顺序
+1. **神圣牧**（最通用：直接治疗 + 驱散 + 大 CD）→ 2. **恢复德**（HoT 为主，预读逻辑不同）→ 3. **神圣骑**（主坦）→ 4. **恢复萨**（链式/图腾）。
+### 11.6 架构结论：**一个治疗内核 + 四套"辅助功能"配置**（2026-11-01 站长口径）
+
+> 各治疗的**加血本身几乎没区别**，差别在辅助功能；**只有奶德是另一种模型**（HoT 滚动）。
+
+```
+HealCore（共用，只写一次）
+  ├─ 状态机：Idle / Prep / Dispel / Emergency / Tank / Raid / Recover
+  ├─ 目标选择：按血量百分比 + 预读速率
+  ├─ 等级选择：按缺口 downrank
+  └─ 蓝量管理：recover_mana / 省蓝等级
+
+每专精只写一张"配置表"（不是代码分支）：
+  ├─ heal 技能表（技能名 / 读条 / 各等级治疗量）
+  ├─ 可驱散类型 + 驱散技能
+  ├─ 外部技能（盾/保护/自由/牺牲/圣疗/自然迅捷/激活/守护之魂…）
+  ├─ 群体治疗（祷言 / 链疗 / 宁静）
+  └─ 前置维护（祝福 / 光环 / 图腾 / 野性印记）
+```
+
+| 专精 | 差异点（插件内容） |
+|---|---|
+| **神圣/戒律牧** | 驱散（魔法/疾病）、真言术：盾、祷言、守护之魂/痛苦压制、希望印记 |
+| **神圣骑** | 祝福/光环、保护/自由/牺牲之手、圣疗、清洁（魔法/毒/病）、圣光术/圣光闪现 |
+| **恢复萨** | 图腾维护（治疗之泉/法力之泉/空气之怒）、链疗、大地之盾、净化 |
+| **恢复德** | **单独模型**：HoT 滚动（回春/生命绽放/愈合）+ 迅捷治愈 + 激活 + 战复；**不做预读**，按 HoT 剩余与预计受伤补 |
+
+⇒ 实现顺序改为：**神圣牧（做内核）→ 恢复萨 / 神圣骑（只填配置表）→ 恢复德（单独 HoT 模型）**。
+### 11.7 恢复德（HoT 模型，2026-11-01 站长给的完整手法）
+
+> **前提**：奶德不是"看到掉血再反应"，而是**以预铺 HoT 为核心的伤害缓冲系统**；
+> 蓝效建立在"伤害到来之前治疗已经在那"上。等血线掉了才起手，奶德既没有牧师的瞬发爆发、
+> 也没有骑士的持续坦克定向治疗，会陷入被动。
+
+**两个流派**：常规树德（生命绽放维持 + HoT 覆盖，开荒/分散站位/坦克治疗）、
+暴击愈合流（低等级 `regrowth` 为主，爆发高但费蓝，需装备基础）。下面以常规树德为主线。
+
+#### 坦克治疗：**"三花"是绝对轴心**
+| 项 | 规则 |
+|---|---|
+| 三花 | 同目标连放 3 次 `lifebloom`，始终保持 **3 层** |
+| 为什么强 | 生命绽放**每秒跳一次**（多数 HoT 3 秒一跳）；三层叠满 bloom 时还有一次小爆发 ⇒ 给坦克一个高频可预期的治疗脉冲 |
+| 节奏 | 持续 7 秒、每次刷新一个 GCD ⇒ 三层挂满后，**每次补花之间只有 4.5~5.5 秒自由 GCD**（碎片化决策） |
+| 优先级 | **三层不断档 > 回春 > 愈合 HoT**；GCD 冲突时**先保花** |
+| 树形态 | 树形态不能放 `healing touch` ⇒ 中等伤害用**低等级 `regrowth`** 填充；低等级愈合的 HoT **不覆盖**满级愈合的 HoT，可共存 |
+
+#### 团队治疗：预铺，不是反应
+- 可预见 AOE：**伤害来之前**给多人挂回春/生命绽放，让 HoT 在落地瞬间就在跳；之后再用瞬发手段处理最危险的目标。
+- 不可预测的分散掉血：不求一次抬满，给 **2~4 个核心目标**铺满 HoT，用低等级愈合/治疗之触补漏。
+- ⚠ **本库没有作为德鲁伊技能的"野性成长"**（只有 id `34161`、SpellLevel 1 的同名条目，不是那个 WotLK 团队 HoT）
+  ⇒ TBC 的多目标手段就是**回春/生命绽放铺 + 迅捷治愈**，不要照 WotLK 的循环写。
+
+#### 救急（只有两张快牌）
+| 手段 | 规则 |
+|---|---|
+| **迅捷治愈**（小迅捷） | **消耗目标身上的回春/愈合 HoT** 换取瞬抬 ⇒ 不是随时可用的瞬发，而是"对已有 HoT 的兑现"；**留给血线正在快速下降的目标**；HoT 将自然结束时用它"兑现"最划算 |
+| **自然迅捷 + 治疗之触**（大迅捷） | 真正的最后一口气：必须**切出树形态**才能放治疗之触，放完切回（切换有成本）⇒ 只在"下一个伤害事件就会死"时交 |
+| **宁静** | 唯一引导式团队爆发，CD 长；**在可预见的持续团队伤害窗口内提前引导**，不要等全团残血 |
+
+#### 续航
+- 压力来自**生命绽放频繁刷新**与 HoT 广铺，不是某次大读条 ⇒ 不是"省着不刷"，而是**让激活时机与蓝量曲线对齐**。
+- **激活一般给自己**；智力会被放大（激活回的是自身法力，一个激活周期内每点智力≈多一截蓝）⇒ 智力既提上限也提激活质量。
+- **不要等见底才激活**：约 **15%** 就开，让回蓝尽快投入 HoT 循环。
+- 外部：法力药水、智慧审判、暗牧（有暗牧时 HoT 可以铺得更积极）。
+
+#### 映射到 FSM：以"生命绽放计时器"为节拍器的三层结构
+| 层 | 内容 |
+|---|---|
+| **第一层：生命绽放守卫**（最高优先） | 每个 GCD 结束检查"坦克的三层花是否将过期/不足三层" ⇒ 补花；**只关心花的计时器**，不管团队是否掉血 |
+| **第二层：救急守卫** | 有目标低于危险线且有可消耗 HoT ⇒ **迅捷治愈**；濒死 ⇒ **自然迅捷 + 治疗之触**（含形态切换）；执行后回第一层 |
+| **第三层：填充** | 两次补花之间：坦克回春/愈合续期 → 可预见团队伤害预铺 → 多目标缺口补 → 低等级愈合/治疗之触补漏 |
+| `Burst`/`Aoe` | 宁静、可预见团队伤害窗口 |
+
+> 难点不是技能数量，而是**在碎片化 GCD 里同时管理 7 秒的生命绽放计时器、若干 HoT 剩余、以及不可预测的救急**。
+### 11.8 另外三个治疗的手法哲学（2026-11-01 站长给的完整口径）
+
+| 职业 | 核心哲学 | 标志性技能/机制 | 主要短板 |
+|---|---|---|---|
+| **奶德** | 预铺 HoT，持续治疗缓冲伤害 | 生命绽放（三层维持） | 缺乏瞬发救急 |
+| **神牧** | **反应式工具箱**，按情况选法术 | 治疗之环、降级强效治疗术、5 秒规则 | 蓝耗极高 |
+| **奶萨** | **智能串连**，以治疗链为核心 | 治疗链、治疗之道、水盾/大地之盾 | 单体治疗相对薄弱 |
+| **奶骑** | **预读与控制**，维持 Buff 打地鼠 | 光之优雅、圣光闪现/术、预读打断 | 几乎无范围治疗 |
+
+#### 神牧（反应型，最耗蓝）
+- 坦克：`renew` 常驻背景治疗 → **低等级 `greater heal`**（如 2 级）过量刷维持血线 → 预判尖刺用 **7 级强效** → 濒死/移动用 `power word: shield` → `flash heal` 只在紧急抬血；`prayer of mending` 可挂坦克（弹跳 + 少量仇恨）。
+- 团队：**治疗之环**（尽量覆盖 ≥3 人）→ `prayer of healing`（小队集中掉血）→ 可预见 AOE 前**预铺恢复与愈合祷言** → `binding heal` 用于自己与另一名队友同时告急。
+- 续航：**技能栏保留多个等级的强效治疗术**，按缺口与蓝量选；用**5 秒规则**——不需要治疗时**取消读条**制造回蓝窗口。
+
+#### 奶萨（治疗链为核心）
+- 主技能 `chain heal`（对坦克读可同时覆盖附近小队成员）。
+- 链子不好用时：**次级治疗波（1.5s）**抢大缺口；**治疗波（2.5s）**集中刷坦克；**8 级治疗波**在"治疗之道"天赋下治疗量刚好超过满级链子第一跳，是常用高效等级。
+- **治疗之道**：开怪前/高压期用低等级治疗波（1/3/7 级）**快速叠满 3 层**，显著提升后续治疗波。
+- 图腾与盾：**水盾全程保持在自己身上**（主要回蓝）；**大地之盾给坦克**；按小队类型插增益图腾（法系队空气之怒、近战/坦克队风之优雅）。
+- 续航：混用低级/满级法术、卡 CD 喝大蓝、**潮汐图腾**回蓝。
+
+#### 奶骑（光之优雅为轴的预读单刷）
+- **光之优雅**使 `holy light` 施法从 2.5s → **2.0s**；整套手法建立在**维持这个增益不断档**上。
+- 平稳期：缺口小时用**低等级 `holy light`（4/5 级）刷新光之优雅**（低级法术惩罚下 4 级光可能吃不满治疗加成，也可"闪现铺垫 + 光术续时"）；常规填充用 **6/7 级 `flash of light`**（蓝耗极低）。
+- 大缺口：借助已有的光之优雅**预读高级圣光术**，让治疗正好在伤害落地时到位。
+- 救急/移动：**神圣震击**（唯一瞬发直接治疗）。
+- **高阶技巧：预读并打断**——坦克无风险时开始读圣光术、读条完成前打断：需要时能立刻补完，不需要时不浪费蓝，还能利用不施法间隙回蓝。
+- 限制：**几乎没有有效群疗**，团刷必须由神牧/奶萨承担。
+
+> 定位互补：奶德/奶骑 ⇒ 坦克与持续伤害的平滑处理；神牧/奶萨 ⇒ 可预见或不可预见的团队范围伤害。
+
+---
+
+### 12. 本服核心行为确认（写死，勿按"原版 TBC"去改）
+
+| 机制 | 位置 | 结论 / 对 FSM 的影响 |
+|---|---|---|
+| **低等级 HoT 不覆盖高等级** | `Unit::AddSpellAuraHolder()`：`IsSpellAnotherRankOfSpell && IsSpellHigherRankOfSpell(existing, new) ⇒ return false` | 奶德**低等级愈合 HoT 与满级愈合 HoT 可共存**，可放心用它做填充 |
+| **被吸收的物理伤害仍给怒气**（本服自定义，与原版相反） | `Unit::DealDamage()`：`if (!damage)` 分支按 `cleanDamage->damage` 调 `Player::RewardRage()` | 牧师**给战士坦克套盾不会断怒气** ⇒ 盾可以进常规动作 |
+| **圣印切换保留 300ms 窗口**（本服自定义） | `Unit::AddSpellAuraHolder()` 的 `[SEALTWIST]` 分支 | 惩戒骑**只需控时机**（平砍前 `twist_window_ms` 切圣印），窗口机制由核心提供，不用自己维护影子圣印 |
+### 12.1 火法的天赋现实：**没有冰冷血脉，也没有急冷**（2026-11-01 实测确认）
+
+`[DPSFSM-FIRE] Zhenzi 没有 cold snap（11958 未学）` —— 本服 premade 的火法天赋里，
+**急冷（`cold snap`，冰系 11 点）与冰冷血脉（`icy veins`，冰系 40 点）都不存在**，
+爆发期日志的 `top=` 也只有 `fireball` + `combustion`。
+
+⇒ 火法的爆发资源只能来自：**燃烧 + 主动饰品 + 加速药水**（以及 20% 斩杀期的熔岩之怒）。
+之前按"冰冷血脉 + 急冷重置"写的三套爆发表**对本服不成立**，正确形态是：
+
+| 战斗时长 | 火法实际能打出的爆发 |
+|---|---|
+| **≤2 分钟** | 燃烧 + 饰品 + 药水，**等嗜血后半段**再开（只开一次，挑最高收益窗口） |
+| **>2 分钟** | 开场就开（要第二次），燃烧的第二次留给 20% 斩杀期（熔岩之怒翻倍放大） |
+
+代码层面：`FireColdSnap()` / `icy veins` 的调用都是**"学会了才放"**的守卫式写法，
+所以在本服是空操作、不影响行为；但**文档与调参不能把它们当成既定收益**。
+### 12.2 圣印的阵营差异（2026-11-01 站长提醒，必须按阵营取）
+
+**联盟与部落的圣印不一样**，惩戒骑的"舞"所涉及的第二枚圣印要按阵营选：
+
+| 阵营 | 舞的起手印 | 舞的目标印 | 说明 |
+|---|---|---|---|
+| **部落**（血精灵） | `seal of command`（**1 级**） | **`seal of blood`（满级）** | 鲜血圣印是血精灵专属 |
+| **联盟** | `seal of command`（**1 级**） | **`seal of righteousness`（正义圣印）** | 联盟的舞是"命令 → **正义**"（站长原话；我曾误改成复仇圣印，已改回） |
+
+⇒ 实现必须**读 `bot->GetTeam()` 决定第二枚圣印**，不要把 `seal of blood` 写死；
+参数用 `seal_twist_to_horde` / `seal_twist_to_alliance` 覆盖默认值（本服若有自定义，可改参数不改代码）。
+#### 联盟惩戒骑的完整节奏（站长 2026-11-01 补充，含操作序列）
+
+```
+十字军圣印 → 审判 → 1级命令圣印 → 正义圣印 → 审判 → 1级命令圣印 …（其间卡 CD 打十字军打击）
+```
+
+| 项 | 规则 |
+|---|---|
+| 舞的操作区间 | **平砍阶段**：挂 1 级命令，**平砍计时器临近时**切到**正义圣印**，追求双印同时生效的窗口 |
+| 舞的频率 | **不是每刀都舞**——以**审判 CD 为一个周期**，每个周期安排**一次**舞（代价是蓝耗明显上升） |
+| 审判的用法 | 审判既是循环节点、也是"舞的开关"：`审判` 消耗当前圣印后立刻补 `1 级命令`，等下一次平砍前再切成正义 |
+| 十字军打击 | 全程**卡 CD** 打，但与舞窗口冲突时让位 |
+
+⇒ 参数修正：`twist_every_swings` 不是主控，真正的节拍是 **`twist_per_judgement`（默认 1 次/审判）**；
+`twist_every_swings` 只作为"审判未就绪时的兜底上限"。
+---
+
+### 13. 萨满细则（元素 / 增强，2026-11-01 站长口径；**修正前文两处过复杂化**）
+
+### 13.1 元素萨：不是"围绕大招的优先级"，而是**蓝量约束下 闪电链 vs 闪电箭 的取舍**
+TBC 元素**没有熔岩爆裂**，核心决策只有一条：当前蓝量下打链还是打箭。
+
+| 情形 | 循环 |
+|---|---|
+| 蓝量不成问题 | **`chain lightning`（1.5s）优先** → `lightning bolt`（2s）填充 → 移动时 `flame shock` |
+| 蓝量吃紧 / 长战斗 | **无脑 `lightning bolt`**（续航稳定）；"3 箭 + 1 震" dps 更高但约 1.5 分钟见底 |
+
+- **震击不是常规填充**：`flame shock` 主要用于**移动时维持输出**；`earth shock` 与**闪电盾层数**绑定（约 ≥7 层时震出去换伤害），并注意与烈焰震击刷新的窗口冲突（宁可 5~6 层提前震，也别溢出）。
+- **元素掌握**绑给 `chain lightning`（蓝够时），否则给 `lightning bolt`，不要随手交。
+- **AOE**：`fire nova totem` → `chain lightning` → `magma totem`（火新星冷却期间）→ `lightning bolt` 填充。
+  两个图腾半径约 **10 码 / 8 码**，放在**身前 5~8 码**即可，不必贴脸。
+
+### 13.2 增强萨：风暴打击为轴 + 震击按 Debuff 选
+| 条件 | 动作 |
+|---|---|
+| 默认 | **`stormstrike` 卡 CD** |
+| 风暴打击 debuff 在身上 | **`earth shock`**（吃 debuff 加成） |
+| debuff 不在 | **`flame shock`**（维持 DoT） |
+| 风怒武器 3 秒 ICD | 主副手**共享**；进阶是"ICD 快好时轻微延迟风暴打击对齐"，**没有监控条件就卡 CD 打**（不做也算合格） |
+
+- **`shamanistic rage` = 空蓝时的回蓝手段**（开完接火新星/熔岩把蓝拉回高位）。
+  ⚠ **修正前文**：之前写的"双重触发条件的守卫 / 减伤窗口"是过度复杂化，TBC 语境下它只是回蓝。
+- **图腾舞**：**近战组里基本必选**，**小队或非近战组可选**（2026-11-01 站长修正）。它**必定降低自己的 DPS**，所以判据是"我在的队伍是不是近战收益组"：
+  - 参数 `totem_twist_enable`：`-1`=自动（**队伍里有近战 DPS / 我在近战组 ⇒ 开**；否则关）、`0`=强制关、`1`=强制开；
+  - 自动判据用"本小队里近战职业（战/贼/增强/猫德/惩戒）数量 ≥ `twist_melee_min`（默认 2）"近似，读不到队伍信息时按关处理。
+  ⚠ **修正前文**：把它写成"增强萨的底层配置"偏重了。
+- **AOE 起手**：`fire nova totem` → 工程炸药（可选）→ `stormstrike` → `magma totem` → 常规循环。
+
+### 13.3 三系图腾（与 §10.4 一致，这里只补"按队伍配"的默认值）
+| 专精 | 大地 | 火焰 | 水 | 空气 |
+|---|---|---|---|---|
+| 元素 | 石肤/战栗（功能优先） | **天怒图腾**（3% 命中 + 3% 法爆） | 法力之泉 | **空气之怒**（法强） |
+| 增强 | 大地之力 | **熔岩**（群）/ **灼热**（单/移动） | 法力之泉 | **风怒**（多增强时让一个改空气之怒） |
+| 恢复 | 按队伍 | 按队伍 | 治疗之泉/法力之泉 | 按队伍 |
+---
+
+### 14. 坦克（T）口径（2026-11-01 站长确认）
+
+**总原则**：坦克和 DPS 用**同一份威胁数据**，但目标相反 —— DPS 贴着上限打，坦克**尽量多打仇恨**；
+"领先够用就行"，不追求精确的倍数。
+
+```
+仇恨：不压着打，能打多少打多少（threat_lead_target 只是"别被反超"的下限，不是目标）
+多目标：**每个怪都要有仇恨余量**（AoE 仇恨优先于单怪堆叠）
+```
+
+| 状态 | 判据 | 动作 |
+|---|---|---|
+| `Maintain` | 其余 | 仇恨循环：战士 盾猛/复仇/破甲 + 顺劈群拉；熊 割伤/裂伤 + 横扫；骑 正义之怒 + 奉献 + 神圣之盾 |
+| `Survival` | **按"预期受到伤害"触发**（用受伤速率外推"下一段窗口会掉多少"），**不是**当前血量阈值 | 战士 盾墙/破釜/治疗石；熊 狂暴回复/生存本能；骑 圣佑/神圣之盾；**不要默认交树皮** |
+| `Taunt` | **目标确实在打别人**（丢了仇恨）时才嘲讽 | 嘲讽；**对已经在自己身上的目标无效**（所以"预防性嘲讽"是浪费 CD） |
+| `Pickup` | 附近有新怪、且不在我身上 | 嘲讽/远程拉（飞盾、投掷、月火） |
+| `Move` | —— | **不做**：由上层策略负责（见下） |
+
+### 14.1 三条硬约束
+1. **树皮术会变回人形** ⇒ 熊形态坦克**不能默认开**（会丢熊形态的护甲/生命与仇恨），除非策略明确要求。
+2. **嘲讽只对"被别人拉着"的目标有效** ⇒ 不做预防性嘲讽；只在检测到"目标 victim 不是我"时才用。
+3. **走位不归 FSM**：经典引擎已有一整套按 encounter 的走位动作
+   （`ActionContext.h` 的 `move away from hazard / void zone / magmadar / shade of aran / big bad wolf / netherspite infernal / prince malchezaar / raging flames` 等）。
+   坦克 FSM 只负责**仇恨循环 + 生存 + 嘲讽/拉怪**，位置与躲地面的活交给上层 —— 否则两套逻辑会互相打架。
+
+### 14.2 验收指标
+| 指标 | 目标 |
+|---|---|
+| 仇恨领先 | 全程不被反超（`threat_lead_target` 之下不算达标） |
+| 加怪接管 | 新怪出现到"仇恨稳定在我身上"的秒数 |
+| 每怪余量 | 多目标时**每只怪**都有余量（不是只有主目标） |
+| 生存 | 不出现"治疗被抽干"；预期伤害触发 CD 而不是见血才交 |
+| 死亡 | 0（团灭场景除外） |
+### 14.3 坦克的三层分工（2026-11-01 站长确认；**FSM 只消费、不重造**）
+
+| 层 | 内容 | 现在在哪 | 归属 |
+|---|---|---|---|
+| **1. 仇恨/生存/嘲讽** | 仇恨循环、保命、丢仇恨时嘲讽、加怪接管 | 尚未实现 | **新 FSM**（本节 14） |
+| **2. 副本拉怪路线/波次** | 走哪条路、先拉哪几波、顺序与时机 | `ai_playerbot_dungeon_route` / `pull_order` / `pull_timing` + `DungeonRouteStrategy` + `InstancePullRecorder`（`dev/182~188`、`route_v2`、`pull_cost_offline`） | **数据 + 现有策略** |
+| **3. Boss 特定走位** | 躲地面、带位、换嘲 | `ActionContext.h` 的 `move away from …` 系列 + boss 策略表 | **现有策略** |
+
+**实现原则**：
+1. 坦克 FSM 只做第 1 层；**读取**第 2 层给出的"当前该拉哪波/哪个目标"，不自己决定去哪；
+2. 第 3 层通过**接口**下发指令（"该换嘲了 / 该带位了"），FSM 执行、不自判；
+3. 先做**单坦稳定**（拉一波、不掉仇恨、不被 AOE 打死），再谈多坦换嘲；
+4. ⚠ 第 2 层已能跑，**不要重写**拉怪逻辑（会与现有策略冲突）。
+
+**已知真难点（不是写循环）**：进本时"路线系统 vs 仇恨 FSM 谁先动"的时序；换嘲/换位的规则只能来自 boss 数据；拉崩时的退场决策目前没有统一归属。
+### 14.4 防护骑：`righteous defense` 直接对**敌人**释放（2026-11-01 站长口径）
+
+前面把防骑留到后面，理由之一是"`righteous defense` 要先选队友再转过他身上的 3 只怪"。
+**站长更正：直接对敌人释放即可，核心会自己处理重定向。**
+⇒ 防骑可以按和战/熊同一套坦克状态机实现，`Taunt` 状态的动作换成：
+- 优先 `righteous defense`（对目标直接放）；
+- 没有/失败时用 `hand of reckoning`（若学会）；
+- 远程接怪用 `avenger's shield`（弹射属于法术本身行为，不需要我们选落点）。
+
+其余照 §14：`Prep`（`righteous fury` + `holy shield` + 虔诚光环）→ `Maintain`（奉献/神圣之盾/审判/复仇者之盾）→ `Survival`（圣佑/神盾）→ `Pickup`/`Taunt`。
