@@ -169,7 +169,8 @@ void CombatManager::Update(const uint32 diff)
             //   正常战斗每 ~2 秒就有伤害交换，计时器会被刷新，不会误触发。
             if (!m_leashingDisabled && m_owner->GetMap()->IsDungeon() &&
                      m_owner->IsCreature() && !m_owner->IsPlayerControlled() &&
-                     m_owner->GetVictim() && !m_combatTimer &&
+                     m_owner->GetVictim() && m_owner->GetVictim()->IsControlledByPlayer() &&
+                     !m_combatTimer &&
                      !m_owner->IsCrowdControlled() &&
                      !m_owner->CanReachWithMeleeAttack(m_owner->GetVictim()))
             {

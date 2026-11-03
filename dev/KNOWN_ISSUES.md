@@ -11738,6 +11738,20 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 - **回滚**：`dev/rollback/133_回滚_删除补全的钓鱼区域.sql`（删 6 行 + 清 8 个误插行）；⚠️ 只回滚数据不等于回到旧行为，必须同时 `git revert` 掉 `Spell.cpp` 这次改动并重新编译。
 - **云端**：**尚未部署**。已核对：云端 `Spell.cpp` 与本地**只差这一处钓鱼改动**（其余 66 行上游合并在云端已有；之前 md5 不同只是 CRLF/LF 差异）⇒ 上云只带这一处。
 
+#### 七、2026-11-02 幽暗城水池"不能在非渔区钓鱼"——两个独立 bug（源码，已上云）
+
+**现象（站长）**：幽暗城内城水池下钩，客户端红字「你不能在非渔区钓鱼」= `SPELL_FAILED_NOT_FISHABLE`。
+
+**不是液体类型的问题**：`TerrainInfo::IsInWater()` 走 `MAP_ALL_LIMIT?` → 实际是 `getLiquidStatus(..., MAP_ALL_LIQUIDS, ...)`，水/岩浆/海洋/软泥全收（`MAP_ALL_LIQUIDS = WATER|MAGMA|OCEAN|SLIME`）；`fishing_loot_template` 里 `1497 → 11100`（Sickly Looking Fish 等）说明暴雪本来就把这块软泥池设计成可钓。
+
+**真因 1（决定性）：探测点用了地表水位。** `Spell.cpp` → `Spell::SetTargetMap()` 的 `TARGET_LOCATION_CASTER_FISHING_SPOT` 分支原为
+`IsInWater(x, y, GetTerrain()->GetWaterLevel(x, y, GetPositionZ()) - 1.0f, &liq)`。
+幽暗城水池在内城 WMO 里、地表是上层平台，`GetWaterLevel()` 按地表高度查液体 ⇒ 返回 `VMAP_INVALID_HEIGHT_VALUE`(-1000000)，减 1 后 10 个候选点全部判"非水域"。**改为用玩家自身高度探测**（`probeZ = GetPositionZ()`；站岸边时 `getLiquidStatus` 返回"水面上"，同样算有水）。
+
+**真因 2（次要）：10 次随机抛点成功后不复位。** 同一循环里失败分支 `result = SPELL_FAILED_NOT_FISHABLE; continue;`，但成功那轮既不复位 `result` 也不 `break` ⇒ 只要**最后一发**落在岸上，整次施法就判失败，且 `x/y/z` 被失败点覆盖。**改为成功后 `result = SPELL_CAST_OK; break;`**（水面越窄越必挂，大湖不易察觉）。
+
+**验证**：本地编译通过；驻点逻辑可静态验证，抛竿手感需真人客户端复测。二进制随 2026-11-03 部署上云（`mangosd` md5 `df36d253…`）。
+
 ---
 
 ## [PlayerBots] 机器人与副本 AI 总账（名单/轮换 → 副本行为 → 寻路 → DPS 状态机 → 假人测量 → 调优 → 构建）— 2026-10-16 ~ 2026-11-02
@@ -12588,6 +12602,31 @@ boss/免疫默认值 1000/1500 未动。效果：`hold fire` 反而由 8573 涨�
   再与线上库逐表 `mysqldump` 文本对比，行数一致、**0 行差异**（CHECKSUM 的差异只是物理行序，不作为判据）。
 - **执行顺序**：先 `182/183/185` → `223/224/228` → **最后 `230`**（230 是覆盖式快照）。
   运行时表（`pull_log`、`priority_obs`）和大表（`dungeon_route`、`patrol`、`cover_spot`、`nav_block`）不在 230 内。
+
+**(28) ✅【核心已修】小动物被顶进"永久 evade" ⇒ 狼打小动物每击 0 伤害、玩家也点不动它（2026-11-03）**
+
+- 现象（站长）：狼在攻击鸡/兔/鹿，但客户端一直红字「癫皮狼的攻击**未命中**兔子/鹿/鸡」；右键那只被狼打的小动物，
+  攻击也起不来。线上日志统计：NPC 挥击 4,482 次里 **4,106 次（91.6%）是 0 伤害**；按攻击者分组是"整只生物全 0"
+  （如 `Ragged Young Wolf(705)` 129/129、`Stormwind City Patroller(1976, 65 级)` 19/19），而另一些生物正常打出 32~704。
+- **不是伤害公式/数据问题**：`Creature::UpdateDamagePhysical()` 算出的值正常；`absorbed/blocked/resisted` 全 0；
+  `classlevelstats` 行齐全（连 703 的 MinMeleeDmg=351 生物也全 0）。
+- **真因链**（`Entities/Unit.cpp`）：
+  1. `Unit::SelectHostileTarget()`：当前目标**寻路不可达**时 `GetCombatManager().StartEvadeTimer()`（10 秒）；
+  2. 小动物被打后把攻击者当 victim，但它够不到/`CanAttack()` 为假 ⇒ **每一 tick 都重置**这个计时器；
+  3. `CombatManager::IsInEvadeMode()` 因此**恒为真**；而 `Unit::RollMeleeOutcomeAgainst()` 第一行就是
+     `if (pVictim->GetCombatManager().IsInEvadeMode()) return MELEE_HIT_EVADE;`
+  4. ⇒ 任何单位打它都被判"躲避"（客户端显示未命中/闪避），玩家右键也攻击不起来。这就是"打不死+点不动"。
+  5. 另一处放大：`Unit::EvadeTimerExpired()` 的 ③ 分支对**任何计时到期单位**（含无目标/无仇恨的闲置单位、critter）
+     都 `EnterEvadeMode()`，本地实测 47 条 `why=no-victim threat=0`，把站着的兔子/平民 NPC 也反复踢进 evade。
+- **修复（站长口径：只处理"怪打玩家、且已经卡死"）**：
+  - `SelectHostileTarget()` 两处 `StartEvadeTimer()` 分别要求 `target->IsControlledByPlayer()` / `m_attacker->IsControlledByPlayer()`；
+  - `EvadeTimerExpired()`：`IsCritter()` 直接 return；`!victim || !victim->IsControlledByPlayer()` 直接 return；
+  - `CombatManager::Update()` 的副本兜底同样要求 `GetVictim()->IsControlledByPlayer()`。
+  - bot 也是 `Player`，`IsControlledByPlayer()` 为真 ⇒ (25) 修的"纯 bot 队伍卡战斗"不受影响。
+- **本地验证**：狼 80299 打鸡 80308 **修前 50/50 次全 0 → 修后打出 4 点**；其它小动物出现 1、4 点伤害。
+- 与 (25) 的关系：(25) 是"怪不更新"的根因，本条是"脱战机制误伤非玩家目标"。两条都在，别只留一条。
+- 顺带确认：`SelectHostileTarget()` 里"攻击者存在但没造成伤害 ⇒ 不立刻脱战、启动 EvadeTimer"那段是 (25) 的
+  幽灵战斗修复，**保留**，只是现在加了"目标必须是玩家方"的门。
 
 **实验记录（12 图 × 5 组，`--no-cheats --boss 1 --equip-best 1`）**
 

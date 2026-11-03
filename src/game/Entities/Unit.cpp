@@ -696,8 +696,22 @@ void Unit::EvadeTimerExpired()
     //   只对**非玩家控制**单位生效（玩家/宠物/召唤物不动）。
     if (GetTypeId() == TYPEID_UNIT && !HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED))
     {
-        // ① 当前目标还能打？
+        // [站长口径 2026-11-02] 这套逻辑**只处理"怪打玩家、且已经卡死（够不着/零伤害交换）"**：
+        //   - 小动物、闲置单位（没 victim/没仇恨/不在战斗）、以及**目标不是玩家方**的单位，一律不管。
+        //   - 原实现把 ③ 分支当"任何计时到期的单位"处理，后果是：
+        //       · 小动物被狼打后把狼当 victim，但对生物 `CanAttack()` 为假 ⇒ 每次计时到期就 EnterEvadeMode()
+        //         ⇒ 永久停在 evade 状态；而 `RollMeleeOutcomeAgainst()` 对 evade 目标一律返回
+        //         MELEE_HIT_EVADE ⇒ 狼打小动物每一击 0 伤害、**玩家右键也点不动它**
+        //         （本地实测 80299→80308 Chicken 连续 8 次 for 0 dmg）；
+        //       · 站着的小动物/平民 NPC 也会被反复踢进 evade（本地 47 条 why=no-victim）。
+        //   注意：bot 也是 Player，`IsControlledByPlayer()` 为真，所以"纯 bot 队伍被卡战斗"仍会被修复。
         Unit* victim = GetVictim();
+        if (IsCreature() && static_cast<Creature*>(this)->IsCritter())
+            return;
+        if (!victim || !victim->IsControlledByPlayer())
+            return;
+
+        // ① 当前目标还能打？
         bool victimOk = false;
         if (victim && victim->IsAlive() && CanAttack(victim))
         {
@@ -9679,7 +9693,11 @@ bool Unit::SelectHostileTarget()
                 }
                 else
                 {
-                    if (!GetCombatManager().IsInEvadeMode())
+                    // [站长口径 2026-11-02] evade 计时只对"怪打玩家、且够不着"启用。
+                    //   否则小动物/中立目标被打了以后，因为够不到攻击者，每一 tick 都会重置这个
+                    //   10 秒计时 ⇒ 永久 IsInEvadeMode() ⇒ 任何攻击对它的判定都是 MELEE_HIT_EVADE
+                    //   （客户端显示"未命中"）⇒ 玩家/怪物都打不死它，也点不动它。
+                    if (target->IsControlledByPlayer() && !GetCombatManager().IsInEvadeMode())
                         GetCombatManager().StartEvadeTimer();
                 }
             }
@@ -9715,7 +9733,8 @@ bool Unit::SelectHostileTarget()
                 //   队伍侧就表现为"整组在战斗、零攻击者、零推进"（[GHOSTCOMBAT] 实测 200+ 条）。
                 //   现在：仍然不立刻脱战，但**启动 EvadeTimer**；计时到期仍没有有效目标
                 //   ⇒ EvadeTimerExpired() 里按 WOW 语义脱战回位。
-                if (!GetCombatManager().IsInEvadeMode())
+                //   [站长口径 2026-11-02] 同样只对玩家方攻击者启用，避免 NPC 互殴/小动物被顶进永久 evade。
+                if (m_attacker->IsControlledByPlayer() && !GetCombatManager().IsInEvadeMode())
                     GetCombatManager().StartEvadeTimer();
                 return false;
             }

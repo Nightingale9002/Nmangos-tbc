@@ -2101,7 +2101,13 @@ void Spell::SetTargetMap(SpellEffectIndex effIndex, uint32 targetMode, bool targ
                 m_caster->GetNearPoint2d(x, y, dis + m_caster->GetObjectBoundingRadius(), m_caster->GetOrientation() + angle_offset);
 
                 GridMapLiquidData liqData;
-                if (!m_caster->GetTerrain()->IsInWater(x, y, m_caster->GetTerrain()->GetWaterLevel(x, y, m_caster->GetPositionZ()) - 1.0f, &liqData))
+                // [2026-11-02 修·幽暗城水池] 探测点不能用 `GetWaterLevel()`：
+                //   它拿"地表高度"去查液体，而幽暗城水池在内城 WMO 里、地表是上方平台，
+                //   查出来是 VMAP_INVALID_HEIGHT_VALUE（-1000000）⇒ 减 1 后 10 个点全都判非水域，
+                //   客户端就报"你不能在非渔区钓鱼"（SPELL_FAILED_NOT_FISHABLE）。
+                //   站在岸边时用**玩家自身高度**探测，getLiquidStatus 会返回"水面上"（同样算有水）。
+                float const probeZ = m_caster->GetPositionZ();
+                if (!m_caster->GetTerrain()->IsInWater(x, y, probeZ, &liqData))
                 {
                     result = SPELL_FAILED_NOT_FISHABLE;
                     continue;
@@ -2114,6 +2120,14 @@ void Spell::SetTargetMap(SpellEffectIndex effIndex, uint32 targetMode, bool targ
                     result = SPELL_FAILED_LINE_OF_SIGHT;
                     continue;
                 }
+
+                // [2026-11-02 修] 找到合法抛点就**立刻采用并跳出**。
+                //   原实现跑满 10 次：成功那轮既不复位 `result`、也不 break ⇒
+                //   只要**最后一发**随机点落在岸上，整次施法就判 NOT_FISHABLE，
+                //   而 x/y/z 也会被那个失败点覆盖。水面越窄越必挂
+                //   （实测：幽暗城这种小水池钓不了，大湖正常）。
+                result = SPELL_CAST_OK;
+                break;
             }
 
             uint32 mapId = m_caster->GetMapId();
