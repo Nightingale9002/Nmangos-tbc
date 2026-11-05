@@ -292,7 +292,7 @@ void instance_arcatraz::SetData(uint32 type, uint32 data)
                     }
                 }
             }
-            m_auiEncounter[3] = data;
+            m_auiEncounter[type] = data;
             break;
         case TYPE_WARDEN_1:
             if (data == IN_PROGRESS)
