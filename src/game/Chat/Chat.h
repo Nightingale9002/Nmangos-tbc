@@ -782,6 +782,8 @@ class ChatHandler
 #endif
 
 #ifdef ENABLE_PLAYERBOTS
+        bool HandleRecruitBotCommand(char* args);
+        bool HandleBotSpecializationCommand(char* args);
         bool HandlePlayerbotCommand(char* args);
         bool HandleRandomPlayerbotCommand(char* args);
         bool HandleAhBotCommand(char* args);

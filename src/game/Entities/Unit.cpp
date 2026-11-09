@@ -1181,6 +1181,22 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
             damage, victim->GetHealthPercent(), spellInfo ? spellInfo->Id : 0);
     }
 
+    // [2026-11-09 站长口径] **副本怪死亡事件日志**（Boss 验收用）：
+    //   原来的 [BOSSKILL] 是周期扫描 `map->GetCreature(bossGuid)`；尸体消失或网格卸载后
+    //   `GetCreature()` 返回空、扫描直接 continue ⇒ 怪死了也不记账（实测 557：Tavarok 已打掉、
+    //   波次已判清，但 BOSSKILL 漏记，造成"跳过 Boss 直接打 Shaffar"的假象）。
+    //   这里在**伤害致死当刻**记录，尸体/网格状态都不影响；分析时按 entry 过滤 Boss 即可。
+    if (victim->GetTypeId() == TYPEID_UNIT && damage > 0 && damage >= victim->GetHealth()
+        && victim->GetMap() && (victim->GetMap()->IsDungeon() || victim->GetMap()->IsRaid()))
+    {
+        Creature* victimCreature = static_cast<Creature*>(victim);
+        sLog.outError("[MOBDIE] map=%u inst=%u entry=%u dbguid=%u dealer=%s(%u) spell=%u",
+            victim->GetMapId(), victim->GetInstanceId(), victim->GetEntry(),
+            victimCreature->GetDbGuid(),
+            dealer ? dealer->GetName() : "none", dealer ? dealer->GetEntry() : 0,
+            spellInfo ? spellInfo->Id : 0);
+    }
+
     // [rewards 2026-10-19] DPS 打醒控制：bot 对处于控场（眩晕/恐惧/迷惑/定身等）的生物造成伤害
     if (dealer && dealer->IsPlayer() && !static_cast<Player*>(dealer)->isRealPlayer() &&
         victim->GetTypeId() == TYPEID_UNIT && damage > 0 &&
@@ -1386,6 +1402,17 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
 
     if (victim->IsPreventingDeath() && damagetype != INSTAKILL && health <= damage)
         damage = health - 1;
+
+#ifdef ENABLE_PLAYERBOTS
+    // [2026-11-08 治疗预读] **真实承伤累计**只落在"最终实际扣血"这一点：
+    //   · 决斗不死（上面把 damage 压到 health-1）、`IsPreventingDeath()` 的截断都已经算完，
+    //     所以不会把"被截断掉、根本没扣血"的那部分伤害记进来；
+    //   · 致命一击按**剩余血量**封顶（health <= damage 时溢出部分不是这次实际掉的血）；
+    //   · 只增不减：治疗把它加回来也不影响速率（治疗侧读的是"掉血事件总量"，不是净血量差）。
+    //   · 覆盖所有玩家（含真人坦克），不只在 isRealPlayer()==false 的 bot 上统计。
+    if (victim->GetTypeId() == TYPEID_PLAYER && damage > 0)
+        static_cast<Player*>(victim)->damageTakenTotal += (damage < health ? damage : health);
+#endif
 
     if (health <= damage)
         Kill(dealer, victim, damagetype, spellInfo, durabilityLoss, duel_hasEnded);

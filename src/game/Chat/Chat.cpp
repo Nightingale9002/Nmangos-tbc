@@ -958,6 +958,8 @@ ChatCommand* ChatHandler::getCommandTable()
 #endif
         { "rndbot",           SEC_GAMEMASTER,    true,  &ChatHandler::HandleRandomPlayerbotCommand,    "", nullptr },
         { "bot",              SEC_PLAYER,        false, &ChatHandler::HandlePlayerbotCommand,          "", nullptr },
+        { "添加",             SEC_PLAYER,        false, &ChatHandler::HandleRecruitBotCommand,       "添加 <中文专精>；添加 状态；添加 取消", nullptr },
+        { "切天赋",           SEC_PLAYER,        false, &ChatHandler::HandleBotSpecializationCommand, "选中本队机器人后：切天赋 <中文专精>", nullptr },
         { "pmon",             SEC_GAMEMASTER,    true,  &ChatHandler::HandlePerfMonCommand,            "", nullptr },
 #endif
         { "cast",           SEC_ADMINISTRATOR,  false, nullptr,                                        "", castCommandTable     },
@@ -1187,7 +1189,7 @@ bool ChatHandler::hasStringAbbr(const char* name, const char* part) const
                 return true;
             if (!*name)
                 return false;
-            if (tolower(*name) != tolower(*part))
+            if (tolower(static_cast<unsigned char>(*name)) != tolower(static_cast<unsigned char>(*part)))
                 return false;
             ++name; ++part;
         }

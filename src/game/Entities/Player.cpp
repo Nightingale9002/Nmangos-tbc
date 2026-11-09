@@ -22323,6 +22323,40 @@ void Player::SendClearCooldown(uint32 spell_id, Unit* target) const
     SendDirectMessage(data);
 }
 
+// [2026-11-08] 剩余冷却（毫秒，0=就绪）：供"重试间隔按剩余 CD 对齐"使用。
+//   例：防护骑的拉怪技能 Avenger's Shield 在 CD 时，坦克应等到 CD 结束那一刻再起手，
+//   而不是每 tick 重新判定/重新请求（实测会连续空转十余秒）。
+uint32 Player::GetSpellCooldownLeftMs(SpellEntry const& spellEntry) const
+{
+    TimePoint expireTime;
+    bool permanent = false;
+    if (!GetExpireTime(spellEntry, expireTime, permanent) || permanent)
+        return 0;
+
+    TimePoint const now = std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now());
+    if (expireTime <= now)
+        return 0;
+
+    return uint32(std::chrono::duration_cast<std::chrono::milliseconds>(expireTime - now).count());
+}
+
+uint32 Player::GetSpellCooldownLeftByName(char const* spellName) const
+{
+    if (!spellName || !*spellName)
+        return 0;
+
+    for (PlayerSpellMap::const_iterator itr = m_spells.begin(); itr != m_spells.end(); ++itr)
+    {
+        SpellEntry const* info = sSpellTemplate.LookupEntry<SpellEntry>(itr->first);
+        if (!info)
+            continue;
+        if (strcasecmp(info->SpellName[0], spellName) != 0)
+            continue;
+        return GetSpellCooldownLeftMs(*info);
+    }
+    return 0;
+}
+
 bool Player::HasMovementFlag(MovementFlags f) const
 {
     return m_movementInfo.HasMovementFlag(f);

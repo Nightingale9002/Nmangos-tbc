@@ -86,27 +86,82 @@ public:
     PlayerbotHolder* GetPlayerbotHolder() { return playerbotHolder; }
 };
 
-void PlayerbotHolder::AddPlayerBot(uint32 playerGuid, uint32 masterAccount)
+namespace
+{
+    struct DirectBotLoginContext
+    {
+        std::weak_ptr<playerbot::PendingBotLogins> pending;
+        playerbot::PendingBotLogins::RequestPtr request;
+        PlayerbotHolder* owner;
+    };
+
+    // Never bind the delayed callback directly to a short-lived PlayerbotMgr.
+    struct DirectBotLoginDispatcher
+    {
+        void OnResult(QueryResult* dummy, SqlQueryHolder* holder, DirectBotLoginContext context)
+        {
+            auto pending = context.pending.lock();
+            if (!pending || !pending->Complete(context.request))
+            {
+                delete holder;
+                return;
+            }
+            context.owner->HandlePlayerBotLoginCallback(dummy, holder);
+        }
+    };
+
+    DirectBotLoginDispatcher s_directBotLoginDispatcher;
+}
+
+void PlayerbotHolder::CancelPlayerBotLogin(uint32 playerGuid, uint64 loginOwner)
+{
+    m_pendingBotLogins->Cancel(playerGuid, loginOwner);
+}
+
+void PlayerbotHolder::AddPlayerBot(uint32 playerGuid, uint32 masterAccount, uint64 loginOwner)
 {
     // has bot already been added?
     ObjectGuid guid = ObjectGuid(HIGHGUID_PLAYER, playerGuid);
     Player* bot = sObjectMgr.GetPlayer(guid);
 
-    if (bot && bot->IsInWorld())
+    if (bot)
+        return;
+
+    auto request = m_pendingBotLogins->Begin(playerGuid, loginOwner);
+    if (!request)
         return;
 
     uint32 accountId = sObjectMgr.GetPlayerAccountIdByGUID(guid);
     if (accountId == 0)
+    {
+        m_pendingBotLogins->Complete(request);
         return;
+    }
+
+    // [2026-11-06] 专精恢复失败被隔离的专用随机 bot：任何 holder / 旧 `.bot add` 路径都不得把它登录上线。
+    //   只对随机 bot 账号池生效（真人小号与 allowMultiAccountAltBots 不受影响）。
+    if (sPlayerbotAIConfig.IsInRandomAccountList(accountId) && sRandomPlayerbotMgr.GetValue(playerGuid, "specQuarantine"))
+    {
+        sLog.outError("Bot #%u login refused: quarantined by failed specialization restore", playerGuid);
+        m_pendingBotLogins->Complete(request);
+        return;
+    }
 
     PlayerbotLoginQueryHolder* holder = new PlayerbotLoginQueryHolder(this, masterAccount, accountId, playerGuid);
     if (!holder->Initialize())
     {
         delete holder;                                      // delete all unprocessed queries
+        m_pendingBotLogins->Complete(request);
         return;
     }
 
-    CharacterDatabase.DelayQueryHolder(this, &PlayerbotHolder::HandlePlayerBotLoginCallback, holder);
+    DirectBotLoginContext context{m_pendingBotLogins, request, this};
+    if (!CharacterDatabase.DelayQueryHolder(&s_directBotLoginDispatcher,
+        &DirectBotLoginDispatcher::OnResult, holder, context))
+    {
+        delete holder;
+        m_pendingBotLogins->Complete(request);
+    }
 }
 
 void PlayerbotHolder::HandlePlayerBotLoginCallback(QueryResult* dummy, SqlQueryHolder* holder)
@@ -115,20 +170,21 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(QueryResult* dummy, SqlQueryH
         return;
 
     PlayerbotLoginQueryHolder* lqh = (PlayerbotLoginQueryHolder*)holder;
-    uint32 masterAccount = lqh->GetMasterAccountId();
+    // A duplicate result still owns its holder; avoid allocating/leaking a session.
+    if (sObjectMgr.GetPlayer(lqh->GetGuid(), false))
+    {
+        delete lqh;
+        return;
+    }
 
+    uint32 masterAccount = lqh->GetMasterAccountId();
     WorldSession* masterSession = masterAccount ? sWorld.FindSession(masterAccount) : NULL;
     uint32 botAccountId = lqh->GetAccountId();
-    WorldSession* botSession = new WorldSession(botAccountId, NULL, SEC_PLAYER, 1, 0, LOCALE_enUS, "", 0, 0, false);
+    std::unique_ptr<WorldSession> botSession(new WorldSession(botAccountId, NULL, SEC_PLAYER, 1, 0, LOCALE_enUS, "", 0, 0, false));
     botSession->SetNoAnticheat();
+    uint32 guid = lqh->GetGuid().GetCounter();
 
-    // has bot already been added?
-    if (sObjectMgr.GetPlayer(lqh->GetGuid(), false))
-        return;
-
-    uint32 guid = lqh->GetGuid().GetRawValue();
-
-    botSession->HandlePlayerLogin(lqh); // will delete lqh
+    botSession->HandlePlayerLogin(lqh); // consumes/deletes lqh
 
     Player* bot = botSession->GetPlayer();
     if (!bot)
@@ -158,6 +214,10 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(QueryResult* dummy, SqlQueryH
     if (allowed)
     {
         OnBotLogin(bot);
+        if (GetPlayerBot(bot->GetGUIDLow()) == bot)
+            botSession.release(); // playerBots owns the bot/session lifecycle
+        else
+            botSession->LogoutPlayer(); // e.g. playerbots disabled during the SQL wait
         return;
     }
 
@@ -167,8 +227,10 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(QueryResult* dummy, SqlQueryH
         ch.PSendSysMessage("You are not allowed to control bot %s", bot->GetName());
     }
 
-    LogoutPlayerBot(bot->GetObjectGuid());
-    sLog.outError("Attempt to add not allowed bot %s, please try to reset all random bots", bot->GetName());
+    // Not handed to playerBots: the local session still owns cleanup.
+    std::string botName = bot->GetName();
+    botSession->LogoutPlayer();
+    sLog.outError("Attempt to add not allowed bot %s, please try to reset all random bots", botName.c_str());
 }
 #endif
 

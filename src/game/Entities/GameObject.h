@@ -946,6 +946,7 @@ class GameObject : public WorldObject
         bool        m_respawnOverriden;
         bool        m_respawnOverrideOnce;
         bool        m_forcedDespawn;
+        bool        m_hasGoUseScript;                       // a `dbscripts_on_go_use` script actually ran for this GO (mechanism lever/panel)
         LootState   m_lootState;
         bool        m_spawnedByDefault;
         time_t      m_cooldownTime;                         // used as internal reaction delay time store (not state change reaction).

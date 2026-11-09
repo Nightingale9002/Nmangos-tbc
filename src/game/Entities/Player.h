@@ -2250,6 +2250,7 @@ class Player : public Unit
         uint64 botCasts = 0;
         std::map<uint32, uint64> botSpellCounts;
         uint64 botDamageTaken = 0;   // [rewards 2026-10-19] 奖励函数：非坦克受伤
+        uint64 damageTakenTotal = 0; // Monotonic damage counter for healer forecasts; healing never reduces it.
         uint32 botBrokeCc = 0;       // [rewards 2026-10-19] 奖励函数：DPS 打醒控制
         uint32 botUnengagedHits = 0; // [rewards 2026-10-19] 奖励函数：打了还没进战斗的怪
         // [rewards 2026-10-19] 站长口径：副本里"推进进度是好的，灭团是坏的，自己死了是坏的"。
@@ -2276,6 +2277,10 @@ class Player : public Unit
         virtual void LockOutSpells(SpellSchoolMask schoolMask, uint32 duration) override;
         void RemoveSpellLockout(SpellSchoolMask spellSchoolMask, std::set<uint32>* spellAlreadySent = nullptr);
         void SendClearCooldown(uint32 spell_id, Unit* target) const;
+        // [2026-11-08] 剩余冷却读取：给"按剩余 CD 对齐重试"用（例：防护骑拉怪技能在 CD 时，
+        //   不要每秒重试、也不要换目标，而是等到 CD 结束那一刻）。0 = 就绪或无冷却记录。
+        uint32 GetSpellCooldownLeftMs(SpellEntry const& spellEntry) const;
+        uint32 GetSpellCooldownLeftByName(char const* spellName) const;
         void RemoveArenaSpellCooldowns();
         void _LoadSpellCooldowns(std::unique_ptr<QueryResult> queryResult);
         void _SaveSpellCooldowns();

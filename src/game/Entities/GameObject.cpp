@@ -81,6 +81,7 @@ GameObject::GameObject() : WorldObject(),
     m_respawnOverriden = false;
     m_respawnOverrideOnce = false;
     m_forcedDespawn = false;
+    m_hasGoUseScript = false;
 
     m_lootState = GO_READY;
     m_spawnedByDefault = true;
@@ -665,11 +666,22 @@ void GameObject::Update(const uint32 diff)
              * NOT covered (2026-10-10: widening to all NODESPAWN buttons interacted badly with
              * panel-driven doors such as Steamvault 183049).
              * 184912 keeps its explicit entry check (it is a DOOR with auto-close, so it is also covered
-             * by the general rule - the entry check makes the intent obvious for that regression case). */
+             * by the general rule - the entry check makes the intent obvious for that regression case).
+             *
+             * 2026-11-07: a BUTTON that actually ran a `dbscripts_on_go_use` script is a mechanism (a lever
+             * that opens a door), not a one-shot effect - its auto-close only returns it to rest, so it must
+             * not be removed from the world for its spawn timer. Hellfire Citadel levers 183517/183518
+             * (Shattered Halls gate) vanished for 181 s after the first pull and the Deadmines door levers
+             * 101831-101834 for 24 h. Buttons WITHOUT such a script (fireworks, torches, banners) keep the
+             * old behaviour - the class is data-scoped by the script table, not by GO type. */
             bool const autoCloseStaticDoor = GetGoType() == GAMEOBJECT_TYPE_DOOR &&
                                              GetGOInfo()->GetAutoCloseTime() > 0 && m_spawnedByDefault &&
                                              HasStaticDBSpawnData();
-            bool const neverDespawns = !m_forcedDespawn && (GetEntry() == 184912 || autoCloseStaticDoor);
+            bool const autoCloseScriptedLever = GetGoType() == GAMEOBJECT_TYPE_BUTTON && m_hasGoUseScript &&
+                                                GetGOInfo()->GetAutoCloseTime() > 0 && m_spawnedByDefault &&
+                                                HasStaticDBSpawnData();
+            bool const neverDespawns = !m_forcedDespawn && (GetEntry() == 184912 || autoCloseStaticDoor ||
+                                                            autoCloseScriptedLever);
 
             // Remove wild summoned after use
             // non-consumable chests/goobers (IsDespawnAtAction == false) must never despawn,
@@ -1589,9 +1601,9 @@ void GameObject::Use(Unit* user, SpellEntry const* spellInfo)
 
             TriggerLinkedGameObject(user);
 
-            // activate script
-            if (!scriptReturnValue)
-                GetMap()->ScriptsStart(SCRIPT_TYPE_GAMEOBJECT, GetDbGuid(), spellCaster, this);
+            // activate script; remember that this button is a scripted mechanism (see neverDespawns below)
+            if (!scriptReturnValue && GetMap()->ScriptsStart(SCRIPT_TYPE_GAMEOBJECT, GetDbGuid(), spellCaster, this))
+                m_hasGoUseScript = true;
 
             return;
         }

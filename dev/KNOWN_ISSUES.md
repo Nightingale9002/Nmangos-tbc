@@ -10018,6 +10018,24 @@ if (!GetGOInfo()->GetDespawnPossibility() && !GetGOInfo()->IsDespawnAtAction() &
   - 云端 2026-10-07 11:2x：删掉 **1 行**（`guid=25826 entry=184912 map=530`，原定 10:59:01 到期）⇒ 门**立即**恢复；同表另一行 `guid=154239` 不属于门/按钮，按范围未动。mangosd **未重启**（PID 2050，起于当天 04:07:10 的夜间窗口）。
 - 通配分支（`!HasStaticDBSpawnData()` 的野生召唤门，`:669`）未改：那类对象要么没有静态刷点、要么 `m_forcedDespawn`，本次先不动。
 
+#### 破碎大厅入口拉杆（183517 / guid 24397）—— 2026-11-07：开门正常，但用完消失 181 秒
+- 站长报「点拉杆没反应」，随后补充「点完拉杆消失了」。云端实测：点一次拉杆，`Server.log` 抓到 `CMSG_GAMEOBJ_USE guid: Gameobject (Entry: 183517 Counter: 24397)`，门（184912 / guid 25826）**随即打开** ⇒ 开门链路正常；**拉杆自身用完被移出世界** ⇒ 按 `gameobject.spawntimesecsmin=181` 消失 3 分钟才回来。
+- 开门链路：`GameObject::Use()` 的 BUTTON 分支 → `Map::ScriptsStart(SCRIPT_TYPE_GAMEOBJECT, GetDbGuid())` → `dbscripts_on_go_use` id=24397：`command 11`（`SCRIPT_COMMAND_OPEN_DOOR`）、`datalong=25826`、`datalong2=10` ⇒ `ScriptMgr::ExecuteDbscriptCommand()` 对门 25826 调 `GameObject::UseOpenableObject(true, 15)`。模板与脚本三库一致（`tbcmangos` / `tbcmangos_orig` / `tbcdb_ref`），启动与点击时 `DBErrors.log` 无该脚本报错。
+- 消失链路（同一类和 184912 老 bug 同源）：拉杆是 `GAMEOBJECT_TYPE_BUTTON`，`data2=196608` ⇒ `GetAutoCloseTime()` 3 秒；3 秒后 `GameObject::Update` 的 GO_ACTIVATED 调 `GameObject::ResetDoorOrButton()` ⇒ `SetLootState(GO_JUST_DEACTIVATED)`。该分支的 `neverDespawns`（`GameObject.cpp` → GO_JUST_DEACTIVATED 里的 `autoCloseStaticDoor`）只覆盖 **DOOR**（+ 点名 184912），**BUTTON 被有意排除** ⇒ 走 `GetGoAnimProgress()>0` 的消失动画 + 按 181 s 排重生。
+- 影响：拉杆脚本只给门 15 秒（`datalong2=10` 被 `min 15` 抬到 15），门随后自动关闭；此后约 166 秒拉杆不在场、门又需要 `lock 1687`（钥匙 28395）⇒ **没钥匙的玩家这 3 分钟进不去**。
+- 同族：`dbscripts_on_go_use` 里 183518（guid 24398）、185123（guid 25980）也是"拉杆开门"；185123 模板是 DOOR 且 `flags=0x20` ⇒ 已被 `autoCloseStaticDoor` 覆盖，只有 183517/183518（BUTTON、flags=0）吃这个亏。
+- 修法（2026-11-07 选定，本地已改、**待部署**）：给 `GameObject` 加运行时标记 `m_hasGoUseScript` —— `GameObject::Use()` 的 BUTTON 分支若真的跑起了 `dbscripts_on_go_use` 脚本（`Map::ScriptsStart(SCRIPT_TYPE_GAMEOBJECT, GetDbGuid())` 返回 true）就打上；`GameObject::Update` 的 GO_JUST_DEACTIVATED 里新增 `autoCloseScriptedLever = BUTTON && m_hasGoUseScript && autoClose>0 && m_spawnedByDefault && HasStaticDBSpawnData()`，并把它并入 `neverDespawns` ⇒ 机关拉杆复位后留在世界，只清 `GO_FLAG_IN_USE` + 回到 `GO_STATE_READY`。
+  - 范围由**数据表**界定（`dbscripts_on_go_use` 里 `type=1` 且 `autoClose>0` 的刷点共 16 个：183517/183518、Deadmines 的 101831-101834、Blackrock 的 101852/101853/90567、189 的 101855/104589、179507/179508/179510/179513 火把等），不是按 GO 类型一刀切。
+  - 不选的做法：① 只点名 entry（治不了同一族的 14 个刷点）；② 数据补 `flags |= 0x20` + BUTTON 认旗标（会连带放开 24 个带 0x20 的 BUTTON 刷点，2026-10-10 在这里翻过车）；③ 改 type 1→0（偏离参考库数据）。
+  - **历史对照（2026-11-07 复查 `git log`，确认没踩旧坑）**：
+    - `d7b3ac8a8`（2026-09-22，上游 e0999474b）删掉「非消耗型门/按钮/goober 一律 `GO_FLAG_NODESPAWN` + `respawnDelay=0`」分支，1,972 个刷点恢复按 DB `spawntimesecs` 重生 —— **拉杆会消失的源头就是这次**，不是后面哪次改坏；
+    - `f5ca11d17`（2026-10-07）先按「DOOR/BUTTON + `0x20`」兑现 NODESPAWN → `d135353b6`（2026-10-10）补回失效分支的 flags 复位 → 蒸汽地窟主厅大门那次回归定案后收窄到「仅 entry 184912」，并写下**"只影响目标对象、禁止通改"**；
+    - `d97bbe8b7`（2026-10-24）按「DOOR + `autoCloseTime>0` + `spawnedByDefault`」放宽，**明确不覆盖 BUTTON**（"蒸汽地窟面板连锁教训"）。
+    - 本修**不重演那次连锁**：蒸汽地窟面板 184125/184126 是 `type=0 DOOR` + SD2 `go_main_chambers_access_panel` + `data2=0`（**永不自动关**）；本判据要求 `BUTTON` + 真跑过 `dbscripts_on_go_use` + `autoCloseTime>0`，三条都不满足。而且 `autoClose>0` 保证每次都会走到 `GO_JUST_DEACTIVATED` 的 flags 复位 —— 2026-10-10 的事故恰恰是「永不自动关的门」**走不到**复位那段。
+  - 验收口径：点拉杆 → 门开（15 s 窗口）→ 3 秒后**拉杆仍在原位、可再点**；`.gobject target` 能选中；`Server.log` 不再出现该 GO 的重生计时。
+  - 验证（2026-11-07）：WSL `Ubuntu-20.04` 的 `/root/nb-build` 编译 **0 error**，`FULL_MD5=260335264f40372dad5758e8cefab0ff`（strip 后 `/root/mangosd_pb8_all` md5 `f1d8a7074c52d0482378b519108bbede`）；本机 Linux 剖析台启动冒烟 `World initialized` ✓、`ERROR` 0 ✓、`dbscripts_on_go_use` 40 条加载 ✓。**未部署**（等站长指令），游戏内验收未做。
+- ⚠️ 另记：开门脚本**不看门上的锁** —— `UseOpenableObject()` 只切状态、不校验 `lock 1687`，没钥匙也能靠拉杆开门（本次未做无钥匙对照测试）。
+
 ---
 
 ### [机制] 纳杉地面火没有伤害 ＝ 陷阱 GO 的触发直径是 0（`dev/170`，已上云）—— 2026-10-09
@@ -11754,7 +11772,7 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 
 ---
 
-## [PlayerBots] 机器人与副本 AI 总账（名单/轮换 → 副本行为 → 寻路 → DPS 状态机 → 假人测量 → 调优 → 构建）— 2026-10-16 ~ 2026-11-02
+## [PlayerBots] 机器人与副本 AI 总账（名单/轮换 → 副本行为 → 寻路 → DPS 状态机 → 假人测量 → 调优 → 构建）— 2026-10-16 ~ 2026-11-07
 
 > **本章合并自 8 块**（2026-11-02，站长口径：「关于 playerbot 的文档都收进 KNOWN_ISSUES 一章，归类总结」）：
 > ① `[PlayerBots] 机器人行为、在线名单与轮换`（10-16~21）② `[构建/工具] 本地编译与战斗测试`（10-19）
@@ -11772,7 +11790,7 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 
 ### 〇、导读：三张表（先看这里，再进阶段）
 
-#### 〇-1 阶段索引（时间顺序，A → H）
+#### 〇-1 阶段索引（时间顺序，A → J）
 
 | 阶段 | 日期 | 主题 | 关键符号 / 命令 |
 |---|---|---|---|
@@ -11784,9 +11802,11 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 | **F** | 10-30 | 整队假人测量台（`dummyall`/`arms`）、静态 BIS 表、优先级表、猎人自动射击链路；`10.1 ~ 10.59` 逐条实证 | `ai_playerbot_bis_gear`、`SetParamOverride`、`ReachTargetAction::GetApproachRange`、`[DUMMY]`/`[DPSFSM]` |
 | **G** | 10-31 ~ 11-01 | `mode=5`（显式状态图）落地 11 专精 + 六个通用能力 + 6 个核心 bug；测量纪律（5 轮中位数 / DPM / 装备钉死） | `ResolveMode()`、`BotMem::mode`、`DecisionMode`、`TickResult{Hold}`、`EvalThreat()` |
 | **H** | 11-01 ~ 02 | `mode=5` 扩到四类角色：20 DPS 专精 + 四治疗（`HealCore`）+ 三坦克；`NearbyEnemy`、分阶段 BIS（`dev/234`） | `HealCore`、`NearbyEnemy`、`AuraStacks`/`TargetAuraRemain`、`bis_phase` |
+| **I** | 11-06 ~ 11-07 | 中文离线招募（`.添加`）+ 选中本队专用 bot 的完整专精切换（`.切天赋`）；隔离回收、旧套退休、熊/猫权重核查 | `BotRecruitment::RecruitBot()/FinishBotRecruitment()`、`BotSpecialization::ApplyBotSpecialization()`、`RecruitmentState`、`specQuarantine`、`specRetired:<GUID>` |
+| **J** | 11-08 | 高危审计 11 条落地：治疗自救/急救先于驱散、找背只给近战输出、坦克不误拉 + 嘲讽失败切救援、**仇恨门收手用 `MeleeAttackStop` 而不是 `AttackStop`**、种子爆炸真实仇恨预算、术士牺牲与补宠互斥、核心单调承伤计数（本地编译通过，未安装未部署） | `ai::dpsfsm::SuspendOffense()`、`TankFocusTarget()`、`WarlockSeedThreatSafe()`、`WarlockSacrificeActive()`、`HealSampleRate()`、`Player::damageTakenTotal`、`Unit::DealDamage()` |
 
-> 想按主题跳，而不是按时间：**名单/轮换** → A；**副本跑位与寻路** → C + D；**DPS/治疗/坦克的数字** → G + H；
-> **数字可信度（怎么测才算数）** → F §6 + G §五 + H §六。
+> 想按主题跳，而不是按时间：**名单/轮换** → A；**副本跑位与寻路** → C + D；**DPS/治疗/坦克的数字** → G + H；**招募与专精切换** → I；
+> **仇恨门/保命/术士种子这类"机制正确性"** → J；**数字可信度（怎么测才算数）** → F §6 + G §五 + H §六。
 
 #### 〇-2 ⚠️ 过时 / 已被取代清单（2026-11-02 逐条复核，先看这张表再信任何旧文）
 
@@ -12338,6 +12358,23 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
 > 全部是**本地仿真**（WSL `Ubuntu-20.04` + `mangosd_pb8_all`）的改动，云端未部署。实验脚本在 `_agent_tmp/tune/`，
 > 台账 `_agent_tmp/tune/ISSUES.md`、`runs.csv`。引用代码请按**符号名** grep。
 
+**当前统一口径（2026-11-08）**：源码已移除 `AiPlayerbot.DpsFsm`、`AiPlayerbot.DpsFsmDefaultMode`、tune 文件和 per-bot mode/ownership 覆写；`PlayerbotAI::UpdateAIInternal()` 与 `DpsFsm::ResolveMode()` 固定走生产 FSM。旧运行日志和旧二进制记录仅作历史证据，不是当前配置建议。
+
+ `CustomStrategy.cpp → toNextActionArray()` 原先遇到顶层逗号后新增 token，又把逗号追加到该 token，导致第二及后续动作名形如 `,will of the forsaken`，精确 creator 查找无法命中。修正仅在顶层分隔后 `continue`，保留花括号内逗号、动作顺序、权重和 trim 语义。以本轮静态清单的真实 98 条规则逐字抽取生产解析函数编译回归：新版 98/98，通过解析 145 个动作；旧版相同预期 38 条失败、47 个动作名前缀错误，其中 Boss 范围为 34 条/43 个。另 21 个边界用例及主会话手写 5 个动作参数嵌套逗号用例均通过；旧版负对照保留。这里的通过只指名称/权重解析，不代表 TBC creator 注册、职业资格、FSM 施法准入或 Boss 实战通过；此前两条 `every_man_for_himself` 的 TBC 编译资格缺口仍未处理。Ubuntu-20.04 完整目标构建退出 0，新件 MD5 `3c68627dff947904b2f2cbf46de62860`、SHA256 `54e9a36e42eca5aeb2f622ce44879d99023027471a3614cd1fcaf98c9de2f215`；构建前后目标源码双侧一致，运行 PID681835/startticks30505683 与旧运行件 `4fa2867ca059438792b7922e5b5f6ef0` 保持不变。证据 `_agent_tmp/dungeon_strategy_continue_20261107/`；本次未安装/重启本地服务、未操作云端，32 格全量实战仍未完成。
+
+**2026-11-07 下一轮全量测试：本地已修、已装、已跑完 11 图 55 组（云端未动）。** 现场 `AiPlayerbot.DpsFsm=1`，`PlayerbotAI.cpp → UpdateAIInternal()` 的 FSM 战斗独占加两层施法闸使 `custom::boss_*` 的 22 条含法术规则**没有执行窗口**；物品/走位不受影响。修法是在普通轮转之前按 `TriggerNode` 的实际策略来源（`Engine::TagStrategyTriggerSource()` / `IsBossRuleSource()`）挑机制法术，成功即置 `castThisTick` 让引擎整段让位；不按共享动作名豁免、不关锁、不新增配置。机制通道用 `Engine::ListenAndExecute(action,event,bool* outRealExecuted)` 只认 `Action::Execute()` 的真实返回值——监听器“跳过但报成功”不算出手，真实成功即使被 `OverrideResult` 改 false 也立刻收手，避免同 tick 双发；成功时打一条 `[BOSS-MECHANIC] bot=… guid=… map=… inst=… grp=… src=… rule=… action=…`。节点归属字符串在收集锁内复制，避免前一动作 `ResetStrategies()` 删除全部 `TriggerNode` 后后一候选解引用悬空节点（修正前切片在 ASan 下确定性 heap-use-after-free）。离线回归 267 断言、69 项静态检查、16 个变异全部通过；本地真实战斗出现 13 条 `[BOSS-MECHANIC]`（556 图实例 476，`src=custom::boss_18472`，动作 cleanse / dispel magic），证明窗口确实打开；`will of the forsaken` 未被触发，恐惧自解仍属未证。另把 TBC 不注册的 `every_man_for_himself` 从 `boss_common`(1863)/`boss_17381`(1879) 两条规则删掉（SQL 236 + 精确回退，230 种子同步；本地库实测只改这两行、重复应用零变更、98 行总数不变）。构建 MD5 `c254c72ed258606c7dfa2c6228ac1d26`，本地正常停机后按新路径 `/root/run_local/mangosd_full_next_20261107_c254c72ed258` 启动，PID689590/startticks31287935。长窗实测：55 组全部下发、54 组真实入本（1 组准备期 `食水准备失败：成员不在队或战斗中 guid=2624`）、观察窗 3600.0008 秒、各组独立实例、12 次 `[BOSSKILL]`（543 entry 17306 四次、547 entry 17941 三次、557 entry 18341 三次、558 entry 18371 两次）、55 组原生收尾但最好进度差异极大（4/39 到 75/78），采样最高死亡 0–163。32 格口径：只有 11 个普通格拿到真实实例证据（51/54 组实例行 difficulty=0），英雄格与 269/542/554/560/585 全部未覆盖，不判任何整格 PASS。监护侧另修两处自身口径错误并保留失败证据：候选池不是永久占用（`SelectRealRoles()` 提交即下线未选 3 人，后续组可合法复用；审计改为只对“已收窄 5 人且仍存活”的组互斥），以及准备窗不因单组失败提前结束。原始证据 `_agent_tmp/dungeon_strategy_full_next_20261107/`（`runner/full_attempt_3/session.full.log` 2.08GB 完整归档、`FULL_REPORT.md`、`FULL_SUMMARY.json`）。
+**2026-11-07 开 Boss 连锁小怪的检查口径（按刷点组连锁，不按几何距离）。** 副本里"拉 Boss 连带一群小怪"不是靠距离判断，而是服务器数据 `spawn_group_linked_group`：Boss 自己所属的刷点组被链到若干小怪刷点组，任一组被激活就互相带仇恨。查法（三步，全部按数据）：
+① `ai_playerbot_boss_spawn` 给出 (map, Boss entry) → `creature` 找到该 Boss 的 guid；
+② `spawn_group_spawn` 由 guid 得 Boss 的刷点组 Id → `spawn_group_linked_group` 得所有被连锁组；
+③ 被连锁组再经 `spawn_group_spawn` 展开成怪 entry，就是"开 Boss 前必须先清掉"的怪。
+同时要查两条 guid/entry 级链路：`creature_linking_template`（master_entry=Boss）与 `creature_linking`（master_guid=Boss guid），按各自 flags 的真实方向和语义判断；**不是全空**，前一轮查询已有 540/16808→16809、546/17826→17827 等记录。不能只看行存在就称“互相带仇恨”，也不能把非仇恨链接当清怪前置。刷点组随机 entry=0 必须展开 `spawn_group_entry`，不能忽略这部分成员。
+实测结果（只读查询）：**557 Pandemonius(18341)** 刷点组 5570009 链到 5570004–5570008，带出 Ethereal Sorcerer(18313)、Ethereal Crypt Raider(18311)；**557 Nexus-Prince Shaffar(18344)** 5570052 链到 5570045–5570051，带出 19306/19307/18312/18315；**555 的 18667** 5550034 链到 5550024–5550033，带出 18848/18631/18633/18635/18637/18640。其余 9 张图的 Boss 没有任何连锁组。
+前一轮已写本地 `ai_playerbot_boss_require` 12 行，保留原 555/18731←18794。**这些 entry/radius=60 行尚未通过机制与覆盖验收**：动态 entry=0 成员未展开，且任意60码并不能保证覆盖整条连锁；不能标记“已解决”。口径：不要用离 Boss 的距离生成依赖，依赖按连锁机制/flags决定，执行应按该实例的真实被连锁组验证，避免同 entry 无关怪误阻断。557 短测未开 Boss，不能替代连锁验收。
+
+**2026-11-07 入口多拉、拉回与复审（本地待修/补测，云端未动）。** 站长判据：监工与祭仪师同时进战说明拉回不足引入 ADD；555 入口前几组没有6只一组，因此同时接战6只已是多拉，应排查接近路径、远程起手与撤回，不以“治疗不够”替代根因。四图900秒原始日志中，555/实例29为防战/恢复萨/火法/射击猎/元素萨；交战涉及6个运行时怪物，最后status97死而致死日志98条（63 Acolyte/35 Deathsworn），0/59推进。固定6只反复交战不能证明“没有多拉”，需追查首次移动穿入哪些刷点组。552/实例26有51条致死（Horror44/Nightmare5/Spawn2），说明错误接战危险怪；既有worldstate控制组也有常驻巡逻同entry怪，不能将全部20864/20865视为临时召唤。21395/21609仍按应击杀的priority5处理，普通怪不等仇恨、精英仍等。
+最小闭包核查：本地555的入口随机刷点5550054/5550055/5550086均属spawn_group5550005，静态entry=0，当前route没有这三只的ord/group_id；本图70个entry=0刷点route收录0。`DungeonRoute.h → PullGroupKey()` 对未映射怪回退singleton，已算过闭包不等于当前输入覆盖完整。既有 `_agent_tmp/tune/recompute_waves_closure.py` 已含随机组entry展开，但只读dry-run新结果不等于当前DB；不可盲目重排ord导致patrol_window/timing失配。下一步先修分组覆盖及执行侧遵守闭包，不能拿几何替代连锁身份。
+复审撤回三项错误归因：`PULLCHAIN` 无run字段，按run过滤的零条无效；`CanRequestPreparedPull()` 的 `request-existing-party-combat=true` 是放行不是拒绝；`Unit::Attack()` 返回true只表示挂上攻击目标而非实际伤害。`ai_playerbot_pullback.dist` 在现有消费处用于弓箭手站位环，本轮新增35码表值不等于通用拉回已生效，不能把其后的死亡变化称作因果验证。552阶段2真实存在（anchor73.457/1.1833、wait_ms25000），不存在“没stage”的前提；复审候选已删除90秒带怪推进，并改为附近无危险且队伍脱战才继续，尚待构建/本地实战。验收应看首次接战仅一组、撤回不新增群、552等待不错误带入Horror；死亡数只作辅助。
+
 **(1) 安全拉怪点死锁（已修，r93 验证）**
 `PULLSAFE` 把坦克挪到"不引怪的安全点"后，`DungeonRoutePullAction` 顶部 `stand_override_hold` 直接 `return false`；
 而 `DungeonRoutePullTrigger` / `DungeonRouteMoveAction` 仍按**原拉怪位**算距离，把坦克推回去，到原拉怪位又被送回安全点
@@ -12370,10 +12407,11 @@ COMPILE_DEFINITIONS ...)` **之后**；第一次按直觉 `add_definitions(-DGen
   > boss 那条是单目标断视线（`ai_playerbot_boss_ability` + `partypos` 的 los_* 模式），不要混用。
 - 这条也顺带修 `PULLSAFE` 挪位点的 `MovePoint`（同样应"先算路径再走"）。
 
-**(5) 552 Arcatraz 的临时怪（数据修复）**
-Warder 清完后场上有会自己消失的 Protean 系列（动态出现，静态刷点在 x≈176~285），bot 去打分身就是送死；
-死亡记录常见 `attackers=0`（凶手已 despawn）。数据：`ai_playerbot_skip_entry` 加 552 的 20864/20865/21395（`dev/230` 数据快照，**本地已应用，云端未同步**）。
-效果：r99（600s）552 死 4 → r100（同窗口）死 1。
+**(5) 552 Arcatraz 的临时怪（数据修复 → 2026-11-07 已回滚）**
+Warder 清完后场上有会自己消失的 Protean 系列（动态出现，静态刷点在 x≈176~285），原先按“打分身就是送死”把它当成该跳过的怪：
+`ai_playerbot_skip_entry` 加过 552 的 20864/20865/21395（`dev/230` 数据快照），当时 r99（600s）552 死 4 → r100 死 1。
+**2026-11-07 口径纠正**：55组长窗552有448条DEATHCTX观察，20865有287条DEATHDMG致死记录；两种计数语义不同，不混成“精确死亡占比”。长期看到同entry、100%血、EVADEFIX或UNREACH，仅是状态观察，**不证明脚本怪不消失或打不死**，此前这两条根因结论撤回。站长明确分两类：脚本刷出的危险Protean应在后方安全等待其消失；debuff/法术召出的21395（英雄21609）必须及时击杀。同entry另有常驻巡逻，必须按真实刷点组/生成机制区分。按站长指令已删除本地skip_entry的20864/20865/21395三行，保留21186脚本dummy；`dev/230`种子同步，正式脚本`dev/237_回滚_552临时召唤物skip.sql`，逆操作在`dev/rollback/237_恢复_552临时召唤物skip.sql`。删除全entry跳过数据不等于允许主动拉脚本危险怪，也不等于skip表重新启用。
+注意 `DungeonRoute.h` 自 2026-10-26 起**已不加载** `ai_playerbot_skip_entry`（代码里注释保留），所以这次只是清错误数据，运行时行为不变、不需要重启或 reload。
 顺带证据：日志里 Arcatraz Defender(20857) 对 Protean Nightmare 放 `38806`（Protean Subdual）—— 它们本来就在互相打。
 - **2026-11-04 后续审计与单项修正：** 本地阶段 1 全图清 20859，阶段 2 等 25 秒，助手编写的生成器又在阶段 3 要求同一 entry，锚点 `(86,27)`，注释为 5 mobs；本图实际只有四个 20859 静态刷点且均在路线中。`DungeonRoute.h → StageTarget()` 的 `kill_entry` 要求当前阶段自己的 `stageSeen`，`count_limit` 并不是该分支的死亡配额；阶段 1 清完这些怪后，阶段 3 可能从未见过活目标而永远返回锚点。该重复要求已在本地精确删除且保留原行/回退，不重编号。900 秒五组单项验证均出现 `1→2→4`，阶段 3 未加载循环 148→0；仍五组超时、零 Boss 击杀，不能称作副本推进已全部修复。证据 `_agent_tmp/stage552_test_20261104/`，原行及回退 `_agent_tmp/stage552_fix_20261104/`。
 - **机制口径校正：** `arcatraz.cpp → OnCreatureGroupDespawn()` 在两组 Warder（5520001/5520002）都消失后只停止 Protean Horror；Defender 组 5520003 另外控制 Protean Nightmare。不能把“四只 Warder 清完”说成停止所有 Protean。`SetData()` 中 Dalliah/Soccothrates 分别打开 beta/alpha 字段，是真前置；这两个 Boss 的机制依赖需要保留；本次按用户要求保留一条正确固定路线，不为交换先后重构推进器。
@@ -14836,6 +14874,406 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 4. 治疗：戒律牧；`lay on hands` 始终没落地（未定位）。
 5. 防骑 `righteous defense` 的 direct 路径仍会偶发 `BAD_TARGETS`（三级回退已兜）。
 
+---
+
+### 阶段 I｜2026-11-06 ~ 11-07　中文离线招募与完整专精切换（`.添加` / `.切天赋`）
+
+> 目标（站长口径）：**不查 GUID、不用 GM 命令**，玩家用中文命令把**同职业、同等级、同阵营的离线专用机器人**召进普通五人队；
+> 对已入队的专用 bot 做一次**完整**专精切换（天赋 + 策略 + 装备 + 附魔宝石 + 法术技能 + 物资 + 宠物 + 缓存），
+> 任何一步不满足就**明确失败并恢复原状**，不许"半切还报成功"。
+> 证据（scratch，不提交）：`../../_agent_tmp/recruit_bot_20261106/` 下的 `ACCEPTANCE.md`、`command/REPORT.md`、`spec/REPORT.md`、
+> `integration/REPORT.md`、`review/REPORT.md`、`review/FOLLOWUP.md`、`build/REPORT.md`、`RELEASE_PROGRESS.md`、`ARMOR_REPORT.md`。
+
+#### 一、命令面（`Chat.cpp → getCommandTable()`）
+
+| 命令 | 语义 |
+|---|---|
+| `.添加 <中文专精>` | 招募。例：`.添加 防战`、`.添加 奶骑`、`.添加 暗牧`、`.添加 熊T` |
+| `.添加`（裸命令） | 打印用法 + **28 个 profile 的完整中文名**（`BotSpecializationHelp()`） |
+| `.添加 状态` | 看当前等待中的招募在准备哪个专精 |
+| `.添加 取消` | 取消；**迟到的登录结果不会再入队** |
+| `.切天赋 <同职业中文专精>` | 对**选中**的本队专用 bot 做完整切换（`PlayerbotMgr.cpp → HandleBotSpecializationCommand()`） |
+
+两个根命令都是 `SEC_PLAYER` 且 `allowConsole=false`；没有 GM 绕过，也没有解禁 `add/alt/self/delete`。
+`PlayerbotAIConfig::Initialize()` 只把 `添加,切天赋` 加进**默认**白名单；管理员显式配了 `AiPlayerbot.PlayerCommandWhitelist` 时仍以其为准
+（需把两个键补进显式名单；`mangosd.conf.dist.in` 没有内置此项，默认安装走代码默认值即可用）。
+`hasStringAbbr()` 的 `tolower` 实参转 `unsigned char`（UTF-8 负 char 的 UB），英文缩写/大小写语义不变。
+
+#### 二、谁能招募、选中谁（`BotRecruitment.cpp → RecruitBot()`）
+
+- 发起人：**普通五人队队长**（或单人）；本人存活、脱战、未飞行/传送、不在 BG/arena、无待接受邀请；队伍非团队且**有空位**（`PartyReady()`）。
+- 候选一次 SQL 查完再内存复核：**同职业、同等级、同阵营**；`online=0`；只来自 `sPlayerbotAIConfig.randomBotAccounts`
+  （专用随机账号池，并排除发起人自己的账号 ⇒ **不抢玩家小号**）；无 `group_member` 行；不在 `ai_playerbot_random_bots` 的 `add` 轮换池
+  （`GetBots()` 的真实口径折进同一条 SQL）；不是任何在线 `Player`、不 pending、不被本进程管理、不被 `RecruitmentState` 预留、
+  **不被 `SimScenario` 占用**（`IsBotReserved()`）、未被 `specQuarantine` 隔离。
+- 抽样**均匀无放回**；只有被抽中的候选才付一次 `GetValue("specQuarantine")`（事件缓存），不对全池逐只查 SQL。
+- 全池都不可用 ⇒ 明确中文原因，且**不提交**任何登录请求（不占坑、不冒成功）。
+
+#### 三、异步链与并发（`RecruitmentState.h`、`PendingBotLogins.h`、`UpdateBotRecruitment()`）
+
+- `RecruitmentState::Begin()` 在 world thread 原子预留 master/bot，**每玩家最多一个 pending**；`owner` 取 `0x8000…|seq` 高位，与既有 SIM 登录标识区分。
+- 请求只保 `master GUID / account / session / 初始 Group ID / spec key / 90 秒 steady deadline`，**不跨 SQL 持 `Player*`/`Group*`**；
+  每个阶段重核 `CurrentMaster()`（在线、同 session、同账号、同组、未超时）。
+- 取消（玩家取消、换队、满员、断线、manager 析构、超时）一律 `Drop()`：`CancelPlayerBotLogin(bot, owner)` + `state.Release(request)`；
+  迟到的 SQL 结果由 `PendingBotLogins::Complete()` 判 `cancelled` ⇒ **不上线**；原 SQL 占位保留到完成（重试不灌新 SQL、不重复登录）。
+- `Begin()` 对已占用的 master/bot 返回空；`Release()` **精确按 shared request 身份**释放，旧请求不会清新预留。
+
+#### 四、上线的最后一段（`FinishBotRecruitment()`，只由 randommgr 的登录回调触发）
+
+1. 重核 bot：session/AI/存活脱战/职业/**同等级同阵营**/不在组/无邀请/在随机账号池/非发起人同账号；
+2. 复查 `specQuarantine` 与 `SimScenario` 占用（同 world thread，缓存即权威，覆盖 DB 异步未落窗口）；
+3. `ApplyBotSpecialization()` **完整 helper** 成功；
+4. **重新**核 master（准备期间可能换队/离线）；
+5. 普通 `PlayerbotSecurity` 的 INVITE 门 → 核心 `HandleGroupInviteOpcode()`；核 leader、非 raid、`<5` 人；
+6. 核心 `HandleGroupAcceptOpcode()`；**accept 之后**才从本次邀请的那个 `Group` 读真实 id（单人队长的组是 accept 里才 `Group::Create()` 的，accept 前恒 0），
+   再确认 `bot->GetGroup() == offered == master->GetGroup()`；
+7. `SetMaster()` + `+follow,-lfg,-bg` + `AllowActivity(ALL_ACTIVITY)`；**不执行**通用 `AcceptInvitationAction`
+   （它末尾会 `ResetStrategies` / 更新装备，会二次改刚校验好的专精）。
+
+成功提示写明"机器人位于**原上线位置**，可按正常召唤规则召唤"——**没有强制 teleport**，也没开 always/freeAltBots/autologin。
+失败只清**本请求创建的那个组**（指针/已确认 id 比较，不解引用可能失效的 `Group`），不 uninvite 别人的邀请、不抢接管到别组的 bot。
+
+#### 五、回收与"合法转交"（`UpdateBotRecruitment()`）
+
+- bot 消失 ⇒ 从台账删；**master 断线/换组** ⇒ 先 `Group::RemoveMember()` 脱组、`SetMaster(nullptr)`、再 `LogoutPlayerBot()`。
+- **合法转交真人 master**（bot 已在同一组、当前 master 是真人且仍在组内）⇒ 从台账移除、**不抢回**。
+- manager 析构只对"当前 master 仍是自己"的 bot 清指针（指针比较），不解引用可能悬空的旧指针。
+
+#### 六、完整专精切换（`BotSpecialization.cpp`）
+
+- **28 个 profile**：TBC 九职业 27 天赋树，猫/熊分开；中文全名 + 确定别名（`熊T/熊t/熊坦 → bear`、`野性坦克 → bear`、`奶牧 → holy`…）。
+  `神圣/防护/恢复/野性` 这类歧义词**故意没有别名** ⇒ 返回"未知或含糊"并列出可选。
+- 预检（都在改角色之前）：classId、`RandomItemMgr` 的 gear weight 与 premade 精确名、模板最高树与 tab、按等级 crop 后的点数、可用武器形状、
+  必需槽、唯一装备、**存放整套旧装备所需的普通背包格 + 6 格职业物资空间**（不足即 `背包空间不足：…` 中文失败）；预检失败不发布 pin。
+- 天赋：按 `TalentSpec` 每条每个 rank **先清后学**（rank 从高到低移除，再学目标 rank），`SameTalents()` 逐条后验；
+  不调 `Randomize()`/`resetTalents()` 冒充；自定义链接 `specNo=0`、premade 用真实 `path.id+1`（不把 `tab+1` 当 path id）。
+- 策略：表里的真实策略名是 `dps feral` / `tank feral`（**不是** `cat`/`bear`）。`ApplyStrategies()` 的顺序是
+  `InvalidateSpecialization()` → `ai->Reset()` → `UpdateTalentSpec()` → `ResetStrategies(false)` → 回放**非专精**旧策略 →
+  `EnforceBotSpecializationStrategies()` → 四 engine 必须有 `spec.strategy` → **角色/距离后验**：Tank 必须 `STRATEGY_TYPE_TANK`
+  且不得带 RANGED；Healer 必须 `STRATEGY_TYPE_HEAL`；Damage 必须 `STRATEGY_TYPE_DPS`；melee-only 不得带 RANGED、ranged-only 不得带 MELEE；
+  四 engine 必须各有 `close`/`ranged`。`Enforce…` 先按 `IsSpecRootStrategy()` 只删本职业专精根，再按目标策略 native `GetType()`
+  补 `close`/`ranged` 并**删相反那个**（默认 `StrategyContext` 不把二者当 siblings，留着会骗 `PlayerbotAI::IsRanged()`）。
+  `PlayerbotAI::ResetStrategies()` 末尾也会调 `Enforce…`，所以**载入存档策略/换 master 之后专精仍在**。
+- 装备/附魔/宝石：目标 weight 放在 `RandomItemMgr::SpecScope` 线程局部作用域里算（**先不发布 DB pin**），新装备离身建立计划；
+  `EnchantForWeight()` 选到的模板必须实际附上永久附魔 id；`FillGems()` 在同一 weight 作用域，**所有带孔新装备必须有对应 socket enchant**，缺项失败。
+- 职业物资/技能/宠物：复用 `InitSpells/InitSkills`；萨满图腾、猎人新武器弹药、术士恶魔、德鲁伊形态、战士姿态、防骑正义之怒逐项准备后**核对**
+  （法术材料、施法工具、形态、恶魔任一不符即中文失败）；`PlayerbotFactory::InitPet(prepareOnly=true)` 只为本事务验证（不提前保存、不在末尾杀新宠），
+  不匹配的旧恶魔**明确要求先安全解散**、不销毁。
+- 缓存：`ai::dpsfsm::InvalidateSpecialization()` 清正/负技能缓存与专精状态（保留 `BotMem` 指针、不写 ScenarioTargets）。
+
+#### 七、旧装备：全留背包 + 退休，不再自动穿回/卖掉
+
+- 切换前把**每件旧实物**（按 `Item*`，不是 entry）连同**全部附魔槽**的 `id/duration/charges` 与
+  `suffixFactor/randomPropertyId` 一起快照（`OldGear::IdentityMatches()` 防"同 entry 的仿制品"）；旧套存到预留的**普通背包槽**，靠实际指针回装、不重造。
+- 成功提交时逐件 `SetValue(bot, "specRetired:<实物GUID>", 1)`；`RandomItemMgr::ItemStatWeight()` 对退休件记 0。
+- 自动路径全部跳过：`ItemUsageValue::Calculate()` 在 FORCE 之前按 qualifier 返回 `ITEM_USAGE_KEEP`
+  （`HasOnlyRetiredSpecializationItems()`：同 entry/ench/property 里只要还有一件 live 就不整组封）、
+  `FindItemUsageVisitor::Accept()` 直接 KEEP、`EquipUpgradesAction` 每件先 `continue`；**手动** `EquipItems()/EquipItem()` 不拦（玩家想穿就穿）。
+- 代价（已知）：反复成功切换会**持续保留整套旧装备**，背包可能被填满；预检会明确报空间不足，但**没有**自动删旧。
+
+#### 八、失败、回滚与隔离（不能冒充成功）
+
+- 任一步失败：按实际指针复原旧装备/背包计数、法术与技能、四 engine 策略、形态、弹药、生命与**全部能量**、
+  宠物（`m_spells` 与独立 autocast list 按 multiset 比较）、`suffix` 身份；**后置验证**同一口径。
+- 回滚后验证仍失败 ⇒ `SetValue(bot,"specQuarantine",1)` 并保持失败返回；**不发布**新 pin、不把半状态当成功。
+- 世界线程收尾：`PlayerbotHolder::UpdateSessions()` 在 `UpdateBotRecruitment()` 之后、`ForEachPlayerbot` **之前**调 `ReclaimQuarantinedBots()`：
+  先快照本 holder 的 GUID，再在遍历外重取，**先脱组/清 master、再 `LogoutPlayerBot`**（删除不在 ForEach 回调/helper 事务栈内）；登录中的 bot 交既有登出流程；
+  真人 alt（非随机账号或 `IsRealPlayer()`）不拦。
+- 隔离闭环：招募抽样/`FinishBotRecruitment()`、`SimScenario::LoadCandidates()`、自动登录 `AddRandomBots()/ProcessBot()/AddRandomBot()`、
+  `PlayerbotHolder::AddPlayerBot()`（仅随机账号）都拒绝隔离 bot；管理员把事件值清 0 即解除。
+- `specWeight`/`specQuarantine`/`specRetired:` 是**永久事件**（`GetEventValue()` 的过期判定只加这三条例外，其他 event 一字未动）；
+  DB 行 `validIn` 仍是 15 天，直接读表的人会看到 15 天，属预期。
+
+#### 九、保护旧路径（没有 profile 的 bot 行为不变）
+
+- `PlayerbotFactory::Randomize()` / `InitEquipment()`：仅当 `GetExplicitSpecId(bot) != 0` 或 `specQuarantine != 0` 时入口 `return`。
+- `EquipGear()/EquipGearBest()/EquipGearPartialUpgrade()/UpgradeGear()` 四个入口由 `HasExplicitProfile()` **整函数拒绝**——
+  否则 `InitEquipment` 提前返回后**仍会**跑 `InitGems()/FillGems()`，等于绕过 guard 改 profile 的宝石；`EquipGearBest` 的萨满 `InitTotemItems()` 保留在 guard 之后。
+- 没有 profile 的旧随机化/换装路径逐字未动。
+
+#### 十、熊 T / 猫德权重（只核不改）
+
+- 本地世界库 `ai_playerbot_weightscales`：id **30 = feraltank**（`armor=150、sta=150`；本地库权重 dump 实算 **armor cap = 35880**）、
+  id **32 = feraldps**（`armor=20`）—— 两套分离，不混用；`熊T` 别名保证落到 30，不会被旧 `GetPlayerSpecName()` 随机成 32。
+- 实码回归（逐字抽取 `CalculateSingleStatWeight()/ApplyWeightCap()/GetSpecId()` + `CalculateStatWeight()` 的 armor 块，fixture 用真实库 dump）：
+  **未到 cap：+100 护甲 = +15000**；35879 仍 15000；**35880 及 +100 记 0**；熊 pin 30 = 150、猫 pin 32 = 20。
+- **不改 SQL、不抬数值**：旧 TBC 安装种子里 id30 没有 armor 行是历史事实；当前本地库由调优 SQL 合并后已是 150（`dev/230`）。
+- 诚实口径：cap 降权只在**带 player 上下文**的评分路径（`ItemStatWeight` / live 权重 / `FillGems` 的 `WeightPlayerScope`）生效；
+  `GetStatWeight(itemId, spec)` 的建库缓存**没有 player 上下文，不会即时按 cap 降权** —— 不要写成"选装已按 cap 降权"。
+
+#### 十一、验证（全部 exit 0；普通 + ASan/UBSan，`-no-pie`，有界超时）
+
+| 套件 | 结果 |
+|---|---|
+| `spec/run_tests.py`（逐字编译整个 `BotSpecialization.cpp`，仅替换外部 include） | **37 cases / 399 assertions PASS**（旧 31/321 全保留） |
+| `integration/integration_test.py`（逐字 `BotRecruitment` namespace + 真实 `hasStringAbbr()`） | **41 cases PASS** |
+| `review/holder_sessions_test.py`（逐字 `UpdateSessions`+`ReclaimQuarantinedBots`） | **8 cases PASS**（LeakSanitizer 0） |
+| `integration/item_usage_test.py`（逐字退休件 helper + `ItemVisitors.h`） | **6 cases PASS** |
+| `review/holder_login_test.py`（逐字 `PlayerbotHolder::AddPlayerBot`） | **3 cases PASS** |
+| `review/armor_weight_test.py`（真实 armor 评分 + 真实 tsv） | **4 cases PASS** |
+
+- 复用未改源的旧证据：mail **41 cases / 893 assertions**、旧 login **14 cases**。
+- 真实头 `-fsyntax-only`（g++-10，WSL 构建树的 flags）：先前 8 个 TU + 本轮 4 个 TU（`BotSpecialization`/`PlayerbotMgr`/`BotRecruitment`/`CharacterHandler`）**全 rc=0**。
+- 全量构建：**Ubuntu-20.04 / g++-10 / Release / PCH=ON / BUILD_PLAYERBOTS=ON / `-j8`**，`cmake --build … --target mangosd` rc=0
+  （01:34:42 → 01:42:05，443.5 s，末行 `[100%] Built target mangosd`）。31 个白名单源**构建前后逐字节一致**，与 WSL 镜像**双向**一致（mismatch 0）；
+  产物 **56,662,392 B**，md5 `175ffeb494dc57b38904ebf99081f6c0`，sha256 `3bca9e256505000a894ba85c992f44d46d73e67ecd918f46a81b7a6002e9f5c8`。
+- 13 条既有编译告警（`PlayerbotAI` 的 `NULL` 算术、`PlayerbotMgr` 的 `-Wformat-security`、`DpsFsm`/`DpsPolicy.inc` 的格式串等）**原样保留在日志**；
+  `git -c core.autocrlf=true diff --check` 根仓 **0**、子模块 **0**；源码冻结闸门（`SOURCE_FROZEN`）与 31 文件 sha 检查全过。
+- attempt_01 作废：机械上也能构建，但**构建进行中 review 仍在写源**（逐文件 sha 复检 `sources_stable=false`），只认 attempt_02。
+
+#### 十二、限制与上线状态（如实）
+
+- 行为证据是**逐字抽取 + 接口桩故障注入**：**不是游戏内实测** —— 未起服、未连真实 DB、未跑真实 SIM、未用真实客户端 opcode。
+  接口桩 PASS ≠ 游戏里成功；`IsRealPlayer()`、`Group::RemoveMember` 的真实世界语义按核心源码核过，但未在运行服实测。
+- 专精持久化沿用既有多个 `SetValue` + **异步 `SaveToDB`**，**不是跨表 SQL 原子事务**；断电/异步 DB 错误的跨库 rollback 不具备。
+- 本轮**没有跑新的 SIM**；此前失败的 SIM 结论**不追认**为通过。
+- 低等级角色凑不齐模板/武器/姿态/宠物/物资时**明确失败**，不把缺项当 ready；28 个 profile 的名字都有用例，完整成功循环主要在 Mage/Druid/Hunter 上实测。
+- 上线状态（截至 2026-11-07 02:05）：**已按用户授权同步云端并正常重启一次**；以下均为**机器层 / DB 层验收**，**不是**游戏功能验收。
+  停服前在线门复检 12 行全为 RNDBOT 假人（0 真人）。实际运行件 `175ffeb494dc57b38904ebf99081f6c0`（56,662,392 B，sha256 `3bca9e25…e9f5c8`）与本地构建件逐位一致，新 PID `52582`（startticks `7891243`）；
+  8086 启动后 15 秒监听，3724 / realmd（PID `1666`、startticks `21313`）未动；**正常 `server shutdown` 42 秒自行退出，未用 SIGKILL**；95 秒与 4 分钟两次复检 PID 不变，watchdog flag 已恢复原状（不存在）。
+  发布记录目录 `/root/releases/recruit_bot_20261107_015539`（旧二进制、遗留 pending、BIS 与权重备份均在其中且未删除）。
+  静态 DB 只动两项：`ai_playerbot_bot_profile` **schema-only（0 行）**、BIS 四档 **1098 行逐行精确匹配**（phase `272/283/272/271`，PK 唯一，missing/extra = 0/0）；
+  权重四表部署前后 diff = 0；**未**把本地 1925 行 runtime profile 拷上云，`/root/.dev_sql_applied` 仍 233（未抬高）。
+- **仍未做**：游戏内客户端验收（未登录、未实测 `.添加` / `.切天赋` 交互），**未跑真实 SIM**；中文 token 只证明字符串存在于二进制，**不等于**功能可用；12 个在线假人在新件下的行为差异不在本次验收范围。
+  既有 04:00 关服 / 04:06 nightly 拉起节奏未改（届时拉起运行的仍是本记录这件）。证据见 `../../_agent_tmp/recruit_bot_20261106/cloud/exec/DEPLOY_STATUS.md` 与同目录 `RELEASE_PROGRESS.md`。
+
+### 阶段 J｜2026-11-08　治疗自救 / 找背 / 坦克接管 / 仇恨门收手 / 种子爆炸 / 恶魔牺牲：一轮高危审计修复
+
+> 本章统一记录治疗开场、自救与移动、坦克接管、DPS仇恨门、种子爆炸和牺牲补宠的高风险修复。
+> **最终实现及验收以本章末尾「六、最终主审与行为回归」为准**；一至五节保留中间审计证据，
+> 其中的旧构建hash、仅passive暂停宠物、同阶段取消后不重试等描述不再代表当前实现。
+> 本轮只在本地修改与构建，未安装、未重启服务、未部署、未commit/push；没有游戏/SIM实测结论。
+>
+> ⚠️ **2026-11-08 12:22 二次复核（先读这条）**：上一段的"11 条全部"只代表**第一次构建**
+> 时的编译层状态，不代表行为已验收。二次复核发现 **3 处代码事实错误**，旧文保留作对照，
+> 以本段和 §五 为准：
+> 1. `WarlockSeedThreatSafe()` 实际拿 `SpellId("seed of corruption")`=**27243** 当爆炸数据，
+>    还要求 `Effect[0]==SPELL_EFFECT_SCHOOL_DAMAGE`；27243 的 Effect0 是 **APPLY_AURA** ⇒ 恒 false。
+>    正确口径：学会的是 27243（DoT/aura），爆炸要 `LookupSpellInfo(`**27285**`)` 并**扫描**伤害 effect。
+> 2. `WarlockSacrificeActive()` 实际查 `AuraStacks("demonic sacrifice")`，解析到的是**施法** 18788；
+>    真正的 buff 是 18789/18790/18791/18792/35701 ⇒ 恒 false。按名字查光环这条已废弃。
+> 3. 仇恨门"早退门删除、回到晚层门"仍不够：`casting/GCD` 早退发生在晚层门之前，读条中的 DPS
+>    永远停不下来；宠物在 defensive 下被 `MeleeAttackStop` 后会被 PetAI 重新拉回战斗。
+>    二次修复改为**早于 casting/GCD 门的有效 Hold** + 宠物反应状态暂停/恢复。
+>
+> 第二轮本地构建（WSL `Ubuntu-20.04`，`sync_src.py --apply` 后 `cmake --build /root/nb-build
+> --target mangosd -j16`）产物 md5 = **`983990ec2fd8a1f14c985e9e8361d61d`**；
+> 第一次的 `6e6b8e7a75ba72cec43b0f68ebde6c6a` 作废。**仍然只编译，未安装 / 未重启 / 未部署。**
+
+#### 一、逐条修复（符号为准，行号会漂）
+
+| # | 审计项 | 根因（改前） | 现在（符号） |
+|---|---|---|---|
+| 1 | 治疗包含自己 | `HealCollectTargets()` 的 `includeSelf` 只服务戒律牧；其余四张治疗表恒 false ⇒ 治疗者自己濒死也进不了 triage | `HealCollectTargets(..., includeSelf=true)` 默认值与两个调用点都传 true；自己按指针去重，其余过滤（存活/同图/射程/LOS）不变 |
+| 2 | 急救先于维护驱散 | `TickUpkeep()` 排在所有治疗之前；驱散也无条件抢占救命那一手 | `TickHealFsm()`：先拍病人 → 直接治疗系先跑救急（`emergency_hp`）→ `role==3` 只驱散 → HoT 模型自带救急 → `HealTryDispel()`（`!emergencyPending` 才驱散）→ `TickUpkeep()` |
+| 3 | 只有近战输出找背 | `NeedsBehind()` 只看职业，治疗/坦克/远程也去绕背 | `NeedsBehind()` 先排除 `PlayerbotAI::IsHeal()` / `IsTank()` / `!IsMelee()`，再按职业表 |
+| 4 | 坦克不误拉未交战怪 + 嘲讽失败切救援 + 同步距离/victim | 加怪扫描把所有附近怪都算 `fresh`；`Pickup`/`Taunt` 只写 `s.target`（`s.dist`/`s.targetHp` 还是旧目标，`bot->GetVictim()` 没换） | `CountHostilesNear(..., engagedOnly=true)`（`IsEngagedHostile()`：在战斗或有 victim）；新增 `TankFocusTarget()` 同时改 `s.target`/`s.targetHp`/`s.dist`、作废 300ms 计数缓存、用核心 `Unit::Attack()` 切 victim；嘲讽放不出时 `TankFocusTarget(rescue ? rescue : lost)` 再走 `Maintain` |
+| 5 | 仇恨门要停手，但不能打断治疗 | `TickInner()` 早退门 + `AttackAction` + `DungeonDpsHoldFireAction` 都用 `AttackStop(false, true)`：无差别 `InterruptNonMeleeSpells()`，并清 `m_attacking`（`GetVictim()` 变空 ⇒ 门自己失效/引擎重新 Attack 抖动） | 新增 `ai::dpsfsm::SuspendOffense(Player*)`：`Unit::MeleeAttackStop()`（本体+宠物，只清 `UNIT_STAT_MELEE_ATTACKING`，`Player::Update`/`UnitAI::DoMeleeAttackIfReady` 的挥砍入口）+ 只对"当前法术单位目标是敌方"的那一条 `InterruptNonMeleeSpells(false, id)`；**保留 victim**。早退门删除，收手点回到专精派发之后那一份门 |
+| 6 | prio≥5 非精英立即集火豁免（站长明确选择） | （上一轮已加，本轮只核）`ThreatTier>=5 且 Rank==NORMAL` ⇒ 不等坦克仇恨 | `AttackAction::WaitingForTankThreat()`：`tier>=5` 且 `Rank < CREATURE_ELITE_ELITE` ⇒ 直接放行；精英/稀有精英/首领/稀有继续走坦克仇恨门。`EvalThreat()` 同一档置 `Open` |
+| 7 | 腐蚀之种要算爆炸仇恨 | `WarlockSeedThreatSafe()` 只扫 bot 周围 15 码、拿既有仇恨乘 1.5（既不是爆炸中心也不是真实数值）；`WarlockThreatOk()` 的 `CountEngagedHostilesNear(ai,bot,30)` 返回值被丢 ⇒ `engaged` 恒空 ⇒ 恒 true | `WarlockThreatOk()`：当前目标沿用原判据，另外只审"已进战且**我已有仇恨**"的怪。`WarlockSeedThreatSafe(ai,m,s)`：27285 的 effect0/半径/基础伤害/威胁倍率全部从 `SpellEntry`+`spellradius.dbc`+`SpellMgr::GetSpellThreatMultiplier()` 读，伤害加成走核心 `Unit::SpellDamageBonusDone()`（与落地同一条路径），逐目标按"新种子 + 已挂种子的链爆次数"累加上界，要求 `tankThreat >= (myThreat + dmg×mul×n) × threat_target_ratio`。**2026-11-08 更正**：上面这段描述的是"应该是什么"；当时代码实际用的是 27243 的 Effect0，恒 false。现按 27243 学会 + 27285 爆炸 + effect 扫描 + crit/modifier 上界 + `predicted <= tankThreat×ratio` 重写，见 §五-2 |
+| 8 | 毁灭 0/21/40 会牺牲 + 补宠不抵消 | 牺牲只在恶魔系触发；牺牲后 `Prep` 看到"没宠物"立刻召唤 ⇒ 驱散 18788 的增益 | 牺牲改为**任何学会该天赋的术士**都可交（`WarlockCanSacrifice()` 不再看 spec）；新增 `WarlockSacrificeActive()`，`EvalWarlock()`/`EvalWarlockDots()`/`TickPrepCore()` 不再把"无宠"当缺项，`SummonPetIfNeeded()` 在增益在身时**直接不召**（唯一召唤入口，猎人宠物不受影响）。**2026-11-08 更正**：`WarlockSacrificeActive()` 当时用 `AuraStacks("demonic sacrifice")` 查 18788（施法）⇒ 恒 false。现统一按 18789/18790/18791/18792/35701 实际光环；牺牲移到状态选择之前 + Prep，不再只挂在 Burst，见 §五-3 |
+| 9 | 治疗掉血速率排除治疗抵消 | 旧口径用净血量差 ⇒ 采样间被奶回来就把速率抹成 0 | 核心新增单调累计 `Player::damageTakenTotal`；`HealSampleRate()` 只读它的增量（治疗不减计数器），重登/重置走"计数器回退 ⇒ 重开窗口" |
+
+#### 二、核心承伤计数的落点（关键，别改回去）
+
+- `Player.h → Player::damageTakenTotal`（`uint64`，在 `#ifdef ENABLE_PLAYERBOTS` 内，紧邻 `botDamageTaken`）。
+- **只**在 `Unit::DealDamage()` 的**最终实际扣血点**累加（`Kill()`/`HandleDamageDealt()` 之前、`IsPreventingDeath()` 截断之后）：
+  `damageTakenTotal += min(damage, health)`。
+- 为什么不能放在函数开头（上一轮的写法）：那里还没做**决斗不死**（`damage = health - 1`）与 `IsPreventingDeath()` 截断，
+  会把"被截断、根本没扣血"的伤害也记进去；致命一击还会把溢出伤害算成承伤。
+- 判据用 `GetTypeId()==TYPEID_PLAYER`，**不筛 `isRealPlayer()`** ⇒ 真人坦克同样计数（站长口径）。
+
+#### 三、本地验证（实测证据）
+
+> **2026-11-08 12:22 二次构建（覆盖下面第一次的快照）**：`sync_src.py --apply` 后
+> `cmake --build /root/nb-build --target mangosd -j16` → `[100%] Built target mangosd`，
+> `error:` 0 条；产物 **56,817,896 B**，md5 **`983990ec2fd8a1f14c985e9e8361d61d`**。
+> 源码两侧 md5 对齐 `DpsFsm.cpp = 539ff005e32566659e54292cb0cd86ed`（WSL `/root/Nmangos-tbc`
+> 与 `D:\...` 一致）。本轮新增代码 0 告警；`DpsFsm.cpp` 仍只有两条既有 format 告警
+> （`%f` vs int32、`%u` vs uint64），`PlayerbotAI.cpp` 两条既有 pointer-arith（3166/3168），
+> 另 2 条 ld 的 libssl 1.1/3 冲突是环境问题。
+> 下面 `6e6b8e7a75ba72cec43b0f68ebde6c6a` 是**第一次**构建快照，已被本轮取代。
+
+- 构建树真实源码目录：`/root/nb-build/CMakeCache.txt → CMAKE_HOME_DIRECTORY=/root/Nmangos-tbc` ——
+  **构建的不是 `D:\` 挂载**，而是 `_agent_tmp/tune/sync_src.py` 同步过去的副本。
+  这解释了"`cmake --build` 只打印 `Built target mangosd`、没有任何编译"：**没先跑同步**时
+  副本内容与 mtime 都没变 ⇒ make 无事可做。本轮实测同步前 `DpsFsm.cpp` 两侧 md5 不同（差一个 include），
+  同步后两侧一致（`9fffb7fd278e7470c522a1cd1f03d1aa`）。
+- 本地（WSL `Ubuntu-20.04` / `g++-10`（`CMakeCache: CMAKE_CXX_COMPILER=/usr/bin/g++-10`）/ `CMAKE_BUILD_TYPE=Release` /
+  `BUILD_PLAYERBOTS=ON` / `-j16`）`make mangosd`：**rc=0，`error:` 0 条**，末行 `[100%] Built target mangosd`；
+  `Unit.cpp.o` / `DpsFsm.cpp.o` / `AttackAction.cpp.o` / `DungeonRouteActions.cpp.o` mtime 均晚于各自源码
+  （最后一轮 `DpsFsm.cpp.o` 11:48:03 → 链接 11:48:07）。
+- 产物 `src/mangosd/mangosd`：**56,803,920 B**，md5 `6e6b8e7a75ba72cec43b0f68ebde6c6a`（**未安装、未部署**；
+  `/root/mangosd_pb8_all` 仍是别人 11:40 那次 `build_all_pending.sh` 留下的 `5ec0c0dd…`，本轮没有碰它）。
+- 符号自证（`nm -C src/mangosd/mangosd`）：`ai::dpsfsm::SuspendOffense(Player*)` 在；
+  `ai::dpsfsm::TankFocusTarget(...)` 在（`t` 局部符号）。字符串自证：
+  `[DPSFSM-WARLOCK] %s seed=%u radiusIndex=%u`、`tgt=%s r=%.1f dmg=%u x%d my=%.0f tank=%.0f need=%.0f mul=%.2f`
+  都在二进制里 ⇒ 种子爆炸预算与"读不到半径就不放"这两条真的编进去了。
+- 编译告警：本轮最终构建共 5 条，其中代码告警 3 条**全是既有**（`DpsFsm.cpp` 的 `%f` vs int32、
+  `%u` vs uint64，`DpsPolicy.inc` 一条），**本轮新增代码 0 告警**；另 2 条是 ld 的 libssl/libcrypto 1.1/3 冲突（环境问题）。
+- 数据侧（本地库 + DBC，只读取证）：`27285` 的 `spell_template` 行 —— `Effect1=2`（`SPELL_EFFECT_SCHOOL_DAMAGE`）、
+  `EffectBasePoints1=1109`、`EffectBaseDice1=1`、`EffectDieSides1=181`、`EffectBonusCoefficient1=0.214`、
+  `EffectRadiusIndex1=18`、`DmgMultiplier1=1`；`spellradius.dbc` 第 18 行 `Radius=15`
+  （从 `D:\Game\cmangos\x64_Debug\dbc\SpellRadius.dbc` 解出，`recs=41 / fields=4 / recSize=16`）；
+  `spell_threat` 无 27285 行 ⇒ `GetSpellThreatMultiplier()` 返回 1.0。
+  即：单发爆炸 **15 码**、基础伤害取最大掷骰 **1290**（1110 + 180）、每命中一个目标新增约 `1290×1.0` 威胁（未加成就）。
+
+#### 四、剩余缺口（如实，未做）
+
+1. **没有任何游戏内 / SIM 实测**：本轮只有"编译 + 符号 + 数据"三层证据。治疗自救、坦克切焦点、仇恨门停手、
+   种子爆炸预算这些**行为**没有被真机或假人跑测验证；不追认上一轮未通过的 SIM 结论。
+2. 种子预算的伤害模型取**最大掷骰**与"可能链爆次数"的几何上界（不预测谁先炸、不算部分抵抗/减伤），
+   属于**保守**估计：真实威胁只会更低。坦克威胁读取用 `ThreatValue::GetTankThreat()`（最大值口径），
+   若队里有多坦克只取最高，不区分"该怪是否已挂到该坦克身上"。
+   另外这条判据**故意很严**：15 码内**任何**一只坦克还没仇恨的怪都会挡住种子（含还没进战的）；
+   密集怪群里要等坦克把每一只都拉到，术士才会种 —— 这是"宁可晚一颗，也不把整片怪拽走"的取舍。
+   参数 `threat_target_ratio`(0.95) 与半径/伤害都来自真实数据，没有新增魔法倍数。
+3. `SuspendOffense()` 只打断"当前法术**有单位目标且为敌方**"的读条；对地面/无目标 AoE 读条不打断（宁可不误伤治疗）。
+4. 嘲讽失败后的救援目标回退只在 `tank_pickup_adds>=1` 之外的场景才会命中（默认 1 时 `rescue` 会先进 `Pickup`）；
+   `Pickup` 的通路本身仍取决于 `tank_scan_range`(30) 与 `tank_taunt_range`(28)。
+5. 未跑 `dummyall`/`arms`，未做 A/B 数字对比；`heal_rate_window_ms`、`threat_target_ratio` 等阈值一个都没调。
+
+#### 五、2026-11-08 二次修复（阶段 J 追加；以本节为准）
+
+> 触发：站长实测"治疗开怪时没有准备，等 T 掉血才开始，第一波后救不回来"，并点名三个
+> **代码事实错误**（种子拿 27243 当爆炸、牺牲查错光环、casting/GCD 早退让仇恨门停不下来）。
+> 本节所有结论只到"本地编译 + 纯策略回归"层；**游戏/SIM 行为未测**，见 §五-6。
+
+**1. 治疗开怪预读（opening pre-heal，直疗）**
+
+- 信号：坦克 `PullStrategy` 的 `IsPullPendingToStart()` / `HasPullStarted()` + `GetTarget()`，
+  或坦克实际接战（有 victim / 在战斗）。**不等 HP 缺口，也不等 3 秒受伤速率窗口。**
+- 入口：`DpsFsm.cpp → HealOpeningResolve()` / `HealOpeningActive()` / `HealOpeningPrecast()`；
+  每个 pull 阶段（pending→started→engaged）各允许一次预读；坦克仍 ≥ `opening_full_hp`(95%) 才起手。
+- `HealNeedsDispatch()` / `DispatchHealFsm()` 把 HealCore 提到 `TickInner()` 的全局 casting/GCD
+  门和脱战 prep 门之前；Boss 机制法术仍在 HealCore 之前（治疗专精单独提前跑一次）。
+- 取消：`HealOpeningCancel()` 只在 `HealPending.opening==true` 时工作；用
+  `Spell::GetCastedTime()`（核心返回**剩余 m_timer**）进入 `opening_cancel_ms`(400ms) 窗口，
+  且 `Player::damageTakenTotal` 从施法开始**没有任何增量**、目标仍 ≥ `opening_cancel_hp`(98%)
+  才 `InterruptSpell(CURRENT_GENERIC_SPELL)` 省蓝。伤害计数不会被治疗回退 ⇒
+  "被打过又奶满"不会误取消；急救/普通治疗不经过这条路径。
+- 旧引擎的 `HealTargetFullHealthTrigger` 见到满血会立刻 `interrupt current spell`；
+  `PlayerbotAI::IsOpeningPrecast()` + `DpsFsm.cpp → IsOpeningHealCast()` 只放行**这一种**
+  有意的预读。`IsCurrentHealUseful()` 故意**不**为 opening 返回 true —— 反应引擎/自救
+  （`InterruptSpell(keepUsefulHeals=true)`）仍然可以先打断，符合"不能抢躲避 point 运动/自救"。
+- `HealCastId()` 原有保护保留：只清 `FOLLOW_MOTION_TYPE`/`CHASE_MOTION_TYPE`；当前是
+  Point/jump 移动（躲避）时直接拒绝施法，不抢运动。`CanMoveDuringFsmCast()` 在 FSM 读条时
+  继续挡 Follow/Chase 重动。
+- 奶德：`cfg->hotModel` 不走直疗预读；`HealOpeningResolve()` 把 pull 坦克写进
+  `BotMem::healOpeningPatient`，`HealCollectTargets()` 据此把 `h.tank=true`，
+  由 `TickHealHot()` 第一层三花预铺。直疗表一个字节没改。
+
+**2. 腐蚀之种爆炸预算（Warlock）**
+
+- 学会的是 **27243**（DoT/aura，`Effect0=APPLY_AURA`）；爆炸是核心
+  `SpellScripts/ClassScripts/Warlock.cpp → SeedOfCorruption` 固定 cast 的 **27285**
+  （`SPELL_SEED_DAMAGE`）。`WarlockSeedThreatSafe()` 现在：`SpellId("seed of corruption")`
+  只用于"学会了吗"，爆炸数据一律 `LookupSpellInfo(27285)`。
+- `Effect[0..2]` **扫描** `SPELL_EFFECT_SCHOOL_DAMAGE`（不写死 index）；本地库实测
+  `spell_template` 27285：DB `Effect1=2`（DB 列 1 = C++ `Effect[0]`）、`EffectBasePoints1=1109`、
+  `EffectBaseDice1=1`、`EffectDieSides1=181`、`EffectBonusCoefficient1=0.214`、
+  `EffectRadiusIndex1=18`；即最大掷骰 **1290**、半径 15 码。
+- 中心 = **种子目标**（不是 bot）：`DpsFsmPolicy.h → WithinRadius()` 用目标到候选的 3D delta
+  过滤；链爆按"已挂 27243 的敌人各自为中心"的几何上界累加爆炸次数。
+- 预算：`damage × GetSpellThreatMultiplier(27285) × ApplyTotalThreatModifier() ×
+  GetCritMultiplier() × 爆炸次数 + myThreat`，要求 `<= tankThreat × threat_target_ratio`。
+  **ratio 乘在坦克威胁上**（旧写法 `tankThreat < predicted × ratio` 方向反了，会允许自己
+  超过坦克 5%）；暴击按"每发都暴击"取上界（法术 1.5x，Ruin 更高）。
+- 两处守卫：legacy `TickWarlock()` 的 Aoe 走 `WarlockSeedThreatSafeEarly()`（同文件末尾的
+  转发，仍调用同一份 `WarlockSeedThreatSafe()`）；专属 `TickWarlockFsmCore()` 的 Aoe 直接调用。
+  两处读不到 27285/伤害 effect/半径都**不放种子**并留诊断。
+
+**3. 恶魔牺牲（Warlock）**
+
+- 核心 `Warlock.cpp → DemonicSacrifice`：18788 是**施法**；实际 buff 按宠物 entry 为
+  **18789/18790/18791/18792/35701**。`DpsFsmPolicy.h → WarlockSacrificeBuffIds()` 是唯一 id 表；
+  `WarlockSacrificeAuraActive()` 只按这五个 id 查 `HasAura`，不再按名字查 18788。
+- 统一调用点：`SummonPetIfNeeded()`（唯一召唤入口）、`WarlockSacrificeActive()`、
+  `WarlockCanSacrifice()`、`EvalWarlock()`、`EvalWarlockDots()`、`TickPrepCore()`。
+  增益在身 ⇒ `needPet=false` 且召唤入口直接返回，不会补宠驱散增益。
+- 牺牲不再只挂 `State::Burst`：`TickWarlockFsmCore()` 在**状态选择之前**交一次（群怪走 Aoe
+  也能交），`TickPrepCore()` 在脱战准备阶段也交一次；`WarlockCanSacrifice()` 自己初始化
+  `demoPetAt`，宠物在场满 `demo_pet_min_ms`(8s) 才交。0/21/40 毁灭开怪前即可正常牺牲。
+
+**4. 仇恨门收手（early effective Hold + 宠物暂停/恢复）**
+
+- `TickInner()` 在**全局 casting/GCD 门之前**插入早期收手门：非治疗、非 `SkipEngine`、
+  有 victim 且 `AttackAction::WaitingForTankThreat()` 命中 ⇒ `SuspendOffense()` 后 `return true`。
+  这样读条中的 DPS 也能立刻停；`WaitingForTankThreat()` 内部已排除治疗/坦克/野外/无坦克，
+  `SuspendUnitOffense()` 只打断"当前法术单位目标是敌方"的那一条，不会砍治疗友方动作。
+- `SuspendOffense()` 现在：`MeleeAttackStop()`（本体+宠物，保留 victim）+ 只打断敌对读条 +
+  宠物临时 `REACT_PASSIVE`；`RefreshOffenseSuspension()` 每 tick 在 `TickInner()` 最前面检查
+  1.5 秒内有没有再次收手，没有就恢复原反应状态（若捕获时已是 passive，优先取
+  `PullStrategy` 保存的原状态，取不到回 defensive）⇒ 不永久被动、不丢目标。
+- `DungeonDpsHoldFireAction`：删除本地 `tankLeadOk` 重写，focus 直接 `bot->Attack()` 前必须过
+  `AttackAction::WaitingForTankThreat()` + `dpsfsm::WaitingForPreparation()`；不再绕过
+  prio≥5 非精英豁免（`DpsFsmPolicy.h → ThreatTierExemptsNormal()` 与 AttackAction 共用）。
+  gather-pending / focus-blocked / 无 victim 但宠物仍在咬的三种路径都会 `stopOwnedAttacks()`。
+
+**5. 可运行回归（不是 grep 自证）**
+
+- 文件：`_agent_tmp/combat_fix_20261108/test_policy.cpp`；被测的是
+  `src/modules/PlayerBots/playerbot/strategy/DpsFsmPolicy.h` 里的**生产同一份 inline 函数**
+  （`DpsFsm.cpp`、`AttackAction.cpp` 直接调用它们）。
+- 命令：`g++ -std=c++17 -O2 -Wall -Wextra -I <PlayerBots>/playerbot/strategy test_policy.cpp -o test_policy && ./test_policy`
+- 结果：**PASS 52 checks**，覆盖：满血 + pull 可 opening、无 pull 不刷、pending 移动等待/
+  静止可预读、取消窗口/急救不取消/`damageSinceStart>0` 不取消、`RateFromDamageDelta` 的
+  单调承伤（治疗不抹速率）、27243/27285 与 effect 扫描、爆炸中心 `WithinRadius`、ratio 方向、
+  暴击/modifier 上界、牺牲五个实际光环（18788 不在表里）、`ShouldSummonPet(false,true)=false`、
+  prio≥5 仅普通怪豁免。
+- 编译/符号：`mangosd` md5 `983990ec2fd8a1f14c985e9e8361d61d`，56,817,896 B；
+  `nm -C` 可见 `SuspendOffense(Player*)`、`IsOpeningHealCast(Player*)`、
+  `RefreshOffenseSuspension(Player*)`、`WarlockSeedThreatSafe(...)`。
+
+**6. 仍未做 / 风险（如实）**
+
+1. **没有任何游戏内 / SIM 行为实测**：本轮证据只到"编译 + 纯策略 + 符号 + DB 数据"。
+   开怪预读是否真的在坦克接怪前落地、取消是否真的省蓝、群怪牺牲是否按预期交，
+   都**没有**真机/假人跑测验证；不把"编译通过"写成"行为已修复"。
+2. 开怪预读的坦克识别：优先场景 `s_healTank`，其次 `PlayerbotAI::IsTank()`；真人坦克
+   没有 PlayerbotAI 时退化为"队伍里第一个已接战且有 victim 的成员"，不是严格的坦克角色判定。
+3. 种子预算取最大掷骰 + 每发暴击 + 链爆几何上界，**非常保守**；真实威胁只会更低。
+   坦克威胁仍用 `ThreatValue::GetTankThreat()` 的最高值口径，多坦克不区分"该怪挂在哪辆坦克"。
+4. 开场预读每个阶段只起手一次；若在 started 阶段被取消，同一阶段不会立刻重试（要等阶段推进
+   或坦克真正掉血后的普通治疗）。这是为了不把 GCD 反复烧在"取消—重读"上。
+5. `HealTargetFullHealthTrigger` 只对 opening 放行；其它满血治疗打断语义不变。反应引擎仍可
+   通过 `InterruptSpell(keepUsefulHeals=true)` 打断 opening（自救优先）。
+6. 未跑 `dummyall`/`arms`，未做 A/B；`opening_window_ms`(8000)、`opening_cancel_ms`(400)、
+   `opening_full_hp`(95)、`opening_cancel_hp`(98) 是新增参数默认值，一个都没调过。
+7. 未安装、未重启、未部署；云端仍是旧二进制，禁止把本轮产物直接当成线上已验证版本。
+
+#### 六、最终主审与行为回归（2026-11-08，以本节为准）
+
+本节覆盖上文中间版本的实现与构建状态；早先的二进制hash不再用于最终验收。
+
+**最终实现**
+
+- `DpsFsm.cpp → HealNeedsDispatch()/DispatchHealFsm()/TickHealFsm()`：治疗入口提前到全局施法/GCD和脱战prep门之前，Boss机制仍先处理。`HealOpeningResolve()` 根据坦克pull pending/started/getTarget或实际接战识别开场；直疗满血可预读，奶德仍走职业HoT与三花预铺，不改成通用直疗模型。
+- `HealOpeningCancel()/HealOpeningIncoming()`：只认本次opening的**法术+病人**；`Spell::GetCastedTime()`按剩余时间解释。接近落地、病人仍健康、施法以来实际伤害计数无增量且没有已知即将命中的近战/敌对读条，才取消。取消后清pending并重置usedPhase，同一有效开场窗口可再次准备，不再因取消一次就等待掉血。普通/急救读条不走这条取消路径。原有`opening_window_ms=8000`、取消窗口400ms、满血预读阈值95%、取消阈值98%保留默认，未做实战调参。
+- `Player.h → damageTakenTotal`、`Unit.cpp → Unit::DealDamage()`、`DpsFsm.cpp → HealSampleRate()`：在最终实际伤害处累计所有玩家（包括真人坦克）的承伤，按当前血量截断致死伤害，并保留决斗/不死截断的正确先后；采样读取单调计数差，不以净HP差计算，期间治疗补满不会抹掉承伤。死亡/重新建对象导致计数下降时重建采样基线。
+- `TickHealFsm()`：病人包括自身；急救按当前HP及未来1.5秒承伤预测排序，瞬发/快速治疗不可用时继续尝试正常直疗。存在急救需求时，可选驱散、upkeep、图腾、大地之盾重挂和低rank治疗之道堆层不得先占GCD。role3专职驱散不越权开场治疗；role1主坦专职仍能普通自疗。HoT模型先处理自身急救，未处理的急救返回Hold。
+- `NeedsBehind()`：先排除治疗、坦克和非近战，仅近战输出进入职业找背判据。`CountHostilesNear(...,engagedOnly=true)`限制坦克加怪接管扫描；`TankFocusTarget()`同步snapshot目标/HP/距离、实际victim、AI current/old target及selection，并使目标相关缓存失效，避免旧引擎切回旧目标；嘲讽失败仍切到需要救援的怪继续建仇恨。
+- `SuspendUnitOffense()/SuspendOffense()/RefreshOffenseSuspension()`：DPS仇恨门早于casting/GCD早退；本体近战、普通敌对读条、自动射击/魔杖、敌对地面AoE都停手，保留victim和友方治疗/增益。宠物按GUID保存原actions-disabled和AI combat-script状态，使用`PET_MODE_DISABLE_ACTIONS`及`SetCombatScriptStatus(true)`暂停自主动作；1.5秒无刷新后只撤销本次添加的限制，**不改变ReactState**，不把原passive强改defensive。临时无宠保留恢复记账，换宠不写回旧状态；`PlayerbotAI.cpp → UpdateAIInternal()`在FSM开关外刷新恢复，不给从未暂停的legacy bot分配FSM记忆。
+- `ResetScenarioState()/SetScenarioHealTargets()/InvalidateSpecialization()`：不能在解除宠物限制前清丢ownership；场景重置保留恢复记账，专精缓存整体重建时也保留deadline/saved/prev/petGuid四项。旧实现整对象赋值会永久丢恢复点，新增负向对照回归可以复现该错误。
+- `AttackAction.cpp → WaitingForTankThreat()`、`DungeonRouteActions.cpp → DungeonDpsHoldFireAction::Execute()`：共用仇恨与准备判据，直接focus攻击也过门；保留站长明确选择的`prio>=5 && Rank==NORMAL`立即集火豁免。
+- `WarlockSeedThreatSafe()/WarlockSeedThreatSafeEarly()`：学会的是27243，爆炸数据使用27285，扫描SCHOOL_DAMAGE effect（本地SQL Effect1对应C++ Effect[0]），半径来自DBC；按种子目标为中心、最大掷骰、法伤、暴击上界、法术与角色仇恨倍率、既有种子的链爆几何上界，检查`predicted <= tankThreat * ratio`。legacy与专属FSM种子入口都走同一守卫。
+- `WarlockSacrificeAuraActive()/WarlockSacrificeActive()/WarlockCanSacrifice()`：0/21/40天赋包含18788，不能因没有41点暗影之怒就判错专精。真实牺牲光环统一使用18789/18790/18791/18792/35701，18788只是施法。牺牲在状态选择前及脱战prep可执行，Aoe状态不会漏掉；FSM召宠入口均尊重增益。
+- `WarlockActions.h → WarlockMayAutomaticallySummon()`及五个`CastSummon*Action::isUseful()`：补齐脱战旧引擎召宠入口，复用同一份五光环表；有真实牺牲增益时，小鬼/魅魔/地狱猎犬/虚空行者/恶魔卫士的自动召唤都不可用。无增益时保留原宠物entry匹配逻辑；不把18788当buff。
+
+**回归与构建证据**
+
+- 基础套件：纯策略54项、实际停手函数7项、实际目标切换函数10项、实际宠物暂停/恢复/专精失效99项、实际开场取消与命中预测38项，合计**208项不重复检查通过**。99项包含原50项宠物检查，不重复相加；专精失效负向对照换回旧实现会失败15项。
+- `verify_summon_*`：真实旧召宠helper及五个动作正文另有**125项通过**，包括五光环×五宠物×无宠/错宠矩阵、18788不当buff、移除buff后恢复；剥掉五处守卫的负向对照恰好失败60项。与基础208项去重相加，最终为**333项通过、0失败**；静态检查另计，不混入333。
+- 最终WSL `Ubuntu-20.04`：先`sync_src.py --apply`同步到真正构建源`/root/Nmangos-tbc`，再`cmake --build /root/nb-build --target mangosd -j8`，退出0；先前已实际重编FSM与核心改动，本次头文件实际触发3个Warlock依赖TU重编及最终重链。产物`/root/nb-build/src/mangosd/mangosd`为**56,821,864 B**，md5 **`8cf7cc2ec08b87f9f8c033de568afa20`**；11个相关文件双侧源码hash全匹配（包括Player.h/Unit.cpp）。完整表、命令和终态见`_agent_tmp/combat_fix_20261108/verify_summon_REPORT.md`与`verify_summon_build.log`。
+- 告警如实保留：最终3-TU增量构建有2条OpenSSL 1.1/3链接告警、0编译告警；先前受影响TU重编另见5条现有格式/NULL运算告警，不据增量结果声称全树零告警。没有编译错误。
+- 测试脚本和完整日志统一保存在`_agent_tmp/combat_fix_20261108/`；生产函数体由脚本从当前源码抽取，再与Unit/Pet/Spell API fake一起编译执行，覆盖的是实际函数正文，不是grep检查替代行为验证。
+
+**证据边界与保留限制**
+
+- 本轮没有游戏/SIM/客户端包实测，也没有dummyall/arms/A-B数据；不能据此宣称首疗时间、死亡率或OT已在实战达标。159/208等离线检查数不代表副本实测次数。
+- 真人坦克优先使用场景指定或`IsTank()`识别；无法识别时仍退化为第一个已接战且有victim的队友。种子预算使用保守暴击/链爆上界；多坦克沿用现有最高坦克仇恨口径，不重新分配怪的归属。
+- 换新宠到下一次停手检查存在一个AI调度窗口；本次按身份恢复不会把旧宠状态写给新宠。已发出的伤害及已有DoT不会因为停止新动作而撤回。
+- 仅本地源码修复与编译验证；未安装、未部署、未启停任何服务、未commit/push，未干扰其他会话运行的本地服。线上仍须另行明确授权和实战验收。
 
 ---
 
@@ -15003,6 +15441,10 @@ schema(JSON) ──生成采样空间──▶ Optuna study (每专精一个 / �
   - FSM 侧累计每次成功施法的 `SpellCost()`，日志 `[DPSFSM-MANA] spent=<n> pct=<n>`（10 秒一条 + 结束一条）；
   - DPM 用 `[DUMMY]` 的 `dmg=` 除以 `spent=` 得到，与 dps 一起进对比表；
   - 只看 dps 会调出"疯狂泄蓝、续航崩溃"的假最优（奥法尤其明显）。
+- **2026-11-09 生产固定装备接线修正（本地实现，未部署/未实机验收）**：云端 `ai_playerbot_bis_gear` 四档 1098 行已存在，但生产初始化/招募专精事务/进本入口没有统一使用它；旧 conf 112 组含重复唯一戒指饰品、双手主副手冲突。新增 `FixedGearLoadouts.h → FindFixedGearLoadout()` 提供 28 专精×4 档的静态完整套装，`BotSpecialization.cpp → PlanFixedGear()/UpdateFixedBotGear()` 统一生产换装及测量台入口；满级托管 bot 不再随机回落。按职业合法性、专精权重、阶段装等筛选，GS/装等参与同权重取舍；沿用历史套装机制约束（奥法、鸟德、盗贼、兽王、暗毁、元素萨，以及神牧 4T5、防骑 4T6），猫德保留狼头，圣物按对应技能用途固定。当前静态表随二进制发布，旧逐槽 conf/BIS 表不再决定该托管路径；阶段映射仍读现有配置。该取舍替代下文历史“生成器只产 conf”的实现要求，避免两份运行期清单互相覆盖。
+  - **事务与稳定性**：`PlayerbotFactory.cpp → InitEquipment()/EquipGear*()/UpgradeGear()`、`UpdateGearAction.cpp → Execute()` 统一到同一事务；`PlayerbotAI.cpp → UpdateAI()` 每 30 秒检查，脱战后补做进出本/登录延后换装。同套 entry 命中直接返回，不创建新件；`EquipUpgradesAction` 与 `ItemUsageValue → QueryItemUsageForEquip()` 阻止自动掉落升级覆盖。装备先规划，背包不足保留原装，安装失败走现有回滚/隔离；旧装仍保留于背包，跨档反复换装会占用空间，尚未实现旧套复用。非战斗专用维护不重置天赋；野德权重不再每次随机猫熊，附魔/宝石固定路径不读临时属性 cap，附魔同分按 spell id 稳定选择，宝石禁止多彩跨类型兜底。
+  - **评分口径**：`GearScoreLite.h → ItemScore()/EquippedContribution()` 对照本机真实 GearScoreLite 公式，保留品质/部位/附魔/四链接宝石字段/猎人倍率及逐层 floor；`PlayerbotAI → GetGearScoreLite()/GetEquippedAverageItemLevel()` 与旧 `GetEquipGearScore()` 分离，`WhoAction → QuerySpec()` 显示插件总 GS 和平均装等。离线 16,704 公式参考用例和 112 套清单（职业、唯一性、武器配对、机制套装）通过；这不等于客户端实测或实际换装回滚验收。未知物品类型/品质按零贡献处理，与插件异常值 -1 有边界差异，正常固定装备不含这些值。
+
 - **⚠ 装备必须钉死（2026-11-01）**：`BOT_EQUIP_BEST_GEAR` 会在**每次重启时重摇装备**
   （实测同一只法师 `sp 1065→1093`、武器 `15/0→10/-1`），是跨重启 A/B 的独立方差源。
   现有静态 BIS（`ai_playerbot_bis_gear`，`dev/233`）已经会把 bot 穿成同一套，但**缺 slot 14（披风）**
@@ -15175,6 +15617,71 @@ schema(JSON) ──生成采样空间──▶ Optuna study (每专精一个 / �
    不要在同一个轮次里追加诊断、翻日志、改代码。
 3. 想追加检查时**单独开一轮**，并说明这一轮要查什么、为什么。
 4. 汇报格式：先给结论数字（表格），再给证据（日志原文），最后给"未解决/待确认"。
+
+### 7. 真实组队与仿真必须同一条决策路径（2026-11-08 配置分叉清理）
+
+本轮已清理此前的执行路径分叉：仿真不再逐 bot 选择 FSM，真实组队也不再依赖配置开关；两者均进入同一生产 FSM。场景仍可提供伤害、治疗、坦克、装备和准备时长等输入，但不能改变决策引擎。
+
+当前实现：
+
+- `PlayerbotAI::UpdateAIInternal()` 无条件调用 `dpsfsm::Tick()`。
+- `DpsFsm::ResolveMode()` 固定返回 FSM；旧 legacy / table / value 选择器、外部 tune 文件和逐 bot 覆写接口已删除。
+- `SimScenario` 的 `mode` 参数被拒绝；`AiPlayerbot.SimMode` 仅控制场景注入，不选择战斗引擎。
+- 合法行为差异仍来自职业/专精、治疗/坦克职责、战斗状态、目标、仇恨和资源；`priority >= 5` 的普通非精英目标继续豁免坦克仇恨启动门。
+
+源码清理后离线回归通过；Ubuntu-20.04 WSL 构建 `mangosd` 退出码 0，产物 MD5 `9afd1a77b98aa8300fc0f4a9206d7acc`，大小 56,689,672 bytes。未运行服务器实战，未部署、未改云端配置或重启服务。
+
+#### 7.0 FSM 与策略行为交接、能源舰微动跟随（2026-11-09，本地修改，未实战验收）
+
+站长反馈：统一 FSM 后 Boss 战策略行为、救人有缺失；具体现场为能源舰老一/老二，Boss 小幅走动时全团跟随，并无输出。本次未读取该现场的客户端包/运行日志，不能把整场零输出归为已经复现或已证明唯一根因。
+
+源码确认与本地变更：
+
+- `DpsFsm.cpp → Tick()` 返回战斗所有权，内层 Decline 并不返还旧引擎施法权。原战复/职业打断/副治疗策略仍存在却被 `PlayerbotAI.cpp → EngineCastGuardListener::Before()` 和施法出口锁拦截，FSM 未完整接管。普通脱战复活没有被证明一概受此锁阻断。
+- `DpsFsm.cpp → TickInner()/TryBossMechanicDecision()`：机制/支持仲裁移到治疗、会返回的仇恨 Hold、普通循环 GCD/节流之前；先停敌对读条/宠物但继续允许救急。移除机制层 SIM 登记与副本地图差异。固定 mode 在早退前初始化。
+- `Engine.cpp → TryBossMechanicAction()/IsRestrictedSupportAction()`：真实挂载的 Boss 显式动作含非施法动作；其他策略仅按实际 SpellEntry 效果接打断/驱散/战复及高优先级受伤友方急救。普通治疗留 FSM；最大生命治疗急救（圣疗）可供治疗职责使用，但要求低血。不是按高 relevance 全面放行伤害。
+- 同一受限执行器保留倍率、有用/可能、监听器真实 Execute 回执与触发窗口回还；前置/替代有深度、节点预算、防环及逐层重分类。匹配父目标的 reach 前置可消费一 tick；不开放伤害替代链。重复攻击当前 victim 不计机制成功，伤害候选仍经实际目标的 `AttackAction::WaitingForTankThreat()`；`priority >= 5` 普通非精英豁免沿用该原生准入。
+- `PartyPositionCoordinator.h → Compute()`：坦克选择增加真实职责检查，已在近战的坦克保持原位，消除按队伍质心追逐 Boss 的反馈；普通分带/分散/击退阵型在当前站位仍满足距离带和视线时保留原位，后续禁站扇区/地形/危险区/间距仍强制处理。击退沙包不再按首个非坦成员选择，不把近战推到 32 码；远程沙包不超其职责距离带。本地 SQL230 对 19219 是 spread，对 19221 是 knockback，符合两场共用此路径的条件，但不代表已核对线上库。
+- `SimScenario.cpp → StartArms()`：上一轮 `mode` 拒绝中的 continue 不推进游标，会无限添加消息；现改为分配前 return 拒绝整批请求，负对照能检出旧循环。
+
+验证：受限 Engine 真实函数体+最小 ABI 33 例；站位真实片段几何 ABI 73 例及职责/沙包静态检查；交接真实函数/连续片段最小 ABI 869 组合、7 静态合同、3 负对照，均通过。各套测试边界不同，不累加为游戏验收数。最终 WSL `Ubuntu-20.04` `/root/nb-build` 构建 `mangosd` 退出码 0；56,723,080 bytes，MD5 `36e76c1dbedd2b11d11e0d634807a320`。存在原有格式串与 OpenSSL 版本链接警告。无安装、部署、启停、云端配置写入、commit/push。
+
+限制：受限桥不入普通队列，不续接 continuers；非支持语义的装备/姿态等前置保守拒绝。Arena 维护迁出方案经审查会覆盖同 tick 机制移动，已撤回，维持原仲裁，不能宣称已修复独立 arena 的全部时序。尚缺能源舰两场真实战斗日志/包证据：有效射程内微动不引起全队重走、危险地板仍躲、真实输出/打断/战复/队友急救成功；当前仅为代码修改和本地验证完成。
+
+#### 7.1 历史记录：2026-11-07 云端复核（已由固定 FSM 实现取代）
+
+> 以下是当时的运行时调查及处置记录，不是当前源码或部署建议。当前源码不再定义 `AiPlayerbot.DpsFsm` / `AiPlayerbot.DpsFsmDefaultMode`，也不提供退回旧决策引擎的配置开关；本轮未改动云端运行配置或二进制。
+
+- 现场（只读）：`/opt/mangos/etc/aiplayerbot.conf`（二进制默认 `../etc/aiplayerbot.conf`，`SYSCONFDIR` 已核）里**没有** `AiPlayerbot.DpsFsm`；
+  `PlayerbotAIConfig.cpp → Initialize()` 默认 `false` ⇒ `PlayerbotAI.cpp → UpdateAIInternal()` 的 `sPlayerbotAIConfig.dpsFsm && dpsfsm::Tick(this)` 恒假。
+- 证据：本次运行 17 小时、12 个 RNDBOT + 2 个玩家账号；`[DPSFSM-HB]` / `[DPSFSM-OWN]` / 逐 bot `[DPSFSM-MODE] spec=…` / `[FSM-CAST]` **全为 0**，
+  同期 `[THREAT-SWITCH]`/`[TANKOT]`/`[PRIO6]` 大量（bot 确实在打）。日志里 4 条 `[DPSFSM-IDS] … reparse` **不是**状态机在跑：
+  `DpsFsm.h` 导出了 `dpsfsm::DetectSpec()`，`.切天赋` 切换后会重解析技能名；它不产生 HB/OWN。
+- 结论：§7 的 `DpsFsmDefaultMode=5` 在云端**空转**；20 个 DPS 专精 + `HealCore`（含 `kHealPriestDisc`）+ 三坦克全都没上过场。
+  站长报的"戒律牧不加血"同因 —— 治疗核心与戒律牧专表都在运行件 `4fa2867c…` 里（`nm` 已证符号存在），但走不到。
+- 处置（2026-11-07 21:35，站长批准）：`/opt/mangos/etc/aiplayerbot.conf` 末尾追加 `AiPlayerbot.DpsFsm = 1`
+  （备份 `aiplayerbot.conf.bak_dpsfsm_20261107_213502`，md5 `5e4fc876…` → `5c342460…`）；**不改代码、不换二进制**，
+  等 04:05 开机后的 04:06 nightly 启动读取。验收点：逐 bot `[DPSFSM-MODE] spec=… mode=5(fsm)`、`[DPSFSM-HB]` 每 30 秒一条、
+  戒律牧 `[DPSFSM-MODE] … heal=1 cfg=…`。回滚 = 删该行 + 重启（或配 `AiPlayerbot.DpsFsmDefaultMode = 0`）。
+- 顺带缺口：云端 world 库**缺表 `ai_playerbot_patrol_window`**（日志反复 `query ERROR`；本地库 1678 行），且**不在任何 dev SQL 里**
+  ⇒ 副本巡逻窗口数据没上云，下次部署要一起同步（不是本条的修法前置）。
+
+#### 7.2 `summon` 静默失败：先加 `[SUMMON]` 诊断（本地已编译，**未部署**）
+
+- 云端 `AiPlayerbot.NonGmFreeSummon = 1` ⇒ 玩家喊 `summon` 时走 `SummonAction::Execute()` 的第一分支 `Teleport(requester, requester, bot)`，
+  **成功和失败都不回话**（只有集合石/旅店老板分支才说 hello/Welcome）⇒ "不回话"本身分不出原因。
+- 代码层静默出口（都不发请求、也不通知玩家）：`requester-teleporting`、`bot-taxi`、
+  `dead-target-unsafe-cross-map`（`ai->IsSafe()` 同时排除跨 map/instance 与"正在传送中"）、`no-los-spot`、`summoner|target-teleporting`；
+  另有战斗竞态：`PlayerbotAI::SendSummonRequest()` 返回 true 之后，`WorldSession::HandleSummonResponseOpcode()` 开头
+  `if (!_player->IsAlive() || _player->IsInCombat()) return;` **静默丢弃**，此时直传兜底不会再跑。
+- 诊断（`strategy/actions/UseMeetingStoneAction.cpp` 新增 `SummonDiag()`）：每个静默出口打一条
+  `[SUMMON] bot=… req=… reqmap/reqinst/botmap/botinst botdead/botcombat/bottele phase reason`，按 (bot, phase, reason) 6 秒节流；
+  成功也留 `sent-summon-request` / `sent-resurrect-request` / `direct-teleport`。
+  **判据**：喊了 summon 而日志里一条 `[SUMMON]` 都没有 ⇒ 命令没到动作层（命令闸门 / 不在队伍 / 机器人不 tick），不是传送流程失败。
+- 编译证据：g++-10 按构建树 flags（`MANGOSBOT_ONE`）`-fsyntax-only` **rc=0 / 0 error / 0 warning**；
+  全量 `make -j16 mangosd` **MAKE_RC=0、`[100%] Built target mangosd`**，FULL_MD5 `36544c1b1f6800cfed2d2434c11497f5`、
+  strip 后 `d1a452f52b8717b65c819fc7707ee644`（48,082,608 B）—— 只装到本地 `/root/mangosd_pb8_all`；**未部署、云端二进制未动**。
+  本次全量构建同时带进了别的在写文件（同步统计 changed=2：`aiplayerbot.conf.dist.in.tbc`、`DungeonRouteActions.cpp`），属当前工作区快照。
 
 ---
 
