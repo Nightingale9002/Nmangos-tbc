@@ -245,7 +245,14 @@ bool GameObject::Create(uint32 dbGuid, uint32 guidlow, uint32 name_id, Map* map,
             // safe to use door cos both have startOpen on same spot
             SetGoState(goinfo->door.startOpen ? GO_STATE_ACTIVE : GO_STATE_READY);
             if (goinfo->door.startOpen)
+            {
                 m_lootState = GO_ACTIVATED;
+                // A door that spawns open and has an auto-close time must stay open for that long.
+                // Without seeding the cooldown, Update()'s GO_ACTIVATED branch sees m_cooldownTime == 0
+                // and closes it on the very first tick (Naxx 181198/181199, autoClose 3 s).
+                if (uint32 autoClose = goinfo->door.autoCloseTime / 0x10000)
+                    m_cooldownTime = time(nullptr) + autoClose;
+            }
             break;
         case GAMEOBJECT_TYPE_TRAP:
             // values from rogue detect traps aura

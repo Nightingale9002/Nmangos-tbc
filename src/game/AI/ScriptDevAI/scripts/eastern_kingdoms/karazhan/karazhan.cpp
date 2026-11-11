@@ -181,11 +181,18 @@ void instance_karazhan::OnObjectCreate(GameObject* pGo)
                 pGo->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
             break;
         case GO_STAGE_CURTAIN:
+            pGo->SetGoState(m_auiEncounter[TYPE_OPERA] == IN_PROGRESS || m_auiEncounter[TYPE_OPERA] == DONE
+                ? GO_STATE_ACTIVE : GO_STATE_READY);
+            break;
         case GO_PRIVATE_LIBRARY_DOOR:
-        case GO_MASSIVE_DOOR:
-        case GO_GAMESMANS_HALL_DOOR:
-        case GO_NETHERSPACE_DOOR:
-        case GO_DUST_COVERED_CHEST:
+            if (m_auiEncounter[TYPE_ARAN] == IN_PROGRESS)
+            {
+                pGo->SetGoState(GO_STATE_READY);
+                pGo->SetLootState(GO_READY);
+                pGo->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+                pGo->SetFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+            }
+            break;
         case GO_MASTERS_TERRACE_DOOR_1:
         case GO_MASTERS_TERRACE_DOOR_2:
             if (m_auiEncounter[TYPE_OPERA] == DONE)
@@ -193,8 +200,12 @@ void instance_karazhan::OnObjectCreate(GameObject* pGo)
                 pGo->SetGoState(GO_STATE_ACTIVE); // 直接打开
             }
             break;
+        case GO_MASSIVE_DOOR:
+        case GO_GAMESMANS_HALL_DOOR:
+        case GO_NETHERSPACE_DOOR:
         case GO_BLACKENED_URN:
         case GO_CHESSBOARD:
+        case GO_DUST_COVERED_CHEST:
             break;
 
         // Opera event backgrounds
@@ -277,19 +288,40 @@ void instance_karazhan::SetData(uint32 uiType, uint32 uiData)
                 if (GameObject* pDoor2 = GetSingleGameObjectFromStorage(GO_MASTERS_TERRACE_DOOR_2))
                     pDoor2->SetGoState(GO_STATE_ACTIVE);
             }
-            // use curtain only for event start or fail
-            else
-                DoUseDoorOrButton(GO_STAGE_CURTAIN);
+            // Explicit state is idempotent; never toggle a live arena barrier.
+            if (GameObject* curtain = GetSingleGameObjectFromStorage(GO_STAGE_CURTAIN))
+            {
+                if (uiData == IN_PROGRESS || uiData == DONE)
+                    curtain->SetGoState(GO_STATE_ACTIVE);
+                else if (uiData == FAIL || uiData == NOT_STARTED)
+                    curtain->SetGoState(GO_STATE_READY);
+                sLog.outString("[OPERA-CURTAIN] encounter=%u state=%u collision=%u", uiData,
+                    uint32(curtain->GetGoState()), uint32(curtain->IsCollisionEnabled()));
+            }
             break;
         case TYPE_CURATOR:
         case TYPE_TERESTIAN:
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_ARAN:
-            if (uiData == FAIL || uiData == DONE)
-                DoToggleGameObjectFlags(GO_PRIVATE_LIBRARY_DOOR, GO_FLAG_LOCKED, false);
-            if (uiData == IN_PROGRESS)
-                DoToggleGameObjectFlags(GO_PRIVATE_LIBRARY_DOOR, GO_FLAG_LOCKED, true);
+            // Keep the library door state explicit and idempotent; do not toggle an open door.
+            if (GameObject* libraryDoor = GetSingleGameObjectFromStorage(GO_PRIVATE_LIBRARY_DOOR))
+            {
+                if (uiData == IN_PROGRESS)
+                {
+                    libraryDoor->SetGoState(GO_STATE_READY);
+                    libraryDoor->SetLootState(GO_READY);
+                    libraryDoor->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+                    libraryDoor->SetFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+                }
+                else if (uiData == FAIL || uiData == DONE)
+                {
+                    libraryDoor->SetGoState(GO_STATE_ACTIVE);
+                    libraryDoor->SetLootState(GO_READY);
+                    libraryDoor->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+                    libraryDoor->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+                }
+            }
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_NETHERSPITE:
@@ -313,10 +345,33 @@ void instance_karazhan::SetData(uint32 uiType, uint32 uiData)
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_NIGHTBANE:
+        {
+            // Terrace doors: closed for the whole encounter, open again on fail/kill.
+            // DoUseDoorOrButton is a toggle: with the doors already forced open after the Opera it
+            // would close them on NOT_STARTED and reverse the pair on every later call.
+            uint32 const doorEntries[2] = { GO_MASTERS_TERRACE_DOOR_1, GO_MASTERS_TERRACE_DOOR_2 };
+            for (uint32 entry : doorEntries)
+            {
+                GameObject* pDoor = GetSingleGameObjectFromStorage(entry);
+                if (!pDoor)
+                    continue;
+
+                pDoor->SetLootState(GO_READY);
+                pDoor->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+                if (uiData == IN_PROGRESS)
+                {
+                    pDoor->SetGoState(GO_STATE_READY);
+                    pDoor->SetFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+                }
+                else
+                {
+                    pDoor->SetGoState(GO_STATE_ACTIVE);
+                    pDoor->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+                }
+            }
             m_auiEncounter[uiType] = uiData;
-            DoUseDoorOrButton(GO_MASTERS_TERRACE_DOOR_1);
-            DoUseDoorOrButton(GO_MASTERS_TERRACE_DOOR_2);
             break;
+        }
         // Store the event type for the Opera
         case TYPE_OPERA_PERFORMANCE:
             m_uiOperaEvent = uiData;

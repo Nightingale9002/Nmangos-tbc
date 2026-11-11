@@ -3794,6 +3794,16 @@ if (remaining > sizeof(sAuthLogonChallengeBody))
 - **运维口径（顺带定案）**：**在线角色不能靠 SQL 挪** —— `characters` 的位置会被服务端定期保存覆盖；本次给 `UPDATE … WHERE online=0` 守卫实测**静默 0 行**（改库时他还在线）。在线只能走游戏内命令（命令表见 `Chat.cpp`：`.tele name <角色> <命名点>` / `.recall` / `.summon` / `.goname`）或先踢下线再写库。**炉石点存在 `character_homebind`（map/zone/x/y/z），不是 `characters` 的列**；本例炉石 = map 0 / zone 12 / `-8949.95, -132.493, 83.5312`（北郡修道院）。另：`game_tele` 里最近的命名点是 `NorthshireValley`（map 0 / `-8921.09, -119.135, 82.195`，与炉石相距约 30 码）。
 
 - 顺带记录（未改）：该角色 `health = 1000003712`、`power1 = 100000000`、`extra_flags = 7` —— 人为改过的超上限数值。
+### 2026-11-11 普通模式在不可进入副本登录：门外回退已完成，代理报物品更新失败（分析，未改）
+
+站长提供09:44:08–12 Sugar日志：六个WowGuid128 low=7872463–7872467/7427651每秒“游戏内对象信息更新失败”；强调预期应被送到副本门外。本轮只读云端日志、目标行查询及下载已有封包，未改服务/DB/代理/代码。
+
+一手封包证据：Asggd guid5于约09:43:19登录；CMSG_PLAYER_LOGIN→SMSG_LOGIN_VERIFY_WORLD(map532，歌剧场坐标)→SMSG_TRANSFER_PENDING(map0)→SMSG_NEW_WORLD(map0，-11034.8,-2003.8,92.98)→MSG_MOVE_WORLDPORT_ACK。角色表当前位置也为map0上述门外位置、online1，09:46再次登录的VERIFY_WORLD直接为map0。因此“服务端未发起或未完成门外回退”不成立；这不证明现代客户端界面/对象状态正确。轮转pkt开头有稀疏空洞且缺PKT文件头，解析以SMSG/CMSG记录头定位并用当前进程04:06:26启动时间恢复近似绝对时间，顺序与相对间隔准确，不能宣称毫秒级绝对对时。
+
+六个GUID静态查item_instance均owner_guid5：7872463–67是entry23435，7427651是entry33183；不是副本生物GUID。逐字段解码：ACK约69ms后同一136块自建包内六件物品均有CREATE_OBJECT/type1、movement flags0x18、GUID/entry/owner/duration字段；随后每秒六个VALUES块只更新ITEM_FIELD_DURATION(field15)。09:44:08该六GUID与提供的报错逐一吻合；09:46门外重登也发出同六物品创建与duration更新。当前服务端抓包不支持“漏发这六个物品create”或“先values后create”的解释。对应代码`Player.cpp → BuildCreateUpdateBlockForPlayer()`创建自身背包、`Item.cpp → UpdateDuration()`产生每秒更新。仅有服务端→代理输入，尚不能证明代理→现代客户端输出和对象表如何处理。
+
+另有确定时序需排查：NEW_WORLD(map0)之后、ACK之前仍发INIT_WORLD_STATES(map532)，随后ACK完成才有map0世界状态。源码`CharacterHandler.cpp → WorldSession::HandlePlayerLogin()`在回退TeleportTo发起后无条件继续`SendInitialPacketsAfterAddToMap(false)`；后者UpdateZone仍读取旧map。该交错与需要登录回退才出现的代理异常相符，但未证明它导致物品对象更新失败，不能据此贸然改时序或宣称代理根因。Sugar源码历史位置D:/heitu/workspace/sugar本机仍不存在，仅有本机tools/sugar-proxy运行目录；进一步定案需对应代理对象创建/换图/更新代码或其输出抓包。原始及解码证据保存在本地_agent_tmp/bot_release_20261110的cloud_login_0944.pkt、login_instance_packet_timeline.json、login_item_verified_decode.json；禁止把包含其他会话数据的原始pkt公开提交。
+
 ## [机制] 飞行/出租车（taxi）总账 — 2026-09-17 ~ 2026-09-24（本章合并自 6 章：[机制] 客户端 2.5.3：点飞行经常提示"离空运站太远"（ERR_TAXITOOFARAWAY）— 2026-09-17 已修（待推云）、[机制] 飞行路线「会走不同路径」的机制排查 —— 2026-09-23（纯分析，**未改任何东西**）、[机制] 「未知的服务器错误」= `ERR_TAXIUNSPECIFIEDSERVERERROR`：它只在"一个航段都没建成"时发出 —— 2026-09-24（诊断日志已加，**行为未改**）、追加：飞行日志改回**可开关**（2026-09-24 站长：复现穿模时没有弹出日志）、【关键机制】飞行中"客户端上报移动被服务端接受" —— 绕过 DBC 航线的真正入口（2026-09-24 定位）、飞行穿模追查（2026-09-24 夜）：云端日志实测 + 提交考古 + 探针升级）
 
 > **合章说明（2026-10-16）**：本章由 6 个旧章合并；旧结论一律保留，被后续推翻/取代的已就地标注。
@@ -10036,6 +10046,89 @@ if (!GetGOInfo()->GetDespawnPossibility() && !GetGOInfo()->IsDespawnAtAction() &
   - 验证（2026-11-07）：WSL `Ubuntu-20.04` 的 `/root/nb-build` 编译 **0 error**，`FULL_MD5=260335264f40372dad5758e8cefab0ff`（strip 后 `/root/mangosd_pb8_all` md5 `f1d8a7074c52d0482378b519108bbede`）；本机 Linux 剖析台启动冒烟 `World initialized` ✓、`ERROR` 0 ✓、`dbscripts_on_go_use` 40 条加载 ✓。**未部署**（等站长指令），游戏内验收未做。
 - ⚠️ 另记：开门脚本**不看门上的锁** —— `UseOpenableObject()` 只切状态、不校验 `lock 1687`，没钥匙也能靠拉杆开门（本次未做无钥匙对照测试）。
 
+#### 2026-11-10 全面放宽：静态门 + 脚本机关按钮「关闭只复位、不再移出世界」（玛瑟里顿巢穴门 183847 关门＝消失）
+> **2026-11-11 全面复审更正：下列是上一轮广义候选补丁及历史推断，不是全副本功能验收结论，不得凭启动成功发布。** `neverDespawns` 只影响去激活后的生命周期，不能修复错误 `GO_STATE`、跨事件初始化和残留 `IN_USE`。静态门583/159/424和副本按钮110的数量已复核；“世界图29”“世界图无脚本165”和“187/187都是已确认故障”的口径未复现，不能沿用为实测。静态门规则也包括世界图/BG门，并非只动副本；模板级dbscript且无autoClose的世界图按钮177673、177404仍有覆盖缺口。原“面板教训所以排除BUTTON”论据错位：184125/184126本身是DOOR。详见同章11-11专项复审；广义补丁仍独立待验证，本轮卡拉赞定点修复不依赖它。
+- 现象（站长）：玛瑟里顿的巢穴开 boss 后房间应该关门，实际没关；并指出"许多 GO 都有问题"，要求全面检查。
+- 一手证据：云端只读从库 `tbccharacters.gameobject_respawn` 有 `guid=5440006 / instance=3 / respawntime=2026-11-10 17:12:46`（= 16:57:46 关门时刻 + 900 s）⇒ **门其实被关过**，但随即被核心移出世界 900 秒，玩家看到的是"门没了 / 没关"。
+- 机制：门 183847（map 544、`type=0 DOOR`、`flags=0x20`、`data0=1` 出生即开、`data2=0` 无自动关闭）由 `instance_magtheridons_lair::SetData()` → `ScriptedInstance::DoUseOpenableObject(GO_DOODAD_HF_MAG_DOOR01, false)` 关闭 ⇒ `GameObject::UseOpenableObject()` → `GameObject::ResetDoorOrButton()` → `SetLootState(GO_JUST_DEACTIVATED)`；旧 `neverDespawns` 只认 `autoCloseTime>0` 的门，这扇门 `data2=0` ⇒ 落进"移出世界 + 按 900 s 排重生"。
+- 修法（`GameObject.cpp` → GO_JUST_DEACTIVATED 分支，三个判据并入 `neverDespawns`）：
+  - `staticDoor = type==DOOR && m_spawnedByDefault && HasStaticDBSpawnData()`（**不再要求 autoClose>0**）⇒ 静态门关闭只复位到关闭态；
+  - `autoCloseScriptedLever = type==BUTTON && (m_hasGoUseScript || GetScriptId()) && autoClose>0 && m_spawnedByDefault && HasStaticDBSpawnData()`（按钮侧从「只认 `dbscripts_on_go_use`」扩到「或带 `ScriptName`」）；
+  - `staticInstanceButton = type==BUTTON && GetMap()->IsDungeon() && m_spawnedByDefault && HasStaticDBSpawnData()`（**实例内**的静态按钮一律按"机关道具"处理——黑石塔火盆 175528-175533、黑铁符文 170578-170584、厄运水晶藤 179502 这类由实例脚本 `DoUseDoorOrButton(guid)` 开关、自身没有脚本的按钮靠这条兜住）；
+  - 脚本/法术当场召唤的门、负刷点门、**世界图/战场**的无脚本按钮（烟花/火把/旗帜/邮箱）行为一律不变；`m_forcedDespawn`（如 Naxx 克总触发器 181444 自己 `SetForcedDespawn`）仍走原路径。
+- 影响面（云端只读从库普查 + 只读脚本审计）：
+  - 静态门 **583 个刷点**（`autoClose>0` 159 + **`autoClose=0` 424（406 entry，本次新覆盖）**）；
+  - 脚本/实例机关按钮：世界图 29 个（16 dbscript 拉杆 + 13 SD2 按钮：Gnomeregan `go_gnomeface_button` 142214-142219、Fire of Elune 177417、Naga Brazier 178247、Unadorned Stake 175787）+ 实例内静态按钮 **约 110 个刷点**（黑石塔/黑石深渊火盆与符文、厄运水晶、通灵/斯坦索姆/诺莫瑞根/血色等）；
+  - 不动的：世界图无脚本按钮 165 个刷点（烟花/火把/旗帜）、战场旗帜（`IsDungeon()` 为假）、负刷点门。
+  - 审计口径：ScriptDevAI 门/按钮调用点 291 处 → 解析到 184 个 entry / 190 个静态刷点，其中 **187 个刷点**在旧逻辑下"关一次就消失"（**187/187 的 autoClose 都是 0**，即 2026-10-24 的 autoClose 判据一个都罩不到），分布在 **31 个副本场景**（列表见审计：影牙/死亡矿井/剃刀沼泽/黑暗深渊/奥达曼/诺莫瑞根/沉没神庙/血色/黑石塔/黑石深渊/通灵/祖格/斯坦索姆/厄运/黑翼/安其拉神殿/卡拉赞/纳克萨玛斯/破碎大厅/鲜血熔炉/玛瑟里顿/蒸汽地窟/风暴要塞/禁魔监狱/能源舰/暗影迷宫/塞泰克/旧希尔斯布莱德/黑暗神殿/格鲁尔/祖阿曼/太阳井/魔导师平台等）。
+- 回归复核：184912（破碎大厅门）、183450（卡拉赞门房之门）、183049（蒸汽地窟主厅门）都是静态 DOOR ⇒ 仍"关闭后留在世界"，不推翻 2026-10-10 / 10-24 的结论。
+- 验证：WSL 编译 **0 error**，`FULL_MD5=5e80329eed3e842b26f54413ed921f88`（strip 后 `/root/mangosd_pb8_all` md5 `a53b11b89638f96eb58537b3a7ff8db8`）；启动冒烟 `World initialized` ✓、`SERVER STARTUP TIME 0 minutes 49 seconds`、`ERROR` 0 ✓（本机 8086 被另一会话的测试服占用，冒烟在 bind 阶段 abort，与本次改动无关）。**未部署**（站长 2026-11-10 指示"先不动云端"），游戏内验收未做。
+- 部署注意：`characters.gameobject_respawn` 里遗留的"门重生行"仍会把门藏到到期（当前云端该表 0 条未来行，无需清理）；以后若再出现，按 dev/165 / dev/217 的静态清理思路处理。
+- 验收口径：玛瑟里顿开 boss → 门口大门**关上并留在原位**（不再消失）；团灭/击杀按脚本重新打开；`.gobject target` 能选中门。
+
+#### [数据] 黑暗之门旁那两个传送门："门在那儿、点不动"就是 TBC 原样（2026-11-10 定案，**不改**）
+- 起点（站长）：黑暗之门旁边两个传送门点不动，怀疑"官服是可交互的传送门 GO"。
+- 数据面（可查的部分）：
+  - 那个位置只有两条 creature：`18967`（Alliance Portal，guid 68119）/ `18968`（Horde Portal，guid 68120），`Scale=1`；displayId 5561/1070 在**客户端 DBC**（`CreatureDisplayInfo`→`CreatureModelData`）里是 `Creature\WATERELEMENTAL\WaterElemental.mdx` / `Creature\FireElemental\FireElemental.mdx` —— 这是"库里的 NPC 用什么模型"，**不等于**玩家看到的那两个门就是它们（站长确认现场看到的是传送门造型）；
+  - 三个 TBC 库（`tbcmangos` / `tbcmangos_orig` / `tbcdb_ref`）和 `wotlkmangos` 一致：这两个位置**没有任何门 GO 刷点**；只有 `acore_world`（AzerothCore WotLK 库）在同坐标多出 `195139`/`195140` 两个可点击门 GO（type 22、displayId 4396/4395 → `MagePortal_Stormwind.mdx` / `MagePortal_Ogrimmar.mdx`、spell 17334/17609、`partyOnly=0`）。
+- 客户端能不能判定"该是哪一种"：**不能**。客户端只有模型库 + 地图几何（能回答"这里能用什么模型/地图里有没有烤这个模型"），而**GO 刷点与可点击性完全在服务端**（`gameobject` 表 + spell）。所以"原版该不该刷门 GO"只能靠外部实测证据。
+- 外部实测（定案依据）：TBC Classic 2021-06 的官方论坛帖 [PSA - Hellfire Portal to Stormwind](https://us.forums.blizzard.com/en/wow/t/psa-hellfire-portal-to-stormwind/990170) —— 楼主贴出"黑暗之门旁、联盟飞行管理员位置的暴风城传送门"，多人回帖 **“It doesn't work” / “That portal doesnt work” / “Is that portal broken on purpose or a bug? Because you can't use it”** ⇒ **TBC（2.5.x）原版就是"门看得见、点不动"**；能用的版本是 WotLK 及以后（现代正式服当然能用）。
+- 处理（站长 2026-11-10 拍板"那就不改了"）：**不改数据、不补 GO**。曾写的 `dev/240`（新增 `195139`/`195140` 模板 + guid 5850044/5850045 刷点 + 中文名）已撤回：文件在 `_agent_tmp/240_withdrawn_黑暗之门传送门.sql`（不在 `dev/` 下，不会被 apply 脚本扫到），本地库已删回，SQL 索引也已还原。以后要做"便利传送门"再拿回来（需重启生效）。
+- 方法论提醒：本库**不是原版权威**，只能当强证据之一；"官服该有什么"要多库交叉 + 客户端数据 + 外部实测三条腿（今天已连续踩到门/机关消失、陷阱直径、这处传送门三处）。
+
+#### 卡拉赞「埃兰之影」门控——2026-11-11 复审：撤回 UseOpenableObject 错补丁，改副本显式状态
+- 站长报“埃兰战斗也没有关门”。模板184517的自动关闭时间为327680（5秒），本地、参考库、云端均相同；先前误读表格生成的SQL246所称“云端data2=0”已被实查推翻，文件已移出dev自动应用目录，没有应用它。
+- `01d118d5f` 为修露台门，把 `OnObjectCreate()` 原本只登记的一整组GO都加入“OPERA DONE→ACTIVE”。其中图书馆门变成 `state=ACTIVE、loot=READY` 的混合态，不能再把“只加锁没有关闭”孤立视作唯一根因。
+- **前一轮 `UseOpenableObject(false/true)` 补丁撤回**：该API内部调用toggle并置ACTIVATED；真实函数回归证明184517在混合态下先关门，5秒后Reset又反向开门。编译/启动不曾验证这个行为，旧构建不能作功能修复证据。
+- 当前修正：`OnObjectCreate()` 不再因OPERA打开图书馆门；若ARAN正在进行则明确设READY+loot READY+清IN_USE+LOCKED。`SetData(TYPE_ARAN)` 进战斗显式设同样关闭状态，FAIL/DONE设ACTIVE+loot READY+清IN_USE+解除LOCKED。不调用toggle，不更改全局Door/Button API，不依赖广义neverDespawns候选。
+- 同时恢复此前误回退丢失的歌剧幕布修正：创建和事件变化都按OPERA IN_PROGRESS/DONE→ACTIVE、FAIL/NOT_STARTED→READY；保留碰撞诊断，不宣称它已证明大灰狼闪避因果。
+- 验证和限制见下一节：离线生产函数套件通过定点用例，未客户端/副本实测、未部署。该文件含非UTF8字节，本轮保持GBK/CRLF并原子按字节替换，未重编码全文。
+
+#### 卡拉赞象棋「灰尘覆盖的箱子」初始“使用中”——2026-11-11 自研回归复审（本地定点修正，未部署）
+- 报障对象：Dust Covered Chest，GO entry185119、guid5320287。初始模板为CHEST、flags16=NO_INTERACT，**不是IN_USE或LOCKED**。负刷点-86400由象棋奖励脚本控制，addon无state覆盖，掉落20712与参考库一致。本轮没有更改数据库。
+- **提交归因已查实：`01d118d5f`（2026-08-05，“修复主人的露台门”）**。该提交给包含幕布、图书馆门、巨门、棋手大厅门、虚空门、象棋箱子和两扇露台门的整组case加了“OPERA DONE→SetGoState(ACTIVE)”；提交前整组仅登记。箱子因此可能在创建/网格重建时先变ACTIVE，`DoFinishChessEvent()`仅刷出、解禁、生成奖励，不清这个错误state。
+- 不能将ACTIVE直接等同实际有人占用：`m_isInUse`是另一内存成员；本轮证据确认的是错误开启态与正常拾取外观同貌。客户端确切错误文本和报障对应实例仍待封包/实地验收。
+- 子代理第一版报告称“upstream/master相同，属长期上游缺陷”被上述**本地提交diff及父版本**推翻；本地远端跟踪分支不是暴雪原始证据。以本节为准。
+- 修正 `OnObjectCreate()`：箱子保留case及GUID登记，仅不改state；普通自闭的Gamesman's Hall Door也移出歌剧组；Massive/Netherspace门保持各自模板startOpen初态、不再挂在OPERA上。只有原补丁目标两扇MASTER_TERRACE门保留OPERA DONE开门；stage左右门原有进度规则保留，幕布单独明确状态。
+- 保留奖励安全边界：不在创建/重载时按CHESS DONE重刷，不生成第二份loot，不提前清NO_INTERACT，不伪清正在拾取成员。负刷点箱子的拾取持久化不足是既有边界，不能用“重载再刷”修补，否则有重复领奖风险。
+- **离线回归：真实生产函数正文编译运行，311 checks，305通过、6项全局toggle既有契约限制、0项未预期失败**。细分OnObjectCreate124/124、TYPE_ARAN140/140、源码不变量7/7、全局API34/40；HEAD负对照237/311并有68项未预期失败，9个变异全部被检测。计时只模拟Update相关两条转移，不等价整服/客户端功能验收。
+- **全局范围复查而未擅改的事项**：`UseDoorOrButton/ResetDoorOrButton`是历史toggle API，直接将其改set会影响18+脚本调用；startOpen+autoClose初始timer和重生后模板静止态、无自动关闭门的IN_USE滞留另有风险，保留在审计报告，不通过继续加对象豁免掩盖。原全局候选不构成本轮定点修复已覆盖所有GO的证明。
+#### 玛瑟里顿巢穴“开 boss 不关门”——2026-11-11 复审与定点修正（本地已改，未部署）
+- 站长口径更正：这一处是**一直没关上**，不是“关了之后消失”；此前把 `gameobject_respawn` 里 `guid=5440006` 的历史行当作“关过”的证据不够，门当时是否真的进入关闭态需按脚本链路逐段看。
+- 链路（符号级）：`mob_hellfire_channelerAI::Aggro()`（`boss_magtheridon.cpp`）→ `instance_magtheridons_lair::SetData(TYPE_CHANNELER_EVENT, IN_PROGRESS)` → 原代码 `DoUseOpenableObject(GO_DOODAD_HF_MAG_DOOR01, false)`。这条链路有两个缺陷：① `UseOpenableObject(false)` 只在 `GetGoState()==GO_STATE_ACTIVE` 时动作，且内部走 `UseDoorOrButton()/ResetDoorOrButton()`（toggle 语义）——玩家点过门、或门已经 READY 时调用会什么都不做/方向相反；② 关门若走到 `ResetDoorOrButton()`，会进入 `GO_JUST_DEACTIVATED`，该门 `autoClose=0`、不在 HEAD 豁免内 ⇒ 直接按 900 s 刷点被移出世界（这才是“关了就没”的来源）。另外原代码用 `if (m_auiEncounter[1] == uiData) break;` 早退，战斗中玩家把门点开后不会再触发关门，且关门时**没有上锁**（模板 `flags=0x20` 只有 NODESPAWN）。
+- 修法（`magtheridons_lair.cpp` → `instance_magtheridons_lair::SetData()` 的 `TYPE_CHANNELER_EVENT` 分支，与卡拉赞埃兰同一套、不依赖全局重生候选）：`IN_PROGRESS` 每次调用都显式 `SetGoState(GO_STATE_READY)` + `SetLootState(GO_READY)` + 清 `GO_FLAG_IN_USE` + 上 `GO_FLAG_LOCKED`（幂等，玩家点不开、网格重建也回不到开）；`FAIL`/`DONE`/`NOT_STARTED` 显式 `GO_STATE_ACTIVE` + 清 IN_USE + 解 LOCKED。发送 `AI_EVENT_CUSTOM_B` 和重置 `m_uiCageBreakTimer` 只在状态真正变化时执行，避免重复触发。**不再调用 toggle API**，因此不进入 `GO_JUST_DEACTIVATED`，门不会再被移出世界。
+- 副作用核对：`FailBoss()` 内部 `SetData(TYPE_CHANNELER_EVENT, NOT_STARTED)` 与本分支形成一次递归，行为为新代码的“开门+解锁”幂等路径（改动前同样存在该递归）；`TYPE_MAGTHERIDON_EVENT DONE` 原有的开门调用保留作冗余，随后被本分支再显式确认一次。
+- 验证：WSL 编译 0 error；源码不变量检查确认 `TYPE_CHANNELER_EVENT` 分支内**不含** `DoUseOpenableObject`，且含 `GO_FLAG_LOCKED` 的设置与解除；离线行为套件（真实生产函数）`worktree: 0 unexpected failures` 依旧通过。**未部署，未做副本实战**——验收口径：开任一 channeler → 门立即关闭且在整场战斗中保持关闭、点击显示锁住；团灭/击杀后门打开且可通行。
+
+#### 卡拉赞「夜之魇」露台门原为 toggle——改为显式状态（站长 2026-11-11 确认：开战关门、结束开门）
+- 原代码 `SetData(TYPE_NIGHTBANE)` 对本就"歌剧后常开"的两扇露台门调 `DoUseDoorOrButton()`（toggle）：`NOT_STARTED` 会把门关上、之后每次事件再反向一次，方向完全取决于当前状态。
+- 修法：`IN_PROGRESS` → 两门 `GO_STATE_READY` + `SetLootState(GO_READY)` + 清 `IN_USE` + 上 `LOCKED`；其余（FAIL/DONE/NOT_STARTED）→ `GO_STATE_ACTIVE` + 清 `IN_USE` + 解 `LOCKED`。不再用 toggle，幂等。
+- 验证：WSL 编译 0 error；离线套件 `worktree 305/311、0 unexpected`（6 项为全局 toggle 既有契约限制）；源码不变量：`TYPE_NIGHTBANE` 分支内不含 `DoUseDoorOrButton`，且同时含 `GO_STATE_READY` 与 `GO_FLAG_LOCKED`。未做副本实战。
+
+#### 蒸汽地窟 183049 的 `IN_USE` 滞留——站长 2026-11-11 判定"现状是对的"，不改
+- 2026-10-10 已定案为时序、非 bug；本轮审计发现的"`autoClose=0` 的门被脚本打开后 `GO_FLAG_IN_USE` 无人清"在该实例不影响实际通行（门处于开启态、碰撞关闭），站长确认不改。后续若出现"门该开却点不动"再按实例显式清标记处理。
+
+
+#### `startOpen=1 && autoClose>0` 的门首个 tick 就被关掉——2026-11-11（本地已改，未部署）
+- 证据（只读审计）：`GameObject::Create()` 对 `startOpen=1` 设 `GO_STATE_ACTIVE` + `m_lootState=GO_ACTIVATED`，但 `m_cooldownTime` 构造为 0；`GameObject::Update()` 的 `GO_ACTIVATED` 分支是 `if (GetAutoCloseTime() && m_cooldownTime < time(nullptr)) ResetDoorOrButton();` ⇒ 带 autoClose 的 startOpen 门在**第一个 Update tick** 就被复位，而不是等 autoClose 秒。
+- 数据面：本地/从库全表只有 **2 个刷点**命中 `type IN (0,1) && data0=1 && data2>0 && spawntimesecsmin>=0`——Naxx `181198`/`181199`（`data2=196608`，3 秒）。
+- 修法：`GameObject::Create()` 的 DOOR/BUTTON 分支在 startOpen 且 `autoCloseTime/0x10000 > 0` 时写 `m_cooldownTime = time(nullptr) + autoClose`。
+- 影响：只把这两扇 Naxx 门的关闭时刻从“立刻”推迟到“3 秒后”，不产生新的长期开门状态；其余 startOpen 门 `autoClose=0` 不受影响。
+- 验证：WSL 编译 0 error、离线套件全绿；未做副本实测。
+
+
+- 本轮WSL编译链接MAKE_RC=0、0 error（尾版源码：卡拉赞定点 + 夜之魇门控 + 玛瑟里顿门控 + startOpen 计时）：完整MD5 `531c707949e9aec8bf8838528648b64e`、strip MD5 `2c3e910ad3dac79a6d7ddb58419ab549`，产物在 `/root/bin_history/go_final_20261111/`（full + stripped）；二进制内 `OPERA-CURTAIN` 诊断串计数=1，证明幕布修正已编入。**未安装、未部署、未启停测试服**。
+- **广义核心候选已隔离**：`GameObject::Update()` 里 `staticDoor`（所有静态门）/ `staticInstanceButton`（所有副本按钮）/ 按钮 `|| GetScriptId()` 三段扩展本轮**未验证、已从源码撤回**（该文件当前与 HEAD 逐字节一致，sha256 `10c63661…e0cdc`）；原补丁与逐字节备份在 `_agent_tmp/go_review_baseline_20261111/`，待单独做影响面与验收后再启用，本次卡拉赞定点修复不依赖它。
+- 构建仍含其他会话未提交 WIP（`PlayerbotAI.cpp`、`DpsFsm.cpp/h` 等），因此该二进制**不是 karazhan-only 发布包**，不能用于"仅本修复"的归因；此前 bind 失败/仅 `World initialized` 的记录只能算加载观察。
+- **广义候选验证（2026-11-11 夜，已量化证伪，不启用）**：把原文候选的三个布尔表达式从补丁里逐字提取，用独立递归下降求值器对本地库全表 72,385 行刷点求值，并用第二个手写 SQL 实现在 18 个计数上交叉核对（全部一致）：
+  - HEAD 覆盖：159 刷点（steady 口径 175）；原文候选：700 / 710；**新增 535 条 / 505 entry / 51 map**；
+  - 新增构成：门 424（**全部 autoClose=0**，等于删掉 auto-close 条件）、按钮 111；地图：世界 80、5 人 289、团本 146、战场 12、竞技场 8；
+  - **安全问题（三条足以否决）**：① 新增门里 **103 条是 cage/prison/cell/pen/portcullis**（Bristlelimb Cage 15、Ethereum Prison 14、Cell Door 11…），生命周期归任务/脚本，不能一律常驻；② 战场/竞技场 20 条门（AV Gate、WSG Portcullis、AB 门、EotS 力场）未排除；③ 按钮侧 `|| GetScriptId()` 把 7 个世界图按钮（Fire of Elune ×5、Naga Brazier、Unadorned Stake）也纳进来，且 15 个 `autoClose>0` 的副本一次性效果按钮（Headless Horseman Candle、Steam small、两个 Hologram 等）会从"按 DB 计时重生"改成常驻——与注释声称的"世界/战场按钮保持旧行为"不符。
+  - 进一步收窄到"带 `GO_FLAG_NODESPAWN` + 排除战场/竞技场"后仍新增 **365 条，其中 101 条 cage/prison/cell**（如 Warmaul Prison 182484/NODESPAWN/ac=30），笼门是否应常驻没有证据 ⇒ **也不启用**。
+  - 结论：**放弃全局豁免路线**，改为"谁出问题就在该实例脚本里显式定状态"（卡拉赞埃兰/象棋/幕布、玛瑟里顿已按此修完）；全局候选补丁仅存档于 `_agent_tmp/go_review_baseline_20261111/`，不进入部署。
+  - 附带修正：先前"新增 405 / C 覆盖 577"是按简化 SQL 的估算，以本节审计数字（535 / 365）为准；`m_hasGoUseScript` 只按 `dbscripts_on_go_use` 的 GUID 置位，`GetScriptId()` 在本库等价于 `ScriptName <> ''`（未注册的脚本名同样非 0）。
+- 后续实际验收：箱子不因歌剧完成预开；正式胜棋后能正常拾取且友方局不重复领奖；ARAN开战关门并超过10秒保持、结束解锁；幕布在战斗中网格重建仍保持正确碰撞。上述实地项尚未完成。
+
 ---
 
 ### [机制] 纳杉地面火没有伤害 ＝ 陷阱 GO 的触发直径是 0（`dev/170`，已上云）—— 2026-10-09
@@ -10965,6 +11058,18 @@ DB-SCRIPTS 找不到 buddy 等）判得准。
   （`Chat.cpp`/`Level3.cpp` 的那两条报错是 build 树陈旧 PCH 造成的假报错，详见 vmap 那一节的说明）。
 - 交接文档同步：`dev/部署注意事项_conf文件的坑.md` 的 AHBot 验证步骤已改为按标签 grep；
   另在 `dev/README_文档导航.md` 索引里加了本节。
+
+### 2026-11-11 后续：完整日志存档、定期回传与防写满（日志运维已生效）
+
+站长明确要求云端所有bot行为日志尤其副本战斗日志归档分析，定期回传本地并防止再次磁盘写满。只做日志运维变更，未部署/停止/重启/reload游戏，原mangosd PID1627在16:39仍持续运行约12.5小时。
+
+- 首份全量快照54个文件（日志目录常规文件及两类控制台日志），压缩67,795,320字节；本地逐文件长度/SHA256及整个归档校验通过，再清理20个已关闭且远端inode/mtime/大小/哈希均未变化的旧日志，释放381,390,491字节。不删除活动日志。敏感原始日志不进git/公开学习数据。
+- 本机`Cmangos-CloudLogArchive`计划任务每小时17分运行，失败不清云端、禁止并发、恢复在线后补跑。实际任务触发归档34个剩余文件，LastTaskResult=0，不把“任务注册成功”冒充运行成功。工具与原件在工作区`cloud-log-archive`，校验/清理证据分别随每份快照保存；每份活动文件固定起止偏移，保留后续增量给下一次采集。云端nice19/idle I/O和流式gzip1，避免生成远端大临时包。
+- 新专用轮转每5分钟检查：主控制台和副本战斗CSV达到32MiB各保留16片；已核实追加句柄的其他日志8MiB各保留8片。既有Server/packet每小时轮转不变更其策略，只降低调度优先级并与回传加锁串行；未把非追加句柄当成可随意截断的安全日志。
+- 每5分钟磁盘监护：使用率85%或余量不足4GiB告警，92%或不足2GiB严重告警，已知日志实际块占用超2GiB也告警；单JSON状态覆写，不向游戏热路径加高频日志，不自动停止服务。本地余量不足2GiB拒绝归档和清理。16:39核验云端可用12,081,520,640字节、已知日志实际占用54,120,448字节，状态ok；主控制台16:30轮转后已继续增长。
+- **边界必须保留**：本机任务当前Interactive登录，需要电脑开机联网且用户登录；长时间离线超过云端有界缓冲后，最旧片段可能被轮转淘汰，不能宣称全历史无损。copytruncate有微小复制/截断竞态窗口；既有Server/packet非O_APPEND句柄仍有稀疏空洞风险，尚未修改核心或发布。阈值检查不是磁盘硬配额，也不涵盖core/DB/其他服务，不能承诺整机永不写满。若需本机关机期间全历史仍完整，需要额外常在线存储目标。
+
+专家学习口径：原始副本CSV为2026-10-19至11-11累计293,478事件、18地图，不是“今天的人数”。先提取736个死亡/炸弹事件待审候选（源文件SHA256+行号+时间+map/instance，去姓名），统一needs_review/expert_demonstration=false；缺位置、可用动作、玩家意图，不直接做专家模仿训练，也不从事件数量推死亡率。控制台样本871,825行，DPSFSM-DMG218,991/PREP138,905/FSM-BAIL96,012行；这是后续降低重复诊断写入的量化依据，当前没有以关闭日志代替存档。
 
 ### 九、这次整治后的"ERROR 里剩什么"（下一次清理候选）
 `DB-SCRIPTS: … has buddy … by pool id … and no creature found in map`（≈324 行）是最大一类，
@@ -11907,6 +12012,68 @@ WHERE r.event='always' AND r.value=1;
 
 #### 五、副本通用「躲地板技」（方案A，站长 2026-10-17 拍板）
 
+**2026-11-11 傍晚：四Boss单机制验收进行中，仅本地，未部署。** 站长要求检验布洛戈克毒圈、摩摩尔音爆、艾吉斯魔爆术、能源舰塞比瑟蕾躲火；能源明确同时避开无敌追人NPC与残火，被追者持续风筝并保留合法移动输出，输出目标仍为Boss。实际本地DBC：毒圈30914→30915、英雄38462→38463伤害半径均12码，不用召唤技能30916的3码；音爆33923/38796读条5秒，33666/38795伤害半径34码；魔爆38197/40425读条5秒，普通35码、英雄50码；火元素35281→35278残火半径5码、持续6秒。本地策略无18708音爆规则，艾吉斯仅40425接普通flee，未覆盖正常38197及卡柱语义；英雄模板替换不改变正常GetEntry，不能将英雄entry不在表中误当缺陷。
+
+单项夹具在 [SimMechanicProbe.h](<D:/Game/cmangos/Nmangos-tbc/src/modules/PlayerBots/playerbot/SimMechanicProbe.h>) → `Handle()/Snapshot()/Cleanup()`，由 [SimScenario.cpp](<D:/Game/cmangos/Nmangos-tbc/src/modules/PlayerBots/playerbot/SimScenario.cpp>) → `HandleCommand()` 的 `rndbot sim mechcheck <guid> <setup|poison|boom|flames|state|stop> [cast]` 接入，限定控制台、SimMode、已在世界的固定装且无真人主人的bot。GM岛仅隔离技能识别/仲裁，真实原生召唤、光环、伤害、追人AI和bot决策；不伪造hazard、不替bot下跑位，不冒充副本通关或实际柱子LOS验收。首次夹具样本发现Boss不可选中标志未完整解除、音爆被初始冷却拒绝、能源Aggro加手工施法重复生成4只；这些无效样本单独保留，不用于结论。修正后正常模式恰好2只原生火元素，战斗攻击者关系正常、音爆result=0并造成真实伤害，再采正式负基线。
+
+毒圈确认为自研通用危险扫描缺口：[AoeValues.cpp](<D:/Game/cmangos/Nmangos-tbc/src/modules/PlayerBots/playerbot/strategy/values/AoeValues.cpp>) → `HostileAoeValue::RegisterHostileAoeHazards()` 原复用 `AnyUnfriendlyUnitInObjectRangeCheck`，其 `CanAttackSpell` 把不可选中的毒圈NPC17662排除，实际受伤时hazards始终0。新增 `HostileHazardSourceInRange` 只用于活动光环危险源扫描：NPC不再要求能被攻击，仍要求存活、同实际地图实例、敌对、感知距离及LOS；玩家来源保留正常PvP攻击准入，原伤害效果/半径/必需光环过滤不变，不改攻击目标选择。抽取真实判据的C++回归通过。相同三角色普通毒圈对照：防战54承伤1810→0，法师47为727→0，恢复萨52两轮均0（原版恰好常规走远不能算识别成功）；三者hazards均由0→1，修复后位移分别12.82/12.51/18.26码，末五帧均unsafe=0、moving=0且坐标不再变化。法师与恢复萨预读注入均accepted=1；这证明本地单技能脱圈和最终停止，不证明英雄实例、全局最短路径或完整Boss战已通过。
+
+正式负基线：音爆三角色均无主动移动，分别承伤7680/6329/5661后低血停测；能源三角色都实际被原生火元素选中并移动，但持续风筝/移动输出尚未通过，不能以“开始跑过”算成功。此前“移动动作排除追自己目标”的疑点已由实际实现排除，不修改无效参数；[DpsFsm.cpp](<D:/Game/cmangos/Nmangos-tbc/src/modules/PlayerBots/playerbot/strategy/DpsFsm.cpp>) → `TryBossMechanicDecision()` 当前成功机制动作整拍占用的行为需继续与走位持有权、合法瞬发输出一起验证。艾吉斯尚未进入真实柱子地形测试，普通/英雄四项整体未完成。正式数据及原始日志保存在 [本地试验目录](<D:/Game/cmangos/_agent_tmp/boss_mechanics_20261111/>) 的基线与poison_sensor_fixed各套文件；无效夹具样本有独立invalid_fixture_v1前缀。WSL生产危险源单变量构建exit0，MD5=ed20f5e45312925311cfc60168f81dfd（对照5f38f31f986bace90a6aed99c718d83b），仅既有OpenSSL链接告警。未改Boss策略静态表，无云端部署/重启/reload/写库，无commit/push；本地样本结束已关闭测试服。仓库整体diff检查另有先前配置行尾空白，未擅自改动，本轮目标文件单独检查。
+
+2026-11-11 影月技师炸弹与玩家手动回撤（本地代码/函数回归，未部署及副本实战验收）：血熔炉map542，生物17414/英雄18618的30846/32784创建GO181877/182607；GO陷阱爆炸30844/32786的伤害Effect半径才是避让依据，不用较小的5码触发圈。`AoeValues.cpp → HostileAoeValue::RegisterHostileAoeHazards()`补两种真实GO，过滤未生成/异地图实例/40码外对象，按爆炸SpellRadius登记带GUID的2秒刷新危险，复用既有地板逃离，不新增第二套跑位引擎。
+
+`PositionAction.cpp → PositionAction::Execute()/TickPlayerPullback()`新增`position pullback set [2..10]`：以授权玩家当前站位为圆心保存区域（默认4码）；接怪后`position pullback go`回撤，`position pullback cancel`取消。只允许同队同实例的主人/队长控制坦克，区域60码内，30秒时限；失去权限、脱战/死亡、过期或失去队伍即结束。传送前置保护避免读取过渡地图；跨实例旧区不能复用。`DungeonRoute.h → BotState`单独保存手动意图，不覆盖自动route站位。
+
+`DpsFsm.cpp → TickInner()`在地板/机制优先处理后接入（自身低于35%HP保留生存循环）；队友被近战攻击时让回坦克救场。回撤使用完整导航路径、不用直线无路兜底，逐码检查路径线段危险，500ms节流；已在圆内不再回中心，目标到达近战范围即结束，避免追怪/锚点反复拉扯。生产函数逐字抽取夹具测试覆盖区域边界、节流、到达、救援、不可达、路径危险、跨实例、超时、权限变化及传送GetMap断言保护；炸弹登记覆盖普通/英雄、法术半径、对象失效、地图/距离和缺失DBC等分支，均通过。最终WSL完整链接通过，二进制MD5=81833f8d42b8d0f40aa2f842d31a9a83（保留既有OpenSSL链接告警）；依赖为stub，不冒充真实副本避弹或玩家聊天实测；云端当前仍旧二进制。
+
+本批最终发布（2026-11-11 01:51:27 CST）：站长明确“同步到云”；切换前多次读取online角色12个且均RNDBOT账号、真人0。只上传WSL已验证未strip二进制，md5=3b3b9e75e718a20e1b9d2bf4b44bb710；云端磁盘与/proc/57014/exe相同，mangosd唯一PID57014，8086监听，realmd原PID1670/3724持续运行。先暂停watchdog再切换，监听确认后恢复watchdog；旧版5e80329eed3e842b26f54413ed921f88备份于/root/bot-release-20261111-3b3b9e75e718/mangosd.previous。CharacterDatabase仅ai_playerbot_threat_rule补3列（ALGORITHM=INSTANT，0.188秒）和4行种子，rank/pct保留，未整包覆盖65表、未改world旧副本。表结构及原行备份位于本地_agent_tmp/bot_release_20261110/deploy_20261111_threat_backup.json，逐值复核通过。新进程运行超过70秒、端口/映像一致且未见本机制refresh failed/invalid rule/Unknown column错误；当前空闲bot尚未触发云端[CREATURE-THREAT]加载日志，不把本地loaded4当云端实战证据。日志仍有PREP castfailed/noitem等既有待查现象，本次同步成功不等于所有游戏功能通过。卡拉赞实战验收按站长要求取消。
+
+2026-11-11 卡拉赞及共用输出修正（本地验证后已于01:51按站长明确“同步到云”指令发布）：`MovementActions.cpp → MoveTo(Unit*,float)/ChaseTo()`不再把敌对目标坐标无条件替换为stance槽位，使用`PartyPositionCoordinator.h → FindNearestCombatPosition()`就近搜索安全、LOS和攻击射程内落点；`DpsFsm.cpp → CorrectOffensivePosition()`按主技能真实射程修正，包括术士暗影箭/萨满闪电箭等。普通近战不再单为默认绕背跨怪堆，仅保留毁伤/猫技能约束。`TerrainOK()/PathLooksWalkable()`启用vmap地板并检查短路径高度，减少悬空/跨层候选；仍待室内真实路径验收。
+
+圣女16457、馆长15691显式启用分散；`PartyPositionCoordinator.h → Compute()`用最近候选保持成员间距，并以最终槽位复核全队治疗覆盖，圣女额外要求魔法驱散射程和LOS；贪心求解失败不发布部分队形。仇恨机制按站长11-11纠正：不许硬编码Boss清单，也必须处理普通怪/精英。`CreatureThreatRules.h → GetThreatRule()`从CharacterDatabase的`ai_playerbot_threat_rule`按(map,entry)读取通用规则，新增tank_rank/dps_pct/melee_only，原rank/pct保留坦克追仇恨用途；tank_rank=0关闭，N表示第N个合格存活坦克，缺第N坦克不回退主坦；DPS达到dps_pct%即停手。`ThreatValues.cpp → GetTankThreat()`与`AttackAction.cpp → WaitingForTankThreat()`共用数据，显式配置优先于普通怪立即开打/野外默认豁免，坦克和治疗仍豁免停手。种子数据计划包含莫罗斯15687、骷髅招待员16471、馆长15691与格鲁尔19044，格鲁尔仅计近战可达坦克；这些entry只放数据不放C++。缓存5分钟更新，错误保留有效旧配置、5秒重试，成功空集合可删除全部规则。本地迁移已完成8列4行，重复apply零DDL/DML，rank/pct保留。导出器修正同名表角色库权威、world仅缺表兼容；仅更新包内本表，其他64表记录不变，check65表及整包verify通过。真实头文件stub DB/timer以ASan/UBSan运行69项通过，`ThreatValues.cpp → GetTankThreat()`逐字抽取生产函数体的排序/过滤61项通过（ASan/UBSan/LSan；IsTank/IsSafe以夹具替代，不证明真实角色识别），静态门禁65项通过，导出来源31项回归通过。最终WSL构建exit0，md5=3b3b9e75e718a20e1b9d2bf4b44bb710；18086本地验证实例已启动该版本，运行期日志确认加载4条规则；GM岛190014双怪+单坦+竞争火法60秒result=done，坦克32%HP/0死亡，fsmTaunts1、pickups1、surv2、45casts/25melee。这仅是通用战斗基本验证，非显式双坦副本机制验收。站长随后明确取消卡拉赞测试验收（bot打不过），后续不要求bot通关/击败Boss，继续本地单项行为和边界验证；上述本地构建现已按本章发布记录同步云端。既有持续伤害/飞行法术/宠物尾随仍需定向验收，不能据此声称数学意义上绝不越线。
+
+奥术看守16485本地EventAI点名29768→29767→核心29766爆炸；`DpsFsm.cpp → SeparateOverload()`优先离群，候选检查实际伤害半径、同层路径和未接战怪物，常规接近/打背/射程修正/队形动作避免拉回。奥术畸体16488死亡29882 Loose Mana为周期回蓝；`AoeValues.cpp → HasAreaDebuffValue::Calculate()/CollectHostileAoeCircles()`排除29882。`karazhan.cpp → instance_karazhan::SetData()/OnObjectCreate()`明确设置幕布183932开关状态并恢复战斗中重建对象；旧代码已有相同状态去重，因此重复通知翻转并非已证实根因，大灰狼追小红帽闪避与空气墙关联仍待实测。
+
+`DpsFsm.cpp → FaceForCombat()`替代重复转向样条；`Unit.cpp → GetAutoRepeatRemainingMs()`提供实际自动射击剩余冷却给猎人稳固窗口。`PossibleAttackTargetsValue.cpp → ThreatTier()`与`DpsFsmPolicy.h → IsCuratorFlare()`识别四种星界光芒；抢占后维持高优先级集火，低优先级坦克广播不得拉回Boss。`TickHealFsm()`下一次治疗前按法力缺口调用药水，不取消当前读条；`UseManaPotion()`扫描四包、校验法力效果/可用性/物品共CD，仅回蓝或成功上CD后记成功。治疗取消由FSM持有当前healPending，旧满血触发器不抢取消；保留读条后半且最后500ms的低有效治疗判据。首轮编译md5=98812f28b2e2b137c91c88d17fbf3955，离线取消边界及四种星界光芒断言通过。本地旧配置开启cooldown/attackspeed/health/mana等作弊，首轮运行数据作废；改用独立验证配置，仅保留item/breath/taxi/repair/gold后，180秒正式FSM样本：兽王79次平射/50次稳固、射击59次平射/41次稳固，两者近战0；毁灭术26次暗影箭；恢复萨固定同一承伤目标约599HP/s、有效治疗102283、结束坦克92%，药水两次实际回蓝6553→9254、1871→3925。此结果仅验证基础循环，未验收馆长转火或团队分散。后续把药水检查提到Disc抢先分支前，并在`SlotFor()`增加mapId/instanceId校验；集中构建exit0、md5=bcd9492a99429367bbd824b975ee7ae7，这两项追加尚未运行验收。新旧本地版本关闭阶段均观察到Dead Reference，需独立排查退出生命周期。
+
+大灰狼现场补充为“幕布状态正常，玩家能穿越，Boss寻路不能到达”，viewer显示网格连通，异常集中在幕布另一半。只读Detour探针以工程相同DT_POLYREF64格式加载本地实际532九块导航tile，幕布周边四角度×三偏移12/12生成完整路径；仅支持本地选定区域静态网格连通。11-11云端旧部署md5=5e80329eed3e842b26f54413ed921f88两次SIGSEGV：00:41:56/PID46060、00:49:08/PID52857，均为dtNavMesh::calcTileLoc→PathFinder::calculate→ChaseMovementGenerator。第二core寄存器rdi=0、故障指令subss 0x1c(%rdi),%xmm0，证实导航对象空指针；最后PFDBG为map532起点(-10891.921875,-1763.009277,90.52652)，终点(-10892.878906,-1767.164307,90.47691)，GPS后未输出最终路径。用户明确未开10909亦宕机，因此不能将调试光环当作全部宕机原因。云端mmap开启、忽略地图为空、九块532tile及532.mmap存在；两次均由既有watchdog自动恢复，Agent未重启/部署。
+
+`PathFinder.cpp → HaveTile()`补空m_navMesh保护；`SetCurrentNavMesh()`每次按当前地图实例取得现有query并清除旧指针，修复首次空缓存同图后续加载仍不刷新的缺口，避免运输对象/实例切换残留；它是确定源码缺口，与现场跨边界现象相符，但不能据此宣称已完成大灰狼实战复现修复。`TargetedMovementGenerator.cpp → DispatchSplineToPosition()`路径计算/裁剪后不足两点直接返回不可达，避免末点越界。抽取实际函数以ASan/UBSan验证空导航、延迟加载、实例变化、禁用导航、运输对象和无owner路径均通过；集中WSL构建exit0，md5=404b5ec82b077fa221fcf27c1af37d09。该中间构建未单独部署；修正已合入3b3b最终发布。歌剧追逐未实测且站长已取消卡拉赞验收。
+
+2026-11-11 09时后续确证：云端17521模板ExtraFlags=16897(0x4201)，包含MMAP_FORCE_DISABLE(0x4000)。`Creature.cpp → UpdateEntry()/IsIgnoringMMAP()`使`MoveMap.cpp → IsPathfindingEnabled()`返回false，故`PathFinder.cpp → SetCurrentNavMesh()`主动不取query；`PfProbe.h → Emit()`直接按map/instance查询，所以09:16:29–39同一只狼出现局部navMesh0/query0、全局navmeshOK/walkableYES。`PathFinder.cpp → calculate()`未将模板MMAP禁用视为UNIT_STAT_IGNORE_PATHFINDING，导致同cell直连、跨cell空路径。由此确认本次卡住是模板禁用与跨格禁止直连规则冲突，幕布空气墙解释未获证实。禁用标志的原始设置理由尚无历史证据。站长明确“给他打开”，SQL238在本地先将16897改513并复跑0变更，再云端目标行修改1行、逐值核实513、复跑0变更；只移除禁用位，未改核心。模板由`ObjectMgr.cpp → GetCreatureTemplate()`读取内存sCreatureStorage缓存；本轮不reload、不重启，因此数据库已启用，但运行进程/新召唤仍用旧模板缓存，需下次服务启动重新加载后才生效，尚未做生效后的追逐验证。
+
+2026-11-11后续决策与本地代码：本地CMaNGOS上游数据库引用upstream/master=8967839f的Full_DB/TBCDB_1.11.0_Vengeance_One_A_Cmangos_Story.sql.gz中17521的ExtraFlags也是16897，旧1.10全库为17153，两者均含0x4000。这只能证明模拟器上游数据来源，ExtraFlags是模拟器自定义字段，不能称为暴雪官服原始标志；未找到关闭MMAP的原始理由。站长最终明确“大灰狼仍移除禁用位、已做代码也保留”，因此本地及云端数据保持513，不恢复上游禁用位。通用代码在`PathFinder.cpp → calculate()`将单位IsIgnoringMMAP()==IGNORED或UNIT_STAT_IGNORE_PATHFINDING提前走独立NONNAV分支，复用`BuildShortcut()`的两点路径和既有NormalizePath，type=NORMAL|NOT_USING_PATH，跳过navmesh读取及跨cell缺网格拒绝；不含entry清单。普通单位的缺网格、全局/地图禁用仍受原规则约束。不是新增障碍绕行算法，也不将其用于大灰狼（513生效后走正常mesh）。WSL集中构建通过，MD5=3c170dbe0715e92c02f8b476f37e0336；逐字抽取生产calculate/BuildShortcut和真实cell计算，在ENABLE_PLAYERBOTS开/关两条件各30用例通过，ASan/UBSan干净；移除新分支的负对照在显式禁用跨cell用例失败。用例覆盖09:16现场精确坐标双向、同cell/跨cell、有/无mesh、两种显式豁免、缺query/tile、延迟加载、无owner、路径对象复用与非法坐标；依赖以stub模拟，不等同游戏实测。本轮新代码未部署，云端仍3b3b旧发布；数据库513待下次服务启动载入缓存，未重启/reload、未追逐验收。
+
+2026-11-11 午夜后门口怪下次地图加载仍出现（本地数据已修，云端未改）：站长明确目标为下次地图加载不生成，不是击杀瞬间清场。云端实例3(map532)脚本data首项3=DONE，但encountersMask22(0x16)缺阿图门bit0；实例5首项0/mask2，不能把它当已击杀。马厩spawn_group5320050–60的WorldStateCondition5320001实际为conditions(type42,value1=2315,value2=1=EQUAL_TO,value3=0)，即完成世界状态2315等于0才生成。`WorldStateVariableManager.cpp → Initialize()`从completed mask恢复2315，`SpawnGroup.cpp → IsWorldstateConditionSatisfied()/Spawn()`执行门禁。确定不一致在instance_encounters652的creditEntry15550（下马阶段且death prevention），`boss_midnight.cpp → boss_attumenAI`最终死亡形态是16152；`Unit.cpp → Kill()`只按实际死亡entry调用UpdateEncounterState，15550不匹配，脚本SetData(DONE)却单独保存成功。因此地图重载按缺bit存档仍生成马厩怪。SQL239只本地将652/creditType0/15550→16152，改1行，重复0行，保留lastEncounterDungeon；652映射仍map532/index0/worldstate2315。抽取生产世界状态Initialize/刷怪条件函数在ASan/UBSan下9个记录mask/重载用例通过，条件评价器为stub，不是完整实例游戏验收。历史实例3仅改未来credit不会自动补bit，需单独有依据修复其完成掩码22→23；本轮未修改任何云端表、未重启/reload。昨日原死亡日志已不在现存小时轮转范围，不能声称从昨日日志还原击杀者或时间。证据位于本地_agent_tmp/bot_release_20261110/midnight_persistence_cloud_20261111.txt与attumen_credit_local_20261111.json。
+
+站位补充按用户“允许近到远大部分有效范围”的口径：`PartyPositionCoordinator.h → UsableCombatRange()/Compute()`普通角色/正面模式使用技能实际上限，当前位置有效即保留，不再以RoleBand裁掉可用远点或ClampToLeash下限推远近点；圣女/馆长分散同样去掉固定30码上限及猎人10码额外下限，保留8码死区和机制/支援覆盖检查。此追加包含于404b...构建，待室内定向验证。
+
+
+2026-11-10 猎人在队伍里持续近战：`DpsFsm.cpp → EvalHunter()`仅有超35码Approach，无射击死区距离修正；`HunterEnsureAutoShot()`在8码内直接退出，职业状态Recover/Burst/Aoe又能早于距离分支，导致贴脸后没有可靠恢复射击路径。新增`HunterCorrectRange()`在TickInner机制避让之后、普通技能/GCD之前独立处理；8–35码内停近战挥击并清CHASE/FOLLOW残留，不覆盖已有机制MovePoint；圈内/超射程以0.75码径向候选求最近可射击安全点，留0.75码射程余量，校验地形/LOS/危险路径/未参战怪路径，750ms重寻路节流；移动不删除idle生成器，pet继续独立战斗。6823首次构建因武器查询参数数量失败，按Player.h三参数接口修正；6824最终本地WSL构建exit0，md5=82e393ec2b3b74fcc87e80c0321e3f54，未运行或部署；不证明装备/弹药缺失等其他原因已排除。
+
+
+2026-11-10 时空猎手正面吐息追加：本地原生`creature_spell_list`确认18096/20531普通英雄均施放31914 Sand Breath，目标类型24正面锥形；非DynamicObject。`PartyPositionCoordinator.h → Compute()`对这两个EventAI生物显式选择FRONTAL，不依赖boss_脚本名或缺失的机制表。`EpochBreathUnsafe()`复用核心spell_cone角度（缺省60度），加5度半角余量及DBC作用半径；侧面或范围外安全时保持当前位置，危险时仍以0.75码同心候选搜索最少位移，不恢复固定背后槽。`DpsFsm.cpp → TickInner()`非坦克在该锥内时先求安全位并执行MoveToPartySlot，先于普通施法/GCD；坦克仍由朝向方案处理。`GetBehind()/CloseToMelee()`拒绝落回吐息锥；`PartyPositionActions.cpp → Execute()`向底层传递reaction。6822最终本地WSL构建exit0，md5=dabafe41aa1ede45437e81ee168833c0；未运行或部署，不宣称现场已通过。
+
+
+2026-11-11 午间追加反馈（仅本地）：`AoeValues.cpp → HostileAoeValue::RegisterHostileAoeHazards()`把31909专用处理改为活动光环的通用周期触发自中心敌对伤害解析，A/B两目标栏均检查，涵盖21694正常37266→37267、英雄37863→37864及31909→31910武器伤害；仍绑定单位GUID和必需光环，不把定向DoT/友方效果当作离圈危险。`WorldPosition.h → getHeight()`默认参数实际是useVmaps，改为true读取副本模型地板。`DungeonActions.cpp → MoveAwayFromHazard::Execute()/EscapeRouteSafe()`在反应移动前断读条，复用仍安全的逃离样条；落点/路径检查同层地面，不穿第二危险，已在圈内的路线须持续向外并离圈。`PartyPositionCoordinator.h → MeleeFrontUnsafe()/FindNearestCombatPosition()`及`DpsFsm.cpp → GetBehind()/CorrectOffensivePosition()`把非坦克的近战避正面推广到普通近战怪；怪在打本人时避免绕圈，侧面/背面均可，毁伤/猫保留技能背后约束。当前位置安全即不动，必要移动找最近合法点并复核可复用样条地板、LOS和危险。
+
+`PullActions.cpp → ReachPullAction::isUseful()/Execute()`独立按pull起手技能射程接近，避免近战坦克落入ChaseTo贴身规则或因尚不能施法而永远不移动；`PullStartAction::Execute()`准备不再限40码，`PullStrategy.cpp → GetPreActionName()`已经熊形态不重复变熊。`PlayerbotAI.cpp → PlayerbotAI()`在非真人且脱战初始化时调用免费核心DurabilityRepairAll(false,1.0f,false)；云端只读查到Erinericia209两把武器耐久均0、已学26862，未远程修理。`DpsFsm.cpp → WarlockDestructionUsesFire()/CastWarlockDestructionFiller()/TickWarlockMaintain()/TickWarlockFsmCore()`按小鬼牺牲18789火焰/魅魔18791暗影增益选择填充，火毁用烧尽、保持献祭至末3秒再燃烧，爆发/群伤兜底同口径；主动分流默认蓝<60%、血>55%、缺蓝>2000，仍受技能/GCD和安全条件约束。
+
+转火口径按站长12:15澄清：**有效骷髅仍是最高集火**，自动prio5不覆盖它；坦克救场/接漏怪和稳全怪优先于骷髅。`DpsFsm.cpp → TryPriorityFivePreempt()/TickInner()`在读条/GCD/决策节流前更新目标，清旧施法/追逐并同步宠物；扫描60码，未交战普通怪仍限近身15码，活动prio5引导装置不要求普通victim，同档自动目标保持但不再整场每目标只抢一次。17954优先级表已为5；激活脚本移除UNINTERACTIBLE并引导31543，无victim及旧30/15码筛选属于漏候选条件，不能将全部现场失败归因于优先级表。`Creature.cpp → InitEntry()`保留正常Entry，英雄模板20631不导致该人工表查漏。`TankTargetValue.cpp → FindTargetForTankStrategy::CheckAttacker()/IsBetter()/TankTargetValue::Calculate()`先比较救援/接怪职责再tier/距离，其他坦克正常承伤不当救场；`DpsFsm.cpp → TickTankFsm()`先评估救场，非必需常驻维护不抢救援GCD，必要形态仍由Prep先完成。
+
+`PlayerbotAI.cpp → BotSpellReflectionRisk()/CanCastSpell()/CastSpellBody()/UpdateAI()`按核心IsReflectableSpell、正负效果和GetReflectChance(当前学派)拦截反射技能，并在反射光环出现时中断尚在读条/引导的受影响技能；自身/友方增益、不匹配学派、不可反射技能不因该闸被禁。31534实测模板为100%反射光环28。`UpdateAI()`另在非真人、脱战、不传送时清除非当前地图的个人副本绑定，使旧个人CD不挡下一轮；不解绑正占用地图、不重置/删除共享实例，也不清队伍绑定。
+
+本批最终本地构建6d578bbc0204b7b6922b0a5158b74a8b，WSL exit0、11份目标源码与WSL构建树逐份hash一致、目标源码diff --check通过。80个逐字抽取生产函数用例通过ASan/UBSan：逃离8、牺牲5、prio5抢占11、光环半径7、反射6、近战正面7、pull7、绑定6、修理3、坦克排序5、坦克拦截/双坦筛选/生存次序15；另3个负对照确认旧30码、整场只抢一次和骷髅同档阻塞会触发预期断言。依赖用stub，不等同真实副本实战。最终只读审查发现并已修正FSM路径另坦克未排除、待决拦截压过保命两个缺口；`TickTankFsm()/TankInterceptPending()/TankRescueIntercept()`三处统一保护其他坦克，先计算危急状态、清拦截待决，再选Survival；战士保命均不可用且非防御姿态时回防御姿态。复核两项均resolved，未编造实地数据。18086本地主改版本实测：火毁90秒45casts，烧尽27、分流3、暗影箭0、牺牲1；战斗贼45秒23casts，影袭17、剔骨2、切割2，81melee，确认技能循环可执行。最后路线复用地板复核/其他坦克保护仅构建和函数检查；未在蒸汽地窟原位验收蒸馏器、21694绕圈或连续移动观感，不将局部检查扩大为全副本通过。旧本地进程退出再次出现历史Dead Reference，属既有退出生命周期问题。云端只读，无部署/重启/reload/数据库写入，无commit/push。
+
+2026-11-10 德拉克中尉（17848）盗贼站远/不躲旋风追加：本地原生`creature_spell_list`列表1784801确认旋风斩31909，周期触发伤害31910；该技能为Boss自身光环而非DynamicObject。`AoeValues.cpp → HostileAoeValue::RegisterHostileAoeHazards()`补31909实时光环危险，范围取31910实际DBC半径；`HazardsValue.cpp → Hazard::IsValid()/GetPosition()`绑定施法者GUID及必需光环，跟随Boss、光环消失即失效；`AddHazardValue::Set()`重登记刷新。`DpsFsm.cpp → TickInner()`在治疗/技能GCD/近战循环前执行已有紧急逃离动作，失败仍允许防御治疗；`GetBehind()/CloseToMelee()`检查危险落点与路径，防止躲开后立刻追回。`EvalRogue()/TickRogueFsm()`以核心CanReachWithMeleeAttack优先进入Approach并主动贴近。另确认`MovementActions.cpp → MoveOutOfEnemyContactAction::Execute()`原调用`MoveTo(Unit*,float)`，但该重载忽略distance并改用stance位置，能把接触避让变为远距离场；改为目标身边近战范围内侧的局部安全点。此追加仍在统一构建阶段，未实测或部署。
+
+
+2026-11-10 站长修正跑位口径：遵循最少移动原则，安全且能作战就停；除明确机制要求外，不恢复固定队形。`PartyPositionCoordinator.h → Compute()`普通ROLE_BANDS/FRONTAL以当前位置为首选，失败后以0.75码半径步长、24方向向外寻找最近可用点；15码内无安全候选则不下发远处默认阵型点，交还普通追击/攻击距离或紧急逃生动作。普通模式不再夹默认距离带、不互推远程/治疗固定5码间距；分散模式仍保留间距约束，集合/卡视野/贴墙/明确禁站扇区与朝向机制继续生效。`DungeonActions.cpp → MoveAwayFromHazard::Execute()`从bot当前位置向外搜索最近圈外点，取消绕危险中心随机选点，保留0.75码边界余量。`PartyPositionActions.cpp → isPossible()/Execute()`及触发层统一0.5码到达容差，让必要的小幅修正可执行。以上本批尚未编译或运行验证，未部署。
+
+
+2026-11-10 云端反馈追查（源码已改，按站长要求集中修改后统一验证，未部署）：云端545实例6、17797战中持续生成role_bands队形，但该记录不能证明实际躲技能。`DungeonStrategy.cpp → InitReactionTriggers()`原普通队形优先级为PASSTROUGH+20，脚下危险仅EMERGENCY+5，危险会被队形覆盖；现危险改为PASSTROUGH+30。`GenericTriggers.cpp → PartyPositionTrigger::IsActive()`原有槽位即恒真，现距离大于1.5码才激活；避免到位后持续高优先级移动。`HostileAoeIncomingTrigger::IsActive()`原仅动态地板检测命中才调用登记，而登记内部还检测召唤物地板；现独立登记并以本人被hazards覆盖触发。`DungeonActions.cpp → MoveAwayFromHazard::Execute()`原只选最近中心，较近未覆盖小圈可掩盖较远覆盖大圈；现只在覆盖本人的危险中选择，落点增加1.5码余量并从bot实际位置验证路径。瑟丝比娅源码与本地spell_template确认25033闪电云为persistent area aura；31718包围之风、31481肺部爆裂属于目标光环，不能一律归为走位可躲。当前包中17797只有trinket/药水/转火等custom策略，没有该Boss专属站位或avoid_spell记录，通用动态地板链仍需集中实测。上述改动尚未编译或运行验证，不宣称云端已修好。
+
+
 **为什么原来躲不掉（根因）**：`HazardsValue::Calculate()` **只读 `stored hazards`、自己不做任何检测**；
 而 `stored hazards` 原先只有 `DungeonTriggers.cpp → CloseToHazardTrigger::IsActive()` 会写，
 那是**按预置 BOSS 危险物 GUID** 的（只有熔火之心那类在用）⇒ 通用五人本里 hazards **恒为空**
@@ -11929,7 +12096,7 @@ WHERE r.event='always' AND r.value=1;
 
 提交：子模块 `c7ca2d97`。
 
-#### 六、副本躺尸 → 没有复活职业就跑尸（站长 2026-10-17 口径）
+#### 六、队友复活与尸体保留（历史跑尸口径及2026-11-11修正）
 
 **上游原版行为**（`ReleaseSpiritAction.h`，来自上游 `de538e09`）：副本/团本里只要"主人（真人）同地图"就**不释放灵魂**、原地等复活。
 **问题**：四条自救路径在副本里**全被堵死** ⇒ 真人同地图又不给复活时，bot **无限躺尸**：
@@ -11943,6 +12110,15 @@ WHERE r.event='always' AND r.value=1;
 
 **修法**：新增 `GroupHasLivingRezzer()`（队伍里有没有**活着的、能复活的职业** = 牧师/骑士/萨满，**且同地图**）；
 那条副本守卫改为「**队里没有活着的复活职业 ⇒ 放行释放灵魂**」（→ 跑尸 → 复生）。
+
+**2026-11-11 当前实现与验收（覆盖上述历史“副本自动跑尸”描述）**：
+
+- **接管冲突，自研**：`DpsFsm.cpp → TickInner()` 的常规准备先于旧策略复活，可能在原生解除暗影形态前置动作与复活读条之间补回形态。新增脱战复活交接窗口：有已学会的牧师/圣骑/萨满复活技能及有效尸体时，让原有非战斗引擎执行复活；位于存活队友急救之后、常规准备之前，不另造施法循环，不放开战斗施法锁。
+- **明确阻塞**：本地恢复萨已选中近身尸体，`useful=1 / possible=0`；原生施法返回60，即`SPELL_FAILED_NOT_MOUNTED`。`GenericSpellActions.cpp → ResurrectPartyMemberAction::isPossible()/Execute()` 仅把坐骑作为可移除准备，查询不下马；真正执行时先正常下马，再走原生施法，射程、法力、冷却、战斗限制仍保留。
+- **候选与尸体生命周期缺口**：`PartyMemberToResurrect.cpp → FindDeadPlayer::Check()` 不再提前剔除施法距离之外的尸体，外层`PartyMemberValue::Check()`仍限制视野与实际地图实例，接近仍用现有带目标限定的前置动作。`ReleaseSpiritAction.h → AutoReleaseSpiritAction::isUseful()/RepopAction::Execute()`将组队副本尸体保留置于无主人/自身队长捷径之前，生产与SIM同规则；野外同实例、感知距离内有存活普通复活职业时先等复活，避免先释放。未支持已释放幽灵的远程尸体定位；这些现有路径的上游来源未单独追溯，不冒称全是FSM问题。
+- **真实本地样本**：恢复萨52与暗牧21分别对战士54进行原生死亡/复活，最终均观测到`state=0 / ghost=0 / request=1`，恢复萨样本随后恢复治疗；暗牧从`mounted=1 / shadowform=1`出发，在FSM持续开启时完成解除形态与复活。没有直接调用`ResurrectPlayer()`替代技能或接受。请求数据在下一次`Player::SetDeathState(JUST_DIED)`清除，存活时`request=1`不是“仍待接受”。
+- **负对照不夸大**：只撤掉FSM交接，保留其他修复与同角色六码场景；记录到患者仍死亡时FSM补暗影形态，但该轮最终也复活成功。因此只确认准备/复活存在交错干扰，**未证明它是云端“完全不复活”的唯一根因或必然永久锁死**。
+- **验证范围**：15项抽取生产尸体保留分支，以及原生复活动作准备、候选筛选与FSM顺序回归通过。真实场景是本地公共地图单机制，不是副本全流程、真人客户端验收、圣骑全专精或TBC德鲁伊战复验收；射程外实际寻路及隔墙尸体仍未实地验收。日志/脚本留在不提交的临时区`resurrection_20261111`。最终WSL构建MD5为`958f0e2a403b186f7c5deca1dda3f963`，与实测正样本二进制一致；负对照源码与二进制已撤回。本轮未部署/重启/reload云端，用户接受后转入Boss跑位检验。
 
 #### 七、专精权重：熊德坦（`weightscale` id=30）
 
@@ -12546,21 +12722,14 @@ boss/免疫默认值 1000/1500 未动。效果：`hold fire` 反而由 8573 涨�
 - 仍有 `附近没有安全拉怪点`（7 分钟 661 条）：`target.ord` 为空时（**boss 阶段**、或动态刷位怪）
   排除集合是空的 ⇒ 待拉的那只自己又被算成威胁。下一步把 `target.guid` 本身也加进排除集合。
 
-**(19) ✅【核心已修】卡闪避永远不脱战 ⇒ 永久僵持（2026-10-26）**
-- 现象：整组“在战斗”但 20+ 分钟零推进/零死亡/零伤害；`driver=(-)`（坦克永远 `IsInCombat` ⇒ `ShouldDrive` 恒假）。
-- 现场：`[STALEFIGHT] 目标=Shirrak(18371) hp=100% d=0 vic=坦克 reach=1` 持续 210 秒；`[GHOSTCOMBAT]` 108 条
-  （整组在战斗、**零攻击者**，宠物 0 条在战斗 ⇒ 排除宠物）。
-- 根因（`Unit::EvadeTimerExpired()`）：原逻辑只有“仇恨列表只剩 1 个目标”才 `EnterEvadeMode()`；
-  **多个目标时仅 `SetTargetSuppressed(GetVictim())`** —— 每 10 秒压一个、永远不脱战、之后谁都不打，
-  但 `IsInCombat` 一直挂着。`EVADE_COMBAT` 这个枚举其实**从未被设置**，所以“副本里卡闪避”没有任何超时。
-- 最终语义（站长定稿，按 WOW 原义）：脱战判据不是“仇恨目标数量”，而是**这只怪是否还拥有“可达+可攻击”的目标**：
-  ① 当前目标可达可攻击 ⇒ `StopEvade()`，正常战斗；
-  ② 当前目标不可达但不是“全部” ⇒ 在仇恨列表里找**能完整寻路到**的玩家（`PATHFIND_NORMAL/SHORTCUT`，
-  `INCOMPLETE` 不算）并切换过去继续打；
-  ③ 全部不可达且 `EvadeTimer`（10 s）到期 ⇒ `EnterEvadeMode()`：清仇恨 + 回位 + **回满血**（boss 同样 reset）；
-  ④ 玩家侧 `IsInCombat` 清掉是③的**派生结果**，不做“只清玩家战斗”的绕过。
-  仅对非玩家控制单位生效（玩家/宠物/召唤物不动）。日志 `[EVADEFIX]` 区分“切换目标 / EnterEvadeMode”。
-- 位置：`Unit::EvadeTimerExpired()`（`src/game/Entities/Unit.cpp`），是核心改动 ⇒ 云端上线必须走本地验证过的二进制。
+**(19) 核心 evade 调整：保留战斗更新，撤回扩大脱战判据（2026-10-26 → 2026-11-10）**
+- 历史现象：整组“在战斗”但长时间零推进/零死亡/零伤害，出现`driver=(-)`、`[STALEFIGHT]`和零攻击者的`[GHOSTCOMBAT]`。这些日志证明僵持现象，不能单独证明需要改写上游脱战规则。
+- **11-10 对照最新上游`168921743`纠正**：`CombatManager.cpp → Update()`先推进`m_evadeTimer`，不受后面的副本leash条件限制。`Unit.cpp → EvadeTimerExpired()`原本就是单目标到期`EnterEvadeMode()`、多目标`SetTargetSuppressed(GetVictim())`；“副本没有不可达超时”的旧结论撤回。原版`SelectHostileTarget()`有一处不可达启动点，受`!IsInEvadeMode()`守卫，已有计时器不会每帧重置。
+- **根因修复保留**：`Map.cpp → Update()`的bot优化只加载bot附近网格、跳过该玩家的visit；战斗中的生物通过`Unit.cpp → SetInCombatState()`临时active获得更新，`ClearInCombat()`只撤销该路径设置的active。副本active循环不会走大陆的负载抽样跳过门。该生命周期代码本轮逐字未改，不撤回怪物AI/CC/计时器更新修复。
+- **本轮本地代码调整**：`Unit.cpp → EvadeTimerExpired()`与`SelectHostileTarget()`完整恢复到上述上游版本；撤销手工遍历寻路/主动切目标/全不可达重置、无victim的额外计时启动，以及后来加的“只对玩家方/critter跳过”补丁。`CombatManager.cpp → Update()`移除30秒无victim重置及副本零伤害/近战够不到兜底，删除`m_noVictimMs`；保留上游计时、原有野外leash、独立的联动leash共享时钟与诊断getter。不再把脚本暂时无目标、远程不在近战距离、暂时无伤害交换直接解释为应重置。
+- **行为取舍**：多目标都够不到时恢复上游“压制当前目标”，不承诺10秒后整组清仇恨。若恢复原语义后仍有僵持，应按实际对象更新、仇恨/AI脚本/寻路查证，不能再以现象直接新增强制reset。
+- **本地验证**：提取修改后的两段Unit方法、CombatManager完整Update与头文件计时方法，在替身环境编译执行14组情景、831个断言通过：野外/副本×玩家/NPC单目标准确10秒到期、不续期、多目标只压制、恢复可达取消计时、攻击者无victim不额外启动、CC/脚本状态不被30秒重置、远程无近战伤害不被副本兜底重置。四个故意破坏版本（每tick续期、多目标reset、无victim reset、副本远程reset）均被断言拦住。这是实际源码片段测试，不是服务器/客户端实战；active生命周期用改前后源码一致性核对，尚未做本轮狼打鸡和纯bot副本实测。
+- **构建/发布状态**：Ubuntu-20.04当前工作树`mangosd`完整构建退出0，MD5 `79a6387718f4a45c11ffc3fc30881c71`；存在既存格式/NULL及OpenSSL链接警告。本轮没有安装、部署、重启云端，没有SQL写入。源码片段测试与负对照证据在工作区临时区`evade_review_20261110`。此前已有的PlayerBots路线未提交改动保持原样，不混算成本轮功能修正。
 
 **(23) 仇恨门与优先级：`priority=6` 取代独立豁免表（2026-10-26 站长口径）**
 - `ai_playerbot_priority_target.priority` 的新语义：
@@ -12599,7 +12768,7 @@ boss/免疫默认值 1000/1500 未动。效果：`hold fire` 反而由 8573 涨�
   地牢怪 `ExtraFlags=0`（`creature_template` 实测 18371/18472/18473/17491… 全是 0）⇒ 它们永远不 Update：
   ① 不选目标、不还手；② 不脱战（威胁引用把整队钉住，坦克 `ShouldDrive()` 恒假）；③
   **被控（恐惧/变形/缠绕）的光环计时永不推进** ⇒ 日志里"CC 锁 300~500 秒"的真相；④ 不主动仇恨（必须 bot 先打它）。
-- 修复（三层）：
+- 当时修复（三层；第3层核心reset已于11-10撤回，见(19)）：
   1. **核心**：`Unit::SetInCombatState()` 的 creature 分支 —— 进战斗若还不是 active 就 `SetActiveObjectState(true)`
      并记 `m_combatActivated`；`Unit::ClearInCombat()` 只撤销"这一次"（静态 ACTIVE / forceload / 脚本设的 active 不动）。
      这样**任何**战斗中的怪每 tick 都有 AI（不依赖附近有没有真人）。
@@ -12621,7 +12790,7 @@ boss/免疫默认值 1000/1500 未动。效果：`hold fire` 反而由 8573 涨�
 - ⚠️ **口径修正（重要）**：r92~r131 的"副本战斗"数据是在**怪站着不还手**的前提下测的 ——
   死亡/仇恨/TPS/HPS/威胁门/技能那几类结论**全部作废、需要在新基线上重测**；
   位移/路线/拉怪位/寻路/卡视野类结论（不依赖怪出招）不受影响。
-  以后每轮先确认日志里**副本内**有 `[EVADEFIX]` 与 `[DEATHCTX] attackers>0`，否则这一轮战斗数据无效。
+  11-10后验收不再要求`[EVADEFIX]`日志；应直接证明怪物Update、victim/攻击/施法和伤害事件。历史多变量收益不能归功于已撤回的reset兜底。
 
 **(26) 历史提交 / 台账审计：哪些结论被 (25) 推翻（2026-10-27）**
 > 原则：**不重写历史**，只标注"哪一段证据无效、哪一段仍然有效"。核对方式：看该提交/台账条目是否依赖
@@ -12662,30 +12831,25 @@ boss/免疫默认值 1000/1500 未动。效果：`hold fire` 反而由 8573 涨�
 - **执行顺序**：先 `182/183/185` → `223/224/228` → **最后 `230`**（230 是覆盖式快照）。
   运行时表（`pull_log`、`priority_obs`）和大表（`dungeon_route`、`patrol`、`cover_spot`、`nav_block`）不在 230 内。
 
-**(28) ✅【核心已修】小动物被顶进"永久 evade" ⇒ 狼打小动物每击 0 伤害、玩家也点不动它（2026-11-03）**
+**2026-11-10 核查更新：上述“最终快照 / 47表重放通过”仅代表当时已有全库结构的测试，不构成当前空扩展表重建保证。** 本轮只读比对本地/云端，并在独立审计库实际执行175–237中当前保留的25个SQL，没有改现有本地业务库或生产数据，也未重启。
 
-- 现象（站长）：狼在攻击鸡/兔/鹿，但客户端一直红字「癫皮狼的攻击**未命中**兔子/鹿/鸡」；右键那只被狼打的小动物，
-  攻击也起不来。线上日志统计：NPC 挥击 4,482 次里 **4,106 次（91.6%）是 0 伤害**；按攻击者分组是"整只生物全 0"
-  （如 `Ragged Young Wolf(705)` 129/129、`Stormwind City Patroller(1976, 65 级)` 19/19），而另一些生物正常打出 32~704。
-- **不是伤害公式/数据问题**：`Creature::UpdateDamagePhysical()` 算出的值正常；`absorbed/blocked/resisted` 全 0；
-  `classlevelstats` 行齐全（连 703 的 MinMeleeDmg=351 生物也全 0）。
-- **真因链**（`Entities/Unit.cpp`）：
-  1. `Unit::SelectHostileTarget()`：当前目标**寻路不可达**时 `GetCombatManager().StartEvadeTimer()`（10 秒）；
-  2. 小动物被打后把攻击者当 victim，但它够不到/`CanAttack()` 为假 ⇒ **每一 tick 都重置**这个计时器；
-  3. `CombatManager::IsInEvadeMode()` 因此**恒为真**；而 `Unit::RollMeleeOutcomeAgainst()` 第一行就是
-     `if (pVictim->GetCombatManager().IsInEvadeMode()) return MELEE_HIT_EVADE;`
-  4. ⇒ 任何单位打它都被判"躲避"（客户端显示未命中/闪避），玩家右键也攻击不起来。这就是"打不死+点不动"。
-  5. 另一处放大：`Unit::EvadeTimerExpired()` 的 ③ 分支对**任何计时到期单位**（含无目标/无仇恨的闲置单位、critter）
-     都 `EnterEvadeMode()`，本地实测 47 条 `why=no-victim threat=0`，把站着的兔子/平民 NPC 也反复踢进 evade。
-- **修复（站长口径：只处理"怪打玩家、且已经卡死"）**：
-  - `SelectHostileTarget()` 两处 `StartEvadeTimer()` 分别要求 `target->IsControlledByPlayer()` / `m_attacker->IsControlledByPlayer()`；
-  - `EvadeTimerExpired()`：`IsCritter()` 直接 return；`!victim || !victim->IsControlledByPlayer()` 直接 return；
-  - `CombatManager::Update()` 的副本兜底同样要求 `GetVictim()->IsControlledByPlayer()`。
-  - bot 也是 `Player`，`IsControlledByPlayer()` 为真 ⇒ (25) 修的"纯 bot 队伍卡战斗"不受影响。
-- **本地验证**：狼 80299 打鸡 80308 **修前 50/50 次全 0 → 修后打出 4 点**；其它小动物出现 1、4 点伤害。
-- 与 (25) 的关系：(25) 是"怪不更新"的根因，本条是"脱战机制误伤非玩家目标"。两条都在，别只留一条。
-- 顺带确认：`SelectHostileTarget()` 里"攻击者存在但没造成伤害 ⇒ 不立刻脱战、启动 EvadeTimer"那段是 (25) 的
-  幽灵战斗修复，**保留**，只是现在加了"目标必须是玩家方"的门。
+- **一致性**：42张共有世界库静态表中32张有效数据一致、10张不同（排除`calc_at`等计算时间）。`dungeon_route`本地12828/云端12719行，共同主键有2018行的ord/group_id/kind等改值；`dungeon_stage`79/56；`pull_timing`1672/441；`boss_require`13/1；`boss_spawn`230/234；`priority_target`136/143；`pullback`8/3；`skip_entry`1/4；`avoid_mob`4/2；`custom_strategy`同为98行但两条动作正文不同。云端缺`patrol_window`（本地1678行）和`wave_anchor`（本地817行），当前`DungeonRoute.h`加载路径实际读取这两张表。route.ord与mob_count_weight.engage_count默认值也不同。角色状态/缓存/日志和旧角色库策略副本另列，不将其当静态同步目标。
+- **重建实证**：从模块种子和非bot基础结构开始，且已额外提供198所需的旧角色策略空结构，按编号仍在185遇到缺`patrol_wave`建表（53条语句失败），233/234缺BIS基础表（256/1080条失败）。为定位后续错误采用遇错记录后继续，真实部署应在首错停止。“230放整个链最后”另外导致231/235/237缺结构，故旧顺序说明已不足以指导新安装。
+- **补结构也不等于重建成功**：第三轮只在独立审计库补空`patrol_wave`与旧版BIS结构后，25个dev SQL无语句错误，但BIS仅1077行，现有两侧都是1098行，多出的21行均slot17；cover_spot只有结构0行，现有6318行；wave_anchor旧结构1272行，不等于现有817行及needs_corner/ranged_n等新列；路线重放12105行，仍不同于两侧。patrol_wave的1404行数据可重放但缺建表；附魔320行中3行与当前模块种子不同。故不能通过只改排序解决。
+- **来源断点与迁移纪律**：230的`CREATE IF NOT EXISTS + REPLACE`不会升级旧结构或删除快照外旧行，不能称精确最终快照。234直接`ADD phase`，独立库复跑首条ALTER实测1060重复列。196目标是角色库，而云端旧runner固定默认世界库；197/232测试数据混在正式编号链。巡逻窗口建表填数只在临时`build_patrol_window.py`找到，导航块/锚点等也依赖未归档生成产物。云端标记仍为233，废弃源码目录仅余231/233两个编号文件，实际BIS却已有phase，单个最大编号不是可信应用台账。
+- **后续整理口径**：先确认本地与云端差异各自是否应保留，不能默认本地覆盖生产；再形成独立schema、选定静态数据基线、固定hash的增量补丁，并拆出本地测试/运行维护脚本。用空扩展表重建后逐表主键/字段/hash对齐，再验证复跑幂等。本轮没有擅自合并或删除历史SQL，没有生成生产同步补丁。证据、逐表CSV、三轮逐语句重放结果及来源线索归档在工作区临时区`sql_audit_20261110`；重放是PlayerBots扩展层审计，不是全套上游世界库恢复认证。
+
+**2026-11-10 独立数据导入实施（已部署，旧world表保留回退）**：`contrib/playerbot-data/playerbot_data.py → export_package()/install()/verify()` 与 `tbc/manifest.json` 替代bot编号SQL链，65张表以结构、策略、行数和压缩文件/规范化行SHA-256组成版本包。静态表事务DELETE+INSERT；运行状态不从本地复制给云端；名字池仅初始化；私人custom_strategy保留并检查冲突；备份为外部文件，不建备份表。25个旧dev bot SQL已移至`dev/deprecated/playerbot-sql/`，取消编号并改为`.sql.disabled`，历史混合世界数据不随本次迁移重放。独立空角色库首次导入、重复导入、静态表哈希与私人策略/名字池保留测试通过。首次空库测试暴露MyISAM的ROW_FORMAT=FIXED不兼容InnoDB，已去除该引擎专属选项。实际本地角色库导入65张表并校验通过，新二进制完成启动；云端已完成独立导入与二进制切换，世界旧表暂未删除以便回退。
+
+代码归属：模块94处bot查询及核心`InstancePullRecorder.cpp`、`PlayerNavObs.cpp`改走CharacterDatabase，旅行写入事务同步切换；`DungeonRoute.h → LoadMapRoute()`与`RandomPlayerbotMgr.cpp`的世界生物联查拆为两库只读后在C++关联。原生creature/item/conditions等仍归WorldDatabase。编译通过仅证明接线可构建，不能替代全路线/核心写入验收。
+
+最终包保留此前约定的4个云端专用boss点和8个GM优先目标，boss_spawn共234行、priority_target共144行；相同业务键采用本地修正。65表最终包空库和重复导入通过，现有列名/类型/NULL/主键预检通过云端只读检查，本地停服再次导入与哈希验证通过。运行/种子表首次从world复制、保留源表至显式退役；私人custom_strategy按name/owner/idx迁移，自增id不跨环境同步，公开策略哈希将id归零。隔离测试覆盖私人冲突事务回滚、运行状态分叉拒绝退役、所有表先检查再删除和库外备份恢复。world历史备份表和双库状态冲突仍需明确处置。19:20左右已完成生产角色库65表导入并逐表验证，运行/种子状态保留云端原值。首次源world的pull_log缺target_x/y/z和spawn_group_id四列，复制后校验拒绝继续；显式补齐角色库四列后65表全部通过。导入器补充首次复制前源表结构预检，防止未来重复同类晚失败。发布中监护曾拉起旧版，发现后使用既有`watchdog.nomangosd`维护暂停再切换；起服验收后已清除暂停。旧SQL执行器增加bot表检测并跳过编号bot SQL，修正上传CRLF后bash语法检查通过。世界旧bot表暂作回退副本保留，不再被新版bot查询使用；旧二进制及执行器备份目录`/root/bot-release-20261110-10c1437dea9e`，数据为本机库外逐表备份。最终实际云端运行MD5 `5e80329eed3e842b26f54413ed921f88`，含其他会话未提交改动，非最初冻结候选10c1437。
+
+
+**(28) 小动物全躲避：历史修补与归因纠正（2026-11-03 → 2026-11-10）**
+- 历史观察保留：狼80299打鸡80308修补前50/50次全0，加入玩家方守卫后出现4点伤害，其他小动物出现1/4点。这是现象和前后对照，不能单独证明具体分支是唯一原因。
+- 11-10撤回“每tick重置10秒”解释：原版不可达启动点和新增攻击者启动点都有`!IsInEvadeMode()`守卫，计时运行中不会再次Start。计时期间确实被视为evade，但“永久续期”不能由当前调用点推出。
+- 当前处理统一见(19)：恢复上游两段Unit方法，撤回扩大判据和后续玩家方/critter特判，保留(25)战斗active更新。831个源码断言及四种错误负对照已通过；本轮尚未重做狼打鸡和纯bot副本服务器实测，不能声称原现象已验收消失。旧“额外攻击者启动和30秒兜底必须保留”的结论撤回。
 
 **实验记录（12 图 × 5 组，`--no-cheats --boss 1 --equip-best 1`）**
 
@@ -14876,7 +15040,12 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 
 ---
 
-### 阶段 I｜2026-11-06 ~ 11-07　中文离线招募与完整专精切换（`.添加` / `.切天赋`）
+### 阶段 I｜2026-11-06 ~ 11-11　中文离线招募与完整专精切换（`.添加` / `.切天赋`；11-11 统一行为修订仅本地）
+
+**2026-11-11 云端补齐**：以现有70级公有bot完成16组×2名（每组不同种族）：防战/防骑/熊德、奶骑/神牧/奶萨/奶德、战斗贼/兽王猎/狂暴战/冰法/奥法/毁灭术/恶魔术/暗牧/增强萨；额外现有奥法Rhumu同改，共33名。通过既有`PlayerbotMgr.cpp → HandleBotDo()`调用`ChangeTalentsAction → ApplyBotSpecialization()`完整事务，不需要新入口。名单与独立最终回查见scratch `cloud_bot_roster_20261111/RESULT.md`和`final_roster_verification.json`（33/33实际61点、逐天赋、权重链接和主要装备槽通过，使用Talent.dbc+SkillLineAbility.dbc+云端spell_chain三来源识别训练后的高等级主动天赋）。奥法40/0/21链接`2500052300030150330125--053000331303000`，冰法10/0/51链接`230005--0535023313033010251551`，均极寒冰霜3+强化暴风雪3；原奥法候选`...--003500331303000`核心拒绝（首层仅3点），禁止使用。云端启动配置、本地配置和TBC dist模板两条相应更新；云端没reload/重启，当前名单通过显式事务即时生效，下次正常启动才更新默认模板。
+
+在线数收尾：批处理曾把临时登录成员留在线，在线bot从12变45；站长要求保留部分后，退出25个本轮空闲成员，复查19在线（原12+本轮7），保留玩家队伍，3307同步lag0。普通`kick`对无socket bot没有真正登出；`rndbot logout`会经`RandomPlayerbotMgr → Remove()`删除该bot所有事件并清cache，故下线前精确快照、下线后仅补缺失非login/logout事件，显式权重/链接再次回查，角色与装备不删除。**持久化恢复不等于当前进程cache刷新**：该老入口在重新登录后可能已缓存缺失的显式权重，SQL补回不能当运行锁已经重新加载；本轮探针验证过`auto talents`能覆盖，测试角色Audreya实际61点与装备已重新复核。后续若要求当前进程对该离线池立刻重建锁，应使用完整专精事务认领，不允许以清全服cache、reset或重启作为未经授权的捷径。专精法术检查证明新旧盗贼均有最高级剔骨/切割，新旧萨满均有阵营英勇/嗜血；战斗反馈另见本章后续专精口径§10.1/10.4，相关新C++仅本地验证、尚未部署。
+
 
 > 目标（站长口径）：**不查 GUID、不用 GM 命令**，玩家用中文命令把**同职业、同等级、同阵营的离线专用机器人**召进普通五人队；
 > 对已入队的专用 bot 做一次**完整**专精切换（天赋 + 策略 + 装备 + 附魔宝石 + 法术技能 + 物资 + 宠物 + 缓存），
@@ -14927,17 +15096,20 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 5. 普通 `PlayerbotSecurity` 的 INVITE 门 → 核心 `HandleGroupInviteOpcode()`；核 leader、非 raid、`<5` 人；
 6. 核心 `HandleGroupAcceptOpcode()`；**accept 之后**才从本次邀请的那个 `Group` 读真实 id（单人队长的组是 accept 里才 `Group::Create()` 的，accept 前恒 0），
    再确认 `bot->GetGroup() == offered == master->GetGroup()`；
-7. `SetMaster()` + `+follow,-lfg,-bg` + `AllowActivity(ALL_ACTIVITY)`；**不执行**通用 `AcceptInvitationAction`
-   （它末尾会 `ResetStrategies` / 更新装备，会二次改刚校验好的专精）。
+7. **2026-11-11 本地修订（取代旧版仅 `SetMaster()` / `+follow` 的独立初始化）**：普通邀请和专精招募都调用 `PlayerbotAI::InitializeGroupBehavior()`；先绑定实际主人，再重建各引擎默认策略、恢复默认移动、取消 LFG/BG、重置运行状态并继承 AI 队长队形。`ResetStrategies()` 自身已有专精 pin 的 `EnforceBotSpecializationStrategies()`，不会因换主人丢掉已校验的角色。
+8. `PlayerbotHolder::OnBotLogin()` **只有招募失败才早退**；成功继续普通登录的活跃度、登录延迟、频道、好友标记、炉石收尾。只跳过成功招募者的 `InstaRandomize()`，也不重复调用普通邀请末尾的 `update gear`，保留原子事务刚校验好的天赋、装备、技能与宠物。旧版成功直接 return 的旁路已取消。
 
 成功提示写明"机器人位于**原上线位置**，可按正常召唤规则召唤"——**没有强制 teleport**，也没开 always/freeAltBots/autologin。
 失败只清**本请求创建的那个组**（指针/已确认 id 比较，不解引用可能失效的 `Group`），不 uninvite 别人的邀请、不抢接管到别组的 bot。
 
-#### 五、回收与"合法转交"（`UpdateBotRecruitment()`）
+#### 五、统一团队生命周期（2026-11-11 本地修订，未部署）
 
-- bot 消失 ⇒ 从台账删；**master 断线/换组** ⇒ 先 `Group::RemoveMember()` 脱组、`SetMaster(nullptr)`、再 `LogoutPlayerBot()`。
-- **合法转交真人 master**（bot 已在同一组、当前 master 是真人且仍在组内）⇒ 从台账移除、**不抢回**。
-- manager 析构只对"当前 master 仍是自己"的 bot 清指针（指针比较），不解引用可能悬空的旧指针。
+- **历史策略已被本次取代**：11-07 的 `Recruited` 台账会在招募者断线/换组后强制脱组并 `LogoutPlayerBot()`，另行识别“合法转交”；这与原有公共 AI 的后续行为不同。现在入队成功即释放请求，交给公共 AI 主线；`UpdateBotRecruitment()` / `CancelBotRecruitmentForMaster()` 仅管理未完成请求，保留 nonce、取消及迟到 SQL 结果隔离，不再维护招募专属强制下线分支。普通 `OnPlayerLogout()` 仍清理所有该主人对应的 AI 指针，真人队友转交沿用既有逻辑。
+- 自动解散根因有两个：`DisbandBotOnlyGroups()` 原扫描 `players`（真人注册表），最后真人离开后目标组便不在扫描中；首次无真人时设置的宽限时间只留在局部副本，没有写回，下一轮永远重新开始 60 秒。现在从真实 bot holder 收集队伍，由线程同步的 `BotGroupLifecycle` 保存历史/计时；传送中的 holder 也保留组身份并暂缓清理。
+- `Group::AddMember()` / `RandomPlayerbotMgr::OnPlayerLogin()` 在真人加入/登录时立即调用 `RememberHumanGroup()`；`RemoveMember()` / `OnPlayerLogout()` 在移除/清指针前补记。**不能只在断线时按 `isRealPlayer()` 判定来源**：其判据来自 session 远端地址，socket 已清掉时会返回 bot/断线标记；加入时的历史使两次轮询之间的快速断线也不丢失来源。清理放在随机自动登录闸门前：`RandomBotAutologin=0` 不会关闭手动招募 AI 的团队维护。
+- `AutoDisbandBotOnlyGroups=0` 不清理；默认 `1` 仅处理曾由真人管理、现在无真人的遗留组；`2` 可处理普通户外纯 bot 组。至少等待 60 秒并按现有扫描节拍收尾；任一真人返回即撤销倒计时。无真人来源的自主副本/路线队和实际运行/预留的 SIM 场景不拆；机制测量/完整 Boss 的当前探针也纳入 `IsBotReserved()`。不能用全局路线开关或“曾进过副本”永久豁免已被真人遗留的无主队伍。
+- 执行走核心 `RemoveFromGroup()`，逐个公共 AI 清 master、重置策略/运行态；不直接删数据库、不假造人数、不把所有纯 bot 团队一刀切解散。
+- **验证范围**：WSL 本地最终构建通过（MD5 `1b13af1d968da8323a6ae719c889c0a2`）；最终二进制本地启动后 `server info` 正常响应、0 在线（仅启动冒烟）；真实生产状态头回归覆盖跨扫描计时、离组/下线记忆、真人回归、场景/自主副本保护、时钟回退及 8000 个并发循环；抽取真实初始化方法的 C++ 桩回归及两个入口/共同登录收尾的源码断言通过。**不是完整真人客户端端到端验收，尚未部署**；该开发二进制还包含未通过验收的 Boss 避险工作，不能据此宣称可直接上线。
 
 #### 六、完整专精切换（`BotSpecialization.cpp`）
 
@@ -15444,7 +15616,7 @@ schema(JSON) ──生成采样空间──▶ Optuna study (每专精一个 / �
 - **2026-11-09 生产固定装备接线修正（11-10 已部署二进制，未实机功能验收）**：云端 `ai_playerbot_bis_gear` 四档 1098 行已存在，但生产初始化/招募专精事务/进本入口没有统一使用它；旧 conf 112 组含重复唯一戒指饰品、双手主副手冲突。新增 `FixedGearLoadouts.h → FindFixedGearLoadout()` 提供 28 专精×4 档的静态完整套装，`BotSpecialization.cpp → PlanFixedGear()/UpdateFixedBotGear()` 统一生产换装及测量台入口；满级托管 bot 不再随机回落。按职业合法性、专精权重、阶段装等筛选，GS/装等参与同权重取舍；沿用历史套装机制约束（奥法、鸟德、盗贼、兽王、暗毁、元素萨，以及神牧 4T5、防骑 4T6），猫德保留狼头，圣物按对应技能用途固定。当前静态表随二进制发布，旧逐槽 conf/BIS 表不再决定该托管路径；阶段映射仍读现有配置。该取舍替代下文历史“生成器只产 conf”的实现要求，避免两份运行期清单互相覆盖。
   - **11-10 授权发布记录**：站长明确要求整理提交全部工作区并部署二进制；PlayerBots 提交 `8cb2e053`，主仓库功能提交 `4d120586c`。发布前全量源码同步零差异，Ubuntu-20.04 构建退出 0；评分 16,704 例与站位 73 例回归通过。此次实际发布产物 MD5 为 `41340bbde76bd04c92491d6c56b8ed3d`，56,749,048 字节，取代前轮构建指纹。安装前再次确认只有 12 个 RNDBOT 在线、无真人；30 秒优雅停机，旧二进制备份于云端 `/root/releases/workspace_20261110_0040/mangosd.old`（MD5 `4fa2867ca059438792b7922e5b5f6ef0`），仅安装二进制，没有执行 SQL/改配置。世界服 PID 47781、磁盘与 `/proc/47781/exe` MD5 一致，8086/3724 监听正常，登录服 PID 1719 未重启，维护标记已清除。
   - **发布后真实缺口**：启动后首轮 12 个托管 bot 中，202 奶骑、215 奶萨、219 奶德、205 防战、211 熊德成功记录固定装备 GS（2585/2582/2506/2524/2564）；200/208/214 报“最终装备不可用”，203/209/216/218 分别报槽 13/8/2/10 新装备合法性失败并延后重试。该记录只证明机器发布完成和部分换装成功，固定装备全角色验收仍未通过，需后续定位核心穿装返回码；不宣称已修复这些失败。
-  - **事务与稳定性**：`PlayerbotFactory.cpp → InitEquipment()/EquipGear*()/UpgradeGear()`、`UpdateGearAction.cpp → Execute()` 统一到同一事务；`PlayerbotAI.cpp → UpdateAI()` 每 30 秒检查，脱战后补做进出本/登录延后换装。同套 entry 命中直接返回，不创建新件；`EquipUpgradesAction` 与 `ItemUsageValue → QueryItemUsageForEquip()` 阻止自动掉落升级覆盖。装备先规划，背包不足保留原装，安装失败走现有回滚/隔离；旧装仍保留于背包，跨档反复换装会占用空间，尚未实现旧套复用。非战斗专用维护不重置天赋；野德权重不再每次随机猫熊，附魔/宝石固定路径不读临时属性 cap，附魔同分按 spell id 稳定选择，宝石禁止多彩跨类型兜底。
+  - **事务与稳定性**：`PlayerbotFactory.cpp → InitEquipment()/EquipGear*()/UpgradeGear()`、`UpdateGearAction.cpp → Execute()` 统一到同一事务；`PlayerbotAI.cpp → UpdateAI()` 每 30 秒检查，脱战后补做进出本/登录延后换装。同套 entry 命中直接返回，不创建新件；`EquipUpgradesAction` 与 `ItemUsageValue → QueryItemUsageForEquip()` 阻止自动掉落升级覆盖。装备先规划，背包不足保留原装，安装失败走现有回滚/隔离；2026-11-10 本轮新增：`PlanFixedGear()/InstallGear()`原位复用部位及entry均匹配的实例；重复专精重设不再制造整套旧装，回滚仍恢复原附魔。站长明确允许清理旧装备后，`ClearRetiredGear()`仅清理背包里已有`specRetired:<itemGuid>`标记的淘汰武器/护甲，未标记物品、现穿装备、背包和消耗品保留；新换装通过验证后清理本次旧件。历史清理在新事务拍快照前进行，避免回滚引用已删除物品。实际满包牧师guid21清理83件后正式切换通过；本地样本均有四个36格包，空间耗尽源于历史装备积累，不能概括为所有bot缺包。云端216/218同样已有四包，裸体需按装备合法性修复。非战斗专用维护不重置天赋；野德权重不再每次随机猫熊，附魔/宝石固定路径不读临时属性 cap，附魔同分按 spell id 稳定选择，宝石禁止多彩跨类型兜底。
   - **评分口径**：`GearScoreLite.h → ItemScore()/EquippedContribution()` 对照本机真实 GearScoreLite 公式，保留品质/部位/附魔/四链接宝石字段/猎人倍率及逐层 floor；`PlayerbotAI → GetGearScoreLite()/GetEquippedAverageItemLevel()` 与旧 `GetEquipGearScore()` 分离，`WhoAction → QuerySpec()` 显示插件总 GS 和平均装等。离线 16,704 公式参考用例和 112 套清单（职业、唯一性、武器配对、机制套装）通过；这不等于客户端实测或实际换装回滚验收。未知物品类型/品质按零贡献处理，与插件异常值 -1 有边界差异，正常固定装备不含这些值。
 
 - **⚠ 装备必须钉死（2026-11-01）**：`BOT_EQUIP_BEST_GEAR` 会在**每次重启时重摇装备**
@@ -15634,6 +15806,12 @@ schema(JSON) ──生成采样空间──▶ Optuna study (每专精一个 / �
 源码清理后离线回归通过；Ubuntu-20.04 WSL 构建 `mangosd` 退出码 0，产物 MD5 `9afd1a77b98aa8300fc0f4a9206d7acc`，大小 56,689,672 bytes。未运行服务器实战，未部署、未改云端配置或重启服务。
 
 #### 7.0 FSM 与策略行为交接、能源舰微动跟随（2026-11-09，本地修改，未实战验收）
+
+2026-11-10 21:50续轮（本地构建通过，未运行/部署）：`DpsFsm.cpp → TankRescueIntercept()/TankInterceptPending()`将远程开怪与战中救场分流；仅正在打友方玩家的接战敌人、拦截范围/LOS/技能就绪且够怒时建立限时救援意图，FSM切狂暴→拦截→普通维护恢复防御；Pickup和Taunt共用，失败回常规仇恨/接近而不射箭。`TickTankFsm()`雷霆/挫志按已接战敌人、法术真实DBC半径与3秒减益缺口维护，包含单Boss，顺劈改下一击去重入口。`HealOpeningResolve()/HealOpeningPrecast()`准备排队阶段不启动治疗预读，满血无预计伤害不空读大治疗。`GenericTriggers.cpp → InterruptSpellTrigger::IsActive()`无当前目标也扫描；`Engine.cpp → TryBossMechanicAction()`受限机制支持通道不按活跃度过滤，真实可用打断经目标/冷却/LOS/施法预检、有用性/倍率检查后允许抢占自身读条。德拉克光环危险与盗贼贴近修复记录在原躲地板节。统一WSL构建6739 exit0，二进制md5=d1410eed16183c897b195bc31e8be370，模块diff --check通过；行为效果仍待统一运行验收，不能据此声称已修复云端。
+
+
+2026-11-10 追加同类反馈：战士战斗/防御姿态来回切，熊德来回变身。`DpsFsm.cpp → DeferEngineFormAction()`统一角色形态所有权：FSM内调用明确放行；原生引擎在任何地图/战斗状态下不再自行补战士姿态或德鲁伊熊/巨熊/猫/枭兽/树形态。`DeferEngineShortPreparation()`在副本与战斗早退前执行同一角色形态门；`PlayerbotAI.cpp → EngineCastGuardListener::Before()`动作层共用，替换旧姿态特例。`DruidActions.cpp → CastCasterFormAction::Execute()`补直接移除形态的执行门，战斗熊坦不被旧caster-form前置动作脱成人形；FSM内机制/恢复可有意脱形态，脱战复活路径保留。未改`DrResolveRole()`角色判定。站长澄清“副本外不还手”为自己用了stay命令，因此未据此修改野外战斗门禁。`TickTankFsm()`内部Pickup战士shoot/throw也限制为自身和目标均未进战，已接战则回落正常仇恨循环。与follow/pull、躲地板、最少移动一起统一WSL构建通过（build_feedback_batch.log，任务6713，exit 0）；未启动运行测试，未部署云端，不作为形态稳定性实测通过。
+
 
 站长反馈：统一 FSM 后 Boss 战策略行为、救人有缺失；具体现场为能源舰老一/老二，Boss 小幅走动时全团跟随，并无输出。本次未读取该现场的客户端包/运行日志，不能把整场零输出归为已经复现或已证明唯一根因。
 
@@ -16316,6 +16494,11 @@ Approach: dist > 30
 ### 10. 2026-11-01 讨论定稿（一次写入；与前文冲突时以本节为准）
 
 ### 10.1 三条通用修正
+
+**2026-11-11 战斗反馈后续（本地已编译，云端未部署）**：`DpsFsm.cpp → BuildSnapshot()` 只把属于当前目标的连击点交给盗贼/猫德，避免换怪后拿上一目标五星进入终结技失败与等待。`TickRogueMaintain()` 用实际终结技能量成本（剔骨35）替代默认45点囤能；目标≤25%且至少2星时先泄星、不续切割，长战保留五星与切割维护。`TickInner()` 的公共GCD门对坦克保留扫描/切目标/非GCD接怪机会，每项技能仍接受核心冷却校验，读条中不强插技能。`AttackAction.cpp → WaitingForTankThreat()` 固定500/1000/1500领先只作为开场准入；持续仇恨门统一`DpsFsmPolicy.h → TankThreatHolds()`，即DPS达到坦克仇恨的配置百分比才停火，零坦克仇恨仍等待。旧代码同时全程要求固定差值、且百分比方向相反，可能导致精英小怪长时间停火。保留普通prio5、特殊豁免与无坦克/治疗职责规则。
+
+验证：WSL完整构建exit0，MD5 `9cc0002e5b0f727ade098cf0f2a52b63`；生产函数抽取测试通过（短目标2/4星剔骨、35点可放/34点等待、常规攒星及英勇各保护条件），既有policy回归54项通过。本地Hothkick29单目标45秒实际剔骨26865×2、切割×2、邪恶攻击×17、白字67次；该轮目标实际100%血，不能称为低血木桩验收。独立防战Rararni54三怪+竞争者35秒：FSM嘲讽1次、三怪回主坦、死亡0。三坦并发样本共用场地，已排除横向比较；防骑旧角色仍在战斗导致事务拒绝，不能计通过。副本557五人样本未正常起战，不能宣称精英仇恨门已实地全部验收；尚需现场复测实际停火恢复和各坦克响应延迟。英勇实测见§10.4。
+
 1. **火法灼烧的维护阈值按"3 次施法的容错"算**：`scorch_refresh_ms ≈ 3 × 灼烧读条 ≈ 4500~5000ms`（30 秒轴，剩 5 秒开始补）。
    理由是它**是 debuff 不是 DoT**：提前覆盖不吃最后一跳，而一次抵抗就要从 0 重叠 5 层 ⇒ 宁可早补；连续三次全抵抗概率可忽略。
 2. **预计战斗时长来自 boss 策略**（数据），FSM 不猜；读不到用 `fight_length_default=180s`。整场只在开场确定一次，仅当实际时长超过估计 1.2 倍时才允许切换到长战斗档。
@@ -16352,9 +16535,17 @@ Approach: dist > 30
 | 定位 | **公认垫底**：做到"舞能触发、十字军/审判不断、奉献按蓝降级"即达标，不投入极限调参 |
 
 ### 10.4 萨满：图腾是**给队伍配的**
-**实现前提（手册 §10.53 实证）**：契放后 `GetTotemGuid(slot)` **仍为空**（召唤走 `SPELL_EFFECT_SUMMON` 不登记槽位）⇒ **不能查槽位**，
-必须自己记账：`totemCastAt[slot]` + 施放坐标 + 图腾时长 ⇒ 判据三条：**到期前补** / **跑出 `totem_range` 补** / **换图腾组**。
-战栗/根基等动作名可直接复用经典引擎（`tremor totem` / `grounding totem` / `totem of wrath` / `wrath of air totem` / `windfury totem`）。
+
+**2026-11-11 英勇/嗜血后续（本地编译验证，未部署）**：云端新旧萨满实际都已学2825或32182，问题不在训练。旧`TickShaman()`有两次调用，而当前`TickShamanFsm()`与恢复治疗派发没有对应动作。新增`ShTickPartyHaste()`给元素/增强和恢复共用：已组队、已战斗、非读条且本体没有2825/32182时尝试自己实际学会的阵营技能，遵守原版小队范围/核心GCD与冷却，不新增WLK疲劳机制。恢复萨仍先急救及开场预读，再释放加速，优于普通图腾和维护。生产函数抽取行为测试覆盖两阵营、已有任意加速、未组队、脱战、读条、未学、非萨满及关闭参数。真实恢复萨Kirioa52两人组队、稳定100HP/s承伤35秒样本已记录`[DPSFSM-SH-HASTE] Kirioa cast=heroism`，只1次；该样本不等于元素/增强和部落实地全部验收。当前最新构建信息见§10.1，下文MD5与213断言是前轮图腾验证基线。
+
+**当前实现（2026-11-11）**：`DpsFsm.cpp → ShSyncTotemSlot()` 优先按核心实际图腾对象、`GetCreatedBySpellId()` 与剩余时间修正账本；已观察对象死亡/消失则清账。历史 §10.53 的空槽样本不能推广为“槽位必空”：DBC 中土=1、火=0，元素/战栗都走 `DoSummonTotem()` 登记槽位。未观察到对象时仍保留施法成功账本，兼容旧样本，不能凭一次空槽反复重插。
+
+- 战栗旧代码仍在 `PlayerbotAI.cpp`，但与 FSM 双写土槽；旧代码把任意土图腾当战栗，扫描只含自身攻击者/当前目标，多萨满还共用线程级节流。现删除 raw `CastSpell` 循环，三系统一走 `ShUpdateTotemThreat()` / `ShDesiredTotem()` / `ShTickFearProtection()`。扫描40码交战敌人，保留 `ai_playerbot_cc_creature.has_fear/has_spell`；脱战只允许准备窗口已选目标提供恐惧情报。每bot独立250ms节流，情报每图60秒缓存。
+- 战栗提前铺、覆盖普通土图腾与土元素，恐惧读条允许按原指令1秒节流重插，但服从真实GCD/资源/施法检查；只允许中断输出读条，不打断正在进行的治疗。核心不允许恐惧中施放8143，已删除“自身被恐惧/困惑才插”的死分支。战栗实际30码、每3秒解魅惑/恐惧/睡眠，不解困惑/惊骇。`ShTotemNeed()` 对战栗按30码判断走远重铺。
+- 土元素：已交战普通怪正在攻击本小队非坦克、其血量≤50%时救场；不拿Boss试嘲讽，不覆盖战栗。火元素：已交战Boss或至少3只交战怪、目标血量>20%、坦克仇恨准入后使用。三系共用，恢复萨常规元素施放仍处在治疗非急救维护阶段。两者只在战斗部署，遵守核心20分钟自身CD和2分钟共享类别CD；未学/冷却时回普通图腾。
+- 已在场元素优先保留，不因普通增益维护、准备阶段、走远或临近到期把长CD图腾反复重插/覆盖；战栗需求是土元素保护的例外。根基出现法系威胁时优先空气槽，图腾舞暂退并归零相位。
+- 数据来源：`ObjectMgr.cpp → LoadCreatureTemplateSpells()`会从旧表`creature_template_spells`构造默认列表。本地已有5913→8145、15430→33663、15439→32982，后两张法术effect3召15352/15438，召唤链完整；仅查新表`creature_spell_list`为空不能判定缺数据。本次无持久数据库变更、不交付数据SQL。
+- 验证：最终集中WSL构建exit0，二进制MD5 `8847a068d7bd910f3e80de9834049fd3`；两份目标源码Windows/WSL逐份SHA256一致，diff --check通过。规划/真实槽位同步151断言+威胁检测62断言（合计213，生产函数抽取、依赖stub、ASan/UBSan）通过，4个变异自检全部检出。最终本地运行：Kirioa52三假人45秒，2894火元素1次，实际Greater Fire Elemental接战；临时已知恐惧情报样本45秒，8143战栗1次且4槽维护稳定，无常驻条件下反复重插。临时情报已撤回；没验证真实恐惧落地后的解除时刻、土元素副本救场或三系全副本实战。云端未改。
 
 | 专精 | 大地 | 火焰 | 水 | 空气 |
 |---|---|---|---|---|
@@ -16427,6 +16618,9 @@ Idle → Prep(自身 buff/油)
 
 > 要算 overheal% 必须记录每次治疗的**实际治疗量 vs 有效治疗量**（与给 dps 加 `[DPSFSM-DMG]` 同类工作），
 > 日志 `[DPSFSM-HEAL] <bot> spell=<id> heal=<n> eff=<n> over=<n>`。
+
+2026-11-10续航复查（已完成本地短回归并部署，Boss长测未完成）：`DpsFsm.cpp → HealOpeningResolve()/HealOpeningPrecast()`原先按pull阶段和坦克目标重置预读，导致满血最高级大治疗重复起手；本轮改为同次接战只消费一次预读，取消后等待真实缺血。`HealCancelRedundantCast()`在读条早退前复查，单体直疗最后500ms、目标至少95%且预计有效量不足25%、无即将来伤时取消；群疗和HoT不按单目标取消，12个独立规则边界测试通过。`Unit.cpp → DealHeal()`新增核心raw治疗累计，`HealLogHps()`按实际raw/effective计算HPS和过疗；原theory估算保留为单独诊断字段。`TickHealTest()`模拟扣血同步damageTakenTotal，确保承伤预测可见。验收关闭health/mana自动回填，保留免材料便利；不能用此前100%过疗估算日志直接判定真实比例。首轮暴露对敌读条/饮水清空全部移动生成器后的断言，已改保留默认idle。补齐`SpellAuras.cpp → Aura::PeriodicTick()`绕过DealHeal的周期统计；`TickHealHot()`预测计入已有HoT恢复量，奶德稳定过疗由63–70%降至约45–48%，三花维持仍有浪费，不能声称完全消除。60秒独立战士靶350点/秒承伤，四治疗HPS分别为奶骑350、神牧384、奶萨335、奶德367，全部跑满未空蓝；靶坦25%保护地板使该通道不能证明Boss生存。饮水guid77实测坐下有24355光环，法力521/10428→7154/10428。60秒毁灭术实际46635伤害、元素萨58372；完整工作区最终25秒复验六臂均结束，有真实伤害但元素短窗仅3248，不能宣称输出已达正常水平。坦克朝向/近战背面规则与安全推点复检已包含，但543副本180秒只4/78波、未到Boss，顺劈实战验收待后续。站长要求尽快结束并一并部署其他会话未提交改动后，完整工作区零差异同步编译并启动短复验，19:20左右云端上线MD5 `5e80329eed3e842b26f54413ed921f88`，8086/3724正常。
+
 
 ### 11.5 实现顺序
 1. **神圣牧**（最通用：直接治疗 + 驱散 + 大 CD）→ 2. **恢复德**（HoT 为主，预读逻辑不同）→ 3. **神圣骑**（主坦）→ 4. **恢复萨**（链式/图腾）。

@@ -138,28 +138,56 @@ void instance_magtheridons_lair::SetData(uint32 uiType, uint32 uiData)
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_CHANNELER_EVENT:
-            // don't set the same data twice
-            if (m_auiEncounter[1] == uiData)
-                break;
+        {
+            bool const changed = (m_auiEncounter[uiType] != uiData);
+
             // stop the event timer on fail
-            if (uiData == FAIL)           
+            if (uiData == FAIL)
                 FailBoss();
-            // prepare Magtheridon for release
+
+            GameObject* pDoor = GetSingleGameObjectFromStorage(GO_DOODAD_HF_MAG_DOOR01);
             if (uiData == IN_PROGRESS)
             {
-                if (Creature* pMagtheridon = GetSingleCreatureFromStorage(NPC_MAGTHERIDON))
+                // Combat door: explicit state, never the toggle API.
+                // UseOpenableObject(false) flips an already-open door, and going through
+                // ResetDoorOrButton() sends the GO down GO_JUST_DEACTIVATED, where a static door
+                // without auto-close is removed from the world for its spawn timer (900 s here).
+                // Keep it closed and locked, and re-apply on every call so a player click or a grid
+                // reload cannot reopen it during the encounter.
+                if (pDoor)
                 {
-                    if (pMagtheridon->IsAlive())
+                    pDoor->SetGoState(GO_STATE_READY);
+                    pDoor->SetLootState(GO_READY);
+                    pDoor->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+                    pDoor->SetFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+                }
+
+                if (changed)
+                {
+                    if (Creature* pMagtheridon = GetSingleCreatureFromStorage(NPC_MAGTHERIDON))
                     {
-                        pMagtheridon->AI()->SendAIEvent(AI_EVENT_CUSTOM_B, pMagtheridon, pMagtheridon);
-                        m_uiCageBreakTimer = MINUTE * IN_MILLISECONDS;
+                        if (pMagtheridon->IsAlive())
+                        {
+                            pMagtheridon->AI()->SendAIEvent(AI_EVENT_CUSTOM_B, pMagtheridon, pMagtheridon);
+                            m_uiCageBreakTimer = MINUTE * IN_MILLISECONDS;
+                        }
                     }
                 }
-                // combat door
-                DoUseOpenableObject(GO_DOODAD_HF_MAG_DOOR01, false);
             }
+            else if (uiData == FAIL || uiData == DONE || uiData == NOT_STARTED)
+            {
+                if (pDoor)
+                {
+                    pDoor->SetGoState(GO_STATE_ACTIVE);
+                    pDoor->SetLootState(GO_READY);
+                    pDoor->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+                    pDoor->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+                }
+            }
+
             m_auiEncounter[uiType] = uiData;
             break;
+        }
     }
 
     // Instance save isn't needed for this one
