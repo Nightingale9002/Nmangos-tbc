@@ -12012,6 +12012,10 @@ WHERE r.event='always' AND r.value=1;
 
 #### 五、副本通用「躲地板技」（方案A，站长 2026-10-17 拍板）
 
+**2026-11-12 仇恨准入追加（本地，未部署）**：站长要求大世界、低级怪和无坦克队伍正常攻击。`AttackAction.cpp → ShouldControlThreat()`统一准入：仅副本/团队副本、非灰名生物、非坦克/治疗、确有同实际地图实例且存活/在世界/未传送的坦克时控制仇恨；灰名采用核心 `Relations.cpp → Unit::IsTrivialForTarget()`，不另设等级差公式。`WaitingForTankThreat()`在读专用规则前先检查此准入，专用规则不能覆盖野外或无有效坦克豁免；`CombatStrategy.cpp → WaitForAttackStrategy::ShouldWait()`、`ThreatValues.cpp → Calculate(Unit*)`、候选过滤及FSM `EvalThreat()/WarlockThreatOk()/WarlockSeedThreatSafe()`共用同一规则。种子对同级副目标仍单独审查，不能以低级主目标放过同级副目标。已抽取真实共享门、攻击停手和旧等待三个函数验证有/无配置、大世界、灰名、单人/无坦克/坦克死亡/异图/传送及正常副本停手，两个有效负对照均检出；这是源码函数回归，未宣称真人客户端现场攻击验收。
+
+**2026-11-12 同实例跑尸进入次数核查（未改核心）**：`Player.cpp → AddNewInstanceId()`按真实实例ID作map键，仅首次登记一小时到期值；同ID不增加条目也不延长到期，`CanEnterNewInstance()`在五次上限时先放行已登记ID。`Map.cpp → DungeonMap::Add()`传实际GetInstanceId，`MapManager.cpp → CreateInstance()`从 `GetBoundInstanceSaveForSelfOrGroup()`先取个人/队伍绑定，地图卸载后同存档重建不生成新ID。逐字抽取计数/过期/绑定解析/创建函数验证满五个ID后100次死亡同ID回入、个人及组绑定、卸载重载、到期、GM和真正新实例仍拒绝；延长到期或拒绝旧实例的两个负对照均失败。依赖stub，不等同真人跑尸封包E2E；没有证据表明普通同实例回入会累计，因此不改五次限制、不按地图ID豁免真实重置后的新实例。
+
 **2026-11-12 逃生与根基后续（本地，未部署）**：站长明确本轮只验证正常躲技能和根基正常使用，不要求击杀Boss；避险持有移动权不得把合法瞬发一并锁住。`PlayerbotAI.cpp → UpdateAI()` 在原生受控/击飞落地维护之后、普通面向/反应/读条等待之前调用 `DpsFsm.cpp → TickSurvival()`；保留 `CanMove()`、定身/变羊/击退等原生限制。`CastAvoidance.h → Tick()` 使用完整导航一次性跑步路径，显式关闭 `MotionMaster::MovePath()` 默认的 cyclic，避免安全终点连接回危险起点。`FindPath()` 同时检查请求点与导航吸附后的实际终点；旧版最多1码误差会在柱角出现零长度重寻路。路径仍检查地形、角色碰撞高度LOS、危险区及未交战敌人安全圈，`EscapePathSafety.h → NonIntrudingSegment2D()` 对整条线段约束防add，已在圈内只允许向外逃离。
 
 `CastAvoidance.h → SpellCovered()` 按 `Spell.cpp → CheckTarget()/SetTargetMap()` 的源/目标/施法者LOS与ignoreM2规则判掩体；不能用普通Boss头部LOS代替区域法术结算射线。施法者源坐标在读条期间可能尚未填入，`TARGET_LOCATION_CASTER_SRC` 必须从 `GetCastingObject()` 推算，显式源/目标则检查有效标志。早期9b2版本漏掉此时序，原生回归失败，已由后续修正取代；独立单技能夹具约0.3秒就取消5秒魔爆的零伤害样本同样作废。
