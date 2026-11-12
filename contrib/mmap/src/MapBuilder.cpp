@@ -1432,16 +1432,21 @@ namespace MMAP
         if (iv.polyMesh && iv.polyMeshDetail)
         {
             const float zShiftCells = getTileConfig(mapID, tileX, tileY).value("navZShiftCells", 0.0f);
-            if (zShiftCells != 0.0f)
+            const int shiftCells = (int)lroundf(zShiftCells);
+            if (shiftCells != 0)
             {
-                const float dz = -zShiftCells * config.ch;
+                // ⚠️ ⚠️ `rcPolyMesh::verts` 是 **unsigned short**（以格为单位的量化坐标），
+                //    `verts[...] += -0.3556f` 会被截断成 **-1 格** —— 写 2.0 和写 4.0
+                //    效果完全一样（实测都是 −0.1778 码）。所以这里必须**按整格减**。
+                //    detailMesh 的 verts 是 float（世界坐标），按同一位移量扣。
+                const float dz = -float(shiftCells) * MMAP::CELL_HEIGHT;
                 for (int i = 0; i < iv.polyMesh->nverts; ++i)
-                    iv.polyMesh->verts[i * 3 + 1] += dz;
+                    iv.polyMesh->verts[i * 3 + 1] -= (unsigned short)shiftCells;
                 for (int i = 0; i < iv.polyMeshDetail->nverts; ++i)
                     iv.polyMeshDetail->verts[i * 3 + 1] += dz;
                 if (std::getenv("MMAP_DEBUG_ZSHIFT"))
-                    printf("%s [ZSHIFT] %.2f cells = %.4f yd  polyVerts=%d detailVerts=%d\n",
-                           tileString, zShiftCells, dz, iv.polyMesh->nverts,
+                    printf("%s [ZSHIFT] %.2f -> %d cells = %.4f yd  polyVerts=%d detailVerts=%d\n",
+                           tileString, zShiftCells, shiftCells, dz, iv.polyMesh->nverts,
                            iv.polyMeshDetail->nverts);
             }
         }
@@ -2109,6 +2114,9 @@ namespace MMAP
         // 所以前 terrainTriCount 个三角是地形，只放宽这一段。
         const int terrainTriLimit = (terrainTriCount > 0 && terrainTriCount < tTriCount)
                                     ? terrainTriCount : 0;
+        // ⚠️ 这里**不得**擅自给 terrainSlopeAngle 加"硬上限"。
+        //    （2026-11-11 我曾加过 75° 上限，被站长否掉：地形坡度放宽的取值有明确
+        //      规定，属于设定的一部分，不是实现细节。）配置写多少就用多少。
         const float terrainSlope = terrainSlopeAngle;
         if (terrainTriLimit > 0 && terrainSlope > tileCfg.walkableSlopeAngle)
         {
@@ -2500,6 +2508,24 @@ namespace MMAP
             {"terrainSlopeAngle", 90.0f},
             {"liquidFlagMergeThreshold", 0.0f},
             {"preErosionMedianPasses", 1},
+            // 【导航面高度修正】把 navmesh 顶点整体下移 N 个 ch（0.1778 码/格）。
+            //
+            // 原因（2026-11-11 站长现场）：Recast 的 span 高度是**格子顶面**
+            // （bmin[1] + smax*ch），所以生成的导航面天然比真实地面高，
+            // 实测中位 **+0.205 码**（P90 +0.778）。怪不受影响 —— 它们每步会被
+            // Map::GetHeight 吸附到真实地面；**bot 是玩家单位，不做这个吸附**，
+            // 于是只有 bot 整体浮起几寸~半码。
+            //
+            // 1.0 格 = 0.1778 码：实测下移后中位偏差降到 **+0.077 码**（≈7cm）。
+            // 注意 polyMesh 与 polyMeshDetail 的顶点必须同时移（见 buildTile）。
+            //
+            // 【2026-11-11 定 2.0】—— 之前写 1.0/2.0/4.0 效果完全相同，根因是
+            // rcPolyMesh::verts 是 unsigned short，`+= -0.3556f` 被截断成 -1 格。
+            // 改成按整格减之后重新标定（map 553，400 个采样点，对比 vmap 真实地面）：
+            //     shift=0 → 中位 +0.367 码
+            //     shift=2 → 中位 +0.042 码   ✓ 贴合
+            //     shift=3 → 中位 -0.121 码   （偏低）
+            {"navZShiftCells", 2.0f},
 
             // [AUTOOFFMESH] 自动补连（只在 --autoOffMesh 时生效）
             {"autoOffMeshMaxDH", 2.0f},      // 水平缺口上限（码）
