@@ -686,122 +686,6 @@ void Unit::EvadeTimerExpired()
     if (!AI())
         return;
 
-    // [2026-10-26 站长口径·定稿] 脱战判据不是"仇恨列表里有几个目标"，而是：
-    //   **这只怪是否还拥有"可达 + 可攻击"的目标**。语义与 WOW 一致：
-    //     ① 当前目标可达可攻击 ⇒ 正常战斗（停掉 evade 计时），什么都不做；
-    //     ② 当前目标不可达/不可攻击，但仇恨列表里还有别的**能完整寻路到**的玩家 ⇒ 切换目标继续打；
-    //     ③ 所有仇恨目标都不可达/不可攻击 ⇒ 此时（EvadeTimer 已到期）才 EnterEvadeMode()：
-    //        清仇恨 + 回位 + 回血（boss 同样 reset —— 这是 WOW 行为，不做"只清玩家战斗"的绕过）。
-    //   注意：玩家侧 IsInCombat 是③的派生结果，不在这里手动清。
-    //   只对**非玩家控制**单位生效（玩家/宠物/召唤物不动）。
-    if (GetTypeId() == TYPEID_UNIT && !HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED))
-    {
-        // [站长口径 2026-11-02] 这套逻辑**只处理"怪打玩家、且已经卡死（够不着/零伤害交换）"**：
-        //   - 小动物、闲置单位（没 victim/没仇恨/不在战斗）、以及**目标不是玩家方**的单位，一律不管。
-        //   - 原实现把 ③ 分支当"任何计时到期的单位"处理，后果是：
-        //       · 小动物被狼打后把狼当 victim，但对生物 `CanAttack()` 为假 ⇒ 每次计时到期就 EnterEvadeMode()
-        //         ⇒ 永久停在 evade 状态；而 `RollMeleeOutcomeAgainst()` 对 evade 目标一律返回
-        //         MELEE_HIT_EVADE ⇒ 狼打小动物每一击 0 伤害、**玩家右键也点不动它**
-        //         （本地实测 80299→80308 Chicken 连续 8 次 for 0 dmg）；
-        //       · 站着的小动物/平民 NPC 也会被反复踢进 evade（本地 47 条 why=no-victim）。
-        //   注意：bot 也是 Player，`IsControlledByPlayer()` 为真，所以"纯 bot 队伍被卡战斗"仍会被修复。
-        Unit* victim = GetVictim();
-        if (IsCreature() && static_cast<Creature*>(this)->IsCritter())
-            return;
-        if (!victim || !victim->IsControlledByPlayer())
-            return;
-
-        // ① 当前目标还能打？
-        bool victimOk = false;
-        if (victim && victim->IsAlive() && CanAttack(victim))
-        {
-            bool const motionReachable = GetMotionMaster() && GetMotionMaster()->GetCurrent() &&
-                GetMotionMaster()->GetCurrent()->IsReachable();
-            if (motionReachable)
-                victimOk = true;
-        }
-        if (victimOk)
-        {
-            // [EVADEFIX-ZERODMG 2026-11-02] "motion 说可达" != "真能交换伤害"。
-            //   死锁形态：怪**有 victim**、寻路也回 NORMAL/SHORTCUT（所以上面 ① 为真、CombatManager 的
-            //   30 秒幽灵兜底又因为"有 victim"每 tick 归零），但它其实打不着/打不出（隔墙隔层、
-            //   卡在不可达的落点、被脚本状态锁住），玩家侧 threat ref 因此永远不释放 ⇒ 全队挂战斗。
-            //   这里在"已确认当前目标可达(①)"之后、"换目标(②)/脱战(③)"之前，补一条窄口径：
-            //   （可达 ⇒ 正常打 仍然是 ① 的第一判断；只有"可达但零交换伤害"的单位才会被这条分走）
-            //   **副本内 + 非玩家控制 + 有 victim + 最近 ≥10s 零伤害交换 ⇒ EnterEvadeMode()**。
-            //   时间来源（全部是既有字段，没有新增成员、没有 static map）：
-            //     ① GetCombatManager().GetCombatTimer()（uint32 毫秒倒计时）：每次"真正交换伤害"都会被
-            //        TriggerCombatTimer 重置，递减到 0 表示 ≥GetPursuit()(默认 15000ms) 没有任何交换事件。
-            //        刷新点：Unit::HandleDamageDealt（打到**能持有仇恨表的目标**时转发到挨打方 manager ⇒
-            //        "受到伤害"）、Unit::AttackerStateUpdate 的 resetLeashFunc（站定挥击 ⇒ "造成伤害"）、
-            //        Spell 的延迟命中、Unit::SetInCombatState。被控/被脚本禁用 leash 时它不递减 ⇒ 天然豁免。
-            //     ② GetCombatManager().GetLastLeashExtension()（time_t，1s 精度，联动小队共享同一 ptr）：
-            //        与①同一批刷新点。用它给出**明确的 10 秒墙钟**判断，并兼作日志节流时钟。
-            //   有效阈值 = max(15s, 10s) = 15s，比要求的 10s 更保守（宁可少误杀，不漏掉长期卡死的）。
-            //   最坏情况推演：正常战斗的单位每 2s 左右挨打或挥击一次，①每 tick 被重置，永远 != 0 ⇒ 到不了这里。
-            if (GetMap() && GetMap()->IsDungeon() && !IsCrowdControlled() &&
-                !hasUnitState(UNIT_STAT_CAN_NOT_REACT) && !GetCombatManager().IsLeashingDisabled())
-            {
-                CombatManager& combatMgr = GetCombatManager();
-                time_t const now = time(nullptr);
-                time_t const lastExchange = combatMgr.GetLastLeashExtension();
-                // "打不着"：连近战距离都没有（近战距离内还在挥的单位不会被这条踢走；施法中的也跳过）。
-                bool const cannotStrike = !CanReachWithMeleeAttack(victim) && !IsNonMeleeSpellCasted(false);
-                if (!combatMgr.GetCombatTimer() && now - lastExchange >= 10 && cannotStrike)
-                {
-                    sLog.outError("[EVADEFIX] %s entry=%u map=%u 零交换伤害 10s（有目标但打不到）⇒ EnterEvadeMode "
-                                  "victim=%s thr=%u ct=%u lastExchange=%lds",
-                        GetName(), GetEntry(), GetMap()->GetId(), victim->GetName(),
-                        uint32(getThreatManager().getThreatList().size()), combatMgr.GetCombatTimer(),
-                        long(now - lastExchange));
-                    // 节流（每单位/每联动小队）：把共享时钟推到现在 ⇒ 同一单位最快 10s 后才会再记一条
-                    // （不进副本时 CombatManager 的 leash 分支被 IsDungeon() 门挡掉，写它没有别的副作用）。
-                    combatMgr.UpdateLeashExtension();
-                    AI()->EnterEvadeMode();
-                    return;
-                }
-            }
-            GetCombatManager().StopEvade();      // 又打得着了：恢复正常战斗
-            return;
-        }
-
-        // ② 找一个"能完整寻路走到"的仇恨目标（每 10 秒一次慢回调，寻路开销可接受）
-        Unit* alt = nullptr;
-        for (auto const& ref : getThreatManager().getThreatList())
-        {
-            Unit* t = ref->getTarget();
-            if (!t || t == victim || !t->IsAlive() || !t->IsInWorld() || !CanAttack(t))
-                continue;
-            PathFinder pf(this);
-            pf.calculate(t->GetPositionX(), t->GetPositionY(), t->GetPositionZ());
-            PathType const pt = pf.getPathType();
-            // 只认"完整路径"（NORMAL/SHORTCUT）；INCOMPLETE 只是靠近，不算能打到
-            if (pt == PATHFIND_NORMAL || pt == PATHFIND_SHORTCUT)
-            {
-                alt = t;
-                break;
-            }
-        }
-        if (alt)
-        {
-            sLog.outError("[EVADEFIX] entry=%u map=%u 当前目标不可达 ⇒ 切换目标 %s(entry=%u) 继续战斗",
-                GetEntry(), GetMap() ? GetMap()->GetId() : 0, alt->GetName(),
-                alt->GetTypeId() == TYPEID_UNIT ? alt->GetEntry() : 0);
-            if (victim)
-                getThreatManager().SetTargetSuppressed(victim);   // 旧目标暂时压掉（不是脱战）
-            AI()->AttackStart(alt);
-            return;
-        }
-
-        // ③ 一个都够不着（EvadeTimer 已到期）⇒ WOW 语义：清仇恨 + 回位 + 回血
-        sLog.outError("[EVADEFIX] entry=%u map=%u pos=(%.1f,%.1f,%.1f) 所有仇恨目标都不可达/不可攻击 ⇒ "
-                      "EnterEvadeMode（清仇恨/回位/回血）",
-            GetEntry(), GetMap() ? GetMap()->GetId() : 0,
-            GetPositionX(), GetPositionY(), GetPositionZ());
-        AI()->EnterEvadeMode();
-        return;
-    }
-
     // When there is no target to switch to, leave combat
     if (getThreatManager().getThreatList().size() == 1)
     {
@@ -4777,6 +4661,18 @@ void Unit::_UpdateSpells(uint32 time)
 #endif
 }
 
+uint32 Unit::GetAutoRepeatRemainingMs() const
+{
+    Spell* repeat = m_currentSpells[CURRENT_AUTOREPEAT_SPELL];
+    if (!repeat || !repeat->m_spellInfo || !IsInWorld()) return 0;
+    if (m_AutoRepeatFirstCast) return 500;
+    TimePoint expiration;
+    bool permanent = false;
+    if (!GetExpireTime(*repeat->m_spellInfo, expiration, permanent) || permanent) return 0;
+    auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(expiration - GetMap()->GetCurrentClockTime()).count();
+    return remaining > 0 ? uint32(remaining) : 0;
+}
+
 void Unit::_UpdateAutoRepeatSpell()
 {
     // check "real time" interrupts
@@ -7718,7 +7614,10 @@ int32 Unit::DealHeal(Unit* pVictim, uint32 addhealth, SpellEntry const* spellPro
         // [BOT-ML 2026-10-17] bot 治疗统计（核心数据）：只计**有效治疗**（gain，过量治疗不算）。
 #ifdef ENABLE_PLAYERBOTS
         if (!static_cast<Player*>(unit)->isRealPlayer())
+        {
             static_cast<Player*>(unit)->botHealingDone += gain;
+            static_cast<Player*>(unit)->botHealingRaw += addhealth;
+        }
 #endif
         if (BattleGround* bg = static_cast<Player*>(unit)->GetBattleGround())
             bg->UpdatePlayerScore(static_cast<Player*>(unit), SCORE_HEALING_DONE, gain);
@@ -9720,11 +9619,7 @@ bool Unit::SelectHostileTarget()
                 }
                 else
                 {
-                    // [站长口径 2026-11-02] evade 计时只对"怪打玩家、且够不着"启用。
-                    //   否则小动物/中立目标被打了以后，因为够不到攻击者，每一 tick 都会重置这个
-                    //   10 秒计时 ⇒ 永久 IsInEvadeMode() ⇒ 任何攻击对它的判定都是 MELEE_HIT_EVADE
-                    //   （客户端显示"未命中"）⇒ 玩家/怪物都打不死它，也点不动它。
-                    if (target->IsControlledByPlayer() && !GetCombatManager().IsInEvadeMode())
+                    if (!GetCombatManager().IsInEvadeMode())
                         GetCombatManager().StartEvadeTimer();
                 }
             }
@@ -9752,19 +9647,7 @@ bool Unit::SelectHostileTarget()
         for (auto m_attacker : m_attackers)
         {
             if (m_attacker->IsInMap(this) && CanAttack(m_attacker) && m_attacker->isInAccessablePlaceFor(this))
-            {
-                // [2026-10-26 站长口径·核心修] 这里原来是**无条件 return false**：
-                //   "有攻击者、但对方没造成伤害（所以没有仇恨记录）" ⇒ 本意只是**不要立刻脱战**
-                //   （例如宠物被命令攻击很远的目标）。问题是它**永远不脱战**：
-                //   攻击者只要站在"可访问位置"就一直成立 ⇒ 怪 IsInCombat + 没有 victim + 永不 evade，
-                //   队伍侧就表现为"整组在战斗、零攻击者、零推进"（[GHOSTCOMBAT] 实测 200+ 条）。
-                //   现在：仍然不立刻脱战，但**启动 EvadeTimer**；计时到期仍没有有效目标
-                //   ⇒ EvadeTimerExpired() 里按 WOW 语义脱战回位。
-                //   [站长口径 2026-11-02] 同样只对玩家方攻击者启用，避免 NPC 互殴/小动物被顶进永久 evade。
-                if (m_attacker->IsControlledByPlayer() && !GetCombatManager().IsInEvadeMode())
-                    GetCombatManager().StartEvadeTimer();
                 return false;
-            }
         }
     }
 
@@ -11880,6 +11763,38 @@ void Unit::KnockBackFrom(Unit* target, float horizontalSpeed, float verticalSpee
 
 void Unit::KnockBackWithAngle(float angle, float horizontalSpeed, float verticalSpeed)
 {
+#ifdef ENABLE_PLAYERBOTS
+    // [BOT-KNOCKBACK-PHYSICS 2026-11-11] "击飞要按正确的客户端物理"。
+    //   真人玩家：下面那条 IsClientControlled() 只发 MSG_MOVE_KNOCK_BACK，
+    //   抛物线由**客户端**算，服务端不管。
+    //   bot 没有真客户端 ⇒ 包发出去没人算 ⇒ 服务端位置不动，或停在半空下不来。
+    //   这里给 bot 补服务端版抛射：初速 (horizontal, vertical) + 重力 → 落点取真实地面，
+    //   交给 MotionMaster::MoveJump 走 spline（和客户端表现一致：上抛→下落→着地）。
+    if (IsPlayer())
+    {
+        Player* botPlayer = static_cast<Player*>(this);
+        if (botPlayer->GetPlayerbotAI())
+        {
+            float constexpr GRAVITY = 19.291105f;           // 客户端重力（码/s^2）
+            float const vz  = std::max(0.1f, verticalSpeed);
+            float const vxy = std::max(0.1f, horizontalSpeed);
+            float const t   = 2.0f * vz / GRAVITY;          // 滞空时间
+            float const tx  = GetPositionX() + cosf(angle) * vxy * t;
+            float const ty  = GetPositionY() + sinf(angle) * vxy * t;
+            float const tz  = GetMap()->GetHeight(tx, ty, GetPositionZ() + 5.0f);
+            if (tz > INVALID_HEIGHT)
+            {
+                float const maxH = vz * vz / (2.0f * GRAVITY);
+                sLog.outError("[BOT-KNOCKBACK] %s from(%.1f,%.1f,%.1f) -> (%.1f,%.1f,%.1f) v=(%.1f,%.1f) maxH=%.1f",
+                              botPlayer->GetGuidStr().c_str(), GetPositionX(), GetPositionY(), GetPositionZ(),
+                              tx, ty, tz, vxy, vz, maxH);
+                botPlayer->GetMotionMaster()->MoveJump(tx, ty, tz, vxy, maxH, EVENT_JUMP);
+                return;
+            }
+        }
+    }
+#endif
+
     if (IsClientControlled())
     {
         if (Player const* player = GetControllingPlayer())

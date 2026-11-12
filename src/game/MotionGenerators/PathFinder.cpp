@@ -85,6 +85,10 @@ PathFinder::~PathFinder()
 
 void PathFinder::SetCurrentNavMesh()
 {
+    // A query can become available after grids are loaded. Do not retain an
+    // initial null query, or a query from an earlier map/instance/transport.
+    m_navMesh = nullptr;
+    m_navMeshQuery = nullptr;
     if (m_sourceUnit && MMAP::MMapFactory::IsPathfindingEnabled(m_sourceUnit->GetMapId(), m_sourceUnit))
     {
         MMAP::MMapManager* mmap = MMAP::MMapFactory::createOrGetMMapManager();
@@ -92,22 +96,18 @@ void PathFinder::SetCurrentNavMesh()
             m_navMeshQuery = mmap->GetModelNavMeshQuery(transport->GetDisplayId());
         else
         {
-            if (m_defaultMapId != m_sourceUnit->GetMapId())
-                m_defaultNavMeshQuery = mmap->GetNavMeshQuery(m_sourceUnit->GetMapId(), m_sourceUnit->GetInstanceId());
-
+            m_defaultNavMeshQuery = mmap->GetNavMeshQuery(m_sourceUnit->GetMapId(), m_sourceUnit->GetInstanceId());
             m_navMeshQuery = m_defaultNavMeshQuery;
         }
-
         if (m_navMeshQuery)
             m_navMesh = m_navMeshQuery->getAttachedNavMesh();
-
     }
 #ifdef ENABLE_PLAYERBOTS
     else if (!m_sourceUnit && MMAP::MMapFactory::IsPathfindingEnabled(m_defaultMapId, nullptr))
     {
         MMAP::MMapManager* mmap = MMAP::MMapFactory::createOrGetMMapManager();
+        m_defaultNavMeshQuery = mmap->GetNavMeshQuery(m_defaultMapId, m_defaultInstanceId);
         m_navMeshQuery = m_defaultNavMeshQuery;
-
         if (m_navMeshQuery)
             m_navMesh = m_navMeshQuery->getAttachedNavMesh();
     }
@@ -170,6 +170,22 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
     m_forceDestination = forceDest;
     m_straightLine = straightLine;
 
+    // An explicit unit policy is not a missing navigation mesh. Preserve the
+    // non-navmesh movement requested by scripts/template data across cell borders.
+    // Global/map MMAP disablement and unloaded tiles still use the checks below.
+    bool const ignorePf = m_sourceUnit && m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING);
+    bool const ignoreMmap = m_sourceUnit && m_sourceUnit->IsIgnoringMMAP() == Unit::MmapForcingStatus::IGNORED;
+    if (ignorePf || ignoreMmap)
+    {
+        m_navMesh = nullptr;
+        m_navMeshQuery = nullptr;
+        PFDBG_MSG(m_sourceUnit, "NONNAV reason=%s -> BuildShortcut NORMAL|NOT_USING",
+                  ignoreMmap ? "unit-mmap-disabled" : "unit-ignore-pathfinding");
+        BuildShortcut();
+        m_type = PathType(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH);
+        return true;
+    }
+
     SetCurrentNavMesh();
 
 #ifdef ENABLE_PLAYERBOTS
@@ -179,17 +195,11 @@ bool PathFinder::calculate(Vector3 const& start, Vector3 const& dest, bool force
 
     // make sure navMesh works - we can run on map w/o mmap
     // check if the start and end point have a .mmtile loaded (can we pass via not loaded tile on the way?)
-#ifdef ENABLE_PLAYERBOTS
-    if (!m_navMesh || !m_navMeshQuery || (m_sourceUnit && m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING)) ||
-#else
-    if (!m_navMesh || !m_navMeshQuery || m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING) ||
-#endif    
-        !HaveTile(start) || !HaveTile(dest))
+    if (!m_navMesh || !m_navMeshQuery || !HaveTile(start) || !HaveTile(dest))
     {
         // [PATH-MMAP 2026-10-17 站长口径] 正常陆地寻路必须走 mmap：
         //   同格 ⇒ 保持旧行为（下面的直连）；跨格 ⇒ 先把 start/dest 的格载进来再重算一次。
         //   加载后仍没有 mmap（真的没提取）⇒ 不再退回直连，直接给空路径（走到哪算哪）。
-        bool const ignorePf = m_sourceUnit && m_sourceUnit->hasUnitState(UNIT_STAT_IGNORE_PATHFINDING);
         Cell const startCell(MaNGOS::ComputeCellPair(start.x, start.y));
         Cell const destCell(MaNGOS::ComputeCellPair(dest.x, dest.y));
         if (m_sourceUnit && !ignorePf && !m_sourceUnit->IsFlying() && !m_sourceUnit->IsInWater())
@@ -1376,6 +1386,10 @@ void PathFinder::createFilter()
         // [2026-10-21 站长口径] bot 与真实玩家完全一致：包含 steep、只排除岩浆，
         //   不做 bot 专属 area cost / 不排除 steep —— 否则和怪物寻路口径不一致，
         //   会出现"怪物→bot 无路、bot→怪物有路"的单向可达误判。
+        //
+        // [2026-11-11 审查结论] 这次曾试图改成"按怪的 CanWalk/CanSwim 取 include"，
+        //   但 Player::CanWalk()/CanSwim() 恒为 true ⇒ 会把 NAV_MAGMA_SLIME 也算进
+        //   可走区域（玩家会走岩浆），属新引入的回归，已还原。
         includeFlags |= (NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP);
         excludeFlags |= (NAV_MAGMA_SLIME);
     }
@@ -1451,6 +1465,9 @@ bool PathFinder::HaveTile(const Vector3& p) const
 {
     if (m_sourceUnit && m_sourceUnit->GetTransport())
         return true;
+
+    if (!m_navMesh)
+        return false;
 
     int tx = -1, ty = -1;
     float point[VERTEX_SIZE] = {p.y, p.z, p.x};

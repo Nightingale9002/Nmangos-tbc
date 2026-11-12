@@ -80,7 +80,7 @@ namespace
         TileOf(mapId, dx, dy, dgx, dgy, dtile);
 
         float const dist2d = std::sqrt((dx - sx) * (dx - sx) + (dy - sy) * (dy - sy));
-        WorldDatabase.PExecute(
+        CharacterDatabase.PExecute(
             "INSERT INTO ai_playerbot_jump_obs "
             "(`ts`,`map`,`instance_id`,`is_bot`,`player_guid`,`player_name`,"
             "`src_x`,`src_y`,`src_z`,`src_tile`,`src_tile_x`,`src_tile_y`,"
@@ -111,7 +111,7 @@ namespace
         TileOf(mapId, sx, sy, sgx, sgy, stile);
         TileOf(mapId, dx, dy, dgx, dgy, dtile);
 
-        WorldDatabase.PExecute(
+        CharacterDatabase.PExecute(
             "INSERT INTO ai_playerbot_lift_obs "
             "(`ts`,`map`,`instance_id`,`is_bot`,`player_guid`,`player_name`,"
             "`src_x`,`src_y`,`src_z`,`src_tile`,`src_tile_x`,`src_tile_y`,"

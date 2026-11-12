@@ -76,8 +76,6 @@ class CombatManager
         uint32 m_evadeTimer; // Used for evade during combat when mob is not running home and target isnt reachable
         EvadeState m_evadeState; // Used for evade during running home
         uint32 m_combatTick;
-        // [GHOST-FIX 2026-10-27] "在战斗但 30 秒都没有 victim"的累计时长（幽灵战斗兜底，见 Update）
-        uint32 m_noVictimMs;
 
         // combat timer handling
         uint32 m_combatTimer;

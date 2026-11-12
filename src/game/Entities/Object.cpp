@@ -2307,6 +2307,20 @@ Creature* WorldObject::SummonCreature(TempSpawnSettings settings, Map* map)
     if (creature->IsLinkingEventTrigger())
         map->GetCreatureLinkingHolder()->DoCreatureLinkingEvent(LINKING_EVENT_RESPAWN, creature);
 
+    // [2026-11-10 站长口径] **副本召唤物日志**：验证 Boss 召唤是否真的刷出来
+    //   （如 554 Nethermancer Sepethrea 的火元素）。召唤物是否 active 也要能看见：
+    //   active=1 ⇒ 它会自己更新（选目标/施法），active=0 ⇒ 只有附近有玩家时才更新。
+    if (map && (map->IsDungeon() || map->IsRaid()))
+    {
+        uint32 const summonerEntry = (settings.spawner && settings.spawner->GetTypeId() == TYPEID_UNIT)
+            ? settings.spawner->GetEntry() : 0;
+        sLog.outError("[SUMMON] map=%u inst=%u caster=%s(%u) entry=%u guid=%u active=%d spell=%u",
+            map->GetId(), map->GetInstanceId(),
+            settings.spawner ? settings.spawner->GetName() : "none", summonerEntry,
+            settings.entry, creature->GetDbGuid(), creature->isActiveObject() ? 1 : 0,
+            settings.spellId);
+    }
+
     // return the creature therewith the summoner has access to it
     return creature;
 }

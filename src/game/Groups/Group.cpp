@@ -36,6 +36,9 @@
 #ifdef BUILD_DEPRECATED_PLAYERBOT
 #include "PlayerBot/Base/PlayerbotMgr.h"
 #endif
+#ifdef ENABLE_PLAYERBOTS
+#include "playerbot/RandomPlayerbotMgr.h"
+#endif
 
 GroupMemberStatus GetGroupMemberStatus(const Player* member = nullptr)
 {
@@ -306,6 +309,9 @@ bool Group::AddMember(ObjectGuid guid, const char* name)
 
     if (Player* player = sObjectMgr.GetPlayer(guid))
     {
+#ifdef ENABLE_PLAYERBOTS
+        sRandomPlayerbotMgr.RememberHumanGroup(this, player);
+#endif
         _updateMembersOnRosterChanged(player);
 
         if (!IsLeader(player->GetObjectGuid()) && !IsBattleGroup())
@@ -380,6 +386,9 @@ bool Group::AddMember(ObjectGuid guid, const char* name)
 uint32 Group::RemoveMember(ObjectGuid guid, uint8 method)
 {
     Player* player = sObjectMgr.GetPlayer(guid);
+#ifdef ENABLE_PLAYERBOTS
+    sRandomPlayerbotMgr.RememberHumanGroup(this, player);
+#endif
 #ifdef BUILD_DEPRECATED_PLAYERBOT
     // if master leaves group, all bots leave group
     if (player && player->GetPlayerbotMgr())

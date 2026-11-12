@@ -846,9 +846,20 @@ bool ChaseMovementGenerator::DispatchSplineToPosition(Unit& owner, float x, floa
     }
 
     auto& path = this->i_path->getPath();
+    if (path.size() < 2)
+    {
+        m_reachable = false;
+        return false;
+    }
 
     if (cutPath)
         CutPath(owner, path);
+
+    if (path.size() < 2)
+    {
+        m_reachable = false;
+        return false;
+    }
 
     if (checkReachable)
     {

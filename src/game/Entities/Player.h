@@ -1564,8 +1564,9 @@ class Player : public Unit
             m_resurrectZ = Z;
             m_resurrectHealth = health;
             m_resurrectMana = mana;
+            m_botSummonResurrect = false;
         }
-        void AddResurrectRequest(ObjectGuid casterGuid, SpellEntry const* spellInfo, Position position, uint32 mapId, uint32 health, uint32 mana, bool isSpiritHealer, const char* sentName);
+        void AddResurrectRequest(ObjectGuid casterGuid, SpellEntry const* spellInfo, Position position, uint32 mapId, uint32 health, uint32 mana, bool isSpiritHealer, const char* sentName, bool botSummon = false);
         void SendResurrectRequest(SpellEntry const* spellInfo, bool isSpiritHealer, const char* sentName);
         void clearResurrectRequestData() { setResurrectRequestData(ObjectGuid(), 0, 0.0f, 0.0f, 0.0f, 0, 0); }
         bool isRessurectRequestedBy(ObjectGuid guid) const { return m_resurrectGuid == guid; }
@@ -2244,6 +2245,7 @@ class Player : public Unit
         //   （站长口径"用核心数据"）。判据 isRealPlayer() 来自 session 远端地址，不依赖 playerbot 模块实现。
         uint64 botDamageDealt = 0;
         uint64 botHealingDone = 0;
+        uint64 botHealingRaw = 0;  // Actual direct/periodic healing before the health cap; raw - done is overheal.
         // [2026-10-29 战斗取证] 宠物/图腾伤害、平砍次数、施法次数、技能分布（用于查"技能有没有放"）
         uint64 botPetDamageDealt = 0;
         uint64 botMeleeHits = 0;
@@ -2478,6 +2480,7 @@ class Player : public Unit
         uint32 m_resurrectMap;
         float m_resurrectX, m_resurrectY, m_resurrectZ;
         uint32 m_resurrectHealth, m_resurrectMana;
+        bool m_botSummonResurrect = false;
 
         WorldSession* m_session;
 

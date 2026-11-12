@@ -116,7 +116,7 @@ namespace
 
         tableChecked = true;
         tableCheckedAt = now;
-        std::unique_ptr<QueryResult> res = WorldDatabase.Query(
+        std::unique_ptr<QueryResult> res = CharacterDatabase.Query(
             "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() "
             "AND table_name = 'ai_playerbot_pull_log'");
         tableExists = (res != nullptr);
@@ -143,7 +143,7 @@ namespace
 
         columnsChecked = true;
         columnsCheckedAt = now;
-        std::unique_ptr<QueryResult> res = WorldDatabase.Query(
+        std::unique_ptr<QueryResult> res = CharacterDatabase.Query(
             "SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() "
             "AND table_name = 'ai_playerbot_pull_log' AND column_name = 'group_id'");
         hasNewColumns = (res != nullptr);
@@ -163,7 +163,7 @@ namespace
             return has;
         checked = true;
         checkedAt = now;
-        std::unique_ptr<QueryResult> res = WorldDatabase.Query(
+        std::unique_ptr<QueryResult> res = CharacterDatabase.Query(
             "SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() "
             "AND table_name = 'ai_playerbot_pull_log' AND column_name = 'spawn_group_id'");
         has = (res != nullptr);
@@ -178,7 +178,7 @@ namespace
             return ++it->second;
 
         uint32 next = 1;
-        std::unique_ptr<QueryResult> res = WorldDatabase.PQuery(
+        std::unique_ptr<QueryResult> res = CharacterDatabase.PQuery(
             "SELECT COALESCE(MAX(`seq`),0) FROM `ai_playerbot_pull_log` "
             "WHERE `map`='%u' AND `instance_id`='%u' AND `tank_guid`='%u'",
             pull.mapId, pull.instanceId, pull.leaderGuid);
@@ -231,7 +231,7 @@ namespace
         if (logTable)
         {
             if (newColumns && posColumns)
-                WorldDatabase.PExecute(
+                CharacterDatabase.PExecute(
                     "INSERT INTO `ai_playerbot_pull_log` "
                     "(`map`,`instance_id`,`seq`,`ord`,`target_guid`,`target_entry`,`tank_guid`,"
                     "`group_id`,`source`,`members`,`started_at`,`result`,`mobs_total`,`mobs_alive`,"
@@ -244,7 +244,7 @@ namespace
                     uint32(now), pull.mobsTotal, pull.mobsTotal,
                     snap.firstMobX, snap.firstMobY, snap.firstMobZ, snap.firstMobGroupId);
             else if (newColumns)
-                WorldDatabase.PExecute(
+                CharacterDatabase.PExecute(
                     "INSERT INTO `ai_playerbot_pull_log` "
                     "(`map`,`instance_id`,`seq`,`ord`,`target_guid`,`target_entry`,`tank_guid`,"
                     "`group_id`,`source`,`members`,`started_at`,`result`,`mobs_total`,`mobs_alive`) VALUES "
@@ -254,7 +254,7 @@ namespace
                     snap.hasRealPlayer ? "player" : "bot", snap.members,
                     uint32(now), pull.mobsTotal, pull.mobsTotal);
             else
-                WorldDatabase.PExecute(
+                CharacterDatabase.PExecute(
                     "INSERT INTO `ai_playerbot_pull_log` "
                     "(`map`,`instance_id`,`seq`,`ord`,`target_guid`,`target_entry`,`tank_guid`,"
                     "`started_at`,`result`,`mobs_total`,`mobs_alive`) VALUES "
@@ -292,7 +292,7 @@ namespace
         const uint32 duration = uint32(now > pull.startedAt ? (now - pull.startedAt) : 0);
 
         if (logTable)
-            WorldDatabase.PExecute(
+            CharacterDatabase.PExecute(
                 "UPDATE `ai_playerbot_pull_log` SET `ended_at`='%u', `duration_s`='%u', "
                 "`result`='%s', `mobs_alive`='%u', `deaths`='%u' "
                 "WHERE `map`='%u' AND `instance_id`='%u' AND `tank_guid`='%u' AND `seq`='%u'",

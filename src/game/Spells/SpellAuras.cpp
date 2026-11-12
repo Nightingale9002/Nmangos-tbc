@@ -6880,8 +6880,22 @@ void Aura::PeriodicTick()
             if (!pCaster)
                 break;
 
-            // don't heal target if max health or if not alive, mostly death persistent effects from items
-            if (!target->IsAlive() || (target->GetHealth() == target->GetMaxHealth()))
+            // Preserve the core's full-health early exit; count the unused HoT tick
+            // separately without applying health, threat or proc effects.
+            if (!target->IsAlive())
+                break;
+#ifdef ENABLE_PLAYERBOTS
+            Player* healBot = pCaster->IsPlayer() ? static_cast<Player*>(pCaster) : nullptr;
+            if (healBot && healBot->isRealPlayer()) healBot = nullptr;
+            if (healBot && target->GetHealth() == target->GetMaxHealth())
+            {
+                uint32 const amount = m_modifier.m_amount > 0 ? m_modifier.m_amount : 0;
+                uint32 const base = m_modifier.m_auraname == SPELL_AURA_OBS_MOD_HEALTH
+                    ? uint32(target->GetMaxHealth() * amount / 100) : amount;
+                healBot->botHealingRaw += target->SpellHealingBonusTaken(pCaster, spellProto, GetEffIndex(), base, DOT, GetStackAmount());
+            }
+#endif
+            if (target->GetHealth() == target->GetMaxHealth())
                 break;
 
             // heal for caster damage (must be alive)
@@ -6913,6 +6927,13 @@ void Aura::PeriodicTick()
                 GetCasterGuid().GetString().c_str(), target->GetGuidStr().c_str(), pdamage, GetId());
 
             int32 gain = target->ModifyHealth(pdamage);
+#ifdef ENABLE_PLAYERBOTS
+            if (healBot)
+            {
+                healBot->botHealingRaw += pdamage;
+                healBot->botHealingDone += gain > 0 ? uint32(gain) : 0;
+            }
+#endif
             SpellPeriodicAuraLogInfo pInfo(this, pdamage, 0, 0, 0.0f);
             target->SendPeriodicAuraLog(&pInfo);
 

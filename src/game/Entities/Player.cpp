@@ -74,6 +74,7 @@
 #ifdef ENABLE_PLAYERBOTS
 #include "playerbot/playerbot.h"
 #include "playerbot/PlayerbotAIConfig.h"
+#include "playerbot/BotSummonRevive.h"
 #endif
 
 #include <algorithm>
@@ -21037,12 +21038,13 @@ bool Player::IsAtGroupRewardDistance(WorldObject const* pRewardSource) const
     return false;
 }
 
-void Player::AddResurrectRequest(ObjectGuid casterGuid, SpellEntry const* spellInfo, Position position, uint32 mapId, uint32 health, uint32 mana, bool isSpiritHealer, const char* sentName)
+void Player::AddResurrectRequest(ObjectGuid casterGuid, SpellEntry const* spellInfo, Position position, uint32 mapId, uint32 health, uint32 mana, bool isSpiritHealer, const char* sentName, bool botSummon)
 {
     if (isRessurectRequested()) // already have one active request
         return;
 
     setResurrectRequestData(casterGuid, mapId, position.x, position.y, position.z, health, mana);
+    m_botSummonResurrect = botSummon;
     SendResurrectRequest(spellInfo, isSpiritHealer, sentName);
 }
 
@@ -21061,9 +21063,27 @@ void Player::SendResurrectRequest(SpellEntry const* spellInfo, bool isSpiritHeal
 
 void Player::ResurrectUsingRequestDataInit()
 {
+    if (!isRessurectRequested()) return;
+#ifdef ENABLE_PLAYERBOTS
+    if (m_botSummonResurrect && !ai::summonrevive::CanRevive(sObjectMgr.GetPlayer(m_resurrectGuid), this))
+    {
+        sLog.outError("[SUMMON-REVIVE] guid=%u phase=accept reason=blocked-state", GetGUIDLow());
+        clearResurrectRequestData();
+        return;
+    }
+#endif
     /// Teleport before resurrecting by player, otherwise the player might get attacked from creatures near his corpse
     if (m_resurrectGuid.IsPlayer())
-        TeleportTo(m_resurrectMap, m_resurrectX, m_resurrectY, m_resurrectZ, GetOrientation());
+    {
+        bool const teleported = TeleportTo(m_resurrectMap, m_resurrectX, m_resurrectY, m_resurrectZ, GetOrientation());
+        // Convenience resurrection must not revive outside a rejected dungeon.
+        // Preserve the ordinary spell-resurrection path and all core entry rules.
+        if (m_botSummonResurrect && !teleported)
+        {
+            clearResurrectRequestData();
+            return;
+        }
+    }
 
     // we cannot resurrect player when we triggered far teleport
     // player will be resurrected upon teleportation
@@ -21079,6 +21099,16 @@ void Player::ResurrectUsingRequestDataInit()
 
 void Player::ResurrectUsingRequestDataFinish()
 {
+    // A canceled/consumed request must not become an unguarded delayed revive.
+    if (!isRessurectRequested()) return;
+#ifdef ENABLE_PLAYERBOTS
+    if (m_botSummonResurrect && !ai::summonrevive::CanRevive(sObjectMgr.GetPlayer(m_resurrectGuid), this))
+    {
+        sLog.outError("[SUMMON-REVIVE] guid=%u phase=finish reason=blocked-state", GetGUIDLow());
+        clearResurrectRequestData();
+        return;
+    }
+#endif
     ResurrectPlayer(0.0f, false);
 
     if (GetMaxHealth() > m_resurrectHealth)
@@ -21096,6 +21126,7 @@ void Player::ResurrectUsingRequestDataFinish()
     SetPower(POWER_ENERGY, GetMaxPower(POWER_ENERGY));
 
     SpawnCorpseBones();
+    if (m_botSummonResurrect) clearResurrectRequestData();
 }
 
 void Player::UpdateClientControl(Unit const* target, bool enabled, bool forced) const

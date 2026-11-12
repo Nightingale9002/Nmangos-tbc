@@ -1,0 +1,1113 @@
+{
+  "format": 1,
+  "target": "characters",
+  "tables": {
+    "ai_playerbot_arena_team_names": {
+      "ddl": "CREATE TABLE `ai_playerbot_arena_team_names` (\n  `name_id` mediumint NOT NULL AUTO_INCREMENT,\n  `name` varchar(24) NOT NULL,\n  `type` tinyint NOT NULL,\n  PRIMARY KEY (`name_id`),\n  UNIQUE KEY `name_id` (`name_id`),\n  UNIQUE KEY `name` (`name`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI arena team names'",
+      "columns": [
+        "name_id",
+        "name",
+        "type"
+      ],
+      "policy": "seed",
+      "file": "ai_playerbot_arena_team_names.jsonl.gz",
+      "rows": 300,
+      "sha256": "08a626cfe4131d87caffed17788bd8d0cf6625cc04c69ed5403bb0075a94378e",
+      "file_sha256": "ed8a6d406105642b4454b29ca192f258c6cc8b02f1759e3773e7852e09f119e3"
+    },
+    "ai_playerbot_avoid_mob": {
+      "ddl": "CREATE TABLE `ai_playerbot_avoid_mob` (\n  `map` smallint unsigned NOT NULL,\n  `entry` int unsigned NOT NULL,\n  `radius` float NOT NULL DEFAULT '0',\n  `note` varchar(160) NOT NULL DEFAULT '',\n  PRIMARY KEY (`map`,`entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "entry",
+        "radius",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_avoid_mob.jsonl.gz",
+      "rows": 4,
+      "sha256": "7eaefe06416207cf111fa0d198ac09f7b4203c2e4f366809af0f6b3568d2cf16",
+      "file_sha256": "e6cb041851dd540ad3833372a1c006a441e92d150aeb2411e89c985dffa43a50"
+    },
+    "ai_playerbot_avoid_spell": {
+      "ddl": "CREATE TABLE `ai_playerbot_avoid_spell` (\n  `map` smallint unsigned NOT NULL,\n  `spell_id` int unsigned NOT NULL,\n  `radius` float NOT NULL DEFAULT '25',\n  `note` varchar(160) NOT NULL DEFAULT '',\n  `break_los` tinyint unsigned NOT NULL DEFAULT '0',\n  PRIMARY KEY (`map`,`spell_id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "spell_id",
+        "radius",
+        "note",
+        "break_los"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_avoid_spell.jsonl.gz",
+      "rows": 6,
+      "sha256": "ff67095e6a5475bf8597e6ee00454715464cce02f1b4a0a4e47fbe34b723de0b",
+      "file_sha256": "03b2aa6b1aba78242bcc09392aad744679c5f922210dad22aa544968a3aabbb8"
+    },
+    "ai_playerbot_bis_gear": {
+      "ddl": "CREATE TABLE `ai_playerbot_bis_gear` (\n  `cls` tinyint unsigned NOT NULL,\n  `spec` varchar(24) NOT NULL,\n  `slot` tinyint unsigned NOT NULL,\n  `item_id` int unsigned NOT NULL,\n  `item_name` varchar(255) NOT NULL DEFAULT '',\n  `ilvl` int unsigned NOT NULL DEFAULT '0',\n  `hit` int NOT NULL DEFAULT '0',\n  `phase` tinyint NOT NULL DEFAULT '0',\n  PRIMARY KEY (`cls`,`spec`,`phase`,`slot`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "cls",
+        "spec",
+        "slot",
+        "item_id",
+        "item_name",
+        "ilvl",
+        "hit",
+        "phase"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_bis_gear.jsonl.gz",
+      "rows": 1098,
+      "sha256": "d27bdb0326f7e7190d2e9b838fe357dca03f5308eb6f363025de599043bfcbdf",
+      "file_sha256": "63091c18cecf800174ce9f792013bd7eb833a839e363e1c37f2ce9b5b1c439c1"
+    },
+    "ai_playerbot_boss_ability": {
+      "ddl": "CREATE TABLE `ai_playerbot_boss_ability` (\n  `map` smallint unsigned NOT NULL COMMENT '地图/副本 id',\n  `boss_entry` int unsigned NOT NULL COMMENT 'BOSS 本体 entry（召唤物的行也填它所属的 boss）',\n  `owner_entry` int unsigned NOT NULL DEFAULT '0' COMMENT '实际施法单位 entry：boss 本体=boss_entry；召唤物/图腾=它自己的 entry',\n  `spell_id` int unsigned NOT NULL COMMENT 'spell_template.Id（未匹配到 = 0，靠 note 保留攻略名字）',\n  `category` varchar(24) NOT NULL DEFAULT 'other' COMMENT 'heal/control/interrupt/dispel/aoe/move/summon/buff/damage/other',\n  `interruptible` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '是否可打断（0/1）',\n  `dispellable` varchar(16) NOT NULL DEFAULT '' COMMENT '可驱散类型：magic/disease/curse/poison（空=不可驱散/未知）',\n  `avoid_sectors` varchar(32) NOT NULL DEFAULT '' COMMENT '禁站扇区：front/right/back/left（60° 一档，逗号分隔）',\n  `facing_mode` varchar(24) NOT NULL DEFAULT 'away_group' COMMENT '朝向模式：away_group/fixed/open/wall',\n  `facing_deg` smallint NOT NULL DEFAULT '0' COMMENT 'fixed 模式下的目标朝向（度）',\n  `generic_handling` varchar(32) NOT NULL DEFAULT '' COMMENT '交给哪条通用链路（空 = 通用处理不了）',\n  `needs_special` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '1 = 需要单独策略',\n  `source` enum('guide','db','observed') NOT NULL DEFAULT 'guide' COMMENT '数据来源',\n  `note` varchar(255) NOT NULL DEFAULT '' COMMENT '攻略原文/补充说明',\n  PRIMARY KEY (`map`,`boss_entry`,`owner_entry`,`spell_id`,`category`),\n  KEY `idx_needs_special` (`needs_special`),\n  KEY `idx_category` (`category`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='副本 BOSS/召唤物技能与效果，决定\"通用处理 or 单独策略\"'",
+      "columns": [
+        "map",
+        "boss_entry",
+        "owner_entry",
+        "spell_id",
+        "category",
+        "interruptible",
+        "dispellable",
+        "avoid_sectors",
+        "facing_mode",
+        "facing_deg",
+        "generic_handling",
+        "needs_special",
+        "source",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_boss_ability.jsonl.gz",
+      "rows": 48,
+      "sha256": "9b34df7d14f67b67d0183b1826cc8ad6695fda2ef71bc7bc7c3ea7f8792c6488",
+      "file_sha256": "20bf3e01d2552b11e4245608af6dec48c5e18c8e9b0e46938817060ed74d18e4"
+    },
+    "ai_playerbot_boss_arena": {
+      "ddl": "CREATE TABLE `ai_playerbot_boss_arena` (\n  `map` smallint unsigned NOT NULL,\n  `boss_entry` int unsigned NOT NULL,\n  `kind` enum('hold','spread','bounds') NOT NULL,\n  `role` enum('tank','dps','heal','all') NOT NULL,\n  `idx` tinyint unsigned NOT NULL,\n  `x` float NOT NULL,\n  `y` float NOT NULL,\n  `z` float NOT NULL,\n  `tol` float NOT NULL DEFAULT '3',\n  `note` varchar(128) NOT NULL DEFAULT '',\n  PRIMARY KEY (`map`,`boss_entry`,`kind`,`role`,`idx`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "map",
+        "boss_entry",
+        "kind",
+        "role",
+        "idx",
+        "x",
+        "y",
+        "z",
+        "tol",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_boss_arena.jsonl.gz",
+      "rows": 2,
+      "sha256": "054d0619fcc6777e160719bf1a3960fe1786f8b25c516773e488be94bea64211",
+      "file_sha256": "181197ad4874f720c2994f5e6f6feea8422761dcceb998c5e7de9789eef3abc2"
+    },
+    "ai_playerbot_boss_position": {
+      "ddl": "CREATE TABLE `ai_playerbot_boss_position` (\n  `entry` int unsigned NOT NULL COMMENT 'BOSS 的 creature entry',\n  `map` int unsigned NOT NULL DEFAULT '0' COMMENT '地图 id（0 = 不限地图）',\n  `bot_role` varchar(16) NOT NULL COMMENT 'tank / healer / melee / ranged',\n  `x` float NOT NULL DEFAULT '0' COMMENT '站位 世界X',\n  `y` float NOT NULL DEFAULT '0' COMMENT '站位 世界Y',\n  `z` float NOT NULL DEFAULT '0' COMMENT '站位 高度',\n  `radius` float NOT NULL DEFAULT '8' COMMENT '战场半径/到点容差（码），超出就回来',\n  PRIMARY KEY (`entry`,`bot_role`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC COMMENT='每个 BOSS 的角色站位（playerbot，`.bot bosspos` 维护）'",
+      "columns": [
+        "entry",
+        "map",
+        "bot_role",
+        "x",
+        "y",
+        "z",
+        "radius"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_boss_position.jsonl.gz",
+      "rows": 4,
+      "sha256": "c3fd92fa313a86a3a6bf7d71cdf84bcf53b052d94a2695aa6cf6a202d0b55ff2",
+      "file_sha256": "fab16b45238c94318e92fc17a63ee9474aa055455dac17c1b07baf7f8cda764a"
+    },
+    "ai_playerbot_boss_require": {
+      "ddl": "CREATE TABLE `ai_playerbot_boss_require` (\n  `map` smallint unsigned NOT NULL,\n  `boss_entry` int unsigned NOT NULL,\n  `req_entry` int unsigned NOT NULL,\n  `radius` float NOT NULL DEFAULT '40',\n  `note` varchar(160) NOT NULL DEFAULT '',\n  PRIMARY KEY (`map`,`boss_entry`,`req_entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "boss_entry",
+        "req_entry",
+        "radius",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_boss_require.jsonl.gz",
+      "rows": 13,
+      "sha256": "994bfcae55da1186a7068ee91245fc78788ea810bf0dc71d72aba27b8d89475d",
+      "file_sha256": "8b4039e77ef6cd06ffddbeffef7f7e7d626bd83e57d70f7e0dc0f3fec1bccdb0"
+    },
+    "ai_playerbot_boss_spawn": {
+      "ddl": "CREATE TABLE `ai_playerbot_boss_spawn` (\n  `map` smallint unsigned NOT NULL COMMENT '地图/副本 id',\n  `entry` int unsigned NOT NULL COMMENT 'creature entry',\n  `x` float NOT NULL COMMENT '落点 世界X（静态 boss = 离入口最近的刷点；多刷点只留一行）',\n  `y` float NOT NULL COMMENT '落点 世界Y',\n  `z` float NOT NULL COMMENT '落点 高度',\n  `ord` smallint unsigned NOT NULL DEFAULT '0' COMMENT '该 boss 落在第几波之后（= P 的最大 ord + 1）；运行时用它判定\"这条路是否走完\"',\n  `source` varchar(64) NOT NULL DEFAULT '' COMMENT '来源：loot/script/rank3（可叠加，`#N` = 本图刷点数）/ 脚本常量名（触发召唤 boss）/ 手工',\n  `verified` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '1 = 该图已通过 L3 实测，允许运行时按 ord 驱动；0 = 未验证',\n  PRIMARY KEY (`map`,`entry`),\n  KEY `idx_map_ord` (`map`,`ord`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC COMMENT='本图 boss 落点（静态 + 触发/召唤；离线生成，勿手改）'",
+      "columns": [
+        "map",
+        "entry",
+        "x",
+        "y",
+        "z",
+        "ord",
+        "source",
+        "verified"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_boss_spawn.jsonl.gz",
+      "rows": 234,
+      "sha256": "d43ffe7ba2b60bdcfc707663b13952cb8a25243376cd7f77fedbdd59ec313b3b",
+      "file_sha256": "ad362ca49f4f69f1481633370b99c4d7042b1522a2e6bb4a5086304a9604b17a"
+    },
+    "ai_playerbot_boss_strategy": {
+      "ddl": "CREATE TABLE `ai_playerbot_boss_strategy` (\n  `entry` int unsigned NOT NULL,\n  `note` varchar(255) NOT NULL DEFAULT '',\n  PRIMARY KEY (`entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "entry",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_boss_strategy.jsonl.gz",
+      "rows": 58,
+      "sha256": "04e139f0b114d83dede246b88a682a1051e1a50a5ba6ea4cdee39f54a2d513a4",
+      "file_sha256": "a6bec2ab248c356d40564962e2faec9c81fe433e2dffd2318113a44ea2143d82"
+    },
+    "ai_playerbot_boss_switch": {
+      "ddl": "CREATE TABLE `ai_playerbot_boss_switch` (\n  `map` smallint unsigned NOT NULL,\n  `boss_entry` int unsigned NOT NULL,\n  `go_guid` int unsigned NOT NULL,\n  `go_entry` int unsigned NOT NULL DEFAULT '0',\n  `x` float NOT NULL DEFAULT '0',\n  `y` float NOT NULL DEFAULT '0',\n  `z` float NOT NULL DEFAULT '0',\n  `kind` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '0=boss 战后点开关',\n  `note` varchar(96) NOT NULL DEFAULT '',\n  PRIMARY KEY (`map`,`go_guid`),\n  KEY `idx_boss` (`boss_entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "boss_entry",
+        "go_guid",
+        "go_entry",
+        "x",
+        "y",
+        "z",
+        "kind",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_boss_switch.jsonl.gz",
+      "rows": 6,
+      "sha256": "7e60350e698655081e23c60780ad6dedbb3cf32899bb4fb18c716737e6011e6c",
+      "file_sha256": "eadde76df2fe4bfeffa6543483fe3703e8dafec997c488412c1a74600781dfab"
+    },
+    "ai_playerbot_bot_profile": {
+      "ddl": "CREATE TABLE `ai_playerbot_bot_profile` (\n  `guid` int unsigned NOT NULL,\n  `cls` tinyint unsigned NOT NULL,\n  `spec_tab` tinyint NOT NULL,\n  `role` tinyint unsigned NOT NULL DEFAULT '3',\n  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,\n  PRIMARY KEY (`guid`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "guid",
+        "cls",
+        "spec_tab",
+        "role",
+        "updated_at"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_cc_creature": {
+      "ddl": "CREATE TABLE `ai_playerbot_cc_creature` (\n  `map` smallint unsigned NOT NULL,\n  `entry` int unsigned NOT NULL,\n  `has_fear` tinyint unsigned NOT NULL DEFAULT '0',\n  `has_spell` tinyint unsigned NOT NULL DEFAULT '0',\n  PRIMARY KEY (`map`,`entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "entry",
+        "has_fear",
+        "has_spell"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_cc_creature.jsonl.gz",
+      "rows": 308,
+      "sha256": "663a25b2de43ddf4b7e55ea41a86df31cf9ef91aa34166b72fcd671136904195",
+      "file_sha256": "72a0ca49ec1b61512dd55ee7cda2146988f8b8b3eef15fc8f6a8860ce3df8a08"
+    },
+    "ai_playerbot_combat_sample": {
+      "ddl": "CREATE TABLE `ai_playerbot_combat_sample` (\n  `id` bigint unsigned NOT NULL AUTO_INCREMENT,\n  `bot` varchar(32) NOT NULL,\n  `class` tinyint unsigned NOT NULL,\n  `role` varchar(12) NOT NULL,\n  `map` smallint unsigned NOT NULL,\n  `started_at` int unsigned NOT NULL,\n  `duration` smallint unsigned NOT NULL,\n  `min_hp` tinyint unsigned NOT NULL,\n  `hp_lost` int unsigned NOT NULL,\n  `died` tinyint unsigned NOT NULL DEFAULT '0',\n  `group_size` tinyint unsigned NOT NULL DEFAULT '1',\n  PRIMARY KEY (`id`),\n  KEY `idx_bot_started` (`bot`,`started_at`),\n  KEY `idx_map` (`map`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "id",
+        "bot",
+        "class",
+        "role",
+        "map",
+        "started_at",
+        "duration",
+        "min_hp",
+        "hp_lost",
+        "died",
+        "group_size"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_cover_spot": {
+      "ddl": "CREATE TABLE `ai_playerbot_cover_spot` (\n  `map` smallint unsigned NOT NULL,\n  `x` float NOT NULL,\n  `y` float NOT NULL,\n  `z` float NOT NULL,\n  `wall_dist` float NOT NULL DEFAULT '0' COMMENT '离墙距离（码），越小越贴墙',\n  `block_rays` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '1.2 码半径内 16 条射线被挡住的条数（>=8 即 180 度）',\n  `seen_max_ord` smallint unsigned NOT NULL DEFAULT '0' COMMENT '能看到这个点的最大波次；0=谁都看不见，9999=巡逻怪看得见',\n  `seen_count` smallint unsigned NOT NULL DEFAULT '0' COMMENT '能看到这个点的路线怪数量',\n  PRIMARY KEY (`map`,`x`,`y`),\n  KEY `idx_map_seen` (`map`,`seen_max_ord`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='离线预筛的卡视野点库（.rndbot sim spots 生成）'",
+      "columns": [
+        "map",
+        "x",
+        "y",
+        "z",
+        "wall_dist",
+        "block_rays",
+        "seen_max_ord",
+        "seen_count"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_cover_spot.jsonl.gz",
+      "rows": 6318,
+      "sha256": "8d6201cb385f336ebbd6b3165e7a6c9287660b08f86b1fe87298dfedc0d765c6",
+      "file_sha256": "96f0a47621573c8c0826c7bd0115ad8181bafff86a3032fbfc989ccf38c685c6"
+    },
+    "ai_playerbot_custom_strategy": {
+      "ddl": "CREATE TABLE `ai_playerbot_custom_strategy` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  `name` varchar(255) NOT NULL,\n  `idx` bigint DEFAULT NULL,\n  `owner` bigint DEFAULT NULL,\n  `action_line` varchar(1024) NOT NULL,\n  PRIMARY KEY (`id`),\n  KEY `name` (`name`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "id",
+        "name",
+        "idx",
+        "owner",
+        "action_line"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_custom_strategy.jsonl.gz",
+      "rows": 98,
+      "sha256": "f15d04fa0b49d66ac102561b4d4aa605ce6d629f74e8724257a687bd31e5d59e",
+      "file_sha256": "fe7bc0a320454d60e23f4a05b168808e1a3530f81fb788a421f173239ca188c1"
+    },
+    "ai_playerbot_db_store": {
+      "ddl": "CREATE TABLE `ai_playerbot_db_store` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  `guid` bigint NOT NULL,\n  `preset` varchar(32) NOT NULL,\n  `key` varchar(32) NOT NULL,\n  `value` varchar(4000) DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  KEY `guid` (`guid`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "id",
+        "guid",
+        "preset",
+        "key",
+        "value"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_decision_weight": {
+      "ddl": "CREATE TABLE `ai_playerbot_decision_weight` (\n  `key` varchar(64) NOT NULL COMMENT '决策项.因子，例 target.threat_tier',\n  `weight` float NOT NULL DEFAULT '0' COMMENT '权重（线性加权求和；负值=惩罚）',\n  `note` varchar(255) NOT NULL DEFAULT '' COMMENT '说明/调参记录',\n  PRIMARY KEY (`key`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='playerbot 决策打分权重（离线调参/RL 入口）'",
+      "columns": [
+        "key",
+        "weight",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_decision_weight.jsonl.gz",
+      "rows": 39,
+      "sha256": "4ad59fbc62030664e444c8004624ab5ed4cbccbabddc10d119ea330ed7c82bfd",
+      "file_sha256": "869b635c3b64ef08613c5f3ca3210e20a8d3d3c4190db3853401f46e16e30b5a"
+    },
+    "ai_playerbot_dungeon_route": {
+      "ddl": "CREATE TABLE `ai_playerbot_dungeon_route` (\n  `map` smallint unsigned NOT NULL COMMENT '地图/副本 id',\n  `guid` int unsigned NOT NULL COMMENT 'creature spawn guid',\n  `ord` smallint unsigned NOT NULL DEFAULT '0' COMMENT '波次序：沿细化路径的弧长序，越小越靠前；同组共享同一个值；0 = 未算（只有分组）',\n  `group_id` int unsigned NOT NULL DEFAULT '0' COMMENT '静态遭遇组 id（同组一起拉）；0 = 未分组',\n  `kind` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '0 = 静态怪；1 = 类型A巡逻怪（路线全在本组领地内，已并入本组）',\n  `verified` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '1 = 该图已通过 L3 实测，允许运行时按 ord 驱动；0 = 未验证（运行时完全回落原逻辑）',\n  PRIMARY KEY (`map`,`guid`),\n  KEY `idx_map_ord` (`map`,`ord`),\n  KEY `idx_map_grp` (`map`,`group_id`,`ord`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC COMMENT='副本推进路线：怪 -> 波次序 + 遭遇组（离线生成，勿手改）'",
+      "columns": [
+        "map",
+        "guid",
+        "ord",
+        "group_id",
+        "kind",
+        "verified"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_dungeon_route.jsonl.gz",
+      "rows": 12828,
+      "sha256": "7d81bb3219f317886c067aa295c662ab455b1d9da83439103e70d9a69e1be950",
+      "file_sha256": "86b5dc15f5873a7215a487ad5f0d5a8dee936b2090933110ab33e8e8695fe2c3"
+    },
+    "ai_playerbot_dungeon_stage": {
+      "ddl": "CREATE TABLE `ai_playerbot_dungeon_stage` (\n  `map` smallint unsigned NOT NULL,\n  `stage_ord` smallint unsigned NOT NULL,\n  `kind` varchar(16) NOT NULL,\n  `target_entry` int unsigned NOT NULL DEFAULT '0',\n  `anchor_x` float NOT NULL DEFAULT '0',\n  `anchor_y` float NOT NULL DEFAULT '0',\n  `radius` float NOT NULL DEFAULT '0',\n  `count_limit` int unsigned NOT NULL DEFAULT '0',\n  `keep_out` float NOT NULL DEFAULT '0',\n  `note` varchar(160) NOT NULL DEFAULT '',\n  `wait_ms` int unsigned NOT NULL DEFAULT '0',\n  PRIMARY KEY (`map`,`stage_ord`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "stage_ord",
+        "kind",
+        "target_entry",
+        "anchor_x",
+        "anchor_y",
+        "radius",
+        "count_limit",
+        "keep_out",
+        "note",
+        "wait_ms"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_dungeon_stage.jsonl.gz",
+      "rows": 80,
+      "sha256": "a9d6669fda1fb12344d7414a9cea46a92d0328098ba43f67f504a92bd9c05e87",
+      "file_sha256": "8dd4f7edd4467bc6b0447d314d5b5475e9615acf83f4871b3330cf5f75ac4540"
+    },
+    "ai_playerbot_enchants": {
+      "ddl": "CREATE TABLE `ai_playerbot_enchants` (\n  `class` tinyint NOT NULL,\n  `spec` tinyint NOT NULL,\n  `spellid` bigint NOT NULL,\n  `slotid` tinyint NOT NULL DEFAULT '1',\n  `name` varchar(255) NOT NULL COMMENT 'name of the enchant',\n  PRIMARY KEY (`class`,`spec`,`spellid`,`slotid`)\n) ENGINE=InnoDB DEFAULT CHARSET=latin1",
+      "columns": [
+        "class",
+        "spec",
+        "spellid",
+        "slotid",
+        "name"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_enchants.jsonl.gz",
+      "rows": 320,
+      "sha256": "2bac66986158b0fe345c0e2680fcdf50d419b0e9babf2b0c5d2b43de6fa129b9",
+      "file_sha256": "a93a3d0de3e133c79f973481d19e71dc7112c3eb973456bdd4ab730466b34401"
+    },
+    "ai_playerbot_equip_cache": {
+      "ddl": "CREATE TABLE `ai_playerbot_equip_cache` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  `clazz` mediumint NOT NULL,\n  `spec` mediumint NOT NULL,\n  `lvl` mediumint NOT NULL,\n  `slot` mediumint NOT NULL,\n  `quality` mediumint NOT NULL,\n  `item` mediumint NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI equip Cache'",
+      "columns": [
+        "id",
+        "clazz",
+        "spec",
+        "lvl",
+        "slot",
+        "quality",
+        "item"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_guild_names": {
+      "ddl": "CREATE TABLE `ai_playerbot_guild_names` (\n  `name_id` mediumint NOT NULL AUTO_INCREMENT,\n  `name` varchar(24) NOT NULL,\n  PRIMARY KEY (`name_id`),\n  UNIQUE KEY `name_id` (`name_id`),\n  UNIQUE KEY `name` (`name`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI guild names'",
+      "columns": [
+        "name_id",
+        "name"
+      ],
+      "policy": "seed",
+      "file": "ai_playerbot_guild_names.jsonl.gz",
+      "rows": 400,
+      "sha256": "0e1cf6cccf2e7dc0b262c38c5860d77bb457f95ad1c889e3f53cf992738a014f",
+      "file_sha256": "04aee053205d4e223451a84b8593b1580f3acdf60c7688c30249fb525e0d3a6f"
+    },
+    "ai_playerbot_help_texts": {
+      "ddl": "CREATE TABLE `ai_playerbot_help_texts` (\n  `id` smallint NOT NULL AUTO_INCREMENT,\n  `name` varchar(255) NOT NULL COMMENT 'name - type:subject',\n  `template_changed` tinyint NOT NULL DEFAULT '0' COMMENT 'template_changed - Has the template text changed after text?',\n  `template_text` text NOT NULL COMMENT 'generated text',\n  `text` text NOT NULL COMMENT 'text',\n  `text_loc1` text NOT NULL,\n  `text_loc2` text NOT NULL,\n  `text_loc3` text NOT NULL,\n  `text_loc4` text NOT NULL,\n  `text_loc5` text NOT NULL,\n  `text_loc6` text NOT NULL,\n  `text_loc7` text NOT NULL,\n  `text_loc8` text NOT NULL,\n  `locs_updated` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'locs_updated - Have the loc texts been updated?',\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC",
+      "columns": [
+        "id",
+        "name",
+        "template_changed",
+        "template_text",
+        "text",
+        "text_loc1",
+        "text_loc2",
+        "text_loc3",
+        "text_loc4",
+        "text_loc5",
+        "text_loc6",
+        "text_loc7",
+        "text_loc8",
+        "locs_updated"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_help_texts.jsonl.gz",
+      "rows": 2922,
+      "sha256": "1d281c7ffc248db5b522ae1e6b4a5d902af074dec344405d7903cf381b436e44",
+      "file_sha256": "cc5682c5f17e2a7a599a062d0622bbf5d8e2a963b332cdb01f7d4e288319d28a"
+    },
+    "ai_playerbot_item_info_cache": {
+      "ddl": "CREATE TABLE `ai_playerbot_item_info_cache` (\n  `id` bigint NOT NULL,\n  `quality` bigint DEFAULT NULL,\n  `slot` bigint DEFAULT NULL,\n  `source` mediumint DEFAULT NULL,\n  `sourceId` mediumint DEFAULT NULL,\n  `team` mediumint DEFAULT NULL,\n  `faction` mediumint DEFAULT NULL,\n  `factionRepRank` mediumint DEFAULT NULL,\n  `minLevel` mediumint DEFAULT NULL,\n  `scale_1` mediumint DEFAULT NULL,\n  `scale_2` mediumint DEFAULT NULL,\n  `scale_3` mediumint DEFAULT NULL,\n  `scale_4` mediumint DEFAULT NULL,\n  `scale_5` mediumint DEFAULT NULL,\n  `scale_6` mediumint DEFAULT NULL,\n  `scale_7` mediumint DEFAULT NULL,\n  `scale_8` mediumint DEFAULT NULL,\n  `scale_9` mediumint DEFAULT NULL,\n  `scale_10` mediumint DEFAULT NULL,\n  `scale_11` mediumint DEFAULT NULL,\n  `scale_12` mediumint DEFAULT NULL,\n  `scale_13` mediumint DEFAULT NULL,\n  `scale_14` mediumint DEFAULT NULL,\n  `scale_15` mediumint DEFAULT NULL,\n  `scale_16` mediumint DEFAULT NULL,\n  `scale_17` mediumint DEFAULT NULL,\n  `scale_18` mediumint DEFAULT NULL,\n  `scale_19` mediumint DEFAULT NULL,\n  `scale_20` mediumint DEFAULT NULL,\n  `scale_21` mediumint DEFAULT NULL,\n  `scale_22` mediumint DEFAULT NULL,\n  `scale_23` mediumint DEFAULT NULL,\n  `scale_24` mediumint DEFAULT NULL,\n  `scale_25` mediumint DEFAULT NULL,\n  `scale_26` mediumint DEFAULT NULL,\n  `scale_27` mediumint DEFAULT NULL,\n  `scale_28` mediumint DEFAULT NULL,\n  `scale_29` mediumint DEFAULT NULL,\n  `scale_30` mediumint DEFAULT NULL,\n  `scale_31` mediumint DEFAULT NULL,\n  `scale_32` mediumint DEFAULT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI item info Cache'",
+      "columns": [
+        "id",
+        "quality",
+        "slot",
+        "source",
+        "sourceId",
+        "team",
+        "faction",
+        "factionRepRank",
+        "minLevel",
+        "scale_1",
+        "scale_2",
+        "scale_3",
+        "scale_4",
+        "scale_5",
+        "scale_6",
+        "scale_7",
+        "scale_8",
+        "scale_9",
+        "scale_10",
+        "scale_11",
+        "scale_12",
+        "scale_13",
+        "scale_14",
+        "scale_15",
+        "scale_16",
+        "scale_17",
+        "scale_18",
+        "scale_19",
+        "scale_20",
+        "scale_21",
+        "scale_22",
+        "scale_23",
+        "scale_24",
+        "scale_25",
+        "scale_26",
+        "scale_27",
+        "scale_28",
+        "scale_29",
+        "scale_30",
+        "scale_31",
+        "scale_32"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_jump_obs": {
+      "ddl": "CREATE TABLE `ai_playerbot_jump_obs` (\n  `id` bigint unsigned NOT NULL AUTO_INCREMENT,\n  `ts` int unsigned NOT NULL DEFAULT '0',\n  `map` smallint unsigned NOT NULL DEFAULT '0',\n  `instance_id` int unsigned NOT NULL DEFAULT '0',\n  `is_bot` tinyint unsigned NOT NULL DEFAULT '0',\n  `player_guid` int unsigned NOT NULL DEFAULT '0',\n  `player_name` varchar(32) NOT NULL DEFAULT '',\n  `src_x` float NOT NULL DEFAULT '0',\n  `src_y` float NOT NULL DEFAULT '0',\n  `src_z` float NOT NULL DEFAULT '0',\n  `src_tile` int NOT NULL DEFAULT '0',\n  `src_tile_x` tinyint NOT NULL DEFAULT '0',\n  `src_tile_y` tinyint NOT NULL DEFAULT '0',\n  `dst_x` float NOT NULL DEFAULT '0',\n  `dst_y` float NOT NULL DEFAULT '0',\n  `dst_z` float NOT NULL DEFAULT '0',\n  `dst_tile` int NOT NULL DEFAULT '0',\n  `dst_tile_x` tinyint NOT NULL DEFAULT '0',\n  `dst_tile_y` tinyint NOT NULL DEFAULT '0',\n  `dz` float NOT NULL DEFAULT '0',\n  `dist2d` float NOT NULL DEFAULT '0',\n  `duration_ms` int unsigned NOT NULL DEFAULT '0',\n  `verified` tinyint unsigned NOT NULL DEFAULT '0',\n  `note` varchar(128) NOT NULL DEFAULT '',\n  PRIMARY KEY (`id`),\n  KEY `idx_map_verified` (`map`,`verified`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "id",
+        "ts",
+        "map",
+        "instance_id",
+        "is_bot",
+        "player_guid",
+        "player_name",
+        "src_x",
+        "src_y",
+        "src_z",
+        "src_tile",
+        "src_tile_x",
+        "src_tile_y",
+        "dst_x",
+        "dst_y",
+        "dst_z",
+        "dst_tile",
+        "dst_tile_x",
+        "dst_tile_y",
+        "dz",
+        "dist2d",
+        "duration_ms",
+        "verified",
+        "note"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_lift_obs": {
+      "ddl": "CREATE TABLE `ai_playerbot_lift_obs` (\n  `id` bigint unsigned NOT NULL AUTO_INCREMENT,\n  `ts` int unsigned NOT NULL DEFAULT '0',\n  `map` smallint unsigned NOT NULL DEFAULT '0',\n  `instance_id` int unsigned NOT NULL DEFAULT '0',\n  `is_bot` tinyint unsigned NOT NULL DEFAULT '0',\n  `player_guid` int unsigned NOT NULL DEFAULT '0',\n  `player_name` varchar(32) NOT NULL DEFAULT '',\n  `src_x` float NOT NULL DEFAULT '0',\n  `src_y` float NOT NULL DEFAULT '0',\n  `src_z` float NOT NULL DEFAULT '0',\n  `src_tile` int NOT NULL DEFAULT '0',\n  `src_tile_x` tinyint NOT NULL DEFAULT '0',\n  `src_tile_y` tinyint NOT NULL DEFAULT '0',\n  `dst_x` float NOT NULL DEFAULT '0',\n  `dst_y` float NOT NULL DEFAULT '0',\n  `dst_z` float NOT NULL DEFAULT '0',\n  `dst_tile` int NOT NULL DEFAULT '0',\n  `dst_tile_x` tinyint NOT NULL DEFAULT '0',\n  `dst_tile_y` tinyint NOT NULL DEFAULT '0',\n  `d_z` float NOT NULL DEFAULT '0',\n  `duration_ms` int unsigned NOT NULL DEFAULT '0',\n  `verified` tinyint unsigned NOT NULL DEFAULT '0',\n  `note` varchar(128) NOT NULL DEFAULT '',\n  PRIMARY KEY (`id`),\n  KEY `idx_map_verified` (`map`,`verified`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "id",
+        "ts",
+        "map",
+        "instance_id",
+        "is_bot",
+        "player_guid",
+        "player_name",
+        "src_x",
+        "src_y",
+        "src_z",
+        "src_tile",
+        "src_tile_x",
+        "src_tile_y",
+        "dst_x",
+        "dst_y",
+        "dst_z",
+        "dst_tile",
+        "dst_tile_x",
+        "dst_tile_y",
+        "d_z",
+        "duration_ms",
+        "verified",
+        "note"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_map_path": {
+      "ddl": "CREATE TABLE `ai_playerbot_map_path` (\n  `map` smallint unsigned NOT NULL,\n  `boss_guid` int unsigned NOT NULL,\n  `seq` int unsigned NOT NULL,\n  `x` float NOT NULL,\n  `y` float NOT NULL,\n  `z` float NOT NULL,\n  `stage_ord` smallint unsigned NOT NULL DEFAULT '0',\n  `verified` tinyint unsigned NOT NULL DEFAULT '0',\n  PRIMARY KEY (`map`,`seq`),\n  KEY `idx_map` (`map`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "map",
+        "boss_guid",
+        "seq",
+        "x",
+        "y",
+        "z",
+        "stage_ord",
+        "verified"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_map_path.jsonl.gz",
+      "rows": 552,
+      "sha256": "a767b8884c0056d48ecfe3aba41e5cfa2b137228c0109a1174c1b54e3ae259c8",
+      "file_sha256": "c6eebdb810fffdf9a2f4535fee5429821a2affa478552351bb79ea9cc174d6ac"
+    },
+    "ai_playerbot_mob_count_weight": {
+      "ddl": "CREATE TABLE `ai_playerbot_mob_count_weight` (\n  `map` smallint unsigned NOT NULL,\n  `entry` int unsigned NOT NULL,\n  `radius` float NOT NULL DEFAULT '25',\n  `engage_count` smallint unsigned NOT NULL DEFAULT '8',\n  `weight_per_count` float NOT NULL DEFAULT '0.15',\n  `note` varchar(128) NOT NULL DEFAULT '',\n  PRIMARY KEY (`map`,`entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "entry",
+        "radius",
+        "engage_count",
+        "weight_per_count",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_mob_count_weight.jsonl.gz",
+      "rows": 2,
+      "sha256": "72e1e171539a3ff51cb1bb345467971011c4ed3d25b74048c739e85a1fb9c282",
+      "file_sha256": "a8c058769de2bccfaeffaa64577e699f8fa5b11d7ea254eae883e431bf7c5573"
+    },
+    "ai_playerbot_named_location": {
+      "ddl": "CREATE TABLE `ai_playerbot_named_location` (\n  `name` char(128) NOT NULL,\n  `map_id` smallint NOT NULL,\n  `position_x` decimal(40,20) NOT NULL,\n  `position_y` decimal(40,20) NOT NULL,\n  `position_z` decimal(40,20) NOT NULL,\n  `orientation` decimal(40,20) NOT NULL,\n  `description` varchar(255) NOT NULL,\n  PRIMARY KEY (`name`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI Named Location'",
+      "columns": [
+        "name",
+        "map_id",
+        "position_x",
+        "position_y",
+        "position_z",
+        "orientation",
+        "description"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_named_location.jsonl.gz",
+      "rows": 88158,
+      "sha256": "0d97d0067256fc77b3704386aac4b3782e948cf131194024c5dba1f8ac3e7e29",
+      "file_sha256": "25b962276830df02dcd5dbce17f89a4919170615e7bdfaa9a7f57a253541d90b"
+    },
+    "ai_playerbot_names": {
+      "ddl": "CREATE TABLE `ai_playerbot_names` (\n  `name_id` mediumint NOT NULL,\n  `name` varchar(12) DEFAULT NULL,\n  `gender` tinyint unsigned NOT NULL,\n  PRIMARY KEY (`name_id`),\n  UNIQUE KEY `name_id` (`name_id`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI RandomBot names'",
+      "columns": [
+        "name_id",
+        "name",
+        "gender"
+      ],
+      "policy": "seed",
+      "file": "ai_playerbot_names.jsonl.gz",
+      "rows": 112000,
+      "sha256": "4ea726a321dcbe318f94c2887d10a11950a21c171875caf21fc34df3eca5c6d8",
+      "file_sha256": "b1cd99de6df8dc8db17a63b5cac37bdfbb74bbacef2498887de5bf0b1589f0f6"
+    },
+    "ai_playerbot_nav_block": {
+      "ddl": "CREATE TABLE `ai_playerbot_nav_block` (\n  `map` smallint unsigned NOT NULL COMMENT '地图/副本 id',\n  `gx` smallint NOT NULL COMMENT '粗格 X = floor(世界X / 4)',\n  `gy` smallint NOT NULL COMMENT '粗格 Y = floor(世界Y / 4)',\n  `block` int unsigned NOT NULL COMMENT '连通块号（同一块内只能走路到达）',\n  PRIMARY KEY (`map`,`gx`,`gy`),\n  KEY `idx_map_block` (`map`,`block`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC COMMENT='导航连通块粗格表（nav_blocks.py 生成，勿手改）'",
+      "columns": [
+        "map",
+        "gx",
+        "gy",
+        "block"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_nav_block.jsonl.gz",
+      "rows": 32349,
+      "sha256": "dc80358cc8a90d2ff4dfb1bbe9d2f386087360d8acd9d009740f08d6f5343dab",
+      "file_sha256": "1cf414bdfdcba6d31085aaa052fc9e8284585def87ebf092b93eb21185dc2820"
+    },
+    "ai_playerbot_nav_trans": {
+      "ddl": "CREATE TABLE `ai_playerbot_nav_trans` (\n  `id` int unsigned NOT NULL AUTO_INCREMENT,\n  `map` smallint unsigned NOT NULL COMMENT '地图/副本 id',\n  `ttype` tinyint unsigned NOT NULL COMMENT '1 GATE / 2 JUMP / 3 TELEPORT / 4 ELEVATOR / 5 SUMMON / 6 SCRIPT',\n  `from_block` int unsigned NOT NULL DEFAULT '0' COMMENT '起点所在连通块',\n  `to_block` int unsigned NOT NULL DEFAULT '0' COMMENT '终点所在连通块',\n  `from_x` float NOT NULL DEFAULT '0' COMMENT '起点 世界X',\n  `from_y` float NOT NULL DEFAULT '0' COMMENT '起点 世界Y',\n  `from_z` float NOT NULL DEFAULT '0' COMMENT '起点 高度',\n  `to_x` float NOT NULL DEFAULT '0' COMMENT '终点 世界X',\n  `to_y` float NOT NULL DEFAULT '0' COMMENT '终点 世界Y',\n  `to_z` float NOT NULL DEFAULT '0' COMMENT '终点 高度',\n  `dh` float NOT NULL DEFAULT '0' COMMENT '高差 to_z - from_z（跳跃高度上限的实测依据）',\n  `dist` float NOT NULL DEFAULT '0' COMMENT '水平距离（跳跃距离上限的实测依据）',\n  `payload` varchar(128) NOT NULL DEFAULT '' COMMENT '类型参数，如 gate_entry=182539',\n  `sel_name` varchar(64) NOT NULL DEFAULT '' COMMENT '选中目标名字',\n  `master_guid` int unsigned NOT NULL DEFAULT '0' COMMENT '标记人 guid',\n  `master_name` varchar(32) NOT NULL DEFAULT '' COMMENT '标记人名字',\n  `mark` varchar(64) NOT NULL DEFAULT '' COMMENT '备注（.bot trans note）',\n  `created_at` int unsigned NOT NULL DEFAULT '0' COMMENT 'unix 时间',\n  `sel_kind` char(1) NOT NULL DEFAULT '' COMMENT 'c=生物 / g=游戏物体',\n  `sel_guid` int unsigned NOT NULL DEFAULT '0' COMMENT '选中目标 guid',\n  `sel_entry` int unsigned NOT NULL DEFAULT '0' COMMENT '选中目标 entry',\n  PRIMARY KEY (`id`),\n  KEY `idx_map_type` (`map`,`ttype`),\n  KEY `idx_map_blocks` (`map`,`from_block`,`to_block`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC COMMENT='人工标记的跨块转移（.bot trans，勿手改）'",
+      "columns": [
+        "id",
+        "map",
+        "ttype",
+        "from_block",
+        "to_block",
+        "from_x",
+        "from_y",
+        "from_z",
+        "to_x",
+        "to_y",
+        "to_z",
+        "dh",
+        "dist",
+        "payload",
+        "sel_name",
+        "master_guid",
+        "master_name",
+        "mark",
+        "created_at",
+        "sel_kind",
+        "sel_guid",
+        "sel_entry"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_nav_trans.jsonl.gz",
+      "rows": 0,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "file_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    "ai_playerbot_patrol": {
+      "ddl": "CREATE TABLE `ai_playerbot_patrol` (\n  `map` smallint unsigned NOT NULL COMMENT '地图/副本 id',\n  `guid` int unsigned NOT NULL COMMENT 'creature spawn guid',\n  `entry` int unsigned NOT NULL COMMENT 'creature entry',\n  `point` smallint unsigned NOT NULL COMMENT '路线点序号，从 0 起',\n  `x` float NOT NULL COMMENT '路线点 世界X',\n  `y` float NOT NULL COMMENT '路线点 世界Y',\n  `z` float NOT NULL COMMENT '路线点 高度',\n  `detection` float NOT NULL DEFAULT '18' COMMENT '该怪侦测距离（战斗点安全距离用）',\n  `patrol_type` char(1) NOT NULL DEFAULT 'B' COMMENT 'A = 单组巡逻（仅诊断，正常应并入 ①）；B = 跨组/无组巡逻，运行时动态避让，不占 ord',\n  PRIMARY KEY (`map`,`guid`,`point`),\n  KEY `idx_map_guid` (`map`,`guid`),\n  KEY `idx_map_type` (`map`,`patrol_type`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC COMMENT='巡逻怪及其路线点（离线生成，勿手改）'",
+      "columns": [
+        "map",
+        "guid",
+        "entry",
+        "point",
+        "x",
+        "y",
+        "z",
+        "detection",
+        "patrol_type"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_patrol.jsonl.gz",
+      "rows": 28945,
+      "sha256": "1fc8b39a13557d3bf0a2c37e905046b9dbe267c4ea690fcc6cb19d9d16a5562a",
+      "file_sha256": "467b2d6fef8d46d065f7f618d4aef7e96a472dbd66848849127df516c934eb4b"
+    },
+    "ai_playerbot_patrol_wave": {
+      "ddl": "CREATE TABLE `ai_playerbot_patrol_wave` (\n  `map` smallint unsigned NOT NULL COMMENT '地图/副本 id',\n  `guid` int unsigned NOT NULL COMMENT '巡逻怪 spawn guid',\n  `ord` smallint unsigned NOT NULL COMMENT '会被它撞上的波次（= dungeon_route.ord）',\n  `clearance` float NOT NULL DEFAULT '0' COMMENT '路线到该波仇恨圈的最小净距（码）；< 0 = 穿过，越负越深',\n  PRIMARY KEY (`map`,`guid`,`ord`),\n  KEY `idx_map_ord` (`map`,`ord`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC COMMENT='类型B 巡逻怪会撞上哪些波（route_v2.py 生成，勿手改）'",
+      "columns": [
+        "map",
+        "guid",
+        "ord",
+        "clearance"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_patrol_wave.jsonl.gz",
+      "rows": 1404,
+      "sha256": "e336f08ff24b7064e22a3510ee138d28ad6c5c301b39fd7861dd1a50f989335a",
+      "file_sha256": "1c07d9e98405bb429e9c9290bb14b4d91e6b8eee7bae948c0bbdad28f64e79f0"
+    },
+    "ai_playerbot_patrol_window": {
+      "ddl": "CREATE TABLE `ai_playerbot_patrol_window` (\n  `map` smallint unsigned NOT NULL,\n  `group_key` int unsigned NOT NULL,\n  `ord` smallint unsigned NOT NULL,\n  `phase_ms` int unsigned NOT NULL,\n  `cycle_ms` int unsigned NOT NULL,\n  `min_dist` float NOT NULL,\n  `safe_static` tinyint unsigned NOT NULL DEFAULT '0',\n  `near_waves_static` smallint unsigned NOT NULL DEFAULT '0',\n  `linked_waves_total` smallint unsigned NOT NULL DEFAULT '0',\n  `linked_ord_list` varchar(96) NOT NULL DEFAULT '',\n  `source` varchar(32) NOT NULL DEFAULT 'offline-path',\n  `calc_at` datetime NOT NULL,\n  PRIMARY KEY (`map`,`group_key`,`ord`,`phase_ms`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "group_key",
+        "ord",
+        "phase_ms",
+        "cycle_ms",
+        "min_dist",
+        "safe_static",
+        "near_waves_static",
+        "linked_waves_total",
+        "linked_ord_list",
+        "source",
+        "calc_at"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_patrol_window.jsonl.gz",
+      "rows": 1678,
+      "sha256": "e05cb17165488d04ebd89552bc32c626f0c781a53da37c3babbab7ae0ce70888",
+      "file_sha256": "a6370fa4e26c34e40a908253ec30b15caa55bef3ee0c3e37963a98f65e0354b3"
+    },
+    "ai_playerbot_priority_obs": {
+      "ddl": "CREATE TABLE `ai_playerbot_priority_obs` (\n  `entry` int unsigned NOT NULL COMMENT 'creature_template.entry（怪的类型，不是 guid）',\n  `kind` enum('heal','control') NOT NULL COMMENT 'heal=读条治疗；control=读条控制（击晕/魅惑/恐惧/沉默等，不含缠绕）',\n  `count` int unsigned NOT NULL DEFAULT '0' COMMENT '累计观测到该 entry 读此类条的次数（只增）',\n  `last_seen` int unsigned NOT NULL DEFAULT '0' COMMENT '最近一次观测到的 unix 时间',\n  `last_map` smallint unsigned NOT NULL DEFAULT '0' COMMENT '最近一次观测到的地图/副本 id',\n  `last_spell` int unsigned NOT NULL DEFAULT '0' COMMENT '最近一次观测到的 spell id',\n  PRIMARY KEY (`entry`,`kind`),\n  KEY `idx_kind_count` (`kind`,`count`),\n  KEY `idx_last_seen` (`last_seen`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='playerbot 观测到的怪读条（治疗/控制），用于威胁等级自适应；人工名单见 ai_playerbot_priority_target'",
+      "columns": [
+        "entry",
+        "kind",
+        "count",
+        "last_seen",
+        "last_map",
+        "last_spell"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_priority_target": {
+      "ddl": "CREATE TABLE `ai_playerbot_priority_target` (\n  `entry` int unsigned NOT NULL,\n  `priority` tinyint unsigned NOT NULL,\n  `source` varchar(16) NOT NULL,\n  `reason` varchar(255) NOT NULL,\n  PRIMARY KEY (`entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "entry",
+        "priority",
+        "source",
+        "reason"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_priority_target.jsonl.gz",
+      "rows": 144,
+      "sha256": "7e9bd2ecda78f0479f0453865283b9493f2caf28504d70b74d2d387d4a38ddc7",
+      "file_sha256": "a244bc14a601096896b9cb6ed22972f01763d3a7adc5cb59d800b664960980a1"
+    },
+    "ai_playerbot_pull_first": {
+      "ddl": "CREATE TABLE `ai_playerbot_pull_first` (\n  `map` smallint unsigned NOT NULL,\n  `entry` int unsigned NOT NULL,\n  `max_dist` float NOT NULL DEFAULT '30',\n  `max_adds` int unsigned NOT NULL DEFAULT '2',\n  `note` varchar(160) NOT NULL DEFAULT '',\n  PRIMARY KEY (`map`,`entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "entry",
+        "max_dist",
+        "max_adds",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_pull_first.jsonl.gz",
+      "rows": 1,
+      "sha256": "c353177362b8828e142ef001ce8456e6f206545c34416356499e30bef3bebdad",
+      "file_sha256": "180bfd0ad2e3213c2ce93b9379f44dadc03849a555ea8946a360837839d0a6fd"
+    },
+    "ai_playerbot_pull_log": {
+      "ddl": "CREATE TABLE `ai_playerbot_pull_log` (\n  `id` bigint unsigned NOT NULL AUTO_INCREMENT,\n  `map` smallint unsigned NOT NULL COMMENT '地图/副本 id',\n  `instance_id` int unsigned NOT NULL DEFAULT '0' COMMENT '副本实例 id（= 一轮副本）',\n  `seq` smallint unsigned NOT NULL DEFAULT '0' COMMENT '本轮第几次拉怪，从 1 开始',\n  `ord` smallint unsigned NOT NULL DEFAULT '0' COMMENT '波次（= dungeon_route.ord；0 = boss 阶段/不在路线表）',\n  `target_guid` int unsigned NOT NULL DEFAULT '0' COMMENT '第一次拉的目标 spawn guid',\n  `target_entry` int unsigned NOT NULL DEFAULT '0' COMMENT '目标 entry',\n  `tank_guid` int unsigned NOT NULL DEFAULT '0' COMMENT '记录者/队长 guid：真人组=队长；单人=自己；bot 路线=驱动坦克',\n  `group_id` int unsigned NOT NULL DEFAULT '0' COMMENT '队伍 id（0 = 单人）',\n  `source` enum('player','bot') NOT NULL DEFAULT 'player' COMMENT 'player = 队里有真人；bot = 纯机器人队',\n  `members` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '开拉时在本里的队伍人数',\n  `started_at` int unsigned NOT NULL DEFAULT '0' COMMENT '开拉 unix 时间',\n  `ended_at` int unsigned NOT NULL DEFAULT '0' COMMENT '结束 unix 时间（0 = 还没结束）',\n  `duration_s` smallint unsigned NOT NULL DEFAULT '0' COMMENT '持续秒数',\n  `result` varchar(16) NOT NULL DEFAULT 'pending' COMMENT 'pending/cleared/skipped/died/left',\n  `mobs_total` smallint unsigned NOT NULL DEFAULT '0' COMMENT '开拉时这波还活着几只',\n  `mobs_alive` smallint unsigned NOT NULL DEFAULT '0' COMMENT '结束时还剩几只',\n  `deaths` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '本次拉怪期间队伍死亡人数',\n  `target_x` float NOT NULL DEFAULT '0',\n  `target_y` float NOT NULL DEFAULT '0',\n  `target_z` float NOT NULL DEFAULT '0',\n  `spawn_group_id` int unsigned NOT NULL DEFAULT '0',\n  PRIMARY KEY (`id`),\n  UNIQUE KEY `uk_run_seq_leader` (`map`,`instance_id`,`tank_guid`,`seq`),\n  KEY `idx_map_ord` (`map`,`ord`),\n  KEY `idx_started` (`started_at`),\n  KEY `idx_started_at` (`started_at`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci ROW_FORMAT=DYNAMIC COMMENT='每轮副本的拉怪顺序与每次拉怪的结果（playerbot 引擎自动写入，勿手改）'",
+      "columns": [
+        "id",
+        "map",
+        "instance_id",
+        "seq",
+        "ord",
+        "target_guid",
+        "target_entry",
+        "tank_guid",
+        "group_id",
+        "source",
+        "members",
+        "started_at",
+        "ended_at",
+        "duration_s",
+        "result",
+        "mobs_total",
+        "mobs_alive",
+        "deaths",
+        "target_x",
+        "target_y",
+        "target_z",
+        "spawn_group_id"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_pull_order": {
+      "ddl": "CREATE TABLE `ai_playerbot_pull_order` (\n  `map` smallint unsigned NOT NULL,\n  `new_ord` smallint unsigned NOT NULL,\n  `old_ord` smallint unsigned NOT NULL,\n  `pred_adds` smallint unsigned NOT NULL DEFAULT '0',\n  `calc_at` datetime NOT NULL,\n  `source` varchar(32) NOT NULL DEFAULT 'peel',\n  PRIMARY KEY (`map`,`new_ord`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "new_ord",
+        "old_ord",
+        "pred_adds",
+        "calc_at",
+        "source"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_pull_order.jsonl.gz",
+      "rows": 423,
+      "sha256": "cd2d68f9b26899d620bb5776a9d717fee0e02f7590892d1b74f841c179177d04",
+      "file_sha256": "d6f1d351c10af76de0c8f384fa78b1e43d1a470d0abb49fa22d624b013fcfb1f"
+    },
+    "ai_playerbot_pull_timing": {
+      "ddl": "CREATE TABLE `ai_playerbot_pull_timing` (\n  `map` smallint unsigned NOT NULL,\n  `ord` smallint unsigned NOT NULL,\n  `best_cost` smallint unsigned NOT NULL DEFAULT '0',\n  `best_phase_ms` int unsigned NOT NULL DEFAULT '0',\n  `cycle_ms` int unsigned NOT NULL DEFAULT '0',\n  `calc_at` datetime NOT NULL,\n  `source` varchar(32) NOT NULL DEFAULT 'offline-path',\n  PRIMARY KEY (`map`,`ord`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "ord",
+        "best_cost",
+        "best_phase_ms",
+        "cycle_ms",
+        "calc_at",
+        "source"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_pull_timing.jsonl.gz",
+      "rows": 1672,
+      "sha256": "9878057b3bf400d4425d9f7b277792f564714e95b8c11f4abdcb73c271654bfb",
+      "file_sha256": "ef0ac3cd49b64e3bfe14d6433aaa65f614e00682f176a96560d06372ba337d40"
+    },
+    "ai_playerbot_pull_wait": {
+      "ddl": "CREATE TABLE `ai_playerbot_pull_wait` (\n  `map` smallint unsigned NOT NULL,\n  `radius` float NOT NULL DEFAULT '40',\n  `max_assist` int unsigned NOT NULL DEFAULT '1',\n  `wait_enemy_fight` tinyint unsigned NOT NULL DEFAULT '1',\n  `note` varchar(160) NOT NULL DEFAULT '',\n  PRIMARY KEY (`map`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "radius",
+        "max_assist",
+        "wait_enemy_fight",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_pull_wait.jsonl.gz",
+      "rows": 1,
+      "sha256": "bcc4502a144f9984ddc4f13904401af9e532eac3d09ed2c6483f865413967892",
+      "file_sha256": "e2feac2a661c77f4a3c63b3e4ec80e8d48565893bd274340d120934a424c410d"
+    },
+    "ai_playerbot_pullback": {
+      "ddl": "CREATE TABLE `ai_playerbot_pullback` (\n  `map` smallint unsigned NOT NULL,\n  `entry` int unsigned NOT NULL,\n  `dist` float NOT NULL DEFAULT '40',\n  `note` varchar(160) NOT NULL DEFAULT '',\n  PRIMARY KEY (`map`,`entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "entry",
+        "dist",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_pullback.jsonl.gz",
+      "rows": 8,
+      "sha256": "254fd8ff3da4c9a1f61da57332e8f1da8dc9b159d9767dd7f94e9100af973446",
+      "file_sha256": "43b015c91c746f45d4dc23b4532481e23a63b1acb13216743a85ed9096cf73dd"
+    },
+    "ai_playerbot_random_bots": {
+      "ddl": "CREATE TABLE `ai_playerbot_random_bots` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  `owner` bigint NOT NULL,\n  `bot` bigint NOT NULL,\n  `time` bigint NOT NULL,\n  `validIn` bigint DEFAULT NULL,\n  `event` varchar(45) DEFAULT NULL,\n  `value` bigint DEFAULT NULL,\n  `data` varchar(255) DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  KEY `owner` (`owner`),\n  KEY `bot` (`bot`),\n  KEY `event` (`event`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "id",
+        "owner",
+        "bot",
+        "time",
+        "validIn",
+        "event",
+        "value",
+        "data"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_rarity_cache": {
+      "ddl": "CREATE TABLE `ai_playerbot_rarity_cache` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  `item` mediumint NOT NULL,\n  `rarity` float NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI Rarity Cache'",
+      "columns": [
+        "id",
+        "item",
+        "rarity"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_rnditem_cache": {
+      "ddl": "CREATE TABLE `ai_playerbot_rnditem_cache` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  `lvl` mediumint NOT NULL,\n  `type` mediumint NOT NULL,\n  `item` mediumint NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI Random Item Cache'",
+      "columns": [
+        "id",
+        "lvl",
+        "type",
+        "item"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_route_link": {
+      "ddl": "CREATE TABLE `ai_playerbot_route_link` (\n  `map` smallint unsigned NOT NULL,\n  `src_x` float NOT NULL,\n  `src_y` float NOT NULL,\n  `src_z` float NOT NULL,\n  `dst_x` float NOT NULL,\n  `dst_y` float NOT NULL,\n  `dst_z` float NOT NULL,\n  `kind` tinyint unsigned NOT NULL DEFAULT '0' COMMENT '0=跳点 1=升降台/传送点',\n  `note` varchar(64) NOT NULL DEFAULT '',\n  PRIMARY KEY (`map`,`src_x`,`src_y`,`src_z`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "src_x",
+        "src_y",
+        "src_z",
+        "dst_x",
+        "dst_y",
+        "dst_z",
+        "kind",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_route_link.jsonl.gz",
+      "rows": 55,
+      "sha256": "da80b86cda70e3803bf3984c47f98214ef446bbde78d648f18e662086e4b9fac",
+      "file_sha256": "7eb7aa034458316b602f40bce081b7222630e55d4d0c8d6cc81246771fc445d6"
+    },
+    "ai_playerbot_rpg_races": {
+      "ddl": "CREATE TABLE `ai_playerbot_rpg_races` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  `entry` bigint DEFAULT NULL,\n  `race` bigint DEFAULT NULL,\n  `minl` bigint DEFAULT NULL,\n  `maxl` bigint DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  KEY `entry` (`entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "id",
+        "entry",
+        "race",
+        "minl",
+        "maxl"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_rpg_races.jsonl.gz",
+      "rows": 441,
+      "sha256": "f3757383632bf980f22348e39f97903b9ade94a4d5062885c2e701598c00a606",
+      "file_sha256": "f90cb6a2cb116ca2d2c9eb05d1a6c7a37af41ee34ffcf9105ceefe033b55a054"
+    },
+    "ai_playerbot_rpg_tele_cache": {
+      "ddl": "CREATE TABLE `ai_playerbot_rpg_tele_cache` (\n  `race` tinyint unsigned NOT NULL,\n  `level` tinyint unsigned NOT NULL,\n  `map_id` smallint unsigned NOT NULL,\n  `x` float NOT NULL,\n  `y` float NOT NULL,\n  `z` float NOT NULL,\n  PRIMARY KEY (`race`,`level`,`map_id`,`x`,`y`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "race",
+        "level",
+        "map_id",
+        "x",
+        "y",
+        "z"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_skip_entry": {
+      "ddl": "CREATE TABLE `ai_playerbot_skip_entry` (\n  `map` smallint unsigned NOT NULL,\n  `entry` int unsigned NOT NULL,\n  `note` varchar(160) NOT NULL DEFAULT '',\n  PRIMARY KEY (`map`,`entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "entry",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_skip_entry.jsonl.gz",
+      "rows": 1,
+      "sha256": "08a70f94800e52bef791cbdb4d6832de8afc757e11a33e56f4eb526bc43681ad",
+      "file_sha256": "dc040c9f1b73d16b0339f47971778fad92ab6f4b4fda7fe86591403b73b834e3"
+    },
+    "ai_playerbot_tele_cache": {
+      "ddl": "CREATE TABLE `ai_playerbot_tele_cache` (\n  `id` mediumint NOT NULL AUTO_INCREMENT,\n  `level` mediumint NOT NULL,\n  `map_id` mediumint NOT NULL,\n  `x` float NOT NULL,\n  `y` float NOT NULL,\n  `z` float NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI Tele Cache'",
+      "columns": [
+        "id",
+        "level",
+        "map_id",
+        "x",
+        "y",
+        "z"
+      ],
+      "policy": "preserve"
+    },
+    "ai_playerbot_texts": {
+      "ddl": "CREATE TABLE `ai_playerbot_texts` (\n  `id` smallint NOT NULL AUTO_INCREMENT,\n  `name` varchar(255) NOT NULL COMMENT 'name - used in strategies/code as filter',\n  `text` varchar(1024) NOT NULL COMMENT 'text',\n  `say_type` tinyint NOT NULL DEFAULT '0' COMMENT '0 - say, 1 - yell',\n  `reply_type` tinyint NOT NULL DEFAULT '0' COMMENT 'if > 0 then can be filtered as a response to chat',\n  `text_loc1` varchar(1024) NOT NULL DEFAULT '',\n  `text_loc2` varchar(1024) NOT NULL DEFAULT '',\n  `text_loc3` varchar(1024) NOT NULL DEFAULT '',\n  `text_loc4` varchar(1024) NOT NULL DEFAULT '',\n  `text_loc5` varchar(1024) NOT NULL DEFAULT '',\n  `text_loc6` varchar(1024) NOT NULL DEFAULT '',\n  `text_loc7` varchar(1024) NOT NULL DEFAULT '',\n  `text_loc8` varchar(1024) NOT NULL DEFAULT '',\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC",
+      "columns": [
+        "id",
+        "name",
+        "text",
+        "say_type",
+        "reply_type",
+        "text_loc1",
+        "text_loc2",
+        "text_loc3",
+        "text_loc4",
+        "text_loc5",
+        "text_loc6",
+        "text_loc7",
+        "text_loc8"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_texts.jsonl.gz",
+      "rows": 2386,
+      "sha256": "da4c054d3168d142e7ea0372c6b0500852d485cdfbc3a84237a10be862c42bea",
+      "file_sha256": "dd1b56f22844dd3570ffbf98a29e71d2b0e51143d0ed93cbc8987a13fa7990f8"
+    },
+    "ai_playerbot_texts_chance": {
+      "ddl": "CREATE TABLE `ai_playerbot_texts_chance` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  `name` varchar(255) NOT NULL,\n  `probability` bigint NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC",
+      "columns": [
+        "id",
+        "name",
+        "probability"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_texts_chance.jsonl.gz",
+      "rows": 3,
+      "sha256": "28fbe294203dddb7a62d971ea0d2b9879f61518f24d07a1e853b58acf9168ad0",
+      "file_sha256": "82404ea50f35179ce716535c87e47b3ba9ea6b0ac52a7e27b1b2427b77e9fa41"
+    },
+    "ai_playerbot_threat_rule": {
+      "ddl": "CREATE TABLE `ai_playerbot_threat_rule` (\n  `map` smallint unsigned NOT NULL,\n  `entry` int unsigned NOT NULL,\n  `rank` tinyint unsigned NOT NULL DEFAULT '1',\n  `pct` float NOT NULL DEFAULT '100',\n  `note` varchar(160) NOT NULL DEFAULT '',\n  `tank_rank` tinyint unsigned NOT NULL DEFAULT '0',\n  `dps_pct` float NOT NULL DEFAULT '90',\n  `melee_only` tinyint unsigned NOT NULL DEFAULT '0',\n  PRIMARY KEY (`map`,`entry`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "entry",
+        "rank",
+        "pct",
+        "note",
+        "tank_rank",
+        "dps_pct",
+        "melee_only"
+      ],
+      "policy": "replace",
+      "source": "characters",
+      "file": "ai_playerbot_threat_rule.jsonl.gz",
+      "rows": 4,
+      "sha256": "e0e4ac472bd708114ae55130fc2e96a2f9af6cc565abb4e93bbb95a03dcb02e1",
+      "file_sha256": "4bb4f8bff39a83ccf3f381639c3ab58da02ae21d697b4a797b772b60e1fe3843"
+    },
+    "ai_playerbot_travelnode": {
+      "ddl": "CREATE TABLE `ai_playerbot_travelnode` (\n  `id` mediumint NOT NULL,\n  `name` varchar(1024) NOT NULL,\n  `map_id` mediumint NOT NULL,\n  `x` float NOT NULL,\n  `y` float NOT NULL,\n  `z` float NOT NULL,\n  `linked` tinyint DEFAULT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI Travel Node'",
+      "columns": [
+        "id",
+        "name",
+        "map_id",
+        "x",
+        "y",
+        "z",
+        "linked"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_travelnode.jsonl.gz",
+      "rows": 2887,
+      "sha256": "c0c0038ee3934b22ec064219089da002b43b65654a1e9fc8ae8182ea722a7193",
+      "file_sha256": "e7ae2675817fc6228195d417e6d248f272eb1bbeaa0dbc9e755080bb71dd5d1c"
+    },
+    "ai_playerbot_travelnode_link": {
+      "ddl": "CREATE TABLE `ai_playerbot_travelnode_link` (\n  `node_id` mediumint NOT NULL,\n  `to_node_id` mediumint NOT NULL,\n  `type` tinyint NOT NULL,\n  `object` mediumint NOT NULL,\n  `distance` float NOT NULL,\n  `swim_distance` float NOT NULL,\n  `extra_cost` float NOT NULL,\n  `calculated` tinyint(1) NOT NULL,\n  `max_creature_0` tinyint NOT NULL,\n  `max_creature_1` tinyint NOT NULL,\n  `max_creature_2` tinyint NOT NULL,\n  PRIMARY KEY (`node_id`,`to_node_id`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI Travel Node link'",
+      "columns": [
+        "node_id",
+        "to_node_id",
+        "type",
+        "object",
+        "distance",
+        "swim_distance",
+        "extra_cost",
+        "calculated",
+        "max_creature_0",
+        "max_creature_1",
+        "max_creature_2"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_travelnode_link.jsonl.gz",
+      "rows": 9556,
+      "sha256": "bad165e8c3e48f5c2d0d96e492b4ee15e1d7c9ee583df363a0aa0eb3c73bcf7c",
+      "file_sha256": "8d2c4fc0c1c76fc11f715b1fdfc3281ba78d00a53446cdae4241eef5b47aa326"
+    },
+    "ai_playerbot_travelnode_path": {
+      "ddl": "CREATE TABLE `ai_playerbot_travelnode_path` (\n  `node_id` mediumint NOT NULL,\n  `to_node_id` mediumint NOT NULL,\n  `nr` mediumint NOT NULL,\n  `map_id` mediumint NOT NULL,\n  `x` float NOT NULL,\n  `y` float NOT NULL,\n  `z` float NOT NULL,\n  PRIMARY KEY (`node_id`,`to_node_id`,`nr`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 ROW_FORMAT=FIXED COMMENT='PlayerbotAI Travel Node path'",
+      "columns": [
+        "node_id",
+        "to_node_id",
+        "nr",
+        "map_id",
+        "x",
+        "y",
+        "z"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_travelnode_path.jsonl.gz",
+      "rows": 627446,
+      "sha256": "92560c552b64b15f8914681106f9cfeadbbd2711809eee32f1d21014899cacaa",
+      "file_sha256": "28b6945739b30ad751686f1770e63637393ef1b87558a58520348ca34b142824"
+    },
+    "ai_playerbot_unreachable": {
+      "ddl": "CREATE TABLE `ai_playerbot_unreachable` (\n  `map` smallint unsigned NOT NULL,\n  `guid` int unsigned NOT NULL,\n  `reason` varchar(32) NOT NULL DEFAULT '',\n  PRIMARY KEY (`map`,`guid`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
+      "columns": [
+        "map",
+        "guid",
+        "reason"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_unreachable.jsonl.gz",
+      "rows": 179,
+      "sha256": "4e772dd32801d85044aaf945d1ed5bc6249f2fbac24ebde428fcda6b4d92ed56",
+      "file_sha256": "22ef670a2f282a703b5f69320810042e1f8c5e3a4af715671c68a4f033c759a3"
+    },
+    "ai_playerbot_wave_anchor": {
+      "ddl": "CREATE TABLE `ai_playerbot_wave_anchor` (\n  `map` smallint unsigned NOT NULL,\n  `ord` smallint unsigned NOT NULL,\n  `group_id` int unsigned NOT NULL DEFAULT '0',\n  `pull_x` float NOT NULL,\n  `pull_y` float NOT NULL,\n  `pull_z` float NOT NULL,\n  `combat_x` float NOT NULL,\n  `combat_y` float NOT NULL,\n  `combat_z` float NOT NULL,\n  `blocked_ratio` float NOT NULL DEFAULT '0',\n  `score` float NOT NULL DEFAULT '0',\n  `needs_corner` tinyint unsigned NOT NULL DEFAULT '0',\n  `ranged_n` smallint unsigned NOT NULL DEFAULT '0',\n  `verified` tinyint unsigned NOT NULL DEFAULT '0',\n  PRIMARY KEY (`map`,`ord`)\n) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "map",
+        "ord",
+        "group_id",
+        "pull_x",
+        "pull_y",
+        "pull_z",
+        "combat_x",
+        "combat_y",
+        "combat_z",
+        "blocked_ratio",
+        "score",
+        "needs_corner",
+        "ranged_n",
+        "verified"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_wave_anchor.jsonl.gz",
+      "rows": 817,
+      "sha256": "b0656ada58dfca14f888641e0efd908451e44790ba065987cc01f9e1316ba74a",
+      "file_sha256": "83cdf14c367540f7dea210764abcba6de0ff3034c06fd384322a4cc4b5ba42c3"
+    },
+    "ai_playerbot_weightscale_caps": {
+      "ddl": "CREATE TABLE `ai_playerbot_weightscale_caps` (\n  `id` int NOT NULL,\n  `field` varchar(18) NOT NULL,\n  `cap` int unsigned NOT NULL,\n  `capped` int unsigned NOT NULL,\n  `alt_field` varchar(18) NOT NULL DEFAULT '',\n  `alt_cap` int unsigned NOT NULL DEFAULT '0',\n  `cap2` int unsigned NOT NULL DEFAULT '0',\n  `capped2` int unsigned NOT NULL DEFAULT '0',\n  KEY `id` (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "id",
+        "field",
+        "cap",
+        "capped",
+        "alt_field",
+        "alt_cap",
+        "cap2",
+        "capped2"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_weightscale_caps.jsonl.gz",
+      "rows": 41,
+      "sha256": "8cb99e608877bc55c05c41f4ce57be14761a20ce6db97e483d0195f874709eb5",
+      "file_sha256": "ec6c0267be991a383ab90e9e5544c39f212adb641870cc98c6dcb9d2707681e0"
+    },
+    "ai_playerbot_weightscale_data": {
+      "ddl": "CREATE TABLE `ai_playerbot_weightscale_data` (\n  `id` int NOT NULL,\n  `field` varchar(18) NOT NULL,\n  `val` smallint unsigned NOT NULL,\n  KEY `id` (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "id",
+        "field",
+        "val"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_weightscale_data.jsonl.gz",
+      "rows": 277,
+      "sha256": "69932ef0487aad7b7ab815d59e53b0fb484b26ee1bd1e1864e6651ca26a3670c",
+      "file_sha256": "886d67ed1d46428c764023b4512e8852757b929349300caa2a1670468a7b0c6f"
+    },
+    "ai_playerbot_weightscales": {
+      "ddl": "CREATE TABLE `ai_playerbot_weightscales` (\n  `id` int NOT NULL AUTO_INCREMENT,\n  `name` varchar(32) NOT NULL,\n  `class` tinyint unsigned NOT NULL DEFAULT '0',\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 ROW_FORMAT=COMPACT",
+      "columns": [
+        "id",
+        "name",
+        "class"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_weightscales.jsonl.gz",
+      "rows": 32,
+      "sha256": "6de693040e41995501a9a2924249c053e1f963d920faafc299e172b3d796ba76",
+      "file_sha256": "9b6da6cbed87664ab445bcca79685064845b93591f48530e38046b74eea02675"
+    },
+    "ai_playerbot_zone_level": {
+      "ddl": "CREATE TABLE `ai_playerbot_zone_level` (\n  `id` bigint NOT NULL,\n  `level` bigint NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3",
+      "columns": [
+        "id",
+        "level"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_zone_level.jsonl.gz",
+      "rows": 2659,
+      "sha256": "0f35c27c4ae0143bcb6b90a33ef7409a455646956fb5f47c97276575a5ea056b",
+      "file_sha256": "dcdbc2de78dcaa42431d9b9e0156d561772c63319cab2df6b778c70e4c0c51dd"
+    },
+    "ai_playerbot_dps_exempt": {
+      "ddl": "CREATE TABLE `ai_playerbot_dps_exempt` (`map` int unsigned NOT NULL, `entry` int unsigned NOT NULL, `note` varchar(255) NOT NULL DEFAULT '', PRIMARY KEY (`map`,`entry`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+      "columns": [
+        "map",
+        "entry",
+        "note"
+      ],
+      "policy": "replace",
+      "file": "ai_playerbot_dps_exempt.jsonl.gz",
+      "rows": 0,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "file_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    }
+  }
+}
