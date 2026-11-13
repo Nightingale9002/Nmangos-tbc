@@ -22381,7 +22381,7 @@ uint32 Player::GetSpellCooldownLeftByName(char const* spellName) const
         SpellEntry const* info = sSpellTemplate.LookupEntry<SpellEntry>(itr->first);
         if (!info)
             continue;
-        if (strcasecmp(info->SpellName[0], spellName) != 0)
+        if (stricmp(info->SpellName[0], spellName) != 0)
             continue;
         return GetSpellCooldownLeftMs(*info);
     }

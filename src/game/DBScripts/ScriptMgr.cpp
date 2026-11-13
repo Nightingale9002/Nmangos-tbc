@@ -2193,13 +2193,15 @@ bool ScriptAction::ExecuteDbscriptCommand(WorldObject* pSource, WorldObject* pTa
             if (LogIfNotUnit(pSource))
                 break;
 
-            // [FIX 2026-10-03] A DB script must not make a dead creature cast.  Map::ScriptsProcess was
+            // [FIX 2026-10-03] A DB script must not normally make a dead creature cast.  Map::ScriptsProcess was
             // observed driving a CORPSE through this very command: the Sunwell Dawnblade channel beams
             // (spells 45104 Shadow Channelling / 30944 Red Beam) kept being cast by corpses, so players saw
             // a corpse that "still casts" (stack 2026-10-03 01:18: ScriptsProcess -> HandleScriptStep ->
             // ExecuteDbscriptCommand -> Unit::CastSpell).  Scripts that must affect a dead unit can still
-            // target it (the pTarget side is untouched); only the caster has to be alive.
-            if (static_cast<Unit*>(pSource)->GetTypeId() == TYPEID_UNIT && !static_cast<Unit*>(pSource)->IsAlive())
+            // target it (the pTarget side is untouched). Explicit death-cast spells, such as Eject Sneed
+            // (5141), must remain allowed via SPELL_ATTR_ALLOW_CAST_WHILE_DEAD.
+            if (static_cast<Unit*>(pSource)->GetTypeId() == TYPEID_UNIT && !static_cast<Unit*>(pSource)->IsAlive() &&
+                !spellInfo->HasAttribute(SPELL_ATTR_ALLOW_CAST_WHILE_DEAD))
                 break;
 
             SpellCastTargets spellCastTargets;

@@ -85,6 +85,10 @@ if(MSVC)
   # It creates "CMakePredefinedTargets" folder by default and adds CMake
   # defined projects like INSTALL.vcproj and ZERO_CHECK.vcproj
   set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+  # Several sources carry UTF-8 comments (Chinese). Without /utf-8 MSVC decodes
+  # them with the system ANSI code page (936 here) and can swallow line breaks,
+  # which surfaces as bogus C4819/C2447 errors.
+  add_compile_options(/utf-8)
 endif()
 
 # set default buildoptions and print them

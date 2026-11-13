@@ -1568,6 +1568,115 @@ bool PathFinder::getSteerTarget(const float* startPos, const float* endPos,
     return true;
 }
 
+// Detour's moveAlongSurface searches neighbouring polygons without knowing the
+// A* corridor. Retry an escaping step with the same local surface search, but
+// treat links outside that corridor as walls. Do not infer layers from height
+// or terrain flags: selected ground/water transitions remain traversable.
+static dtStatus moveAlongCorridor(const dtNavMesh* nav, const dtPolyRef* corridor, uint32 corridorSize,
+                                 const float* startPos, const float* endPos, float* resultPos,
+                                 dtPolyRef* visited, uint32& visitedCount, uint32 maxVisited)
+{
+    // Match Detour's tiny local search limits; keep scratch state on the stack.
+    static const uint32 MAX_NODES = 64;
+    static const uint32 MAX_STACK = 48;
+    struct Node { dtPolyRef ref; int parent; };
+    Node nodes[MAX_NODES];
+    uint32 queue[MAX_STACK];
+    uint32 nodeCount = 1, queueCount = 1;
+    nodes[0] = {corridor[0], -1};
+    queue[0] = 0;
+    int bestNode = -1;
+    float bestPos[3], bestDist = std::numeric_limits<float>::max();
+    dtVcopy(bestPos, startPos);
+    float searchPos[3];
+    dtVlerp(searchPos, startPos, endPos, 0.5f);
+    const float searchRadius = dtVdist(startPos, endPos) * 0.5f + 0.001f;
+    const float searchRadiusSqr = searchRadius * searchRadius;
+    while (queueCount)
+    {
+        const uint32 current = queue[0];
+        for (uint32 i = 1; i < queueCount; ++i)
+            queue[i - 1] = queue[i];
+        --queueCount;
+        const dtMeshTile* tile = nullptr;
+        const dtPoly* poly = nullptr;
+        if (dtStatusFailed(nav->getTileAndPolyByRef(nodes[current].ref, &tile, &poly)))
+            return DT_FAILURE;
+        float verts[DT_VERTS_PER_POLYGON * 3];
+        for (uint32 i = 0; i < poly->vertCount; ++i)
+            dtVcopy(&verts[i * 3], &tile->verts[poly->verts[i] * 3]);
+        if (dtPointInPolygon(endPos, verts, poly->vertCount))
+        {
+            bestNode = current;
+            dtVcopy(bestPos, endPos);
+            break;
+        }
+        for (uint32 i = 0, j = poly->vertCount - 1; i < poly->vertCount; j = i++)
+        {
+            dtPolyRef neighbours[8];
+            uint32 neighbourCount = 0;
+            // Use actual edge links (including cross-tile links), never just
+            // adjacency in the corridor array or overlapping XY footprints.
+            for (unsigned int k = poly->firstLink; k != DT_NULL_LINK; k = tile->links[k].next)
+            {
+                const dtLink& link = tile->links[k];
+                if (link.edge != j || !link.ref)
+                    continue;
+                for (uint32 c = 0; c < corridorSize; ++c)
+                {
+                    if (corridor[c] == link.ref)
+                    {
+                        if (neighbourCount < 8)
+                            neighbours[neighbourCount++] = link.ref;
+                        break;
+                    }
+                }
+            }
+            const float* vj = &verts[j * 3];
+            const float* vi = &verts[i * 3];
+            float t;
+            if (!neighbourCount)
+            {
+                const float dist = dtDistancePtSegSqr2D(endPos, vj, vi, t);
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    bestNode = current;
+                    dtVlerp(bestPos, vj, vi, t);
+                }
+                continue;
+            }
+            if (dtDistancePtSegSqr2D(searchPos, vj, vi, t) > searchRadiusSqr)
+                continue;
+            for (uint32 n = 0; n < neighbourCount; ++n)
+            {
+                uint32 index = 0;
+                while (index < nodeCount && nodes[index].ref != neighbours[n])
+                    ++index;
+                if (index < nodeCount || nodeCount == MAX_NODES || queueCount == MAX_STACK)
+                    continue;
+                nodes[nodeCount] = {neighbours[n], int(current)};
+                queue[queueCount++] = nodeCount++;
+            }
+        }
+    }
+    visitedCount = 0;
+    if (bestNode < 0)
+        return DT_FAILURE;
+    // Return the same start-to-result visited ordering as moveAlongSurface.
+    dtPolyRef reversed[MAX_NODES];
+    uint32 count = 0;
+    for (int n = bestNode; n >= 0; n = nodes[n].parent)
+        reversed[count++] = nodes[n].ref;
+    // A truncated visited list cannot identify the polygon of resultPos.
+    if (count > maxVisited)
+        return DT_FAILURE | DT_BUFFER_TOO_SMALL;
+    while (count)
+        visited[visitedCount++] = reversed[--count];
+    dtVcopy(resultPos, bestPos);
+    return DT_SUCCESS;
+}
+
 dtStatus PathFinder::findSmoothPath(const float* startPos, const float* endPos,
                                     const dtPolyRef* polyPath, uint32 polyPathSize,
                                     float* smoothPath, int* smoothPathSize, uint32 maxSmoothPathSize)
@@ -1635,7 +1744,20 @@ dtStatus PathFinder::findSmoothPath(const float* startPos, const float* endPos,
         dtPolyRef visited[MAX_VISIT_POLY];
 
         uint32 nvisited = 0;
-        m_navMeshQuery->moveAlongSurface(m_smoothPathPolyRefs[0], iterPos, moveTgt, &m_filter, result, visited, (int*)&nvisited, MAX_VISIT_POLY);
+        const dtStatus moveStatus = m_navMeshQuery->moveAlongSurface(m_smoothPathPolyRefs[0], iterPos, moveTgt, &m_filter, result, visited, (int*)&nvisited, MAX_VISIT_POLY);
+        if (dtStatusFailed(moveStatus) || !nvisited)
+            return DT_FAILURE;
+        bool leftCorridor = (moveStatus & DT_BUFFER_TOO_SMALL) != 0;
+        for (uint32 v = 0; v < nvisited && !leftCorridor; ++v)
+        {
+            uint32 p = 0;
+            while (p < npolys && visited[v] != m_smoothPathPolyRefs[p])
+                ++p;
+            leftCorridor = p == npolys;
+        }
+        if (leftCorridor && dtStatusFailed(moveAlongCorridor(m_navMesh, m_smoothPathPolyRefs.data(), npolys,
+                                                            iterPos, moveTgt, result, visited, nvisited, MAX_VISIT_POLY)))
+            return DT_FAILURE;
         npolys = fixupCorridor(m_smoothPathPolyRefs.data(), npolys, m_pointPathLimit, visited, nvisited);
 
         m_navMeshQuery->getPolyHeight(m_smoothPathPolyRefs[0], result, &result[1]);
