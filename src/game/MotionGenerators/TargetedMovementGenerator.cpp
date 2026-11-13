@@ -1064,6 +1064,16 @@ void FollowMovementGenerator::MarkMovegen()
 
 float FollowMovementGenerator::GetSpeed(Unit& owner) const
 {
+#ifdef ENABLE_PLAYERBOTS
+    if (owner.IsPlayer() && !static_cast<Player&>(owner).isRealPlayer())
+    {
+        // Bots use their own legal movement speed, never the leader's walk,
+        // backpedal or catch-up speed. Aura slows and mount bonuses remain intact.
+        UnitMoveType const type = owner.IsFlying() ? MOVE_FLIGHT
+            : (owner.m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING) ? MOVE_SWIM : MOVE_RUN);
+        return owner.GetSpeed(type);
+    }
+#endif
     const UnitMoveType type = i_target->m_movementInfo.GetSpeedType();
     float speed = owner.GetSpeed(type);
 
@@ -1328,7 +1338,12 @@ bool FollowMovementGenerator::Move(Unit& owner, float x, float y, float z)
 
     Movement::MoveSplineInit init(owner);
     init.MovebyPath(path);
-    init.SetWalk(EnableWalking());
+    bool walking = EnableWalking();
+#ifdef ENABLE_PLAYERBOTS
+    if (owner.IsPlayer() && !static_cast<Player&>(owner).isRealPlayer())
+        walking = false;
+#endif
+    init.SetWalk(walking);
     init.SetVelocity(GetSpeed(owner));
     if (!i_target->IsMoving())
         init.SetFacing(i_target->GetOrientation());

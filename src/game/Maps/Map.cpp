@@ -1911,7 +1911,7 @@ uint32 Map::GetPlayersCountExceptGMs() const
 {
     uint32 count = 0;
     for (const auto& itr : m_mapRefManager)
-        if (!itr.getSource()->IsGameMaster())
+        if (!itr.getSource()->IsGameMaster() || !itr.getSource()->isRealPlayer())
             ++count;
     return count;
 }
@@ -2310,6 +2310,22 @@ void DungeonMap::InitVisibilityDistance()
 /*
     Do map specific checks and add the player to the map if successful.
 */
+bool DungeonMap::CanEnter(Player* player)
+{
+    if (!Map::CanEnter(player))
+        return false;
+
+    // Rechecked by Add after transit, so a batch of summons cannot all use
+    // the same last slot. Only real gamemasters retain the core exemption.
+    if (!(player->IsGameMaster() && player->isRealPlayer()) &&
+        GetPlayersCountExceptGMs() >= GetMaxPlayers())
+    {
+        player->GetSession()->SendTransferAborted(GetId(), TRANSFER_ABORT_MAX_PLAYERS);
+        return false;
+    }
+    return true;
+}
+
 bool DungeonMap::Add(Player* player)
 {
     // TODO: Not sure about checking player level: already done in HandleAreaTriggerOpcode

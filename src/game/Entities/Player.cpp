@@ -22520,15 +22520,24 @@ AreaLockStatus Player::GetAreaTriggerLockStatus(AreaTrigger const* at, uint32& m
         return AREA_LOCKSTATUS_INSUFFICIENT_EXPANSION;
     }
 
-    // Gamemaster can always enter
-    if (IsGameMaster())
+    // Real gamemasters can always enter; bot capacity is never waived.
+    if (IsGameMaster() && isRealPlayer())
         return AREA_LOCKSTATUS_OK;
 
     // [bot 2026-10-16] 站长口径：副本进门条件（等级 / 钥匙 / 英雄钥匙 / 开门任务 / 条件系统）
     // 对 bot 一律不生效 —— bot 由玩家带进本，不要求它自己做前置任务。
     // 判据用核心自带的 isRealPlayer()（session remote address == "disconnected/bot"），不依赖 playerbot 模块。
     if (!isRealPlayer())
+    {
+        DungeonPersistentState* state = GetBoundInstanceSaveForSelfOrGroup(at->target_mapId);
+        Map* map = sMapMgr.FindMap(at->target_mapId, state ? state->GetInstanceId() : 0);
+        // GetMapId also matches pending arrivals. Only a linked map reference
+        // proves that this player already occupies a slot in this instance.
+        if (map && map->IsDungeon() && GetMapRef().getTarget() != map &&
+            map->GetPlayersCountExceptGMs() >= map->GetMaxPlayers())
+            return AREA_LOCKSTATUS_INSTANCE_IS_FULL;
         return AREA_LOCKSTATUS_OK;
+    }
 
     // Level Requirements
     if (GetLevel() < at->requiredLevel && !sWorld.getConfig(CONFIG_BOOL_INSTANCE_IGNORE_LEVEL))

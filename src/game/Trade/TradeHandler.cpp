@@ -253,6 +253,15 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPacket& recvPacket)
 
     Player* trader = my_trade->GetTrader();
 
+#if defined(ENABLE_PLAYERBOTS) || defined(BUILD_DEPRECATED_PLAYERBOT)
+    // Player/bot trades are forbidden, including trades opened before AI was attached.
+    if (bool(_player->GetPlayerbotAI()) != bool(trader->GetPlayerbotAI()))
+    {
+        _player->TradeCancel(true);
+        return;
+    }
+#endif
+
     TradeData* his_trade = trader->m_trade;
     if (!his_trade)
         return;
@@ -524,6 +533,14 @@ void WorldSession::HandleBeginTradeOpcode(WorldPacket& /*recvPacket*/)
     if (!my_trade)
         return;
 
+#if defined(ENABLE_PLAYERBOTS) || defined(BUILD_DEPRECATED_PLAYERBOT)
+    if (bool(_player->GetPlayerbotAI()) != bool(my_trade->GetTrader()->GetPlayerbotAI()))
+    {
+        _player->TradeCancel(true);
+        return;
+    }
+#endif
+
     TradeStatusInfo info;
     info.Status = TRADE_STATUS_OPEN_WINDOW;
     my_trade->GetTrader()->GetSession()->SendTradeStatus(info);
@@ -592,6 +609,16 @@ void WorldSession::HandleInitiateTradeOpcode(WorldPacket& recvPacket)
         SendTradeStatus(info);
         return;
     }
+
+#if defined(ENABLE_PLAYERBOTS) || defined(BUILD_DEPRECATED_PLAYERBOT)
+    // Enforce both directions before allocating trade data or notifying the target.
+    if (bool(_player->GetPlayerbotAI()) != bool(pOther->GetPlayerbotAI()))
+    {
+        info.Status = TRADE_STATUS_TRADE_CANCELED;
+        SendTradeStatus(info);
+        return;
+    }
+#endif
 
     if (pOther == GetPlayer() || pOther->m_trade)
     {

@@ -648,6 +648,7 @@ class DungeonMap : public Map
     public:
         DungeonMap(uint32 id, time_t, uint32 InstanceId, uint8 SpawnMode);
         ~DungeonMap();
+        bool CanEnter(Player*) override;
         bool Add(Player*) override;
         void Remove(Player*, bool) override;
         void Update(const uint32&) override;

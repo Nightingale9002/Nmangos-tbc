@@ -10272,6 +10272,14 @@ if (!GetGOInfo()->GetDespawnPossibility() && !GetGOInfo()->IsDespawnAtAction() &
 
 ---
 
+### 2026-11-14 bot免前置不免副本人数
+
+站长实报云端`summon`仍可超员。根因是`Player.cpp → GetAreaTriggerLockStatus()`对`!isRealPlayer()`提前返回OK，后面的实例人数判断不可达；`Map.cpp → DungeonMap::Add()`虽调用`CanEnter()`，原来只继承基类重复入图判断，没有最终容量复核。云端实查模板值为破碎/蒸汽5、卡拉赞10、玛瑟里顿25，配置不是本次原因。
+
+修复保持bot免等级、钥匙、任务等前置，但在免前置返回前检查目标绑定实例是否满员；以已链接`mapRef`识别现有占位，不用已在途修改的mapId充当已入图证明。新增`DungeonMap::CanEnter()`，让传送预检和最终`Add()`按当前占位再判断，批量进入的后到者不能继续使用最后一个名额；GM标记bot也计入，真人GM保留既有豁免。按`instance_template.maxPlayers`使用各本原人数，不改SQL。
+
+本地生产`CanEnter()/GetPlayersCountExceptGMs()`与bot分支提取测试45断言通过；恢复旧bot提前返回、去掉最终容量检查、漏算GMbot三个负对照均失败。世界对象、Session和Add外层为明确mock，不作为完整session并发或游戏客户端验收。证据：`_agent_tmp/summon_capacity_20261114/`；整包发布和运行产物校验记在现有运维主题。
+
 ### [数据] 副本入口等级：禁魔监狱/生态船/能源舰 68 → 65（dev/172）（2026-10-10）
 
 - `areatrigger_teleport` 三行（4468/4467/4469）`required_level = 68`，但它们**自身的失败提示文本**写的就是 "You must be at least level 65 to enter." ⇒ 数据与提示自相矛盾 ✓ 按站长口径改为 **65** ✓
@@ -10916,6 +10924,16 @@ void EnsureGridLoadedForPath(Cell const& cell) { EnsureGridLoaded(cell); }
 本次构建覆盖2818个跟踪构建输入，Windows与WSL Ubuntu-20.04构建前后SHA256一致；完整mangosd构建退出0，MD5 **`57f381c1fbd4c082eabafd42d16a95b2`**。复跑跟随、纯bot解散、击晕回归与真实Detour/原545网格8例均通过；生产函数夹具包含明确mock，不能扩大为所有职业、副本或客户端实战验收。部署脚本19项本地安全分支检查通过（到人延后、查询失败关闭、哈希拒绝、失败回滚等）。本次只同步二进制，不沿用旧runbook自动夹带数据库/mmap变更；平台控制台的04:01/04:05定时开关机未在本次修改。
 
 同步与清单启用时实查3个真人世界连接，因此先排队而非重启。**实际发布**：北京时间14:27:01、14:27:12、14:27:22连续确认零真人/零世界连接（12个随机bot仍在线），14:27:22开始优雅停服，14:28:31完成安装及握手检查。新世界服唯一PID **29899**，运行`/proc/<pid>/exe`、磁盘及暂存包MD5均为`57f381c1fbd4c082eabafd42d16a95b2`；realmd仍为原PID1627、MySQL仍为原PID1529，8086/3724正常。14:50之后复查实时健康返回true，旧包备份MD5为`3b3b9e75e718a20e1b9d2bf4b44bb710`，watchdog暂停标志已清理、待部署清单已清除，原03:00/04:06维护脚本哈希仍与备份一致。本地证据在`_agent_tmp/release_20261113/cloud-status.json`与`_agent_tmp/ops_progress_20261113.md`，云端`binary-deploy.log`和发布目录`deployment-result.json`保留实际切换记录。仅证明此次二进制发布与服务健康，不扩大为游戏实战验收；现行配置显式`AutoDisbandBotOnlyGroups=1`未被本次发布改成2。
+
+### 2026-11-14 工作区整理与无人队列候选
+
+站长授权整理本地并在无人窗口部署。本轮整合工作树内主动跑步/合法跟随速度、邀请与职责介绍、激活命令、任意队友战斗协助、拾取/逃生/召回、反噬驱散及统一回撤、法师/防骑与反馈限频、真人-bot交易限制，并追加本章引用的副本人数修复。根目录12个临时/误重定向文件保留原件归档和SHA256清单。无新增SQL或配置迁移，不更改03:00提醒、04:06维护及现有显式配置，不执行git push。
+
+最终WSL Ubuntu-20.04整服构建退出0；2820份构建输入Windows/WSL构建前后一致，包含原未跟踪的`PullbackSafety.cpp/.h`。完整符号产物MD5 `5997296ae162bf6a15ba9c7adf38270c`，strip发布产物 `75db0d9f6e8de94a9b4507ad4d718a41`。本次新增人数45断言与3负对照、回撤最终派发36断言/原103回归及有效旧派发负对照通过，均为生产提取加明确mock；不扩大为游戏实战验收。
+
+`MovementActions.cpp → DispatchMovement()`在回撤保护生效时，用最终裁剪/水面修正后的端点调用`PullbackSafety.cpp → MoveAllowed()`输出实际已校验路径，直接同数组`MovePath(RUN)`，避免重新寻路/危险规避/Z修正改变已验路线；`MoveTo2()`回传失败并封住其特殊旅行/飞行/低活动瞬移旁路。其他既有MoveAllowed调用点仍保留原执行方式，不宣称全移动入口已完成同路径改造。
+
+候选上传MD5与本地相同，云端依赖及`--version`加载检查通过；已原子启用现有每分钟零真人队列，使用原维护锁、三次间隔10秒零人/零世界连接检查和停服前再查，备份/回滚/健康检查保持既有流程。此条只记录候选已启用，尚不能据此宣称实际切换；当前实际结果以`_agent_tmp/release_20261114/cloud-status.json`、队列结果与运行中产物MD5为准。证据和实际边界集中在本轮进度及各测试报告。
 
 ### [运维] P0 铁律：无站长明确指令，严禁重启/部署云端（2026-09-25）
 
@@ -12028,6 +12046,8 @@ WHERE r.event='always' AND r.value=1;
 - **连续观察 ≥10 分钟不下降**（本次 12 分钟 × 7 次采样全部 12/12、零崩溃）。
 
 #### 五、副本通用「躲地板技」（方案A，站长 2026-10-17 拍板）
+
+**2026-11-13 地板逃生实际路线校验**：`DungeonActions.cpp → MoveAwayFromHazard::Execute()` 原先检查候选直线/终点后进入通用 `MoveTo()`，随后旅行缓存、裁剪及重新寻路并不保证执行该直线；不能据候选通过断言实际路线安全。现取 `PathFinder` 完整节点，以实际 bot 位置作为首点，`EscapePathSafe()`逐段检查危险圈不侵入/向外脱离、脚部与身体LOS、每0.5码采样贴地高度和实际终点，再将同一数组交给一次性跑步 `MovePath()`，不经旅行缓存/重算。已持有逃生样条用 `RemainingEscapePath()`验证实际剩余节点，失效先停止旧路线。抽取真实校验函数18例通过，去掉贴地差校验的负对照被检出；属于接口桩离线证据，尚未在报障现场或原生副本验收，不能宣称所有偶发穿模已消除。完整构建与其他两项行为回归见[本轮记录](../../_agent_tmp/bot_movement_20261113/RESULT.md)。
 
 **2026-11-12 仇恨准入追加（本地，未部署）**：站长要求大世界、低级怪和无坦克队伍正常攻击。`AttackAction.cpp → ShouldControlThreat()`统一准入：仅副本/团队副本、非灰名生物、非坦克/治疗、确有同实际地图实例且存活/在世界/未传送的坦克时控制仇恨；灰名采用核心 `Relations.cpp → Unit::IsTrivialForTarget()`，不另设等级差公式。`WaitingForTankThreat()`在读专用规则前先检查此准入，专用规则不能覆盖野外或无有效坦克豁免；`CombatStrategy.cpp → WaitForAttackStrategy::ShouldWait()`、`ThreatValues.cpp → Calculate(Unit*)`、候选过滤及FSM `EvalThreat()/WarlockThreatOk()/WarlockSeedThreatSafe()`共用同一规则。种子对同级副目标仍单独审查，不能以低级主目标放过同级副目标。已抽取真实共享门、攻击停手和旧等待三个函数验证有/无配置、大世界、灰名、单人/无坦克/坦克死亡/异图/传送及正常副本停手，两个有效负对照均检出；这是源码函数回归，未宣称真人客户端现场攻击验收。
 
@@ -15154,6 +15174,8 @@ dps=820.9  casts=34  top=27209:32(暗影箭) 712:1(召唤魅魔) 18788:1(恶魔�
 
 #### 五、统一团队生命周期与默认跟随（2026-11-12）
 
+- **2026-11-13 拾取/跟随反复切换**：`LootObjectStack.cpp → LootObject::IsLootPossible()`新增围绕当前 free move center 的拾取准入；follow 时允许 `max(free move range, lootDistance)` 的短绕行，不把正常拾取缩到默认1.5码队形半径，stay/其他策略不扩大范围。初选与正在追的尸体共用此检查，队长走远后旧尸体不再拉回。`FollowActions.cpp → FollowAction::isUseful()`在有效附近拾取期间让位，超视距追队检查仍在其前，战斗/死亡不被拾取占用。真实准入代码7例、跟随仲裁代码5例与各一个负对照通过；未做完整Engine/真人带队游戏验收，实际范围数值以当前配置为准。证据见[本轮记录](../../_agent_tmp/bot_movement_20261113/RESULT.md)。
+
 - **历史策略已被取代**：11-07 的 `Recruited` 台账会在招募者断线/换组后强制脱组并 `LogoutPlayerBot()`，另行识别“合法转交”；现在入队成功即释放请求，交给公共 AI 主线。`UpdateBotRecruitment()` / `CancelBotRecruitmentForMaster()` 仅管理未完成请求，保留 nonce、取消及迟到 SQL 结果隔离，不再维护招募专属强制下线分支。普通 `OnPlayerLogout()` 仍清理所有该主人对应的 AI 指针。
 - **默认跟随实时队长，归属与权限独立**：`PlayerbotAI.cpp → GetFollowTarget()` 统一解析移动对象，`TargetValue.cpp → FollowTargetValue::Calculate()` 与 `PlayerbotAI.cpp → CheckInstanceFollow()` 共用。组内没有有效手动覆盖时取实时 `Group::GetLeaderGuid()`，不被 formation/queue、招募 owner/master 或首个坦克改写；bot 自己是队长时返回空，避免自追。无组时清除组内覆盖，再沿用单人 formation/master-target 解析。此改动不把跟随对象写进 master，也不替换 FSM 攻击目标或治疗工作的坦克锚点。
 - **普通 `follow` 的覆盖规则**：`ChatShortcutActions.cpp → FollowChatShortcutAction::Execute()` 只接受明确同队真人发令者更新 `manual follow target`；非队长发令后按 GUID 跟随该队友，随后换队长不覆盖此指令；当前队长发令则清空覆盖，恢复动态跟队长。目标离队、bot 离队/重新入组时覆盖失效；暂时离线或跨图保留 GUID，不擅自改跟招募者。`ValueActions.cpp → SetFollowTargetAction::Execute()` 的设定/清除均即时重置跟随缓存。原有 `follow target <名字>` / `none` / `unset` 入口保留。
@@ -15919,6 +15941,8 @@ schema(JSON) ──生成采样空间──▶ Optuna study (每专精一个 / �
   ⇒ 副本巡逻窗口数据没上云，下次部署要一起同步（不是本条的修法前置）。
 
 #### 7.2 `summon` 静默失败：先加 `[SUMMON]` 诊断（本地已编译，**未部署**）
+
+**2026-11-13 时序修正（取代下方活bot等待确认的现行路径，旧诊断保留历史）**：`PlayerbotAI.cpp → UpdateAI()/HandleCommands()`在所属更新线程、持续避险及反应/读条等待之前处理命令；普通 `summon`直接执行动作，保留定时命令等待及原权限/命令闸门，触发传送后停止同轮出队。`UseMeetingStoneAction.cpp → SummonAction::Teleport()`对活bot走所属线程直传，消除“发请求后下一AI轮确认”及确认时进入战斗被核心拒绝的窗口；真人保留确认请求，死亡仍走 `BotSummonRevive`准入和复活请求。召唤者/目标正在传送、无LOS落点等原拒绝条件仍存在，因此“下一次bot更新执行”不等于任意状态无条件立即成功。抽取完整Teleport及HandleCommands真实函数21例通过，恢复延后确认/恢复反应事件两个负对照均检出；未覆盖原生真人领队跨图与死亡复活竞态，构建/证据见[本轮记录](../../_agent_tmp/bot_movement_20261113/RESULT.md)。
 
 - 云端 `AiPlayerbot.NonGmFreeSummon = 1` ⇒ 玩家喊 `summon` 时走 `SummonAction::Execute()` 的第一分支 `Teleport(requester, requester, bot)`，
   **成功和失败都不回话**（只有集合石/旅店老板分支才说 hello/Welcome）⇒ "不回话"本身分不出原因。
@@ -16963,3 +16987,11 @@ TBC 元素**没有熔岩爆裂**，核心决策只有一条：当前蓝量下打
 - 远程接怪用 `avenger's shield`（弹射属于法术本身行为，不需要我们选落点）。
 
 其余照 §14：`Prep`（`righteous fury` + `holy shield` + 虔诚光环）→ `Maintain`（奉献/神圣之盾/审判/复仇者之盾）→ `Survival`（圣佑/神盾）→ `Pickup`/`Taunt`。
+
+**2026-11-13 防骑 Boss 审判与低蓝圣印（站长需求）**：
+
+- 原自研 FSM 的 `DpsFsm.cpp → PalMaintain()` 固定补正义圣印并直接打审判，没有维持 Boss 十字军/智慧审判及低蓝智慧圣印分支。现在 `PalProtSeal()` 与 `TickPrepCore()` 共用圣印选择：法力低于 `prot_mana_low`（默认 25%）时切智慧；Boss（当前有效目标命中 `sObjectMgr.IsEncounter()`）缺十字军审判时，在审判就绪后先挂十字军圣印，再使用审判；其余正常蓝量使用正义。未学智慧时仍选正义，不会低蓝卡在十字军。
+- `PalProtJudgementUp()` 检查 TBC 十字军/智慧审判的全部等级（包括队友施加的同类效果）。Boss 正常蓝量补十字军、低蓝补智慧；低蓝时智慧审判存在便保留智慧圣印回蓝，避免反复消耗。切印和所需辅助审判优先于奉献。准备/维护会保留等待公共冷却的十字军圣印，并主动把其他圣印切成所需智慧圣印。
+- 核心 `Paladin.cpp → spell_judgement::OnEffectExecute()` 消费当前圣印并触发对应效果；`Unit.cpp → Unit::DealMeleeDamage()` 用本人的近战伤害刷新自己的辅助审判。正义的直接伤害审判不会移除已有辅助审判，因此正常蓝量仍保留正义伤害审判。
+- 当前源码真实函数及 `TickPrepCore()` 圣印前缀提取后以 C++17 编译运行，39 项离线检查全部通过；去掉智慧选择、忽略已有审判、准备阶段接受任意圣印三组变异均被检出。覆盖 Boss/普通目标、审判各等级、25%边界、跨 tick 切印/审判/补印、GCD暂存、准备阶段主动切印与未学技能回退。世界状态、施法及光环应用为桩，不代表原生服务实测。
+- 本地 `Ubuntu-20.04` Release 增量构建通过，最终输入 SHA256 `d52ef66fe4b6952983b0db223d5fb6a0687fcdd0d358fbd7d25c0799492391bd`，产物 MD5 `0b5099ddeac72cd018b466317bc60521`；共享锁内仅同步本次目标源码。游戏内/客户端包效果尚未验收；没有云端、服务或数据库操作。
