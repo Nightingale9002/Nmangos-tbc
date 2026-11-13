@@ -10915,7 +10915,7 @@ void EnsureGridLoadedForPath(Cell const& cell) { EnsureGridLoaded(cell); }
 
 本次构建覆盖2818个跟踪构建输入，Windows与WSL Ubuntu-20.04构建前后SHA256一致；完整mangosd构建退出0，MD5 **`57f381c1fbd4c082eabafd42d16a95b2`**。复跑跟随、纯bot解散、击晕回归与真实Detour/原545网格8例均通过；生产函数夹具包含明确mock，不能扩大为所有职业、副本或客户端实战验收。部署脚本19项本地安全分支检查通过（到人延后、查询失败关闭、哈希拒绝、失败回滚等）。本次只同步二进制，不沿用旧runbook自动夹带数据库/mmap变更；平台控制台的04:01/04:05定时开关机未在本次修改。
 
-同步与清单启用时实查3个真人世界连接，仍由现役旧进程服务；**上传/排队不等于已安装成功**。本地证据在`_agent_tmp/release_20261113/`与`_agent_tmp/ops_progress_20261113.md`，实际安装以云端`binary-deploy.log`和发布目录`deployment-result.json`为准。
+同步与清单启用时实查3个真人世界连接，因此先排队而非重启。**实际发布**：北京时间14:27:01、14:27:12、14:27:22连续确认零真人/零世界连接（12个随机bot仍在线），14:27:22开始优雅停服，14:28:31完成安装及握手检查。新世界服唯一PID **29899**，运行`/proc/<pid>/exe`、磁盘及暂存包MD5均为`57f381c1fbd4c082eabafd42d16a95b2`；realmd仍为原PID1627、MySQL仍为原PID1529，8086/3724正常。14:50之后复查实时健康返回true，旧包备份MD5为`3b3b9e75e718a20e1b9d2bf4b44bb710`，watchdog暂停标志已清理、待部署清单已清除，原03:00/04:06维护脚本哈希仍与备份一致。本地证据在`_agent_tmp/release_20261113/cloud-status.json`与`_agent_tmp/ops_progress_20261113.md`，云端`binary-deploy.log`和发布目录`deployment-result.json`保留实际切换记录。仅证明此次二进制发布与服务健康，不扩大为游戏实战验收；现行配置显式`AutoDisbandBotOnlyGroups=1`未被本次发布改成2。
 
 ### [运维] P0 铁律：无站长明确指令，严禁重启/部署云端（2026-09-25）
 
