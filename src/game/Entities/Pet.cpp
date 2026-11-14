@@ -1138,9 +1138,15 @@ void Pet::GivePetXP(uint32 xp)
 
         xp *= GetMap()->GetXPModRate(RateModType::PETKILL);
 
+        // Fast growth also applies to hunter pet leveling, including at owner max level.
+        // Keep loyalty progress on its existing XP basis and inherit only the fast-track aura.
+        uint32 levelXP = xp;
+        if (Aura* fastGrowth = GetOwner()->GetAura(900001, EFFECT_INDEX_1))
+            levelXP = uint32(levelXP * (1.0f + fastGrowth->GetModifier()->m_amount / 100.0f));
+
         uint32 nextLvlXP = GetUInt32Value(UNIT_FIELD_PETNEXTLEVELEXP);
         uint32 curXP = GetUInt32Value(UNIT_FIELD_PETEXPERIENCE);
-        uint32 newXP = curXP + xp;
+        uint32 newXP = curXP + levelXP;
 
         while (newXP >= nextLvlXP && level < maxlevel)
         {

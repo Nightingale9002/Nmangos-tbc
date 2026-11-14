@@ -30,6 +30,7 @@
 #include "MotionGenerators/WrapperMovementGenerator.h"
 #include "Movement/MoveSpline.h"
 #include "Movement/MoveSplineInit.h"
+#include "Movement/BotGroundMovement.h"
 #include "Maps/GridDefines.h"
 #include "Maps/Map.h"
 #include "AI/CreatureAISelector.h"
@@ -689,10 +690,21 @@ bool MotionMaster::MoveFall(ObjectGuid guid/* = ObjectGuid()*/, uint32 relayId/*
 {
     const float x = m_owner->GetPositionX(), y = m_owner->GetPositionY(), z = m_owner->GetPositionZ();
 
-    // use larger distance for vmap height search than in most other cases
-    float tz = m_owner->GetMap()->GetHeight(x, y, z);
+    // Clientless ground players need the first actual floor BELOW their feet;
+    // the general height API may choose the outdoor ADT above a cave.
+    bool const groundBot = Movement::GroundBotMaySettle(*m_owner);
+    float tz;
+    if (groundBot)
+    {
+        if (m_owner->IsRooted() ||
+            !Movement::GroundBotFloorZ(*m_owner, x, y, z, MAX_FALL_DISTANCE, tz) ||
+            m_owner->GetTerrain()->IsInWater(x, y, tz))
+            return false;
+    }
+    else
+        tz = m_owner->GetMap()->GetHeight(x, y, z);
 
-    if (tz <= INVALID_HEIGHT)
+    if (tz <= INVALID_HEIGHT || (groundBot && tz >= z))
     {
         DEBUG_LOG("MotionMaster::MoveFall: unable retrive a proper height at map %u (x: %f, y: %f, z: %f).", m_owner->GetMap()->GetId(), x, y, z);
         return false;
@@ -702,11 +714,13 @@ bool MotionMaster::MoveFall(ObjectGuid guid/* = ObjectGuid()*/, uint32 relayId/*
     if (fabs(z - tz) < g_moveFallMinFallDistance)
         return false;
 
+    if (groundBot)
+        static_cast<Player*>(m_owner)->SetFallInformation(0, z);
     Movement::MoveSplineInit init(*m_owner);
     init.MoveTo(x, y, tz);
     init.SetFall();
     Mutate(new FallMovementGenerator(init, EVENT_FALL, false, guid, relayId));
-    return true;
+    return !groundBot || !m_owner->movespline->Finalized();
 }
 
 void MotionMaster::Mutate(MovementGenerator* m)

@@ -46,6 +46,7 @@
 #include "Maps/MapPersistentStateMgr.h"
 #include "MotionGenerators/MovementGenerator.h"
 #include "Movement/MoveSplineInit.h"
+#include "Movement/BotGroundMovement.h"
 #include "Movement/MoveSpline.h"
 #include "Entities/CreatureLinkingMgr.h"
 #include "Tools/Formulas.h"
@@ -6936,7 +6937,7 @@ void Unit::AttackedBy(Unit* attacker)
         pet->AttackedBy(attacker);
 }
 
-bool Unit::Attack(Unit* victim, bool meleeAttack)
+bool Unit::Attack(Unit* victim, bool meleeAttack, bool updateThreatVictim)
 {
     if (!victim || victim == this)
         return false;
@@ -7005,7 +7006,7 @@ bool Unit::Attack(Unit* victim, bool meleeAttack)
         return false;
 
     m_attacking = victim;
-    if (CanHaveThreatList())
+    if (updateThreatVictim && CanHaveThreatList())
         getThreatManager().setCurrentVictimByTarget(victim);
 
     // delay offhand weapon attack to half of offhand attack speed
@@ -12045,7 +12046,36 @@ void Unit::UpdateSplineMovement(uint32 t_diff)
     };
 
     if (movespline->Finalized())
+    {
+        if (Movement::GroundBotMaySettle(*this))
+        {
+            m_movesplineTimer.Update(t_diff);
+            if (m_movesplineTimer.Passed())
+            {
+                m_movesplineTimer.Reset(POSITION_UPDATE_DELAY);
+                float floor;
+                if (Movement::GroundBotFloorZ(*this, GetPositionX(), GetPositionY(), GetPositionZ(), MAX_FALL_DISTANCE, floor) &&
+                    !GetTerrain()->IsInWater(GetPositionX(), GetPositionY(), floor))
+                {
+                    if (GetPositionZ() - floor > 2.0f)
+                        i_motionMaster.MoveFall();
+                    else if (GetPositionZ() - floor > 0.01f)
+                    {
+                        static_cast<Player*>(this)->SetPosition(GetPositionX(), GetPositionY(), floor, GetOrientation());
+                        m_movementInfo.ChangePosition(GetPositionX(), GetPositionY(), floor, GetOrientation());
+                        SendHeartBeat();
+                    }
+                }
+            }
+        }
         return;
+    }
+    bool serverBotFall = false;
+#ifdef ENABLE_PLAYERBOTS
+    serverBotFall = IsPlayer() && !static_cast<Player*>(this)->isRealPlayer() &&
+        movespline->IsFalling() && !i_motionMaster.empty() &&
+        i_motionMaster.GetCurrentMovementGeneratorType() == FALL_MOTION_TYPE;
+#endif
 #ifdef BUILD_METRICS
     metric::duration<std::chrono::microseconds> meas("unit.updatesplinemovement", {
         { "entry", std::to_string(GetEntry()) },
@@ -12066,6 +12096,14 @@ void Unit::UpdateSplineMovement(uint32 t_diff)
     {
         m_movesplineTimer.Reset(POSITION_UPDATE_DELAY);
         UpdateSplinePosition();
+        if (arrived && serverBotFall)
+        {
+            Player* player = static_cast<Player*>(this);
+            m_movementInfo.ChangePosition(GetPositionX(), GetPositionY(), GetPositionZ(), GetOrientation());
+            player->HandleFall(m_movementInfo);
+            player->SetFallInformation(0, GetPositionZ());
+            SendHeartBeat();
+        }
     }
 }
 
@@ -12114,6 +12152,9 @@ void Unit::UpdateSplinePosition(bool relocateOnly)
         }
     }
 
+    bool const settledGroundBot = !relocateOnly && movespline->Finalized() &&
+        Movement::GroundBotStopZ(*this, pos.x, pos.y, pos.z);
+
     m_lastMoveTime = GetMap()->GetCurrentClockTime();
 
     if (relocateOnly)
@@ -12132,6 +12173,11 @@ void Unit::UpdateSplinePosition(bool relocateOnly)
         // and stays at the spawn point (any object-update movement block
         // would teleport the unit back there).
         m_movementInfo.ChangePosition(pos.x, pos.y, pos.z, pos.o);
+    }
+    if (settledGroundBot)
+    {
+        m_movementInfo.ChangePosition(pos.x, pos.y, pos.z, pos.o);
+        SendHeartBeat();
     }
 }
 

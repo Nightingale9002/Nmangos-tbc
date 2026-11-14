@@ -1328,9 +1328,11 @@ class Unit : public WorldObject
          * if we're already attacking someone.
          * @param victim The Unit to attack
          * @param meleeAttack Whether we should attack with melee or ranged/magic
+         * @param updateThreatVictim Whether to update the normal threat-selection victim;
+         *                           temporary charge targets must leave it unchanged.
          * @return True if an attack was initiated, false otherwise
          */
-        bool Attack(Unit* victim, bool meleeAttack);
+        bool Attack(Unit* victim, bool meleeAttack, bool updateThreatVictim = true);
         /**
          * Called when we are attacked by someone in someway, might be when a fear runs out and
          * we want to notify AI to attack again or when a spell hits.

@@ -97,6 +97,7 @@ namespace Movement
 
             MoveSplineInitArgs args;
             Unit&  unit;
+            bool m_pathRejected;
     };
 
     inline void MoveSplineInit::SetFly() { args.flags.flying = true;}
@@ -107,6 +108,7 @@ namespace Movement
 
     inline void MoveSplineInit::MovebyPath(const PointsArray& controls, int32 path_offset)
     {
+        m_pathRejected = false;
         args.path_Idx_offset = path_offset;
         args.path.assign(controls.begin(), controls.end());
     }
@@ -115,22 +117,6 @@ namespace Movement
     {
         Vector3 v(x, y, z);
         MoveTo(v, generatePath, forceDestination);
-    }
-
-    inline void MoveSplineInit::MoveTo(const Vector3& dest, bool generatePath, bool forceDestination)
-    {
-        if (generatePath)
-        {
-            PathFinder path(&unit);
-            path.calculate(dest.x, dest.y, dest.z, forceDestination);
-            MovebyPath(path.getPath());
-        }
-        else
-        {
-            args.path_Idx_offset = 0;
-            args.path.resize(2);
-            args.path[1] = dest;
-        }
     }
 
     inline void MoveSplineInit::SetFacing(Vector3 const& spot)

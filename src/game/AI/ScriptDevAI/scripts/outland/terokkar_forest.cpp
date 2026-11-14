@@ -1405,9 +1405,15 @@ struct npc_vengeful_harbinger : public ScriptedAI
         if (eventType != AI_EVENT_CUSTOM_A)
             return;
 
+        // The defeated harbinger follows airborne orb positions, not the ground
+        // navmesh. Keep this policy for the waypoint continuation as well.
+        m_creature->addUnitState(UNIT_STAT_IGNORE_PATHFINDING);
+
         if (Creature* waypointTrigger = GetClosestCreatureWithEntry(m_creature, NPC_ORB_WAYPOINT_1, 45.f))
         {
-            m_creature->GetMotionMaster()->MovePoint(POINT_ORB_WAYPOINT, waypointTrigger->GetPositionX(), waypointTrigger->GetPositionY(), waypointTrigger->GetPositionZ());
+            // Ordinary MovePoint applies a floor guard before pathfinding and can
+            // mistake the terrain above this crypt for the orb's floor.
+            m_creature->GetMotionMaster()->MovePointTOL(POINT_ORB_WAYPOINT, waypointTrigger->GetPositionX(), waypointTrigger->GetPositionY(), waypointTrigger->GetPositionZ(), true);
         }
         else // Players somehow managed to kill him really far away. In this case just move on waypoints directly.
         {

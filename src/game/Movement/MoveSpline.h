@@ -121,6 +121,7 @@ namespace Movement
 
             uint32 GetId() const { return m_Id;}
             bool Finalized() const { return splineflags.done; }
+            bool IsFalling() const { return splineflags.falling && !Finalized(); }
             bool isCyclic() const { return splineflags.cyclic; }
             FacingInfo const& GetFacing() const { return facing; }
             bool isFacing() const { return splineflags.isFacing(); }

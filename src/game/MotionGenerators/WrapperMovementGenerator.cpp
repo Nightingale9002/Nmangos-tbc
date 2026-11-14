@@ -56,7 +56,9 @@ void AbstractWrapperMovementGenerator::Initialize(Unit& owner)
                     if (!target->IsVisibleForOrDetect(&owner, &owner, true))
                         return;
 
-                    owner.Attack(target, owner.AI()->IsMeleeEnabled());
+                    // Charge temporarily attacks this target. Preserve the normal threat
+                    // victim so post-charge selection keeps the original 110/130% baseline.
+                    owner.Attack(target, owner.AI()->IsMeleeEnabled(), false);
                     owner.SetTarget(target);
                 }
             }

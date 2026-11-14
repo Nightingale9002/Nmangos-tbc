@@ -38,6 +38,42 @@
 
 #define CHASE_CLOSENESS_TIMER                             2000
 
+namespace
+{
+    // Project only temporary airborne targets of ground chasers. This is a
+    // destination query, not a relocation: PathFinder still validates the route.
+    bool ProjectAirborneChasePoint(Unit const& owner, Unit const& target, float x, float y, float& z)
+    {
+        MovementFlags const fallingFlags = MovementFlags(MOVEFLAG_JUMPING | MOVEFLAG_FALLING | MOVEFLAG_FALLINGFAR);
+        if (!target.m_movementInfo.HasMovementFlag(fallingFlags) && !target.movespline->IsFalling())
+            return false;
+
+        if (!owner.CanWalk() || owner.CanFly() || owner.IsInWater() || owner.IsLevitating() || owner.IsHovering() ||
+            owner.m_movementInfo.HasMovementFlag(MovementFlags(fallingFlags | MOVEFLAG_SWIMMING)) || owner.movespline->IsFalling() ||
+            owner.GetTransport() || target.GetTransport() || owner.GetTransportInfo() || target.GetTransportInfo() ||
+            target.IsFlying() || target.IsLevitating() || target.IsHovering() || target.IsInWater() ||
+            target.m_movementInfo.HasMovementFlag(MOVEFLAG_SWIMMING))
+            return false;
+
+        // Use the raw terrain only when it is below the target, then shorten
+        // the downward ray at the first static/dynamic collision. The general
+        // height query can discard cave floors in favor of ADT above the target.
+        Map const* map = owner.GetMap();
+        float const targetZ = target.GetPositionZ();
+        float floorZ = map->GetTerrain()->GetHeightStatic(x, y, targetZ, false);
+        if (!(floorZ > INVALID_HEIGHT && floorZ <= targetZ))
+            floorZ = INVALID_HEIGHT;
+        float hitX = x, hitY = y, hitZ = floorZ;
+        if (floorZ < targetZ && map->GetHitPosition(x, y, targetZ, hitX, hitY, hitZ, 0.f))
+            floorZ = hitZ;
+        if (!(floorZ > INVALID_HEIGHT && floorZ <= targetZ))
+            return false;
+
+        z = floorZ;
+        return true;
+    }
+}
+
 const char* ChaseModes[] =
 {
     "CHASE_MODE_NORMAL",
@@ -916,12 +952,16 @@ void ChaseMovementGenerator::CutPath(Unit& owner, PointsArray& path)
         const float distSquared = (dist * dist);
         float tarX, tarY, tarZ;
         this->i_target->GetPosition(tarX, tarY, tarZ);
+        bool const projected = ProjectAirborneChasePoint(owner, *i_target.getTarget(), tarX, tarY, tarZ);
+        Position const groundTarget(tarX, tarY, tarZ);
 
         // Need to start at index 1, index 0 is start position and filled in init.Launch()
         for (size_t i = 1; i < path.size(); ++i)
         {
             const G3D::Vector3& data = path.at(i);
-            if (this->i_target->GetDistance(data.x, data.y, data.z, DIST_CALC_NONE) > distSquared)
+            float const distance = projected ? groundTarget.GetDistance(Position(data.x, data.y, data.z)) :
+                this->i_target->GetDistance(data.x, data.y, data.z, DIST_CALC_NONE);
+            if (distance > distSquared)
                 continue;
             if (!owner.GetMap()->IsInLineOfSight(tarX, tarY, tarZ + i_target->GetCollisionHeight(), data.x, data.y, data.z + owner.GetCollisionHeight(), IGNORE_M2))
                 continue;
@@ -940,19 +980,29 @@ bool ChaseMovementGenerator::RequiresNewPosition(Unit& owner, Position pos) cons
 {
     float dist = this->GetDynamicTargetDistance(owner, true);
     dist *= dist;
-    float distanceToCoords = i_target->GetDistance(pos.x, pos.y, pos.z, DIST_CALC_NONE, owner.GetTransport()); // raw squared istance
+    float distanceToCoords = i_target->GetDistance(pos.x, pos.y, pos.z, DIST_CALC_NONE, owner.GetTransport()); // raw squared distance
+    Position groundTarget = i_target->GetPosition();
+    bool const projected = ProjectAirborneChasePoint(owner, *i_target.getTarget(), groundTarget.x, groundTarget.y, groundTarget.z);
+    if (projected)
+        distanceToCoords = groundTarget.GetDistance(pos);
+    auto const inLineOfSight = [&]()
+    {
+        return projected ? owner.GetMap()->IsInLineOfSight(groundTarget.x, groundTarget.y, groundTarget.z + i_target->GetCollisionHeight(),
+            owner.GetPositionX(), owner.GetPositionY(), owner.GetPositionZ() + owner.GetCollisionHeight(), IGNORE_M2) :
+            i_target->IsWithinLOSInMap(&owner, IGNORE_M2);
+    };
     if (m_moveFurther)
     {
         // need a small window for running further/closer
         if (this->i_offset != 0.f) // optimization for los check
-            return distanceToCoords > dist * 1.1f || distanceToCoords < dist * 0.9f || !i_target->IsWithinLOSInMap(&owner, IGNORE_M2);
+            return distanceToCoords > dist * 1.1f || distanceToCoords < dist * 0.9f || !inLineOfSight();
         else
             return distanceToCoords > dist * 1.1f || distanceToCoords < dist * 0.9f;
     }
     else
     {
         if (this->i_offset != 0.f) // optimization for los check
-            return distanceToCoords > dist || !i_target->IsWithinLOSInMap(&owner, IGNORE_M2);
+            return distanceToCoords > dist || !inLineOfSight();
         else
             return distanceToCoords > dist;
     }
@@ -976,11 +1026,16 @@ bool ChaseMovementGenerator::_getLocation(Unit& owner, float& x, float& y, float
     // ԭ�У�����Ŀ��㣨�������Ҷ�¥Z��
     i_target->GetNearPoint(&owner, x, y, z, owner.GetObjectBoundingRadius(), this->GetDynamicTargetDistance(owner, false), angle);
 
+    // The shared position clamp deliberately preserves scripted aerial Z.
+    // Ground chase instead requests the floor below this airborne target point;
+    // the ordinary navmesh path still decides whether that floor is reachable.
+    ProjectAirborneChasePoint(owner, *i_target.getTarget(), x, y, z);
+
     // [PFDBG] Chase 追击目标点（GetNearPoint 结果，可能是玩家脚下投影/二楼点）
     PFDBG_MSG(&owner, "_getLocation result(%.8f,%.8f,%.8f)", x, y, z);
 
-    // destination height is handled by PathFinder (the path always ends
-    // on the navmesh surface), so no manual floor snapping is needed here
+    // PathFinder remains responsible for snapping the requested destination
+    // onto a walkable navmesh surface and validating the corridor.
 
 
 
@@ -1010,6 +1065,14 @@ void ChaseMovementGenerator::_setLocation(Unit& owner)
 
 bool ChaseMovementGenerator::IsReachablePositionToTarget(Unit& owner, float x, float y, float z, Unit& target)
 {
+    Position groundTarget = target.GetPosition();
+    if (ProjectAirborneChasePoint(owner, target, groundTarget.x, groundTarget.y, groundTarget.z))
+    {
+        float const reach = this->i_offset == 0.f ? owner.GetCombinedCombatReach(&target, true) :
+            this->i_offset + owner.GetCombatReach() + target.GetCombatReach();
+        return groundTarget.GetDistance(Position(x, y, z, 0.f)) <= reach * reach;
+    }
+
     // if we arrived here something failed in PF dispatch and target is not reachable
     if (this->i_offset == 0.f)
     {

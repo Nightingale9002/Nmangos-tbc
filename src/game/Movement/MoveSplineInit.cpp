@@ -18,6 +18,7 @@
 
 #include "MoveSplineInit.h"
 #include "MoveSpline.h"
+#include "BotGroundMovement.h"
 #include "packet_builder.h"
 #include "Entities/Unit.h"
 #include "Entities/Creature.h"
@@ -32,8 +33,36 @@ namespace Movement
 {
     static thread_local uint32 splineCounter = 1;
 
+    void MoveSplineInit::MoveTo(const Vector3& dest, bool generatePath, bool forceDestination)
+    {
+        m_pathRejected = false;
+        if (generatePath)
+        {
+            PathFinder path(&unit);
+            bool const calculated = path.calculate(dest.x, dest.y, dest.z, forceDestination);
+            MovebyPath(path.getPath());
+            // A failed PathFinder still carries a two-point shortcut. Ground
+            // bots must not execute that shortcut as a valid route through air.
+            if (GroundBotMaySettle(unit))
+                m_pathRejected = !calculated || path.getPath().size() < 2 ||
+                    (path.getPathType() & (PATHFIND_NOPATH | PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH | PATHFIND_SHORT)) ||
+                    !(path.getPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE));
+        }
+        else
+        {
+            args.path_Idx_offset = 0;
+            args.path.resize(2);
+            args.path[1] = dest;
+        }
+    }
+
     int32 MoveSplineInit::Launch()
     {
+        if (m_pathRejected)
+        {
+            Stop(true);
+            return 0;
+        }
         // show path in the client if need
         if (unit.HaveDebugFlag(CMDEBUGFLAG_WP_PATH))
         {
@@ -362,6 +391,12 @@ namespace Movement
         if (!move_spline.Finalized())
             real_position = move_spline.ComputePosition();
 
+        if (GroundBotStopZ(unit, real_position.x, real_position.y, real_position.z))
+        {
+            static_cast<Player&>(unit).SetPosition(real_position.x, real_position.y, real_position.z, real_position.orientation);
+            unit.m_movementInfo.ChangePosition(real_position.x, real_position.y, real_position.z, real_position.orientation);
+        }
+
         if (args.path.empty())
         {
             // should i do the things that user should do?
@@ -403,7 +438,7 @@ namespace Movement
         unit.SendMessageToAllWhoSeeMeMove(data, ObjectGuid());
     }
 
-    MoveSplineInit::MoveSplineInit(Unit& m) : unit(m)
+    MoveSplineInit::MoveSplineInit(Unit& m) : unit(m), m_pathRejected(false)
     {
         // mix existing state into new
         args.flags.runmode = !unit.m_movementInfo.HasMovementFlag(MOVEFLAG_WALK_MODE);
