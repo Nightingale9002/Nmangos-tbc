@@ -196,7 +196,9 @@ struct npc_voidwalker_summoner : public CombatAI
             if (Unit* vorpil = m_creature->GetSpawner())
             {
                 DoBroadcastText(SAY_HELP, vorpil);
-                summoned->GetMotionMaster()->MoveChase(vorpil, 0.0f, 0.0f);
+                // The passive traveler tracks an object, not an attack victim.
+                // Combat chase would stop updating when GetVictim()!=vorpil.
+                summoned->GetMotionMaster()->MoveChase(vorpil, 0.0f, 0.0f, false, false, false);
             }
         }
     }
