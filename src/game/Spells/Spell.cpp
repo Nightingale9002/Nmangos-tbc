@@ -19,6 +19,8 @@
 #include "Spells/Spell.h"
 #include "Util/CallerAddress.h"     // [DIAG 2026-10-03]
 #include <atomic>                   // [HOLDER-UAF-FIX 2026-10-03] report cap
+#include <cstdlib>
+#include <cstdio>
 #include "Database/DatabaseEnv.h"
 #include "Server/WorldPacket.h"
 #include "Server/WorldSession.h"
@@ -56,6 +58,16 @@
 #endif
 
 extern pEffect SpellEffects[MAX_SPELL_EFFECTS];
+
+static bool BotCastTraceEnabled(Unit* caster, SpellEntry const* spell)
+{
+    char const* selector = std::getenv("PB_CAST_TRACE");
+    if (!selector || !caster || !spell || caster->GetTypeId() != TYPEID_PLAYER
+        || static_cast<Player*>(caster)->isRealPlayer()) return false;
+    unsigned guid = 0, spellId = 0;
+    return std::sscanf(selector, "%u:%u", &guid, &spellId) == 2
+        && guid == caster->GetGUIDLow() && spellId == spell->Id;
+}
 
 class PrioritizeManaUnitWraper
 {
@@ -3373,6 +3385,13 @@ void Spell::cancel()
     if (m_spellState == SPELL_STATE_FINISHED)
         return;
 
+    if (BotCastTraceEnabled(m_caster, m_spellInfo))
+        sLog.outError("[BOT-CAST-CANCEL] ms=%u guid=%u map=%u inst=%u spell=%u cast=%p state=%u timer=%u target=%u from=%.5f,%.5f,%.5f now=%.5f,%.5f,%.5f stack=%s",
+            WorldTimer::getMSTime(), m_caster->GetGUIDLow(), m_caster->GetMapId(), m_caster->GetInstanceId(),
+            m_spellInfo->Id, static_cast<void*>(this), uint32(m_spellState), m_timer, m_targets.getUnitTargetGuid().GetCounter(),
+            m_castPositionX, m_castPositionY, m_castPositionZ, m_caster->GetPositionX(), m_caster->GetPositionY(), m_caster->GetPositionZ(),
+            MaNGOS::FormatBacktrace().c_str());
+
     // channeled spells don't display interrupted message even if they are interrupted, possible other cases with no "Interrupted" message
     bool sendInterrupt = !(IsChanneledSpell(m_spellInfo) || m_autoRepeat);
 
@@ -4194,6 +4213,10 @@ void Spell::finish(bool ok)
 
 void Spell::SendCastResult(SpellCastResult result) const
 {
+    if (result != SPELL_CAST_OK && BotCastTraceEnabled(m_caster, m_spellInfo))
+        sLog.outError("[BOT-CAST-RESULT] ms=%u guid=%u map=%u inst=%u spell=%u cast=%p state=%u timer=%u result=%u target=%u",
+            WorldTimer::getMSTime(), m_caster->GetGUIDLow(), m_caster->GetMapId(), m_caster->GetInstanceId(),
+            m_spellInfo->Id, static_cast<void const*>(this), uint32(m_spellState), m_timer, uint32(result), m_targets.getUnitTargetGuid().GetCounter());
     if (m_triggeredByAuraSpell) // should not report these
         return;
 

@@ -47,6 +47,7 @@
 #include "MotionGenerators/MovementGenerator.h"
 #include "Movement/MoveSplineInit.h"
 #include "Movement/BotGroundMovement.h"
+#include "Movement/BotKnockbackCollision.h"
 #include "Movement/MoveSpline.h"
 #include "Entities/CreatureLinkingMgr.h"
 #include "Tools/Formulas.h"
@@ -11781,8 +11782,9 @@ void Unit::KnockBackWithAngle(float angle, float horizontalSpeed, float vertical
     //   真人玩家：下面那条 IsClientControlled() 只发 MSG_MOVE_KNOCK_BACK，
     //   抛物线由**客户端**算，服务端不管。
     //   bot 没有真客户端 ⇒ 包发出去没人算 ⇒ 服务端位置不动，或停在半空下不来。
-    //   这里给 bot 补服务端版抛射：初速 (horizontal, vertical) + 重力 → 落点取真实地面，
-    //   交给 MotionMaster::MoveJump 走 spline（和客户端表现一致：上抛→下落→着地）。
+    //   Sweep the ballistic body path through real map geometry before selecting
+    //   a landing. MoveJump below retains this branch's existing spline renderer;
+    //   its lack of parabolic rendering is separate from collision admission.
     if (IsPlayer())
     {
         Player* botPlayer = static_cast<Player*>(this);
@@ -11791,16 +11793,27 @@ void Unit::KnockBackWithAngle(float angle, float horizontalSpeed, float vertical
             float constexpr GRAVITY = 19.291105f;           // 客户端重力（码/s^2）
             float const vz  = std::max(0.1f, verticalSpeed);
             float const vxy = std::max(0.1f, horizontalSpeed);
-            float const t   = 2.0f * vz / GRAVITY;          // 滞空时间
-            float const tx  = GetPositionX() + cosf(angle) * vxy * t;
-            float const ty  = GetPositionY() + sinf(angle) * vxy * t;
-            float const tz  = GetMap()->GetHeight(tx, ty, GetPositionZ() + 5.0f);
+            Movement::KnockbackLanding const landing = Movement::TraceKnockbackLanding(
+                GetPositionX(), GetPositionY(), GetPositionZ(), angle, vxy, vz, GetCollisionHeight(),
+                [&](float x, float y, float z, float& endX, float& endY, float& endZ)
+                { return GetMap()->GetHitPosition(x, y, z, endX, endY, endZ, -0.1f); });
+            float const tx = landing.x, ty = landing.y;
+            float const floorProbe = landing.blocked ? landing.z + 0.5f : GetPositionZ() + 5.0f;
+            float tz = GetMap()->GetHeight(tx, ty, floorProbe);
+            if (landing.blocked && tz > landing.z + 0.1f)
+            {
+                // GetHeight searches above its probe as well. A head collision
+                // must not turn that overhead surface into a new landing floor.
+                float floorX = tx, floorY = ty, floorZ = landing.z - MAX_FALL_DISTANCE;
+                if (GetMap()->GetHitPosition(tx, ty, landing.z + 0.1f, floorX, floorY, floorZ, 0.0f)) tz = floorZ;
+                else tz = INVALID_HEIGHT_VALUE;
+            }
             if (tz > INVALID_HEIGHT)
             {
                 float const maxH = vz * vz / (2.0f * GRAVITY);
-                sLog.outError("[BOT-KNOCKBACK] %s from(%.1f,%.1f,%.1f) -> (%.1f,%.1f,%.1f) v=(%.1f,%.1f) maxH=%.1f",
+                sLog.outError("[BOT-KNOCKBACK] %s from(%.1f,%.1f,%.1f) -> (%.1f,%.1f,%.1f) v=(%.1f,%.1f) maxH=%.1f blocked=%u",
                               botPlayer->GetGuidStr().c_str(), GetPositionX(), GetPositionY(), GetPositionZ(),
-                              tx, ty, tz, vxy, vz, maxH);
+                              tx, ty, tz, vxy, vz, maxH, uint32(landing.blocked));
                 botPlayer->GetMotionMaster()->MoveJump(tx, ty, tz, vxy, maxH, EVENT_JUMP);
                 return;
             }
