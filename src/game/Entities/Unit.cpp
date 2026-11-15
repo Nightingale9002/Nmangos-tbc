@@ -10853,6 +10853,12 @@ bool Unit::SetConfused(bool apply, ObjectGuid casterGuid, uint32 spellID)
 
         if (apply)
             SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CONFUSED);
+        else
+        {
+            // Uncharm may already have removed the crowd-control movement generator.
+            if (const Player* controllingClientPlayer = GetClientControlling())
+                controllingClientPlayer->UpdateClientControl(this, true);
+        }
 
         return true;
     }
@@ -10896,6 +10902,12 @@ bool Unit::SetFleeing(bool apply, ObjectGuid casterGuid/* = ObjectGuid()*/, uint
 
         if (apply)
             SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_FLEEING);
+        else
+        {
+            // Uncharm may already have removed the crowd-control movement generator.
+            if (const Player* controllingClientPlayer = GetClientControlling())
+                controllingClientPlayer->UpdateClientControl(this, true);
+        }
 
         return true;
     }

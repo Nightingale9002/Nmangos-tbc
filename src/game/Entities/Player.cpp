@@ -4658,6 +4658,14 @@ void Player::ResurrectPlayer(float restore_percent, bool applySickness)
         if (InstanceData* instanceData = GetMap()->GetInstanceData())
             instanceData->OnPlayerResurrect(this);
 
+#ifdef ENABLE_PLAYERBOTS
+    // Bots retain resurrection convenience without a damage/threat penalty.
+    if (!isRealPlayer())
+    {
+        RemoveAurasDueToSpell(SPELL_ID_PASSIVE_RESURRECTION_SICKNESS);
+        return;
+    }
+#endif
     if (!applySickness)
         return;
 
