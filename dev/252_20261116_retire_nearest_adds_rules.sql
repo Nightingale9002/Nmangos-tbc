@@ -44,13 +44,14 @@ START TRANSACTION;
 --   （`spell_template` 没写 SpellList，但 `creature_template_spells` 有 18176→31983、18177→31986），
 --   所以地缚/石肤两个图腾是**真有效果且可击杀**的，属于该集火的 add；半径 20（刷在 boss 脚下）。
 --   18179 堕落新星：出生 `ACTION_T_SET_DEATH_PREVENTION` ⇒ 打不掉，只能靠坦克拖出 15 码；
---   20208 治疗图腾：34980 的 SummonProperties=121（Title=NONE）⇒ 走 DoSummonWild，不是 Totem 对象，
---   34978 静态上不施放（见 _agent_tmp/mennu_totem_audit_20261116/REPORT.md）；18178 是残留数据。
+--   20208 治疗图腾：dev/253 给它补回了 34978 光环（每 2 秒 34977 治疗 2313–2688、10 码），
+--   现在它真的会回血 ⇒ 必须纳入集火，否则治疗量白送；20208 只有 5 点血，一下就没。
+--   18178 是残留数据（无召唤法术/无 spells 行/无刷点），不配。
 DELETE FROM `ai_playerbot_encounter_add_range` WHERE
      (`map`=540 AND `add_entry` IN (17621,17622,17623))
   OR (`map`=543 AND `add_entry` IN (17540))
   OR (`map`=545 AND `add_entry` IN (17917))
-  OR (`map`=547 AND `add_entry` IN (18176,18177))
+  OR (`map`=547 AND `add_entry` IN (18176,18177,20208))
   OR (`map`=553 AND `add_entry` IN (19953,19958,19962,19964,19969,19949))
   OR (`map`=558 AND `add_entry` IN (18441))
   OR (`map`=556 AND `add_entry` IN (19203,19204,19205,19206))
@@ -64,6 +65,7 @@ INSERT INTO `ai_playerbot_encounter_add_range` (`map`,`add_entry`,`boss_entry`,`
  (545,17917,17797,30,1),   -- Coilfang Water Elemental
  (547,18176,17941,20,1),   -- Tainted Earthgrab Totem（出生定身，可击杀）
  (547,18177,17941,20,1),   -- Tainted Stoneskin Totem（可击杀）
+ (547,20208,17941,20,1),   -- Mennu's Healing Ward（dev/253 补回 34978 后真的会回血，5 点血）
  (553,19953,17975,30,1),   -- Frayer Protector
  (553,19958,17975,30,1),   -- White Seedling
  (553,19962,17975,30,1),   -- Blue Seedling
@@ -103,7 +105,7 @@ DELETE FROM `ai_playerbot_custom_strategy` WHERE `owner`=0 AND (
 COMMIT;
 
 -- ============ ③ 验收（期望值）============
--- 期望 rows=21（沃匹尔 dev/249 的 555×2 + 本文件 19 行）
+-- 期望 rows=22（沃匹尔 dev/249 的 555×2 + 本文件 20 行）
 SELECT COUNT(*) AS encounter_add_rows FROM `ai_playerbot_encounter_add_range`;
 -- 期望剩 3 行：boss_17862_dps / boss_17980 / boss_20912_dps（本轮无 add 证据，保留待逐场核查）
 SELECT `name`,`idx`,`action_line` FROM `ai_playerbot_custom_strategy`
