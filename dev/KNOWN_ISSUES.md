@@ -16131,7 +16131,7 @@ schema(JSON) ──生成采样空间──▶ Optuna study (每专精一个 / �
 
 源码事实（本地库 `gameobject_template` 179944 / `spell_template` 23598）：门 entry 179944 是 `GAMEOBJECT_TYPE_SUMMONING_RITUAL`（data0 `reqParticipants=2`、data1 spellId=7720、data6 `castersGrouped=1`）；集合石自身走 spell 23598（Effect 50 TRANS_DOOR，AttributesEx 含 channeled），在施法者脚下生成该门并保持引导。核心 `GameObject::Use()` 的 type 18 分支只接受“发起者仍在 `CURRENT_CHANNELED_SPELL`、点门者与其同队”的第二个参与者。
 
-实现：`UseMeetingStoneAction.cpp → MeetingStonePortalTrigger::IsActive()` 用缓存值 `nearest game objects no los::179944` 找本队成员引导中的门，并只让最近的可执行机器人响应（`IsNearestPortalHelper()`：存活/脱战/未传送；stay 且够不着门者跳过；平局按 GUID）；`UseMeetingStonePortalAction::Execute()` 靠近后发送 `CMSG_GAMEOBJ_USE`，成功留一条 `[SUMMON] … phase=portal reason=clicked`。注册在 `WorldPacketActionContext`、`TriggerContext` 与 `WorldPacketHandlerStrategy` 的 default 非战斗触发。
+实现：`UseMeetingStoneAction.cpp → MeetingStonePortalTrigger::IsActive()` 先按“本队同图成员正在引导 23598”预筛（没有仪式就不扫格子），再用缓存值 `nearest game objects no los::179944` 找门，并只让最近的可执行机器人响应（`IsNearestPortalHelper()`：存活/脱战/未传送；stay 且够不着门者跳过；平局按 GUID）；`UseMeetingStonePortalAction::Execute()` 靠近后发送 `CMSG_GAMEOBJ_USE`，成功留一条 `[SUMMON] … phase=portal reason=clicked`。注册在 `WorldPacketActionContext`、`TriggerContext` 与 `WorldPacketHandlerStrategy` 的 default 非战斗触发。
 
 范围与限制：机器人只补“第二参与者”，不代替真人点集合石发起仪式；召唤目标仍是真人选中的队伍成员，完成与否由核心 ritual 与客户端接受决定。WSL `Ubuntu-20.04` `/root/nb-build` 增量构建 `mangosd` exit 0（仅既有 OpenSSL 链接警告）；未启动服务器、未部署、未做游戏内实测，需站长在真实集合石旁验收（日志见 `phase=portal reason=clicked`）。
 
