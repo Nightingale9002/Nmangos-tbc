@@ -47,6 +47,8 @@ struct npc_escortAI : public ScriptedAI
         void SetEscortPaused(bool paused);
 
         bool HasEscortState(uint32 escortState) const { return (m_escortState & escortState) != 0; }
+        ObjectGuid GetEscortPlayerGuid() const { return m_playerGuid; }
+        bool HasEscortParticipants() const;
 
         // update current point
         void SetCurrentWaypoint(uint32 pointId);
@@ -68,11 +70,14 @@ struct npc_escortAI : public ScriptedAI
 
     private:
         bool IsPlayerOrGroupInRange();
+        void ReleaseEscortActiveState();
+        bool m_escortActivated;
 
         void AddEscortState(uint32 escortState) { m_escortState |= escortState; }
         void RemoveEscortState(uint32 escortState) { m_escortState &= ~escortState; }
 
         ObjectGuid m_playerGuid;
+        uint32 m_escortGroupId;
         uint32 m_playerCheckTimer;
         uint32 m_escortState;
 

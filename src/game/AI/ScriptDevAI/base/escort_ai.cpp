@@ -18,7 +18,9 @@ const float MAX_PLAYER_DISTANCE = 66.0f;
 
 npc_escortAI::npc_escortAI(Creature* creature) : ScriptedAI(creature),
     m_questForEscort(nullptr),
+    m_escortActivated(false),
     m_playerGuid(),
+    m_escortGroupId(0),
     m_playerCheckTimer(1000),
     m_escortState(STATE_ESCORT_NONE),
     m_isRunning(false),
@@ -94,6 +96,7 @@ bool npc_escortAI::AssistPlayerInCombat(Unit* who)
 
 void npc_escortAI::JustDied(Unit* /*killer*/)
 {
+    ReleaseEscortActiveState();
     if (!HasEscortState(STATE_ESCORT_ESCORTING) || !m_playerGuid || !m_questForEscort)
         return;
 
@@ -105,24 +108,84 @@ void npc_escortAI::FailQuestForPlayerAndGroup()
     if (!m_questForEscort)
         return;
 
-    if (Player* player = GetPlayerForEscort())
-        player->FailQuestForGroup(m_questForEscort->GetQuestId());
+    uint32 const questId = m_questForEscort->GetQuestId();
+    if (Player* player = sObjectMgr.GetPlayer(m_playerGuid))
+        player->FailQuestForGroup(questId);
+    else if (Group* group = sObjectMgr.GetGroupById(m_escortGroupId))
+    {
+        if (group->IsMember(m_playerGuid))
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->getSource())
+                    if (member->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
+                        member->FailQuest(questId);
+    }
 }
 
 void npc_escortAI::CorpseRemoved(uint32& /*respawnDelay*/)
 {
+    ReleaseEscortActiveState();
     m_escortState = STATE_ESCORT_NONE;
 
     if (!IsCombatMovement())
         SetCombatMovement(true);
 }
 
+bool npc_escortAI::HasEscortParticipants() const
+{
+    if (!HasEscortState(STATE_ESCORT_ESCORTING) || !m_creature->IsAlive())
+        return false;
+
+    for (auto const& ref : m_creature->GetMap()->GetPlayers())
+    {
+        Player* player = ref.getSource();
+        if (!player || !player->IsInWorld())
+            continue;
+        if (m_playerGuid)
+        {
+            if (player->GetObjectGuid() != m_playerGuid
+                && (!player->GetGroup() || !player->GetGroup()->IsMember(m_playerGuid)))
+                continue;
+        }
+        else if (!m_creature->GetMap()->IsDungeon())
+            continue;
+
+        // The NPC is shared, but every player owns their own quest status.
+        if (!m_questForEscort || player->GetQuestStatus(m_questForEscort->GetQuestId()) == QUEST_STATUS_INCOMPLETE)
+            return true;
+    }
+    return false;
+}
+
+void npc_escortAI::ReleaseEscortActiveState()
+{
+    if (m_escortActivated)
+    {
+        m_escortActivated = false;
+        m_creature->SetActiveObjectState(false);
+    }
+}
+
 bool npc_escortAI::IsPlayerOrGroupInRange()
 {
-    if (Player* player = GetPlayerForEscort())
-        if (player->CheckForGroup([&](Player const* player) -> bool { return m_creature->IsWithinDistInMap(player, MAX_PLAYER_DISTANCE); }))
-            return true;
+    // The starter may be on another map while their group is still escorting.
+    // Resolve them globally, then let IsWithinDistInMap validate each member.
+    auto inRange = [&](Player const* player) -> bool
+    {
+        return m_creature->IsWithinDistInMap(player, MAX_PLAYER_DISTANCE);
+    };
+    if (Player* player = sObjectMgr.GetPlayer(m_playerGuid))
+        return player->CheckForGroup(inRange);
 
+    // Logout removes the player from the map, not necessarily from the party.
+    // Do not despawn underneath members still escorting within the normal range.
+    if (Group* group = sObjectMgr.GetGroupById(m_escortGroupId))
+    {
+        if (group->IsMember(m_playerGuid))
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->getSource())
+                    if (inRange(member))
+                        return true;
+    }
     return false;
 }
 
@@ -137,6 +200,7 @@ void npc_escortAI::UpdateAI(const uint32 diff)
             {
                 // set the quest status as failed
                 FailQuestForPlayerAndGroup();
+                ReleaseEscortActiveState();
 
                 // TODO: i am not sure this is correct, isn't that the creature should continue until it get killed?
                 debug_log("SD2: EscortAI failed because player/group was to far away or not found");
@@ -192,6 +256,7 @@ void npc_escortAI::MovementInform(uint32 moveType, uint32 pointId)
         WaypointStart(pointId);
     else                                                    // Last WP Reached
     {
+        ReleaseEscortActiveState();
         if (m_canInstantRespawn)
         {
             m_creature->SetDeathState(JUST_DIED);
@@ -271,6 +336,7 @@ void npc_escortAI::Start(bool run, const Player* player, const Quest* quest, boo
     m_isRunning = run;
 
     m_playerGuid = player ? player->GetObjectGuid() : ObjectGuid();
+    m_escortGroupId = player && player->GetGroup() ? player->GetGroup()->GetId() : 0;
     m_questForEscort = quest;
 
     m_canInstantRespawn = instantRespawn;
@@ -283,6 +349,11 @@ void npc_escortAI::Start(bool run, const Player* player, const Quest* quest, boo
     m_creature->SetUInt32Value(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_NONE);
 
     AddEscortState(STATE_ESCORT_ESCORTING);
+    if (!m_creature->isActiveObject())
+    {
+        m_escortActivated = true;
+        m_creature->SetActiveObjectState(true);
+    }
 
     // Set initial speed
     m_creature->SetWalk(!m_isRunning);
@@ -298,8 +369,10 @@ void npc_escortAI::Start(bool run, const Player* player, const Quest* quest, boo
 
 void npc_escortAI::End()
 {
+    ReleaseEscortActiveState();
     RemoveEscortState(STATE_ESCORT_ESCORTING);
     m_playerGuid = ObjectGuid();
+    m_escortGroupId = 0;
     m_questForEscort = nullptr;
 }
 

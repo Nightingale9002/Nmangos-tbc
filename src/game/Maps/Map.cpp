@@ -40,6 +40,8 @@
 #include "Chat/Chat.h"
 #include "Weather/Weather.h"
 #include "AI/ScriptDevAI/ScriptDevAIMgr.h"
+#include "AI/ScriptDevAI/include/sc_creature.h"
+#include "AI/ScriptDevAI/base/escort_ai.h"
 #include "BattleGround/BattleGroundMgr.h"
 #include "Combat/InstancePullRecorder.h"
 
@@ -1960,6 +1962,24 @@ bool Map::ActiveObjectsNearGrid(uint32 x, uint32 y) const
         CellPair p = MaNGOS::ComputeCellPair(plr->GetPositionX(), plr->GetPositionY());
         if ((cell_min.x_coord <= p.x_coord && p.x_coord <= cell_max.x_coord) &&
                 (cell_min.y_coord <= p.y_coord && p.y_coord <= cell_max.y_coord))
+            return true;
+    }
+
+    // An escort must not be respawn-relocated/deleted mid-event by lazy unload.
+    // Keep only its current neighbourhood while an eligible player remains in
+    // this map. Ordinary active creatures still do not pin their grids.
+    for (WorldObject* obj : m_activeNonPlayers)
+    {
+        if (obj->GetTypeId() != TYPEID_UNIT || !obj->IsInWorld())
+            continue;
+        Creature* creature = static_cast<Creature*>(obj);
+        npc_escortAI* escort = dynamic_cast<npc_escortAI*>(creature->AI());
+        if (!escort || !escort->HasEscortState(STATE_ESCORT_ESCORTING))
+            continue;
+        CellPair p = MaNGOS::ComputeCellPair(obj->GetPositionX(), obj->GetPositionY());
+        if ((cell_min.x_coord <= p.x_coord && p.x_coord <= cell_max.x_coord)
+            && (cell_min.y_coord <= p.y_coord && p.y_coord <= cell_max.y_coord)
+            && escort->HasEscortParticipants())
             return true;
     }
 
