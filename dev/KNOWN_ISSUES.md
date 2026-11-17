@@ -12558,7 +12558,7 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 
 #### 十二、本地模拟队伍测试流程与工具清单（2026-11-18 核查更新）
 
-> 本节是副本模拟队伍的唯一操作流程。2026-10-22 的旧流程、45 分钟固定上限和 `groups=N / partySize=N` 速查写法由本节替代；旧实验结论仍按其日期理解。`dummy / dummyall / arms` 是阶段 E/F 的职业测量入口，不能代替五人副本验收。代码定位：`playerbot/PlayerbotMgr.cpp → PlayerbotHolder::HandleSim()`；`playerbot/SimScenario.cpp → HandleCommand() / LoadCandidates() / ValidateAssignedRoles()`。
+> 本节是路线型副本模拟队伍操作流程。2026-11-18站长另行指定的单Boss测试统一见[单Boss并发测试流程](<单Boss并发测试流程.md>)：按副本人数组队、固定N队独立实例并发，含贞洁圣女10组×10人实测（2队KILL_ONLY、8队WIPE）及item永久生效规则；正式发令复用生产pull，100人/10独立实例共同交战的采样窗口63.583秒，不采用先1组再5组的安排。以下2026-10-22 的旧流程、45 分钟固定上限和 `groups=N / partySize=N` 速查写法由本节替代；旧实验结论仍按其日期理解。`dummy / dummyall / arms` 是阶段 E/F 的职业测量入口，不能代替五人副本验收。代码定位：`playerbot/PlayerbotMgr.cpp → PlayerbotHolder::HandleSim()`；`playerbot/SimScenario.cpp → HandleCommand() / LoadCandidates() / ValidateAssignedRoles()`。
 
 ##### 1. 本地环境快照与开跑条件
 
@@ -12584,7 +12584,7 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 
 每轮记录：本地测试库备份/快照位置、D盘主仓库 HEAD、子模块 HEAD及未提交差异、二进制MD5/对应full符号文件、配置副本、装备档和实际天赋、地图、组数、seed、policy、stuck、maxtime、采集起止时间。确认备份可用后再启动会写库的场景。固定 seed 只在候选池/阵营/占用条件相同的情况下帮助复现，仍要保存实际成员 GUID 和职责。
 
-- 基线按真实战斗跑，`BotCheats` 与 `RndBotCheats` 均设为空；尤其不能开 health/mana/power/cooldown/movespeed/attackspeed。
+- 基线按真实战斗跑，`BotCheats` 与 `RndBotCheats` 均设为空；尤其不能开 health/mana/power/cooldown/movespeed/attackspeed。2026-11-18补充：所有bot的 `item` 已在 `PlayerbotAI.cpp → PlayerbotAI::HasCheat()` 永久生效，空配置与运行时关闭命令均不能取消；材料/物品检查与弹药便利沿用item语义，其他资源/节奏作弊仍需单独启用。
 - 固定装备和天赋，`EquipBestGear=0`，不在 A/B 中途换档。声明使用 preraid/p3/s141 等哪一档，并核对实际装备；开关本身不证明已装好对应套装。
 - 每个假设一次改动加一轮测量；基线与候选采用同一口径。`policy=continue` 的自动复活只用于推进诊断，结果单列；灭团恢复/真实队伍生存验收用 `policy=reset`。
 - 仅改文档不编译。测新代码时按本地运维入口检查同步脚本、确认无其他编译后后台构建，保存真实构建日志、退出码和本轮产物，再测试。strip与full哈希不同属正常，必须有同次构建的对应记录，不能只按文件时间猜。
