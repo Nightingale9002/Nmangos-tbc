@@ -1,9 +1,13 @@
--- Character database (tbccharacters). 夸格米拉的分散间距。
+-- Character database (tbccharacters). 夸格米拉的**距离兜底**间距。
 --
--- 背景：线上 8 场（11-17 08:42–09:03）里酸液喷射 38163 命中 138 次 / 10.4 万伤害，
---   多人同时吃锥。`ai_playerbot_encounter_tactics.separation` 是"队员之间的最小间距（码）"，
---   `PartyPositionCoordinator.h` 用它 `Dist2d(x,y,s.x,s.y) < rule.separation → reject`。
---   我在 dev/256 里把它写成了 4 码（等于没有分散），这里改成 20 码，和布莱卡特（21.5）同一量级。
+-- ⚠️ 口径纠正（2026-11-17，站长）：夸格米拉走 tracked_cone，分散是**按角度**算的
+--   （`ai_playerbot_strategy_profile.separation_degrees`，见 dev/258）；
+--   `ai_playerbot_encounter_tactics.separation` 是按**距离**分散，只有通用阵型
+--   （MODE_ROLE_BANDS/FRONTAL 那条 `Compute()` 路径）才会用，布莱卡特就是这种。
+--   本条只作为"执行器没跑/退回通用阵型"时的兜底，不是这场的主旋钮。
+--
+-- 背景：线上 8 场（11-17 08:42–09:03）酸液喷射 38163 命中 138 次 / 10.4 万，
+--   多人同时吃锥。原来这里写的是 4 码（我在 dev/256 里配的），等于没有距离分散。
 --
 -- 只影响站位，不改技能数值；tactics 有 5 秒缓存，落库即生效，不需要重启。
 
