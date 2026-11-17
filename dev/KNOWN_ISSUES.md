@@ -12105,7 +12105,7 @@ ERROR:AreaId 329 defined in `skill_fishing_base_level` does not exist
 |---|---|---|---|
 | `dev/DESIGN_dps_fsm.md` **§1「决策模式」表** | **已过时** | 表里只到 `mode=0~4`，并写「`fsm`（S2 再加）」；代码已到 **`mode=5`**（`DpsFsm.h` 的 `[2026-11-01 站长口径] mode=5 …` 注释） | 阶段 G / H 的实测与覆盖表；该文其余章节（分层 L0~L7、参数 schema、Optuna、测量纪律）**仍有效** |
 | `dev/DESIGN_dps_fsm_graphs.md` 首段「17 张显式状态图」 | 部分过时 | 文内已扩到 §10（剩余专精）/§11（治疗）/§12（本服核心行为）/§13（萨满）/§14（坦克） | 以文内 §10~§14 为准（阶段 G/H 的实现依据） |
-| `dev/SIM_SCENARIO_设计.md`（已删）的「实现状态」表 | **已删除（2026-11-02）** | 该文状态表是 10-18 快照（DungeonRoute/跑位当时 ⏳），10-25 后有阶段 C、10-29 后有 `dummy/dummyall/arms` | 命令面已收进本章**阶段 A §十二 的「命令面速查」**；副本仿真行为看 `SimScenario.cpp`，测量看阶段 E/F |
+| `dev/SIM_SCENARIO_设计.md`（已删）的「实现状态」表 | **已删除（2026-11-02）** | 该文状态表是 10-18 快照（DungeonRoute/跑位当时 ⏳），10-25 后有阶段 C、10-29 后有 `dummy/dummyall/arms` | 命令面与本地操作收在本章**阶段 A §十二「本地模拟队伍测试流程与工具清单」**；副本仿真行为看 `SimScenario.cpp`，测量看阶段 E/F |
 | `dev/ROADMAP_副本AI_下一步.md`（已删） | **已删除（2026-11-02）** | §〇 记的云端 md5 `01ed9a5a…`、`priority_obs 等部署时一起建` 都是 10-18/19 快照 | 落地记录全在**阶段 C / D / F**，原文已无保留价值 |
 | `dev/patches/README.md`「我们的提交 `2c8ed963` → `c54ecb01`」 | **已过时** | 子模块当前 HEAD **`d369dff4`（2026-11-02）**，与清单差 20+ 提交 | 子模块 `git log`；该文只作「fork/重放补丁/上游升级」的流程参考 |
 | `dev/PLAYER_NAV_OBS_标注日志.md` §4 部署记录 | 历史快照 | 记的是 `md5=a82908df…` 那一次部署 | §1~§3、§5 的采集口径与表结构**仍现行** |
@@ -12556,48 +12556,164 @@ git sync 段全是 `if false`，实际只做"md5 比对 → 需要才装 → 起
 
 **验证**：`[SIM] … 离本检测` 不再出现；`[DUNGEONROUTE] 波 N 的怪重新刷出 ⇒ 重新打开` 在召唤波出现；540 第一波目标为 16700（碎手军团士兵）。
 
-#### 十二、仿真测试流程与工具清单（2026-10-22）
+#### 十二、本地模拟队伍测试流程与工具清单（2026-11-18 核查更新）
 
-> **命令面速查**（原 `dev/SIM_SCENARIO_设计.md`，2026-11-02 该文已删）：
-> `.bot sim start <mapId> [groups=N] [partySize=5] [policy=reset|continue] [attempts=N] [seed=N]` / `stop [runId|all]` / `status` / `prepare <n>`；
-> 控制台等价入口 `.rndbot sim …`（`PlayerbotHolder::HandleSim`）；权限 `SEC_GAMEMASTER` 且 **必须** `AiPlayerbot.SimMode=1`；
-> `policy=reset` = 灭团重开（记 attempt），`continue` = 死即复活续推；灭团/通关/卡死/45 分钟硬上限的判据都在 `SimScenario.cpp`。
-> ⚠️ 之后 10-29 起的 `dummy` / `dummyall` / `arms` 是**另一套测量台**（见阶段 E/F），与这里的副本仿真不是同一个入口分支。
+> 本节是副本模拟队伍的唯一操作流程。2026-10-22 的旧流程、45 分钟固定上限和 `groups=N / partySize=N` 速查写法由本节替代；旧实验结论仍按其日期理解。`dummy / dummyall / arms` 是阶段 E/F 的职业测量入口，不能代替五人副本验收。代码定位：`playerbot/PlayerbotMgr.cpp → PlayerbotHolder::HandleSim()`；`playerbot/SimScenario.cpp → HandleCommand() / LoadCandidates() / ValidateAssignedRoles()`。
 
-**目标**：改完代码/数据后，用**一条命令**跑 8 图 × 5 组（1+1+3），出指标、离线复盘；不靠"感觉变了"。
+##### 1. 本地环境快照与开跑条件
 
-**一轮的固定流程**（编排脚本 `_agent_tmp/tune/cycle.sh`）：
-1. **编译**（可选 `--build`）：`build_all_pending.sh` 按清单把源码拷进 WSL 构建树 → `make -j16 mangosd` → 停服后 `cp`/`strip`/`md5`；
-2. **起服**：`start_server.sh`（建 FIFO `/tmp/mcmdmulti2` + 持久 writer；注入 `SimMode=1 / StaticBots=1 / DungeonRoute=1 / LogLevel=2` 与 cheat、装备开关）；
-3. **清残留队伍**：`tune/clean_groups.py`（清 `groups`/`group_member`，否则会误判"没有真坦"）；
-4. **逐图下发**（45 秒一张图）：
-   `.rndbot sim start <map> 5 5 policy=continue attempts=3 seed=20261020 stuck=1800 maxtime=900 [boss=1]`；
-5. **采集窗口**（默认 900s）→ `tune/metrics.py` 出每图一行（写 `runs.csv`）→ 日志副本存 `/tmp/simlogs/`；
-6. `.rndbot sim stop all` → **离线分析** → 改代码/DB（`decision_weight` 300s 热加载）→ 下一轮。
+2026-11-18 北京时间约 04:04～04:10 的只读核查如下。进程、端口和数据数量每轮重查，不作为永久现值。
 
-**工具清单**（`_agent_tmp/tune/`）：
-| 工具 | 用途 |
-|---|---|
-| `cycle.sh` | 一键：编译/装/起服/清队/开图/采集/指标/停仿真（`--boss --cheats --combat-cheats --equip-best --maps --groups --window --maxtime`） |
-| `metrics.py` / `diff_runs.py` | 每图波次/boss/死亡/跳过/拦截/复活 → `runs.csv`，并与上一轮对比 |
-| `analyze_log.py` | 单轮日志 → 每图"卡在哪"（拉怪几何、帮队友热点、末尾仍活的波） |
-| `analyze_pulls.py` / `analyze_pulltime.py` | `ai_playerbot_pull_log` → 清掉率/耗时/`ord=0` 异常 |
-| `analyze_coverage.py` / `learn_route.py` / `fix_route_coverage.py` | 路线登记率、**用实际拉怪序列反推路线**、按阵营补齐成员 |
-| `boss_reach.py` | navmesh 连通性 + `route_link` 桥接 → boss 可达性、缺口坐标 |
-| `analyze_combat.py` | `bot_events.csv` → 每角色/职业 KPI（承伤/击杀、死亡、破控、乱开怪、动作占比） |
-| `seed_weights.py` | 写 `ai_playerbot_decision_weight`（热加载） |
-| `btx.sh` / `bt_abort.sh` | WSL dump → gdb 回溯（dump 在 `%LOCALAPPDATA%\Temp\wsl-crashes`） |
+| 项目 | 核查结果 | 开跑前要求 |
+|---|---|---|
+| WSL | `Ubuntu-20.04` 运行；未见世界服、登录服或编译进程 | 只使用该发行版；已有测试进程时先确认归属，不能抢服务或构建树 |
+| 数据库 | 本机 3306 是 MySQL 9.3.0；四库存在；WSL 世界服配置内四组账号均认证并执行 SELECT 成功 | 使用本地开发库；不要切到 3307 从库、转发端口或云端库 |
+| 地图素材 | `run_local` 的 dbc/maps/vmaps/mmaps 链接可访问，直属文件数为 185/3586/8607/2833 | 起服后仍须查具体地图加载错误；存在不代表寻路验收通过 |
+| 二进制 | `/root/mangosd_pb8_all` 存在，采样 MD5 `b9286885754146e129ee3189118acb1d` | 每轮记录实际运行 exe 的 MD5；该值仅为安装产物快照，本轮没有重新编译 |
+| 测试源码 | `sync_src.py` 只读比较：changed=0、new=0、same=2415、only_wsl=12 | 这仅覆盖 src；额外 WSL 文件未删，根构建文件/依赖/编译选项须随变更另核查 |
+| 仿真配置 | `SimMode=1`、`StaticBots=1`、`RandomBotAutologin=0`、`DisableBotOptimizations=1`；默认 aiplayerbot 配置仍含战斗作弊 | 使用下文独立配置副本，显式清空两组 cheat；不要直接沿用默认文件 |
+| 候选与队伍 | profile 中坦克360、治疗415、DPS1150；本地已有168个队伍、769条成员 | SQL 候选不等于上线后的真实职责；保留已有队伍，禁止全表清理 |
+| 副本数据 | 540/542/543/545/546/547/552/553/554/555/556/557/558 均有入口、路线、Boss stage | 首轮用543；静态表有数据不代表通关 |
+| 客户端链路 | Windows 登录服3724在运行；世界服未运行；主测试配置18086与 realmlist 的8086不一致 | 纯机器人冒烟不依赖客户端；客户端观测前另核对本地 realm 地址/端口并实际登录 |
 
-**关键开关**：`AiPlayerbot.EquipBestGear`（进本换最佳装备 + 忽略装等）、`GearProgressionSystem.Enable`、cheat 两组
-（常驻 `item,breath,taxi,repair,gold` / 战斗 `health,mana,power,cooldown,movespeed,attackspeed`）、`boss=1`（boss 优先）。
+70级、公共 bot、未隔离且未占已有队伍的 SQL 候选：联盟坦克27/治疗75/DPS385，部落173/198/282；另有733个候选缺 profile。这是数据库预筛，不包含内存中的占用/招募保留、账号缓存以及实际专精复核，不能用总数推导可同时开多少组。`LoadCandidates()` 还排除在线或其他场景占用的 bot，组队后必须通过真实坦克/治疗检查。不要因一次“没有坦克”就执行 `sim profile` 或删除队伍：前者会写职责表，须先查明是专精、隔离、账号还是占用问题。
 
-**踩坑**（都实际发生过）：① `build_all_pending.sh` 清单漏文件 ⇒ 改了没生效（`PlayerbotAI.h`、`UpdateGearAction.cpp`）；
-② 运行中改 bash 脚本会让正在跑的脚本读偏移错位（EOF/语法错）；③ 未停服装二进制报 `Text file busy`；
-④ `GROUPS` 是 bash 特殊变量（要用 `NGROUPS`）；⑤ `LogLevel=2` 下 bot 动作日志 15 分钟可涨到 600MB+；
-⑥ 别并发跑两个 cycle（抢 FIFO/日志/重启）；⑦ 提交前按 HEAD 的 EOL 归一，否则整文件 diff 噪声。
+**本轮验证层级：环境和数据库只读检查完成；没有起服、编译、组队、进本或 Boss 击杀实测。** 原始核查脚本与脱敏记录位于工作区 `_agent_tmp/local_party_test_20261118/`，不提交。
 
-**当前状态**：`c541a77d` 已是"进本换装（忽略装等）"版本，但换装过程中服务端 SIGABRT（日志停在
-`possible items for slot N`），待用最新 dump 做 gdb 回溯定位；定位前不要把这版当稳定版。
+##### 2. 固定本轮输入
+
+每轮记录：本地测试库备份/快照位置、D盘主仓库 HEAD、子模块 HEAD及未提交差异、二进制MD5/对应full符号文件、配置副本、装备档和实际天赋、地图、组数、seed、policy、stuck、maxtime、采集起止时间。确认备份可用后再启动会写库的场景。固定 seed 只在候选池/阵营/占用条件相同的情况下帮助复现，仍要保存实际成员 GUID 和职责。
+
+- 基线按真实战斗跑，`BotCheats` 与 `RndBotCheats` 均设为空；尤其不能开 health/mana/power/cooldown/movespeed/attackspeed。
+- 固定装备和天赋，`EquipBestGear=0`，不在 A/B 中途换档。声明使用 preraid/p3/s141 等哪一档，并核对实际装备；开关本身不证明已装好对应套装。
+- 每个假设一次改动加一轮测量；基线与候选采用同一口径。`policy=continue` 的自动复活只用于推进诊断，结果单列；灭团恢复/真实队伍生存验收用 `policy=reset`。
+- 仅改文档不编译。测新代码时按本地运维入口检查同步脚本、确认无其他编译后后台构建，保存真实构建日志、退出码和本轮产物，再测试。strip与full哈希不同属正常，必须有同次构建的对应记录，不能只按文件时间猜。
+
+##### 3. 独立起服和命令通道
+
+以下在 WSL `Ubuntu-20.04` 的**同一个 Bash 会话**依次执行；另存为脚本时使用LF换行。先确认四库均为本地开发目标，18086空闲，且没有其他世界服/测试轮次。已有服务时先查 `/proc/<pid>/exe`、`cwd`、启动参数及日志归属，复用该服务的已确认控制通道，不另起实例。不要把旧 FIFO 当成本轮通道。
+
+```bash
+pgrep -af 'mangosd|cmake --build|make.*mangosd' || true
+ss -lntp | grep -E ':(18086|8086|7878)\b' || true
+# 看到已有实例或构建任务时，先确认归属；不要直接继续下面的启动段。
+```
+
+没有现有实例且本地目标已确认后，以独立配置、FIFO和日志启动；这会产生正常的本地角色库写入。配置副本含连接凭据，保持在本地，不提交、不回显内容。
+
+```bash
+cd /root/run_local || exit 1
+umask 077
+OUT=$(mktemp -d /root/run_local/party-test-XXXXXXXX)
+export OUT
+BIN=/root/mangosd_pb8_all
+FIFO="$OUT/console.fifo"
+cp mangosd.conf "$OUT/mangosd.conf"
+cp aiplayerbot.conf "$OUT/aiplayerbot.conf"
+mkdir "$OUT/logs"
+python3 - <<'PY'
+import os, pathlib, re
+out = pathlib.Path(os.environ['OUT'])
+settings = {
+    'mangosd.conf': {
+        'WorldServerPort': '18086', 'BindIP': '"127.0.0.1"',
+        'DataDir': '"/root/run_local"', 'LogsDir': '"' + str(out / 'logs') + '/"',
+        'SOAP.Enabled': '0',
+    },
+    'aiplayerbot.conf': {
+        'AiPlayerbot.SimMode': '1', 'AiPlayerbot.StaticBots': '1',
+        'AiPlayerbot.RandomBotAutologin': '0', 'AiPlayerbot.RandomBotAutoCreate': '0',
+        'AiPlayerbot.RandomBotLoginAtStartup': '0', 'AiPlayerbot.DungeonRoute': '1',
+        'AiPlayerbot.AutoDungeonRun': '0', 'AiPlayerbot.DisableBotOptimizations': '1',
+        'AiPlayerbot.BotCheats': '""', 'AiPlayerbot.RndBotCheats': '""',
+        'AiPlayerbot.EquipBestGear': '0',
+    },
+}
+for name, values in settings.items():
+    p = out / name
+    text = p.read_text(encoding='utf-8-sig')
+    for key, value in values.items():
+        text = re.sub(r'^\s*' + re.escape(key) + r'\s*=.*$', '', text, flags=re.M)
+        text += '\n' + key + ' = ' + value + '\n'
+    p.write_text(text, encoding='utf-8')
+PY
+export BOT_METRICS=1
+mkfifo "$FIFO"
+nohup sleep 86400 > "$FIFO" 2>/dev/null &
+WRITER_PID=$!
+nohup "$BIN" -c "$OUT/mangosd.conf" --aiplayerbot="$OUT/aiplayerbot.conf" \
+    < "$FIFO" > "$OUT/console.log" 2>&1 &
+SERVER_PID=$!
+printf 'OUT=%s\nserver=%s\nwriter=%s\n' "$OUT" "$SERVER_PID" "$WRITER_PID"
+printf '%s\n' "$SERVER_PID" > "$OUT/server.pid"
+printf '%s\n' "$WRITER_PID" > "$OUT/writer.pid"
+md5sum "$BIN" > "$OUT/binary.md5"
+```
+
+保留本轮 `OUT` 和两个 PID。持久 writer 避免 stdin EOF，但不能代替起服成功判据。继续检查进程是否存活、实际 exe/参数、18086监听，日志出现本轮 `World initialized` 且无配置/素材/数据库错误；不满足就停在启动排障，不下发场景。下面的 `send()` 每次先检查进程和FIFO，写入最多等5秒；写入成功后仍必须看服务端回执，不能盲目重发 `start`。
+
+```bash
+send() {
+    kill -0 "$SERVER_PID" 2>/dev/null && test -p "$FIFO" || return 1
+    timeout 5 bash -c 'printf "%s\n" "$2" > "$1"' _ "$FIFO" "$1"
+}
+readlink -f "/proc/$SERVER_PID/exe"
+tr '\0' ' ' < "/proc/$SERVER_PID/cmdline"
+printf '\n'
+ss -lntp | grep ':18086' || true
+grep -a 'World initialized' "$OUT/console.log"
+send '.rndbot sim status'
+tail -n 60 "$OUT/console.log"
+```
+
+**不直接运行旧 `start_server.sh` 或默认 `tune/cycle.sh`。** 前者会默认注入战斗作弊、强杀同名世界服、删除固定日志/FIFO；后者默认停服安装，即使用 `--no-restart` 也会先 `stop all`，并可能自动补发 `start`。`--no-cheats` 只改变将要起服时的参数，不能保证已运行实例关闭作弊。这里保留它们作为历史工具，不作为当前默认入口。
+
+##### 4. 一组冒烟 → 五组回归 → 逐图扩展
+
+当前解析器的真实语法是：`.rndbot sim start <mapId> [groups] [partySize] [policy=reset|continue] [attempts=N] [seed=N] [stuck=秒] [maxtime=秒] [boss=0|1]`。**组数和人数是位置参数**，必须写 `543 1 5`；`543 groups=1 partySize=5` 会经 `atoi()` 读成0、继而夹成1组1人，不能使用。游戏内GM入口为 `.bot sim ...`；控制台用 `.rndbot sim ...`；均要求 `SimMode=1`。组数最多16、人数最多5；五人队会先挑8名候选上线再按真实职责选出1坦1奶3DPS，所以启动日志的 `candidates=8` 正常。
+
+1. **冒烟：543图一组五人，先确认链路。**
+
+   ```bash
+   send '.rndbot sim start 543 1 5 policy=reset attempts=1 seed=20261118 stuck=1800 maxtime=600 boss=0'
+   send '.rndbot sim status'
+   tail -n 100 "$OUT/console.log"
+   ```
+
+   保存返回的 `runId`。依次确认：start回执 → 候选登录成功 → 真实职责通过 → 准备完成 → 同地图同实例五人入本 → 首次真实战斗。首次进入运行阶段才开始记战斗观察窗口，登录/食水/天赋准备耗时另列。600秒是短测上限，未打完不判路线失败。失败必须区分候选不足、登录失败、职责不符、准备失败和战斗失败。
+
+2. **回归：冒烟收尾并确认本轮 bot 已释放后，543图五组。** 不用 `stop all` 抢其他轮次；如冒烟仍在跑，用 `send ".rndbot sim stop $RUN_ID"`（先将 `RUN_ID` 设为刚收到的实际编号）。
+
+   ```bash
+   send '.rndbot sim start 543 5 5 policy=reset attempts=3 seed=20261118 stuck=1800 maxtime=3600 boss=0'
+   ```
+
+   逐组确认实际入本，不只看 `groups=5` 的启动回执；以 `(run,g,attempt,map,inst)` 关联证据。观察至各组终态或约定3600秒战斗窗，记录重试与新实例，不因一组先结束而结束全部采集。`maxtime` 是单attempt进本运行上限，reset多次重试会延长总墙钟时间；终态以实际日志为准。样本方差过大时再扩大到同图最多16组，先检查候选和机器负载。
+
+3. **逐图扩展。** 从已核对的13图中按目标选择，前图稳定后再启动后图；不要把一次发出65组当作65组已成功入本。每次保存实际名单和实例。`boss=0` 测完整推进；`boss=1` 单列为Boss优先实验，不能混报。该选项写进程级 `BossFirstSwitch()`，同一进程不要并行跑不同boss模式的A/B。
+
+4. **恢复专项另跑。** 基线 `policy=reset` 观察真实团灭/重开；需要调查后半程路线时再用 `policy=continue attempts=1`，明确报告自动复活介入次数。不要把 `attempts=0` 理解成保证永不结束，卡死、准备失败和其他终态仍需按实现核查。
+
+##### 5. 采集、验收与停止
+
+每个组至少保留启动/登录/职责/准备/入本/战斗/终态证据，以及成员GUID、地图实例、尝试次数、死亡/团灭、耗时和Boss击杀清单。**验收看应打Boss的实际死亡证据，波次/ord只作定位参考。** 以当前本地 `ai_playerbot_dungeon_stage(kind='boss')` 核对名单，按地图+实例+attempt关联 `[MOBDIE]`，去重entry；召唤/事件Boss也计入。不用尾王死亡、`best`增长、`history ok`或已收尾数替代全Boss证据，日志不全时标“未证”。
+
+| 检查点 | 通过依据 | 未满足时如何记录 |
+|---|---|---|
+| 启动 | 实际进程、配置路径、监听和本轮初始化日志一致 | 环境阻塞，不进入战斗统计 |
+| 组队/进本 | 五人同实例，实际坦/奶职责通过，准备完成 | 登录/职责/准备失败单列，不能记成0波路线失败 |
+| 战斗 | 怪物有真实更新、承伤/还手，bot有有效输出和治疗 | 冻结怪、作弊补资源或缺日志的数据不用于强度验收 |
+| 副本 | 目标Boss逐一有本attempt内死亡证据；各组结果分别列出 | 仅短窗未完成为未完成；timeout/stuck保留错误和现场 |
+| 恢复 | reset/continue、死亡、复活、重试与传送行为完整记录 | 仿真自动复活不算生产复活行为验证 |
+| A/B | 同装备天赋、配置、模式和窗口；报告实际成员与每组结果 | 候选池变化必须说明；同时列最好/中位/最差及成功组数 |
+
+离线分析工具 `tune/metrics.py --log <本轮日志> --outdir <本轮目录> --bin <实际MD5> --tag <轮次> --window <实际窗口秒>` 可辅助汇总，但使用前核对它依赖的 `pull_cost_offline_local.connect()` 仍指向本地开发库。其当前实现混读 `[BOSSKILL]` 与 `[MOBDIE]`，且按地图/实例聚合；Boss名单读取失败会继续处理，因此**工具摘要不能独立作为逐attempt验收证据**。保留原始日志并人工/离线复核Boss清单、缺失事件和实例归属，不把空Boss名单当通过。
+
+结束时先发本轮 `stop <runId>` 并核对该run各组退出/队伍释放；只有确认整个进程专属本轮时才使用 `stop all`。保存停止后的回执、`console.log`、本轮日志目录和配置/MD5，原始证据放 `_agent_tmp`，不将含凭据的配置提交git。不要清空 `groups/group_member`；确有残留，先列出本轮GUID与队伍关系并备份，再处理确证的本轮残留。
+
+若需关闭专属本轮世界服，使用该实例控制台的正常退出流程并确认进程退出，再核对 writer PID/命令与本轮记录后结束自己的writer。不要 `pkill -9`、复用历史PID或删除其他轮次FIFO。只停仿真不等于停服，也不等于回滚角色库。数据需完全回到基线时，恢复开跑前保存的本地测试库备份；恢复同样要求确认没有其他本地轮次使用该库。
+
+**历史工具索引**：`tune/analyze_log.py`（拉怪与停滞）、`analyze_pulls.py / analyze_pulltime.py`（拉怪日志）、`analyze_combat.py`（职业KPI）、`btx.sh / bt_abort.sh`（对应full二进制与dump回溯）。写库工具如 `seed_weights.py`、路线生成及清队脚本只在单独数据变更任务中核查使用，不纳入默认测试流程。2026-10-22 的 `c541a77d` 换装崩溃是历史快照，不作为2026-11-18安装产物的稳定性结论。
 
 ---
 
