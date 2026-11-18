@@ -26,6 +26,10 @@
 
 ## 结构变更（无编号，手工执行）
 
+- `spread_rule_schema.sql`：角色库通用环形/就近分散规则表，参数含 R/l/实际弹跳距离、扇区角/范围/n、可选全体点间距离上限/LOS、角色掩码、采样和预算；新增 `dps_boss_range_max/healer_member_range_max` 分别约束 DPS 对 BOSS、治疗对各成员的规划距离及治疗 LOS，不强制 DPS 彼此小于同一上限。距离模式按中心三维距离并保留到位余量，体积用于障碍与扇区。`center_set/center_x/y/z` 明确 BOSS 目标落点，由 BOSS 当前攻击的坦克校正拉位；`tank_bearing_deg` 为初始朝向。仅建表、不覆盖手调配置；30 列与静态绑定见下条。几何边界/七人打包/分角色覆盖测试和完整WSL编译通过，真实十人机制验收进行中，未云端执行。
+
+- `spread_rule_bindings.sql`：`ai_playerbot_spread_rule` 的静态幂等绑定，只插入本地现存两行（map532/entry16457 ring、map532/entry15691 local），30 列逐列显式常量；`ON DUPLICATE KEY UPDATE map=map` 是 no-op，已有行（含未知手调值）不被覆盖，重跑不改变内容。本地独立临时库重建 schema 后执行两次：内容一致，预存手调 15691（preferred 19.5/sep 12/bounce 11/center -11069.25）保持原值，16457 按常量插入；临时库已清理，未改业务表、未云端执行。
+
 - `ahbot_price_pair_schema.sql`
 - `ahbot_price_recipe_schema.sql`
 - `ahbot_virtual_price_schema.sql`
