@@ -30,6 +30,8 @@
 
 - `spread_rule_bindings.sql`：`ai_playerbot_spread_rule` 的静态幂等绑定，只插入本地现存两行（map532/entry16457 ring、map532/entry15691 local），30 列逐列显式常量；`ON DUPLICATE KEY UPDATE map=map` 是 no-op，已有行（含未知手调值）不被覆盖，重跑不改变内容。本地独立临时库重建 schema 后执行两次：内容一致，预存手调 15691（preferred 19.5/sep 12/bounce 11/center -11069.25）保持原值，16457 按常量插入；临时库已清理，未改业务表、未云端执行。
 
+- `spread_rule_budget_200000.sql`：角色库窄更新，仅 map532/entry15691、16457 且 `search_budget=20000` 的行升到200000，其他自定义预算不匹配；schema与缺行绑定默认同步200000，`EncounterSpreadRules.h → ValidProfile()` 上限同步允许新值。本地执行两次影响2/0行，整表逐列核对除预算外未变；未云端执行。馆长共享地面密铺实现与实测结果统一记在 `单Boss并发测试流程.md` 馆长主题。
+
 - `ahbot_price_pair_schema.sql`
 - `ahbot_price_recipe_schema.sql`
 - `ahbot_virtual_price_schema.sql`

@@ -456,3 +456,28 @@ SHA256: 91e487cf8fa5f5f1b973a4bd0f5490ce204d05b9536a91402e403e49cb5cf853
 准备工具问题与修正：原战斗中心(-11070,-1830,165.765)距巡逻路径约43.87码，在馆长Detection60加等级差的约63码引怪范围内，先前准备阶段提前交战作废。最终准备点改为有既有地形/LOS证据的(-11046,-1810,165.765)，离最近巡逻点75.1码，原DB战斗中心未变。脚本修复重复投递未完成入场命令、成功回执GUID键与队伍名键不一致；不改变生产战斗逻辑。中间子代理中止轮次未完整归档，不计正式成绩；最终轮独立存放全部证据。
 
 12:47:38专属世界服正常exit0；12:49:03回验100人online0/map1/group_member0，关联本轮leader的空组也为0，无其他mangosd。正式原始日志165449977字节，SHA256 `f8a93fe50117252aae2a4a84eac57b1919921c694d539c82ace8326034e45a63`。证据在 `_agent_tmp/curator_concurrent_20261119/attempt_final/`：`REPORT.md`、`strict_audit.json`、`mechanics_summary.json`、`results.json`、`commands.tsv`、`staged_rosters.json`、`cleanup_verification.json`；WSL完整原始日志/独立配置在 `/root/run_local/curator_final_20261119/`，敏感配置不提交。首次无效准备另存 `attempt1_preaggro/`。本轮仅提交此实测记录，既有源码脏改动保留，无push。
+
+2026-11-19 13:45 地面密铺/预算重测（替代12:41轮的当前实现结论，旧轮保留追溯）：用户明确要求提高预算并按实际地面密铺看可站人数。`SpreadGeometry.h → Solve()` 默认与本地两条规则20000→200000，`EncounterSpreadRules.h → ValidProfile()` 上限100000→1000000；静态SQL仅将两Boss仍为20000的行提升，自定义值不覆盖。本地执行两次2/0行，整表逐列比较除预算外均不变，未云端执行。
+
+`GroundPacking.h → BuildPackedSlots()/PackTrialPools()/SolveTrials()` 先构造三角/六角格点，3旋转×4半格/半行距平移共12布局，跨布局合并逐对检查13.05码槽距（12码分散+双方0.5到位误差+0.05余量）。`EncounterSpread.h → BuildGroundLayouts()/RouteGroundPool()/CandidatesFromPool()/BuildPlanLocked()` 接入馆长local非unified链：真实地面高度、净空、中心LOS、hazard、完整路径过滤后统计同一构造的实际槽数，再按角色射程/猎人死区/治疗覆盖和LOS匹配，最终逐人完整路由复核。最多4个池共享一次200000总预算；capacity是已构造可用槽数下界，不宣称全局最大，也不把重叠候选总数当容量。坦克与近战不在现有mask28受控集合，容量仅指远程/治疗槽，不外推全十人安全距离；圣女ring/split原路径保留，本轮没有新增圣女游戏实测。
+
+12组纯函数测试通过（含平移覆盖、容量不足、匹配失败、间距/到位余量、预算区分、生命周期、多布局共享预算），真实flags语法检查exit0；全src按内容同步复核changed0/new0，WSL Ubuntu-20.04 `/root/nb-build` make -j8 mangosd exit0。二进制MD5 `b65c8c4299e19e0f4ad4840fe207a6c4`，full `1f166bc87b6e35714726700ad4f9f715`。链接仍有既有libssl1.1/3与libcrypto1.1/3冲突警告；实际新服启动、运行proc哈希与产物一致、正常退出。源码构建包含原有未提交worktree修改，不能声称仅子模块选择性提交可独立复现整个产物。
+
+13:39:52相同100角色/账号、装备与准备点，通过十实例/100人存活脱战屏障，各队一次原生pull、requested全1。十队首次计划均在无死亡快照时完成完整参与集合，没有减员缩小后才成功；first PLAN的required=matched。全部十队实际交战，未出现预算失败；所有规划成员各有实际到位采样。原生起手仍无PULLCHAIN started回执，因此这里只证明原生请求后实际交战，不能证明指定起手技能成功。没有强制engage、战中资源注入或Boss参数修改。
+
+|队伍|完整参与人数|首次实际槽容量|首次检查数|首次匹配|结果/观察秒|Boss最低采样%|球死亡|规划/曾到位|
+|---|---:|---:|---:|---:|---|---:|---:|---|
+|curator01|9|17|1979|9|WIPE/216.04|93.15|17|9/9|
+|curator02|9|13|4293|9|WIPE/70.84|97.5|3|9/9|
+|curator03|9|22|928|9|WIPE/72.84|98.43|5|9/9|
+|curator04|8|18|609|8|WIPE/54.22|98.66|2|8/8|
+|curator05|6|19|1042|6|WIPE/46.36|98.8|2|6/6|
+|curator06|8|15|517|8|WIPE/96.53|98.2|5|8/8|
+|curator07|8|21|1735|8|WIPE/134.24|92.71|9|8/8|
+|curator08|9|13|4605|9|WIPE/197.47|91.73|15|9/9|
+|curator09|8|18|1497|8|WIPE/207.75|81.93|16|8/8|
+|curator10|8|18|620|8|WIPE/91.8|95.95|4|8/8|
+
+预算与密铺的本轮目标得到实测支持：全十队完整参与集合求解成功（517–4605次），已构造实际槽13–22个；对比旧轮7队未开战/2队减员后成功，新轮全部十队交战。但是战斗验收仍失败：10 WIPE、0击杀，不能把规划成功写成攻略通过。03/04/05本轮较早损失治疗，输入来自馆长普攻/仇恨弹；02/09/10先倒坦，06/07有光芒30235引起的早期减员。09最低81.93%、击杀16球，01击杀17球，08击杀15球；仍不足稳定击杀。伤害日志是命中前输入，实际hp0快照确认死亡，27965不当初次死亡原因。到位是逐人曾到位，不证明全员同时持续安全分散。01/02/06/07/08/09/10在准备/入战生命周期存在第二条成功PLAN，不能把首次与第二次槽混成同一冻结方案；汇总到位沿用每人最后记录槽，不据此声称首方案全员同时到位；原始日志保留供后续单独核查。
+
+13:44:47专属世界服exit0，13:45:07核实100人offline/map1/group_member0、leader关联组0，无其它mangosd。原生日志170477167字节，SHA256 `28032df5753b7b1edbf16f7d3ab4d8394082190c6376c1e31cb618a404e55e50`。WSL原始日志/配置在 `/root/run_local/curator_packing_20261119/`；本轮证据 `_agent_tmp/ground_packing_20261119/` 下 `budget_sql_result.json`、`build.log`、`artifact_md5.txt`、`test_ground_packing.cpp`，`lead_trial/` 下 `REPORT.md`、`packing_audit.json`、`strict_audit.json`、`mechanics_summary.json`、`results.json`、`cleanup_verification.json`。主会话审查后选择性提交子模块 `49188f4c`（四个站位头），其余既有脏文件保留。无云端操作、无push。

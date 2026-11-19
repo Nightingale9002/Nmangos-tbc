@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS ai_playerbot_spread_rule (
   arrival_tolerance FLOAT NOT NULL DEFAULT 0.5,
   replan_distance FLOAT NOT NULL DEFAULT 3,
   sample_step FLOAT NOT NULL DEFAULT 2,
-  search_budget INT UNSIGNED NOT NULL DEFAULT 20000,
+  search_budget INT UNSIGNED NOT NULL DEFAULT 200000,
   center_set TINYINT UNSIGNED NOT NULL DEFAULT 0,
   center_x FLOAT NOT NULL DEFAULT 0,
   center_y FLOAT NOT NULL DEFAULT 0,
