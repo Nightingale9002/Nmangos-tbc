@@ -11076,6 +11076,16 @@ void EnsureGridLoadedForPath(Cell const& cell) { EnsureGridLoaded(cell); }
 
 **2026-11-19 02:57配置纠正与加载（同章追加，不另立章）**：02:34后核查发现云端`/opt/mangos/etc/aiplayerbot.conf`显式`AiPlayerbot.WaitForAttackThreatPercent=90`覆盖已核验的120，属配置项未随发布生效，**二进制未换**（上传包、磁盘与`/proc/<pid>/exe`仍为`fe57bd4220d0c470b8feee4c007e019e`）。首次一次性脚本在`screen`异步启动后过早查PID，把正常启动误判为`[]`，02:51:48判定失败并自动回滚90，02:52:18恢复健康、旧PID62093（`config-restart-result.json`保留，未删除）；根因是脚本顺序而非二进制。修正为start→wait_health→pids并通过18项本地回归（旧代码负对照失败，证明回归确实能捕获该错）后重跑，**02:57:35加载成功**：新世界服唯一PID **62573**、realmd仍为1629、`WaitForAttackThreatPercent=120`；配置MD5由`abb0b626f73a9b927e1448cd07d7745b`变为`f0b82222542a34e2b37dab04ecc15eba`（旧件备份`/root/binary-release-20261119-spread/aiplayerbot.conf.before-threat120`）。02:58:41验收：健康true、上传/磁盘/proc三处MD5一致、`cmdline`确实加载指定`aiplayerbot.conf`、逐字节验证**只有该一个配置token改动**、pending与watchdog暂停均false、03:00/04:06脚本及root cron与备份一致、两日志末128KiB未见所查错误；加载前连续三次及停服前复查`people=0`，world TCP连接仅观测。证据`_agent_tmp/spread_refactor_20261119/config-restart-result.v2.json`、`config-final-status.json`。前述02:31段PID60634只作历史，**当前运行PID为62573**；本轮仍无新增游戏战斗实测。
 
+### 2026-11-20 移动仲裁及当前工作树整理发布
+
+站长明确授权“整理推送，同步到云”，随后要求“把当前改动提交”。PlayerBots 将移动仲裁 `29b2f8a1` 与其余当前修改 `e5424640` 一并推送 `origin/agent/los`；核心移动仲裁 `c205b76`、模块引用及历史SQL归档 `895960c` 推送 `origin/release`。发布前两级工作树干净，按CRLF归一化口径核对2433个提交源码与WSL副本逐文件一致，构建目标完成且仲裁回归测试通过。发布包MD5 `95cf817fbac117aa4787761b9a7695c1`，完整符号版MD5 `b412f3daff524de375047ca4bf5ad4be`，符号版保存在本地 `/root/bin_history/mangosd_20261120_movement_895960c_full`。
+
+本轮当前修改还包括统一危险模型、固定配装DB读取、开怪入口补规划及朝向修正。云端原先无 `ai_playerbot_fixed_gear`；配套静态种子先在本地应用并复跑，均为2128行/112套，物品存在性、等级/时效/废弃标志检查无非法行；云端创建后逐个键值回读全部匹配。历史 `259_20261117_raid_reset_thursday_0300.sql` 仅归档提交，**未执行到云端**，未修改线上配置文件。
+
+复用 `/etc/cron.d/mangos-binary-deploy` 的现有发布脚本、锁及零真人门槛，未改root cron或既定维护。北京时间02:14:00/02:14:11/02:14:21连续三次 `people=0`（25个bot），停服前再次核验；02:14:21优雅停止旧世界服，**02:15:50.641333发布完成**，新世界服唯一PID **65472**，realmd保持原PID **1239**。独立复查：上传包、磁盘与运行 `/proc/<pid>/exe` MD5均为 `95cf817fbac117aa4787761b9a7695c1`，8086/3724及握手健康；pending清除、watchdog暂停标志清除，root cron、全部所查cron入口、维护脚本及两份线上配置哈希逐件一致。两份日志末128KiB未见所查崩溃/SQL错误；配装2128个键值再次全部匹配。
+
+旧包已验证备份到 `/root/binary-release-20261120-movement/mangosd.previous.20261120_021421.ba8eed88c6067cbd4647386d1b754c46`，MD5 `ba8eed88c6067cbd4647386d1b754c46`；回退须沿用原零真人、优雅停服、安装校验与健康验收流程，不直接覆盖运行中二进制。证据保存在 `_agent_tmp/movement_release_20261120/` 的源码清单、构建日志、前后状态、`deployment-result.json` 和 `verification.json`。本轮证明提交/推送、发布及服务健康；**未新增副本战斗或客户端实测，不能据此认定全部移动行为已游戏验收**。
+
 ### 2026-11-14 工作区整理与无人队列候选
 
 站长授权整理本地并在无人窗口部署。本轮整合工作树内主动跑步/合法跟随速度、邀请与职责介绍、激活命令、任意队友战斗协助、拾取/逃生/召回、反噬驱散及统一回撤、法师/防骑与反馈限频、真人-bot交易限制，并追加本章引用的副本人数修复。根目录12个临时/误重定向文件保留原件归档和SHA256清单。无新增SQL或配置迁移，不更改03:00提醒、04:06维护及现有显式配置，不执行git push。
@@ -13566,7 +13576,7 @@ shamanistic rage / bloodlust / use trinket` —— 这些跳过 `Ready()` 的 GC
 
 #### 10.4 移动职责（站长架构口径）
 
-**2026-11-20 更正并替代本节旧结论（本地重构，未部署、未游戏实测）**：历史上“FSM 只管技能、仅施法时让引擎让位”的描述已不适用于当前实现。`DpsFsm.cpp → TickSurvival()/TickInner()`、机制执行器和普通动作引擎均有合法移动需求；`DidCastThisTick()` 还包含有意持位。普通动作引擎里的 `BossArena.h → Tick()` 也并非 FSM 后无条件执行的尾部回调。不能依赖各控制器调用先后或反复 `Clear()` 决定移动权。
+**2026-11-20 更正并替代本节旧结论（02:15已部署，未新增游戏实测）**：历史上“FSM 只管技能、仅施法时让引擎让位”的描述已不适用于当前实现。`DpsFsm.cpp → TickSurvival()/TickInner()`、机制执行器和普通动作引擎均有合法移动需求；`DidCastThisTick()` 还包含有意持位。普通动作引擎里的 `BossArena.h → Tick()` 也并非 FSM 后无条件执行的尾部回调。不能依赖各控制器调用先后或反复 `Clear()` 决定移动权。
 
 当前统一提交边界是 `MotionMaster.cpp → Mutate()` 与 `MotionMaster.h → Clear()`。只有 bot 的 MotionMaster 开启仲裁；普通生物沿用核心路径。`MovementOwnership.h → MovementOwnership` 每 bot 保存活动 owner 和当轮静止预约，`MotionMaster.h → MovementScope` 给请求标注来源，低优先级或其它等优先级来源在修改生成器/停步前被拒绝。接受新的 bot 意图时清除被替代的生成器栈，保留 idle 底座，避免旧追击/跟随在新路径结束后恢复。
 
@@ -13585,7 +13595,7 @@ shamanistic rage / bloodlust / use trinket` —— 这些跳过 `Ready()` 的 GC
 
 `EncounterPositioning.h → ExecuteSeatMove()` 保留坦克倒退速度、目标朝向和步进；原始样条发射后通过 `MotionMaster.cpp → AdoptBotSpline()` 纳入仲裁。`PlayerbotAI.cpp → CastSpell()` 保留施法停止普通跟随的能力，同时遵守更高优先级机制所有权。落地、受控运动、逃生瞬发及既有地形/危险/未交战敌人/回撤安全判定继续由各自原生入口校验；仲裁不替代导航和危险模型。
 
-验证：`dev/tests/bot_movement_ownership.cpp → main()` 独立 C++ 仲裁场景测试已通过，覆盖抢占、旧来源误释放、静止预约、手动/自动拉回隔离与重置。完整本地 WSL `Ubuntu-20.04` 的 `mangosd` 构建已通过，主会话已复核并隔离本次暂存差异；编译与离线测试不等于副本游戏实测，尚未部署。本次完整构建另外暴露当前危险模型改动中的旧双字段解构与同名局部变量冲突，已做兼容修正；危险模型原有未提交改动继续保留在工作树。
+验证：`dev/tests/bot_movement_ownership.cpp → main()` 独立 C++ 仲裁场景测试已通过，覆盖抢占、旧来源误释放、静止预约、手动/自动拉回隔离与重置。完整本地 WSL `Ubuntu-20.04` 的 `mangosd` 构建已通过，主会话已复核并隔离本次暂存差异；编译与离线测试不等于副本游戏实测。02:15云端发布及服务健康验收通过，细节见本总账既有运维章2026-11-20记录。本次完整构建另外暴露当前危险模型改动中的旧双字段解构与同名局部变量冲突，已做兼容修正；危险模型及其余当前改动已按站长后续明确指令一并提交、推送和发布。
 
 #### 10.5 猎人自动射击链路（gdb 取证结论）
 
