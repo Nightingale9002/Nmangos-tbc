@@ -97,8 +97,131 @@ void MotionMaster::GuardedDeleteGenerator(MovementGenerator* gen, char const* si
     delete gen;
 }
 
+void MotionMaster::ForgetBotMotion()
+{
+    m_movementOwnership.InvalidateMotion();
+    m_ownedGenerator = nullptr;
+    m_ownedSpline = 0;
+    m_botRequest.clear();
+}
+
+void MotionMaster::ResetBotMovement()
+{
+    ForgetBotMotion();
+    m_movementOwnership.Reset();
+}
+
+void MotionMaster::BeginBotMovementUpdate()
+{
+    m_botMovementEnabled = true;
+    if (m_botMap != m_owner->GetMapId() || m_botInstance != m_owner->GetInstanceId()
+        || !m_owner->IsAlive() || (m_owner->IsPlayer() && static_cast<Player*>(m_owner)->IsBeingTeleported()))
+        ResetBotMovement();
+    m_botMap = m_owner->GetMapId();
+    m_botInstance = m_owner->GetInstanceId();
+    RefreshBotMotion();
+    m_movementOwnership.BeginUpdate();
+}
+
+void MotionMaster::RefreshBotMotion()
+{
+    if (m_ownedGenerator && (empty() || top() != m_ownedGenerator
+        || m_ownedSpline != m_owner->movespline->GetId()
+        || (m_owner->movespline->Finalized() && top()->GetMovementGeneratorType() != FOLLOW_MOTION_TYPE
+            && top()->GetMovementGeneratorType() != CHASE_MOTION_TYPE)))
+        ForgetBotMotion();
+}
+
+bool MotionMaster::CanChangeMovement()
+{
+    if (!m_botMovementEnabled || m_requestedOwner == MovementOwner::Native) return true;
+    RefreshBotMotion();
+    // Core effects and control loss are not bot positioning decisions.
+    if (!m_owner->IsInWorld() || (m_owner->IsPlayer() && static_cast<Player*>(m_owner)->IsBeingTeleported())
+        || m_owner->hasUnitState(UNIT_STAT_CAN_NOT_MOVE | UNIT_STAT_PROPELLED)) return false;
+    if (!empty())
+        switch (top()->GetMovementGeneratorType())
+        {
+            case EFFECT_MOTION_TYPE: case FALL_MOTION_TYPE: case TAXI_MOTION_TYPE:
+            case CONFUSED_MOTION_TYPE: case FLEEING_MOTION_TYPE: case TIMED_FLEEING_MOTION_TYPE:
+                return false;
+            default: break;
+        }
+    return m_movementOwnership.MaySubmit(m_requestedOwner);
+}
+
+bool MotionMaster::OwnsBotMovement(MovementOwner owner)
+{
+    RefreshBotMotion();
+    return m_movementOwnership.Owns(owner);
+}
+
+bool MotionMaster::ReserveBotMovement(MovementOwner owner)
+{
+    MovementScope scope(*this, owner);
+    return CanChangeMovement() && m_movementOwnership.Reserve(owner);
+}
+
+bool MotionMaster::HoldBotPosition(MovementOwner owner)
+{
+    MovementScope scope(*this, owner);
+    if (!CanChangeMovement()) return false;
+    if (m_ownedGenerator)
+    {
+        m_owner->InterruptMoving(true);
+        Clear(false, true);
+        MoveIdle();
+    }
+    return m_movementOwnership.Reserve(owner);
+}
+
+void MotionMaster::StopOwnedBotMovement(MovementOwner owner)
+{
+    MovementScope scope(*this, owner);
+    if (OwnsBotMovement(owner))
+    {
+        if (!CanChangeMovement()) return;
+        m_owner->InterruptMoving(true);
+        Clear(false, true);
+        MoveIdle();
+    }
+    m_movementOwnership.Release(owner);
+}
+
+void MotionMaster::AdoptBotSpline()
+{
+    if (!m_botMovementEnabled || m_requestedOwner == MovementOwner::Native
+        || empty() || m_owner->movespline->Finalized()) return;
+    m_ownedGenerator = top();
+    m_ownedSpline = m_owner->movespline->GetId();
+    m_movementOwnership.Commit(m_requestedOwner);
+}
+
+bool MotionMaster::ContinueBotRequest(std::vector<float> const& request)
+{
+    if (!m_botMovementEnabled || m_requestedOwner == MovementOwner::Native
+        || !CanChangeMovement() || !OwnsBotMovement(m_requestedOwner)) return false;
+    if (m_botRequest == request) return true;
+    // Paths are revalidated before submission; a changing current-position prefix
+    // alone is not a new intent. Keep the already-running route to the same end.
+    if (request.size() >= 11 && m_botRequest.size() >= 11
+        && request[0] == float(PATH_MOTION_TYPE) && m_botRequest[0] == request[0]
+        && std::equal(request.begin(), request.begin() + 5, m_botRequest.begin())
+        && request.size() <= m_botRequest.size()
+        && std::equal(request.begin() + 8, request.end(),
+            m_botRequest.end() - (request.size() - 8))) return true;
+    return false;
+}
+
+void MotionMaster::RecordBotRequest(std::vector<float> request)
+{
+    if (m_botMovementEnabled && OwnsBotMovement(m_requestedOwner)) m_botRequest = std::move(request);
+}
+
 void MotionMaster::Initialize()
 {
+    MovementScope native(*this, MovementOwner::Native);
+    ResetBotMovement();
 #ifdef BUILD_METRICS
     metric::duration<std::chrono::microseconds> meas("motionmaster.initialize", {
         { "entry", std::to_string(m_owner->GetEntry()) },
@@ -170,6 +293,8 @@ MotionMaster::~MotionMaster()
 
 void MotionMaster::UpdateMotion(uint32 diff)
 {
+    MovementScope native(*this, MovementOwner::Native);
+    RefreshBotMotion();
     if (m_owner->hasUnitState(UNIT_STAT_CAN_NOT_MOVE))
         return;
 
@@ -224,6 +349,9 @@ void MotionMaster::UpdateMotion(uint32 diff)
             m_cleanFlag &= ~MMCF_RESET;
         }
     }
+    if (m_ownedGenerator && !empty() && top() == m_ownedGenerator)
+        m_ownedSpline = m_owner->movespline->GetId();
+    RefreshBotMotion();
 }
 
 void MotionMaster::DirectClean(bool reset, bool all)
@@ -339,6 +467,7 @@ void MotionMaster::DelayedExpire(bool reset)
 
 void MotionMaster::MoveIdle()
 {
+    if (!CanChangeMovement()) return;
     if (empty() || !isStatic(top()))
         push(&si_idleMovement);
 }
@@ -377,6 +506,7 @@ void MotionMaster::MoveTargetedHome(bool runHome)
 
 void MotionMaster::MoveConfused()
 {
+    MovementScope native(*this, MovementOwner::Native);
     DEBUG_FILTER_LOG(LOG_FILTER_AI_AND_MOVEGENSS, "%s move confused", m_owner->GetGuidStr().c_str());
 
     Mutate(new ConfusedMovementGenerator(*m_owner));
@@ -384,6 +514,7 @@ void MotionMaster::MoveConfused()
 
 void MotionMaster::MoveChase(Unit* target, float dist, float angle, bool moveFurther, bool walk, bool combat, bool delayed)
 {
+    if (!CanChangeMovement()) return;
     // ignore movement request if target not exist
     if (!target)
         return;
@@ -393,6 +524,7 @@ void MotionMaster::MoveChase(Unit* target, float dist, float angle, bool moveFur
         auto gen = (ChaseMovementGenerator*)top();
         gen->SetOffsetAndAngle(dist, angle, moveFurther);
         gen->SetNewTarget(*target);
+        AdoptBotSpline();
         if (delayed)
             gen->AddDelay();
         return;
@@ -405,6 +537,7 @@ void MotionMaster::MoveChase(Unit* target, float dist, float angle, bool moveFur
 
 void MotionMaster::DistanceYourself(float dist)
 {
+    if (!CanChangeMovement()) return;
     if (GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
     {
         auto gen = (ChaseMovementGenerator*)top();
@@ -415,32 +548,40 @@ void MotionMaster::DistanceYourself(float dist)
 
 void MotionMaster::MoveFollow(Unit* target, float dist, float angle, bool asMain/* = false*/, bool alwaysBoost/* = false*/)
 {
-    if (m_owner->hasUnitState(UNIT_STAT_LOST_CONTROL))
-        return;
-
-    if (asMain)
-        Clear(false, true);
+    if (!CanChangeMovement() || m_owner->hasUnitState(UNIT_STAT_LOST_CONTROL)) return;
+    bool const botRequest = m_botMovementEnabled && m_requestedOwner != MovementOwner::Native;
+    if (botRequest && !target) return;
+    std::vector<float> request;
+    if (botRequest)
+    {
+        uint64 const guid = target->GetObjectGuid().GetRawValue();
+        request = {float(FOLLOW_MOTION_TYPE), float(guid & 0xffff), float((guid >> 16) & 0xffff),
+            float((guid >> 32) & 0xffff), float(guid >> 48), dist, angle, float(asMain), float(alwaysBoost)};
+        if (ContinueBotRequest(request)) return;
+    }
     else
-        Clear(!empty()); // avoid resetting if we are already empty
-
-    // ignore movement request if target not exist
-    if (!target)
-        return;
-
+    {
+        if (asMain) Clear(false, true);
+        else Clear(!empty());
+    }
+    if (!target) return;
     DEBUG_FILTER_LOG(LOG_FILTER_AI_AND_MOVEGENSS, "%s follow to %s", m_owner->GetGuidStr().c_str(), target->GetGuidStr().c_str());
-
-    Mutate(new FollowMovementGenerator(*target, dist, angle, asMain, (m_owner->IsPlayer() && !m_owner->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)), alwaysBoost));
+    Mutate(new FollowMovementGenerator(*target, dist, angle, asMain,
+        (m_owner->IsPlayer() && !m_owner->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED)), alwaysBoost));
+    if (botRequest) RecordBotRequest(std::move(request));
 }
 
 void MotionMaster::MoveInFormation(FormationSlotDataSPtr& sData, bool asMain /*= false*/)
 {
+    if (!CanChangeMovement()) return;
     if (m_owner->hasUnitState(UNIT_STAT_LOST_CONTROL))
         return;
 
-    if (asMain)
-        Clear(false, true);
-    else
-        Clear(!empty()); // avoid resetting if we are already empty
+    if (!m_botMovementEnabled || m_requestedOwner == MovementOwner::Native)
+    {
+        if (asMain) Clear(false, true);
+        else Clear(!empty());
+    }
 
     auto master = sData->GetMaster();
     // ignore movement request if target not exist
@@ -455,13 +596,15 @@ void MotionMaster::MoveInFormation(FormationSlotDataSPtr& sData, bool asMain /*=
 
 void MotionMaster::MoveStay(float x, float y, float z, float o, bool asMain)
 {
+    if (!CanChangeMovement()) return;
     if (m_owner->hasUnitState(UNIT_STAT_LOST_CONTROL))
         return;
 
-    if (asMain)
-        Clear(false, true);
-    else
-        Clear(!empty()); // avoid resetting if we are already empty
+    if (!m_botMovementEnabled || m_requestedOwner == MovementOwner::Native)
+    {
+        if (asMain) Clear(false, true);
+        else Clear(!empty());
+    }
 
     DEBUG_FILTER_LOG(LOG_FILTER_AI_AND_MOVEGENSS, "%s stays at position (X: %f Y: %f Z: %f)", m_owner->GetGuidStr().c_str(), x, y, z);
 
@@ -491,7 +634,19 @@ void MotionMaster::MovePoint(uint32 id, Position const& position, ForcedMovement
                   uint32(GetCurrentMovementGeneratorType()), guid.GetString().c_str(), relayId);
     }
 
+    if (!m_botMovementEnabled || m_requestedOwner == MovementOwner::Native)
+    {
+        Mutate(new PointMovementGenerator(id, dest.x, dest.y, dest.z, dest.o, generatePath, forcedMovement, speed, guid, relayId));
+        return;
+    }
+    std::vector<float> const request = {float(POINT_MOTION_TYPE), float(id & 0xffff), float(id >> 16),
+        dest.x, dest.y, dest.z, dest.o, float(forcedMovement), speed, float(generatePath),
+        float(relayId & 0xffff), float(relayId >> 16),
+        float(guid.GetRawValue() & 0xffff), float((guid.GetRawValue() >> 16) & 0xffff),
+        float((guid.GetRawValue() >> 32) & 0xffff), float(guid.GetRawValue() >> 48)};
+    if (!CanChangeMovement() || ContinueBotRequest(request)) return;
     Mutate(new PointMovementGenerator(id, dest.x, dest.y, dest.z, dest.o, generatePath, forcedMovement, speed, guid, relayId));
+    RecordBotRequest(request);
 }
 
 void MotionMaster::MovePoint(uint32 id, float x, float y, float z, ForcedMovement forcedMovement/* = FORCED_MOVEMENT_NONE*/, bool generatePath/* = true*/)
@@ -523,7 +678,19 @@ void MotionMaster::MovePath(std::vector<G3D::Vector3>& path, float o, ForcedMove
     else
         DEBUG_FILTER_LOG(LOG_FILTER_AI_AND_MOVEGENSS, "%s follows a pre-calculated path to X: %f Y: %f Z: %f", m_owner->GetGuidStr().c_str(), x, y, z);
 
+    if (!m_botMovementEnabled || m_requestedOwner == MovementOwner::Native)
+    {
+        Mutate(new FixedPathMovementGenerator(path, o, forcedMovement, flying, 0.0f, 0, cyclic));
+        return;
+    }
+    std::vector<float> request = {float(PATH_MOTION_TYPE), o, float(forcedMovement), float(flying), float(cyclic)};
+    for (auto const& point : path)
+    {
+        request.push_back(point.x); request.push_back(point.y); request.push_back(point.z);
+    }
+    if (!CanChangeMovement() || ContinueBotRequest(request)) return;
     Mutate(new FixedPathMovementGenerator(path, o, forcedMovement, flying, 0.0f, 0, cyclic));
+    RecordBotRequest(std::move(request));
 }
 
 void MotionMaster::MovePath(int32 pathId, WaypointPathOrigin wpOrigin /*= PATH_NO_PATH*/, ForcedMovement forcedMovement, bool flying, float speed, bool cyclic, ObjectGuid guid/* = ObjectGuid()*/)
@@ -540,6 +707,7 @@ void MotionMaster::MoveRetreat(float x, float y, float z, float o, uint32 delay)
 
 void MotionMaster::MoveFleeing(Unit* source, uint32 time)
 {
+    MovementScope native(*this, MovementOwner::Native);
     if (!source)
         return;
 
@@ -605,6 +773,7 @@ void MotionMaster::MoveLinearWP(uint32 pathId /*= 0*/, uint32 source /*= 0*/, ui
 
 void MotionMaster::MoveTaxi()
 {
+    MovementScope native(*this, MovementOwner::Native);
     if (m_owner->GetTypeId() == TYPEID_UNIT)
     {
         sLog.outError("%s can't be in taxi flight", m_owner->GetGuidStr().c_str());
@@ -634,6 +803,7 @@ void MotionMaster::MoveDistract(uint32 timer)
 //   用途：路线跳点（DungeonRoute.h → TryRouteLink）、bot 跟随主人跳下楼层。
 void MotionMaster::MoveJump(float x, float y, float z, float horizontalSpeed, float max_height, uint32 id/* = EVENT_JUMP*/)
 {
+    if (!CanChangeMovement()) return;
     (void)max_height;   // 该分支 MoveSplineInit 没有 parabolic 参数，先按"下落样条"处理
 
     // [2026-10-19 站长口径] bot 的服务端跳跃也记一份样本（is_bot=1；真人走客户端包）
@@ -652,6 +822,7 @@ void MotionMaster::MoveJump(float x, float y, float z, float horizontalSpeed, fl
 
 void MotionMaster::MoveCharge(float x, float y, float z, float speed, uint32 id/* = EVENT_CHARGE*/)
 {
+    MovementScope native(*this, MovementOwner::Native);
     if (m_owner->hasUnitState(UNIT_STAT_NO_FREE_MOVE))
         return;
 
@@ -668,6 +839,7 @@ void MotionMaster::MoveCharge(float x, float y, float z, float speed, uint32 id/
 
 void MotionMaster::MoveCharge(Unit& target, float speed, uint32 id/* = EVENT_CHARGE*/)
 {
+    MovementScope native(*this, MovementOwner::Native);
     if (m_owner->hasUnitState(UNIT_STAT_NO_FREE_MOVE))
         return;
 
@@ -688,6 +860,7 @@ void MotionMaster::MoveCharge(Unit& target, float speed, uint32 id/* = EVENT_CHA
 
 bool MotionMaster::MoveFall(ObjectGuid guid/* = ObjectGuid()*/, uint32 relayId/* = 0*/)
 {
+    MovementScope native(*this, MovementOwner::Native);
     const float x = m_owner->GetPositionX(), y = m_owner->GetPositionY(), z = m_owner->GetPositionZ();
 
     // Clientless ground players need the first actual floor BELOW their feet;
@@ -725,6 +898,19 @@ bool MotionMaster::MoveFall(ObjectGuid guid/* = ObjectGuid()*/, uint32 relayId/*
 
 void MotionMaster::Mutate(MovementGenerator* m)
 {
+    if (!CanChangeMovement())
+    {
+        GuardedDeleteGenerator(m, "bot-intent-rejected");
+        return;
+    }
+    bool const botRequest = m_botMovementEnabled && m_requestedOwner != MovementOwner::Native;
+    if (botRequest)
+    {
+        // One active bot generator. Never resume a superseded intent from the stack.
+        Clear(false, true);
+        push(&si_idleMovement);
+    }
+    else ResetBotMovement();
     // [DOOR-DIAG 2026-10-03] Mutate() is the single funnel through which every Move* helper installs a
     // movement generator (21 call sites, no direct push(new ...) anywhere), so a corpse that suddenly
     // holds a non-idle generator is named here - together with the generator being installed and the
@@ -758,6 +944,13 @@ void MotionMaster::Mutate(MovementGenerator* m)
 
     m->Initialize(*m_owner);
     push(m);
+    if (botRequest && (!m_owner->movespline->Finalized()
+        || m->GetMovementGeneratorType() == FOLLOW_MOTION_TYPE || m->GetMovementGeneratorType() == CHASE_MOTION_TYPE))
+    {
+        m_ownedGenerator = m;
+        m_ownedSpline = m_owner->movespline->GetId();
+        m_movementOwnership.Commit(m_requestedOwner);
+    }
 }
 
 void MotionMaster::InterruptPanic()

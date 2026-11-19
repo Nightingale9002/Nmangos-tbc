@@ -10804,6 +10804,7 @@ void Unit::SendPetDismiss(uint32 soundId) const
 
 void Unit::StopMoving(bool forceSendStop /*=false*/)
 {
+    if (!GetMotionMaster()->CanChangeMovement()) return;
     if (IsStopped() && !forceSendStop)
         return;
 
@@ -10819,6 +10820,7 @@ void Unit::StopMoving(bool forceSendStop /*=false*/)
 
 void Unit::InterruptMoving(bool forceSendStop /*=false*/)
 {
+    if (!GetMotionMaster()->CanChangeMovement()) return;
     bool isMoving = false;
 
     if (!movespline->Finalized())

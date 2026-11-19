@@ -24,6 +24,7 @@
 #include "MotionGenerators/WaypointManager.h"
 #include "Entities/ObjectGuid.h"
 #include "Maps/SpawnGroupDefines.h"
+#include "MotionGenerators/MovementOwnership.h"
 
 #include <stack>
 #include <vector>
@@ -104,6 +105,32 @@ class MotionMaster : private std::stack<MovementGenerator*>
         explicit MotionMaster(Unit* unit) : m_owner(unit), m_expList(nullptr), m_cleanFlag(MMCF_NONE), m_defaultPathId(0), m_currentPathId(0) {}
         ~MotionMaster();
 
+        class MovementScope
+        {
+        public:
+            MovementScope(MotionMaster& motion, MovementOwner owner, bool onlyIfNative = false)
+                : motion(motion), previous(motion.m_requestedOwner)
+            {
+                if (!onlyIfNative || previous == MovementOwner::Native || previous == MovementOwner::Ordinary)
+                    motion.m_requestedOwner = owner;
+            }
+            ~MovementScope() { motion.m_requestedOwner = previous; }
+            MovementScope(MovementScope const&) = delete;
+            MovementScope& operator=(MovementScope const&) = delete;
+        private:
+            MotionMaster& motion;
+            MovementOwner previous;
+        };
+
+        void BeginBotMovementUpdate();
+        void ResetBotMovement();
+        bool CanChangeMovement();
+        bool OwnsBotMovement(MovementOwner owner);
+        bool ReserveBotMovement(MovementOwner owner);
+        bool HoldBotPosition(MovementOwner owner);
+        void StopOwnedBotMovement(MovementOwner owner);
+        void AdoptBotSpline();
+
         void Initialize();
 
         MovementGenerator const* GetCurrent() const { return top(); }
@@ -119,6 +146,9 @@ class MotionMaster : private std::stack<MovementGenerator*>
         void UpdateMotion(uint32 diff);
         void Clear(bool reset = true, bool all = false)
         {
+            if (!CanChangeMovement()) return;
+            if (m_requestedOwner == MovementOwner::Native) ResetBotMovement();
+            else ForgetBotMotion();
             if (m_cleanFlag & MMCF_UPDATE)
                 DelayedClean(reset, all);
             else
@@ -180,6 +210,18 @@ class MotionMaster : private std::stack<MovementGenerator*>
         void UnMarkFollowMovegens();
 
     private:
+        void RefreshBotMotion();
+        void ForgetBotMotion();
+        bool ContinueBotRequest(std::vector<float> const& request);
+        void RecordBotRequest(std::vector<float> request);
+        bool m_botMovementEnabled = false;
+        MovementOwner m_requestedOwner = MovementOwner::Native;
+        MovementOwnership m_movementOwnership;
+        MovementGenerator* m_ownedGenerator = nullptr;
+        uint32 m_ownedSpline = 0;
+        uint32 m_botMap = 0, m_botInstance = 0;
+        std::vector<float> m_botRequest;
+
         void Mutate(MovementGenerator* m);                  // use Move* functions instead
 
         // [PATHCORRUPT-DIAG 2026-10-03] The ONLY way a movement generator may be deleted: checks the

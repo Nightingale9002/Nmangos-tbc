@@ -13566,13 +13566,26 @@ shamanistic rage / bloodlust / use trinket` —— 这些跳过 `Ready()` 的 GC
 
 #### 10.4 移动职责（站长架构口径）
 
-**移动归引擎，状态机只管技能。** 状态机只在"这一 tick 真放出技能"时让引擎让位：
-`skipEngine = fsmHandled && SkipEngine(guid) && DidCastThisTick(guid)`。
+**2026-11-20 更正并替代本节旧结论（本地重构，未部署、未游戏实测）**：历史上“FSM 只管技能、仅施法时让引擎让位”的描述已不适用于当前实现。`DpsFsm.cpp → TickSurvival()/TickInner()`、机制执行器和普通动作引擎均有合法移动需求；`DidCastThisTick()` 还包含有意持位。普通动作引擎里的 `BossArena.h → Tick()` 也并非 FSM 后无条件执行的尾部回调。不能依赖各控制器调用先后或反复 `Clear()` 决定移动权。
 
-远程不贴脸的正确做法是**引擎侧**：
-- `ReachTargetAction::GetApproachRange()`：敌对目标 + 有 `ranged` 策略 ⇒ 接近距离 = `GetRange("shoot")`（兜底 25）
-- **最后一道闸**（`RandomPlayerbotMgr::UpdateAIInternal`，`simscenario::Update()` 之后）：
-  `ForEachPlayerbot` 检查"有 ranged 策略 + 有目标 + 距离 < 射程-5" ⇒ `MoveChase(victim, keep)`
+当前统一提交边界是 `MotionMaster.cpp → Mutate()` 与 `MotionMaster.h → Clear()`。只有 bot 的 MotionMaster 开启仲裁；普通生物沿用核心路径。`MovementOwnership.h → MovementOwnership` 每 bot 保存活动 owner 和当轮静止预约，`MotionMaster.h → MovementScope` 给请求标注来源，低优先级或其它等优先级来源在修改生成器/停步前被拒绝。接受新的 bot 意图时清除被替代的生成器栈，保留 idle 底座，避免旧追击/跟随在新路径结束后恢复。
+
+| 来源 | 优先级 | 说明 |
+|---|---:|---|
+| 普通旅行 / 跟随 / 战斗位置 | 10 / 20 / 30 | FSM 默认战斗来源；嵌套跟随保留上层机制来源 |
+| stay / 开怪入场 | 32 / 35 | stay 每轮续约，移除策略释放；开怪无安全路线仍持位 |
+| 自动回撤 / 手动拉回 / 场地边界 | 40 / 41 / 45 | 手动与自动使用不同身份，过期取消不能停其它来源 |
+| 编队 / 基础座位 / 机制位置 | 50 / 60 / 70 | 静止预约不抑制治疗与技能选择 |
+| 反应 / 锥形 / 施法躲避 / 光环分离 / 地板逃生 | 75 / 80 / 90 / 95 / 100 | 保留外层生存优先路径；高优先级可抢占低优先级 |
+| 核心原生控制 | 权威来源 | 恐惧、迷惑、冲锋、击退/落地、出租车及重置不受普通 bot 意图阻拦；bot 不能抢受控移动 |
+
+`MotionMaster.cpp → ContinueBotRequest()/RecordBotRequest()/RefreshBotMotion()` 将请求与实际生成器及样条 ID 绑定，只有成功发射后才登记；同一有效点请求和不变剩余路径续跑，结束、外来样条替换、死亡、地图/实例切换及传送重置使记录失效。`MovementActions.cpp → DispatchMovement()` 移除跨地图线程共享的 `s_inflight`；敌对 `ChaseTo()` 执行已经安全求解的坐标，避免把安全点变成核心 Chase 的另一套角度/距离语义。
+
+`DpsFsm.cpp → TickTrackedConePositionOwned()/TickTrackedConePosition()` 的跨 tick 路径记录改由 `PlayerbotAI.h → TrackedMovement()` 随 AI 生命周期持有，移除线程本地状态。取消同时核验 owner 和实际样条身份。`MotionMaster.cpp → HoldBotPosition()` 用于已到安全槽的静止持位，`StopOwnedBotMovement()` 只取消匹配来源；不能用规划失败来停止其它控制器的运动。普通纠位的最后否决条件在生成器提交前生效。
+
+`EncounterPositioning.h → ExecuteSeatMove()` 保留坦克倒退速度、目标朝向和步进；原始样条发射后通过 `MotionMaster.cpp → AdoptBotSpline()` 纳入仲裁。`PlayerbotAI.cpp → CastSpell()` 保留施法停止普通跟随的能力，同时遵守更高优先级机制所有权。落地、受控运动、逃生瞬发及既有地形/危险/未交战敌人/回撤安全判定继续由各自原生入口校验；仲裁不替代导航和危险模型。
+
+验证：`dev/tests/bot_movement_ownership.cpp → main()` 独立 C++ 仲裁场景测试已通过，覆盖抢占、旧来源误释放、静止预约、手动/自动拉回隔离与重置。完整本地 WSL `Ubuntu-20.04` 的 `mangosd` 构建已通过，主会话已复核并隔离本次暂存差异；编译与离线测试不等于副本游戏实测，尚未部署。本次完整构建另外暴露当前危险模型改动中的旧双字段解构与同名局部变量冲突，已做兼容修正；危险模型原有未提交改动继续保留在工作树。
 
 #### 10.5 猎人自动射击链路（gdb 取证结论）
 
