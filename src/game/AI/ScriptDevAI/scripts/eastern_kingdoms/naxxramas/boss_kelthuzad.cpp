@@ -422,10 +422,10 @@ struct boss_kelthuzadAI : public BossAI
         if (Creature* lichKing = m_instance->GetSingleCreatureFromStorage(NPC_THE_LICHKING))
             DoScriptText(SAY_ANSWER_REQUEST, lichKing);
 
-        m_instance->DoUseDoorOrButton(GO_KELTHUZAD_WINDOW_1);
-        m_instance->DoUseDoorOrButton(GO_KELTHUZAD_WINDOW_2);
-        m_instance->DoUseDoorOrButton(GO_KELTHUZAD_WINDOW_3);
-        m_instance->DoUseDoorOrButton(GO_KELTHUZAD_WINDOW_4);
+        SetDoorStateExplicit(m_creature->GetMap(), GO_KELTHUZAD_WINDOW_1, true);
+        SetDoorStateExplicit(m_creature->GetMap(), GO_KELTHUZAD_WINDOW_2, true);
+        SetDoorStateExplicit(m_creature->GetMap(), GO_KELTHUZAD_WINDOW_3, true);
+        SetDoorStateExplicit(m_creature->GetMap(), GO_KELTHUZAD_WINDOW_4, true);
         ResetTimer(KELTHUZAD_STOP_GUARDIAN_SPAWNS, 55s);
     }
 

@@ -76,7 +76,7 @@ void instance_stratholme::DoOpenSlaughterhouseDoor(bool open)
 {
     if (open != m_isSlaughterDoorOpen)
     {
-        DoUseDoorOrButton(GO_ZIGGURAT_DOOR_4);
+        SetDoorStateExplicit(instance, GO_ZIGGURAT_DOOR_4, true);
         m_isSlaughterDoorOpen = open;
     }
 }
@@ -87,8 +87,8 @@ bool instance_stratholme::StartSlaughterSquare()
     {
         DoOrSimulateScriptTextForThisInstance(SAY_ANNOUNCE_RIVENDARE, NPC_BARON);
 
-        DoUseDoorOrButton(GO_PORT_GAUNTLET);
-        DoUseDoorOrButton(GO_PORT_SLAUGHTER);
+        SetDoorStateExplicit(instance, GO_PORT_GAUNTLET, true);
+        SetDoorStateExplicit(instance, GO_PORT_SLAUGHTER, true);
 
         debug_log("SD2: Instance Stratholme: Open Slaughter square.");
         return true;
@@ -248,7 +248,7 @@ void instance_stratholme::SetData(uint32 type, uint32 data)
             if (data == DONE)
             {
                 DoSortZiggurats();
-                DoUseDoorOrButton(m_zigguratStorage[type - TYPE_BARONESS].m_doorGuid);
+                SetDoorStateExplicit(instance, m_zigguratStorage[type - TYPE_BARONESS].m_doorGuid, true);
             }
             if (data == SPECIAL)
                 StartSlaughterSquare();
@@ -259,7 +259,7 @@ void instance_stratholme::SetData(uint32 type, uint32 data)
                 if (m_auiEncounter[type] != SPECIAL && m_auiEncounter[type] != DONE)
                 {
                     m_slaughterSquareTimer = 20 * IN_MILLISECONDS;       // TODO - unknown, also possible that this is not the very correct place..
-                    DoUseDoorOrButton(GO_PORT_GAUNTLET);
+                    SetDoorStateExplicit(instance, GO_PORT_GAUNTLET, false);
                 }
 
                 uint32 abomCount = m_abominationGUIDs.size();
@@ -301,11 +301,11 @@ void instance_stratholme::SetData(uint32 type, uint32 data)
             }
             // After fail aggroing Ramstein means wipe on Ramstein, so close door again
             if (data == IN_PROGRESS && m_auiEncounter[type] == FAIL)
-                DoUseDoorOrButton(GO_PORT_GAUNTLET);
+                SetDoorStateExplicit(instance, GO_PORT_GAUNTLET, false);
             if (data == DONE)
             {
                 // Open side gate and start summoning skeletons
-                DoUseDoorOrButton(GO_PORT_SLAUGHTER_GATE);
+                SetDoorStateExplicit(instance, GO_PORT_SLAUGHTER_GATE, true);
                 // Close the Slaughterhouse door in case it was open again after a wipe on Ramstein
                 DoOpenSlaughterhouseDoor(false);
                 // use this timer as a bool just to start summoning
@@ -330,7 +330,7 @@ void instance_stratholme::SetData(uint32 type, uint32 data)
             // Open Door again and stop Abomination
             if (data == FAIL && m_auiEncounter[type] != FAIL)
             {
-                DoUseDoorOrButton(GO_PORT_GAUNTLET);
+                SetDoorStateExplicit(instance, GO_PORT_GAUNTLET, true);
                 m_slaughterSquareTimer = 0;
 
                 // Let already moving Abominations stop
@@ -347,11 +347,11 @@ void instance_stratholme::SetData(uint32 type, uint32 data)
         case TYPE_BARON:
             if (data == IN_PROGRESS)
             {
-                DoUseOpenableObject(GO_ZIGGURAT_DOOR_5, false);
+                SetDoorStateExplicit(instance, GO_ZIGGURAT_DOOR_5, false);
 
                 // Close Slaughterhouse door if needed
                 if (m_auiEncounter[type] == FAIL)
-                    DoUseOpenableObject(GO_PORT_GAUNTLET, false);
+                    SetDoorStateExplicit(instance, GO_PORT_GAUNTLET, false);
 
                 // If Aurius was given the medaillon wait 5s before summoning him
                 if (GetData(TYPE_AURIUS) == DONE)
@@ -386,7 +386,7 @@ void instance_stratholme::SetData(uint32 type, uint32 data)
                     if (Creature* ysida = GetSingleCreatureFromStorage(NPC_YSIDA))
                     {
                         DoScriptText(SAY_EPILOGUE, ysida);
-                        DoUseDoorOrButton(GO_YSIDA_CAGE);
+                        SetDoorStateExplicit(instance, GO_YSIDA_CAGE, true);
                         ysida->GetMotionMaster()->MovePoint(0, stratholmeLocation[8].x, stratholmeLocation[8].y, stratholmeLocation[8].z);
                         ysida->SetFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER | UNIT_NPC_FLAG_GOSSIP);
                     }
@@ -417,9 +417,9 @@ void instance_stratholme::SetData(uint32 type, uint32 data)
             if (data != IN_PROGRESS)
             {
                 // Open Slaughterhouse door again
-                DoUseOpenableObject(GO_PORT_GAUNTLET, true);
+                SetDoorStateExplicit(instance, GO_PORT_GAUNTLET, true);
                 // Open Baron door
-                DoUseOpenableObject(GO_ZIGGURAT_DOOR_5, true);
+                SetDoorStateExplicit(instance, GO_ZIGGURAT_DOOR_5, true);
             }
 
             m_auiEncounter[type] = data;
@@ -446,15 +446,15 @@ void instance_stratholme::SetData(uint32 type, uint32 data)
 
             // Restart after failure, close Gauntlet
             if (data == IN_PROGRESS && m_auiEncounter[type] == FAIL)
-                DoUseDoorOrButton(GO_PORT_GAUNTLET);
+                SetDoorStateExplicit(instance, GO_PORT_GAUNTLET, false);
             // Wipe case - open gauntlet
             if (data == FAIL)
-                DoUseDoorOrButton(GO_PORT_GAUNTLET);
+                SetDoorStateExplicit(instance, GO_PORT_GAUNTLET, true);
             if (data == DONE)
             {
                 if (Creature* baron = GetSingleCreatureFromStorage(NPC_BARON))
                     DoScriptText(SAY_UNDEAD_DEFEAT, baron);
-                DoUseDoorOrButton(GO_ZIGGURAT_DOOR_5);
+                SetDoorStateExplicit(instance, GO_ZIGGURAT_DOOR_5, true);
             }
             m_auiEncounter[type] = data;
 
@@ -982,8 +982,8 @@ void instance_stratholme::DoGateTrap(uint8 gate)
 
     debug_log("SD2: Instance Stratholme - Rat Trap activated %i.", gate);
     // close the gates
-    DoUseDoorOrButton(gates[2 * gate]);
-    DoUseDoorOrButton(gates[2 * gate + 1]);
+    SetDoorStateExplicit(instance, gates[2 * gate], false);
+    SetDoorStateExplicit(instance, gates[2 * gate + 1], false);
 
     // set timer to reset the trap
     m_gateTrapTimers[gate][0] = 30 * MINUTE * IN_MILLISECONDS;
@@ -1044,8 +1044,8 @@ void instance_stratholme::Update(uint32 diff)
         {
             if (m_gateTrapTimers[i][1] <= diff)
             {
-                DoUseDoorOrButton(gates[2 * i]);
-                DoUseDoorOrButton(gates[2 * i + 1]);
+                SetDoorStateExplicit(instance, gates[2 * i], true);
+                SetDoorStateExplicit(instance, gates[2 * i + 1], true);
                 m_gateTrapTimers[i][1] = 0;
             }
             else
@@ -1177,7 +1177,7 @@ void instance_stratholme::Update(uint32 diff)
                 if (Creature* ysida = GetSingleCreatureFromStorage(NPC_YSIDA))
                 {
                     ysida->GetMotionMaster()->MovePoint(0, stratholmeLocation[8].x, stratholmeLocation[8].y, stratholmeLocation[8].z);
-                    DoUseDoorOrButton(GO_YSIDA_CAGE);
+                    SetDoorStateExplicit(instance, GO_YSIDA_CAGE, true);
                 }
 
                 DoOrSimulateScriptTextForThisInstance(SAY_ANNOUNCE_RUN_FAIL, NPC_BARON);

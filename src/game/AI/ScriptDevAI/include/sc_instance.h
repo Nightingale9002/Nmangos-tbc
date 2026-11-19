@@ -7,6 +7,7 @@
 
 #include "Maps/InstanceData.h"
 #include "Maps/Map.h"
+#include "Entities/GameObject.h"
 #include "AI/ScriptDevAI/ScriptDevAIMgr.h"
 
 enum EncounterState
@@ -84,6 +85,53 @@ class ScriptedMap : public ScriptedInstance
     public:
         ScriptedMap(Map* map) : ScriptedInstance(map) {}
 };
+
+// Applies an explicit open/closed state to one gameobject. Toggle-based helpers
+// silently do nothing when the door's loot state is not GO_READY, which is how a
+// door could stay open exactly when an event required it closed.
+inline bool SetDoorStateExplicit(GameObject* pGo, bool bOpen, bool bLock = false)
+{
+    if (!pGo)
+        return false;
+
+    pGo->SetLootState(GO_READY);
+    pGo->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+    if (bOpen)
+    {
+        pGo->SetGoState(GO_STATE_ACTIVE);
+        pGo->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+    }
+    else
+    {
+        pGo->SetGoState(GO_STATE_READY);
+        if (bLock)
+            pGo->SetFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+    }
+    return true;
+}
+
+// Looks the gameobject up by spawn entry in the map's object store and sets its state
+// explicitly instead of toggling it. Returns false when no such object is loaded.
+inline bool SetDoorStateExplicit(Map* pMap, uint32 uiEntry, bool bOpen, bool bLock = false)
+{
+    if (!pMap)
+        return false;
+
+    ScriptedInstance* pInstance = dynamic_cast<ScriptedInstance*>(pMap->GetInstanceData());
+    if (!pInstance)
+        return false;
+
+    return SetDoorStateExplicit(pInstance->GetSingleGameObjectFromStorage(uiEntry), bOpen, bLock);
+}
+
+// Same, for scripts that only carry a stored ObjectGuid (instance storage maps).
+inline bool SetDoorStateExplicit(Map* pMap, ObjectGuid guid, bool bOpen, bool bLock = false)
+{
+    if (!pMap || !guid)
+        return false;
+
+    return SetDoorStateExplicit(pMap->GetGameObject(guid), bOpen, bLock);
+}
 
 enum DialogueStepType
 {

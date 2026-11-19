@@ -171,7 +171,7 @@ void instance_blackrock_depths::OnObjectCreate(GameObject* pGo)
             {
                 // bar or Plugger event done: open the Grim Guzzler door
                 // tell the instance script it is open to prevent some of the other events
-                DoUseDoorOrButton(GO_BAR_DOOR);
+                SetDoorStateExplicit(instance, GO_BAR_DOOR, true);
                 SetBarDoorIsOpen();
             }
             break;
@@ -237,7 +237,7 @@ void instance_blackrock_depths::SetData(uint32 uiType, uint32 uiData)
             }
             if (uiData == DONE)
             {
-                DoUseDoorOrButton(GO_SECRET_DOOR);
+                SetDoorStateExplicit(instance, GO_SECRET_DOOR, true);
                 DoToggleGameObjectFlags(GO_SECRET_SAFE, GO_FLAG_NO_INTERACT, false);
             }
             m_auiEncounter[1] = uiData;
@@ -260,7 +260,7 @@ void instance_blackrock_depths::SetData(uint32 uiType, uint32 uiData)
             if (uiData == m_auiEncounter[3])
                 break;
             // Combat door
-            DoUseDoorOrButton(GO_TOMB_ENTER);
+            SetDoorStateExplicit(instance, GO_TOMB_ENTER, true);
             // Start the event
             if (uiData == IN_PROGRESS)
                 DoCallNextDwarf();
@@ -282,15 +282,15 @@ void instance_blackrock_depths::SetData(uint32 uiType, uint32 uiData)
             if (uiData == DONE)
             {
                 DoRespawnGameObject(GO_CHEST_SEVEN, HOUR);
-                DoUseDoorOrButton(GO_TOMB_EXIT);
+                SetDoorStateExplicit(instance, GO_TOMB_EXIT, true);
             }
             m_auiEncounter[3] = uiData;
             break;
         case TYPE_LYCEUM:
             if (uiData == DONE)
             {
-                DoUseDoorOrButton(GO_GOLEM_ROOM_N);
-                DoUseDoorOrButton(GO_GOLEM_ROOM_S);
+                SetDoorStateExplicit(instance, GO_GOLEM_ROOM_N, true);
+                SetDoorStateExplicit(instance, GO_GOLEM_ROOM_S, true);
                 if (Creature* magmus = GetSingleCreatureFromStorage(NPC_MAGMUS))
                     DoScriptText(YELL_MAGMUS_INTRO, magmus);
             }
@@ -300,17 +300,17 @@ void instance_blackrock_depths::SetData(uint32 uiType, uint32 uiData)
             switch (uiData)
             {
                 case IN_PROGRESS:
-                    DoUseDoorOrButton(GO_GOLEM_ROOM_N);
-                    DoUseDoorOrButton(GO_GOLEM_ROOM_S);
+                    SetDoorStateExplicit(instance, GO_GOLEM_ROOM_N, false);
+                    SetDoorStateExplicit(instance, GO_GOLEM_ROOM_S, false);
                     break;
                 case FAIL:
-                    DoUseDoorOrButton(GO_GOLEM_ROOM_N);
-                    DoUseDoorOrButton(GO_GOLEM_ROOM_S);
+                    SetDoorStateExplicit(instance, GO_GOLEM_ROOM_N, true);
+                    SetDoorStateExplicit(instance, GO_GOLEM_ROOM_S, true);
                     break;
                 case DONE:
-                    DoUseDoorOrButton(GO_GOLEM_ROOM_N);
-                    DoUseDoorOrButton(GO_GOLEM_ROOM_S);
-                    DoUseDoorOrButton(GO_THRONE_ROOM);
+                    SetDoorStateExplicit(instance, GO_GOLEM_ROOM_N, true);
+                    SetDoorStateExplicit(instance, GO_GOLEM_ROOM_S, true);
+                    SetDoorStateExplicit(instance, GO_THRONE_ROOM, true);
                     break;
             }
             m_auiEncounter[5] = uiData;
@@ -706,7 +706,7 @@ void instance_blackrock_depths::HandleBarPatrol(uint8 uiStep)
                 // if relevant, open the bar door and tell the instance it is open
                 if (!m_bIsBarDoorOpen)
                 {
-                    DoUseDoorOrButton(GO_BAR_DOOR);
+                    SetDoorStateExplicit(instance, GO_BAR_DOOR, true);
                     SetBarDoorIsOpen();
                 }
 

@@ -164,7 +164,7 @@ void instance_scholomance::SetData(uint32 uiType, uint32 uiData)
             if (m_auiEncounter[uiType] != FAIL && uiData == IN_PROGRESS)
                 return;
             m_auiEncounter[uiType] = uiData;
-            DoUseDoorOrButton(GO_GATE_KIRTONOS);
+            SetDoorStateExplicit(instance, GO_GATE_KIRTONOS, false);
             break;
         case TYPE_RATTLEGORE:
             m_auiEncounter[uiType] = uiData;
@@ -176,36 +176,36 @@ void instance_scholomance::SetData(uint32 uiType, uint32 uiData)
             break;
         case TYPE_RAS_FROSTWHISPER:
             m_auiEncounter[uiType] = uiData;
-            DoUseDoorOrButton(GO_GATE_RAS);
+            SetDoorStateExplicit(instance, GO_GATE_RAS, true);
             break;
         case TYPE_MALICIA:                                  // TODO this code can be simplified, when it is known which event-ids correspond to which room
             m_auiEncounter[uiType] = uiData;
-            DoUseDoorOrButton(m_mGandlingData[EVENT_ID_MALICIA].m_doorGuid);
+            SetDoorStateExplicit(instance, m_mGandlingData[EVENT_ID_MALICIA].m_doorGuid, uiData == FAIL || uiData == DONE);
             break;
         case TYPE_THEOLEN:
             m_auiEncounter[uiType] = uiData;
-            DoUseDoorOrButton(m_mGandlingData[EVENT_ID_THEOLEN].m_doorGuid);
+            SetDoorStateExplicit(instance, m_mGandlingData[EVENT_ID_THEOLEN].m_doorGuid, uiData == FAIL || uiData == DONE);
             break;
         case TYPE_POLKELT:
             m_auiEncounter[uiType] = uiData;
-            DoUseDoorOrButton(m_mGandlingData[EVENT_ID_POLKELT].m_doorGuid);
+            SetDoorStateExplicit(instance, m_mGandlingData[EVENT_ID_POLKELT].m_doorGuid, uiData == FAIL || uiData == DONE);
             break;
         case TYPE_RAVENIAN:
             m_auiEncounter[uiType] = uiData;
-            DoUseDoorOrButton(m_mGandlingData[EVENT_ID_RAVENIAN].m_doorGuid);
+            SetDoorStateExplicit(instance, m_mGandlingData[EVENT_ID_RAVENIAN].m_doorGuid, uiData == FAIL || uiData == DONE);
             break;
         case TYPE_ALEXEI_BAROV:
             m_auiEncounter[uiType] = uiData;
-            DoUseDoorOrButton(m_mGandlingData[EVENT_ID_BAROV].m_doorGuid);
+            SetDoorStateExplicit(instance, m_mGandlingData[EVENT_ID_BAROV].m_doorGuid, uiData == FAIL || uiData == DONE);
             break;
         case TYPE_ILLUCIA_BAROV:
             m_auiEncounter[uiType] = uiData;
-            DoUseDoorOrButton(m_mGandlingData[EVENT_ID_ILLUCIA].m_doorGuid);
+            SetDoorStateExplicit(instance, m_mGandlingData[EVENT_ID_ILLUCIA].m_doorGuid, uiData == FAIL || uiData == DONE);
             break;
         case TYPE_GANDLING:
             m_auiEncounter[uiType] = uiData;
             // Close the door to main room, because the encounter will take place only in the main hall and random around all the 6 rooms
-            DoUseDoorOrButton(GO_GATE_GANDLING);
+            SetDoorStateExplicit(instance, GO_GATE_GANDLING, uiData == FAIL || uiData == DONE);
             break;
     }
 
@@ -274,7 +274,7 @@ void instance_scholomance::HandlePortalEvent(uint32 uiEventId, uint32 uiData)
         if (!find->second.m_bIsActive)
         {
             find->second.m_bIsActive = true;
-            DoUseDoorOrButton(find->second.m_doorGuid);
+            SetDoorStateExplicit(instance, find->second.m_doorGuid, false);
         }
     }
     // Toggle door and event state in case of state-switch
@@ -285,7 +285,7 @@ void instance_scholomance::HandlePortalEvent(uint32 uiEventId, uint32 uiData)
                 (uiData == DONE && find->second.m_bIsActive))
         {
             find->second.m_bIsActive = !find->second.m_bIsActive;
-            DoUseDoorOrButton(find->second.m_doorGuid);
+            SetDoorStateExplicit(instance, find->second.m_doorGuid, uiData != IN_PROGRESS);
         }
     }
 }

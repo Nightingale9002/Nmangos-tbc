@@ -200,6 +200,21 @@ static const OperaSpawns aOperaLocJul  = {NPC_JULIANNE,    -10893.56f, -1760.43f
 
 static const float afChroneSpawnLoc[4] = { -10893.11f, -1757.85f, 90.55f, 4.60f};
 
+// Opera encounter bosses: combat with any of them means the performance has started, which has to
+// close and lock the arena barrier door. 17521 (The Big Bad Wolf) is the only one without an NPC_*
+// enum in this header; it is bound by creature_template.ScriptName = 'boss_bigbadwolf'.
+static const uint32 OPERA_BOSS_ENTRIES[] =
+{
+    NPC_DOROTHEE,
+    NPC_STRAWMAN,
+    NPC_TINHEAD,
+    NPC_ROAR,
+    17521,
+    NPC_CRONE,
+    NPC_JULIANNE,
+    NPC_ROMULO,
+};
+
 class instance_karazhan : public ScriptedInstance
 {
     public:
@@ -211,6 +226,7 @@ class instance_karazhan : public ScriptedInstance
 
         void OnPlayerEnter(Player* pPlayer) override;
         void OnCreatureCreate(Creature* pCreature) override;
+        void OnCreatureEnterCombat(Creature* pCreature) override;
         void OnObjectCreate(GameObject* pGo) override;
         void OnCreatureRespawn(Creature* creature) override;
 
@@ -223,6 +239,7 @@ class instance_karazhan : public ScriptedInstance
         void SetData64(uint32 uiData, uint64 uiGuid) override;
 
         void DoPrepareOperaStage(Creature* pOrganizer);
+        void DoSetOperaBarrierDoor(uint32 uiEntry, bool bOpen);
 
         uint32 GetPlayerTeam() const { return m_uiTeam; }
         bool IsFriendlyGameReady() const { return m_bFriendlyGame; }

@@ -173,8 +173,8 @@ void instance_shattered_halls::SetData(uint32 type, uint32 data)
             m_auiEncounter[type] = data;
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_NETHEKURSE_DOOR);
-                DoUseOpenableObject(GO_NETHEKURSE_ENTER_DOOR, true);
+                SetDoorStateExplicit(instance, GO_NETHEKURSE_DOOR, true);
+                SetDoorStateExplicit(instance, GO_NETHEKURSE_ENTER_DOOR, true);
             }
             break;
         case TYPE_OMROGG:

@@ -95,7 +95,7 @@ void instance_scarlet_monastery::OnObjectSpawn(GameObject* go)
 {
     if (go->GetEntry() == GO_CHAPEL_DOOR)
         if (GetData(TYPE_ASHBRINGER_EVENT) == IN_PROGRESS)
-            DoUseDoorOrButton(GO_CHAPEL_DOOR);
+            SetDoorStateExplicit(instance, GO_CHAPEL_DOOR, false);
 }
 
 void instance_scarlet_monastery::SetData(uint32 uiType, uint32 uiData)
@@ -103,7 +103,7 @@ void instance_scarlet_monastery::SetData(uint32 uiType, uint32 uiData)
     if (uiType == TYPE_MOGRAINE_AND_WHITE_EVENT)
     {
         if (uiData == IN_PROGRESS)
-            DoUseDoorOrButton(GO_WHITEMANE_DOOR);
+            SetDoorStateExplicit(instance, GO_WHITEMANE_DOOR, false, true);
         if (uiData == FAIL)
             {
                 Creature* pWhitemane = GetSingleCreatureFromStorage(NPC_WHITEMANE);
@@ -118,7 +118,7 @@ void instance_scarlet_monastery::SetData(uint32 uiType, uint32 uiData)
                     pWhitemane->ForcedDespawn();
                     pMograine->SetRespawnDelay(30, true);
                     pMograine->ForcedDespawn();
-                    DoUseDoorOrButton(GO_WHITEMANE_DOOR);
+                    SetDoorStateExplicit(instance, GO_WHITEMANE_DOOR, true);
                     m_auiEncounter[0] = NOT_STARTED;
                     return;
                 }
@@ -126,7 +126,7 @@ void instance_scarlet_monastery::SetData(uint32 uiType, uint32 uiData)
                 {
                     pWhitemane->SetRespawnDelay(30, true);
                     pWhitemane->ForcedDespawn();
-                    DoUseDoorOrButton(GO_WHITEMANE_DOOR);
+                    SetDoorStateExplicit(instance, GO_WHITEMANE_DOOR, true);
                     m_auiEncounter[0] = uiData;
                     return;
                 }
@@ -144,7 +144,7 @@ void instance_scarlet_monastery::SetData(uint32 uiType, uint32 uiData)
     {
         if (uiData == IN_PROGRESS)
         {
-            DoUseDoorOrButton(GO_CHAPEL_DOOR);
+            SetDoorStateExplicit(instance, GO_CHAPEL_DOOR, false);
 
             Creature* whitemane = GetSingleCreatureFromStorage(NPC_WHITEMANE, true);
             if (whitemane && whitemane->IsAlive() && !whitemane->IsInCombat())

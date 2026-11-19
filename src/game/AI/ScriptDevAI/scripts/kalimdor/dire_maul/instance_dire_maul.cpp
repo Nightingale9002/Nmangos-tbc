@@ -224,7 +224,7 @@ void instance_dire_maul::SetData(uint32 uiType, uint32 uiData)
             {
                 if (!m_bWallDestroyed)
                 {
-                    DoUseDoorOrButton(GO_CRUMBLE_WALL);
+                    SetDoorStateExplicit(instance, GO_CRUMBLE_WALL, true);
                     m_bWallDestroyed = true;
                 }
 
@@ -247,7 +247,7 @@ void instance_dire_maul::SetData(uint32 uiType, uint32 uiData)
         // West
         case TYPE_WARPWOOD:
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_WARPWOOD_DOOR);
+                SetDoorStateExplicit(instance, GO_WARPWOOD_DOOR, true);
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_IMMOLTHAR:
@@ -525,7 +525,7 @@ bool instance_dire_maul::CheckAllGeneratorsDestroyed()
 void instance_dire_maul::ProcessForceFieldOpening()
 {
     // 'Open' the force field
-    DoUseDoorOrButton(GO_FORCEFIELD);
+    SetDoorStateExplicit(instance, GO_FORCEFIELD, true);
 
     // Let the summoners attack Immol'Thar
     Creature* pImmolThar = GetSingleCreatureFromStorage(NPC_IMMOLTHAR);

@@ -1040,6 +1040,13 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
     }
 
 #ifdef ENABLE_PLAYERBOTS
+    static bool const karaAudit = std::getenv("BOT_KARA_AUDIT") != nullptr;
+    if (karaAudit && victim->GetMapId() == 532 && victim->GetTypeId() == TYPEID_PLAYER
+        && !static_cast<Player*>(victim)->isRealPlayer() && damage)
+        sLog.outError("[KARA-DAMAGE] tick=%u inst=%u guid=%u source=%u sourceGuid=%u spell=%u damage=%u hp=%u type=%u repentance=%u xyz=%.2f,%.2f,%.2f",
+            WorldTimer::getMSTime(), victim->GetInstanceId(), victim->GetGUIDLow(), dealer ? dealer->GetEntry() : 0,
+            dealer ? dealer->GetGUIDLow() : 0, spellInfo ? spellInfo->Id : 0, damage, victim->GetHealth(), uint32(damagetype),
+            uint32(victim->HasAura(29511)), victim->GetPositionX(), victim->GetPositionY(), victim->GetPositionZ());
     // [rewards 2026-10-19] 非坦克受伤：受害者是 bot 玩家 ⇒ 累计承伤（离线与坦克一起扣分）
     if (victim->GetTypeId() == TYPEID_PLAYER && !static_cast<Player*>(victim)->isRealPlayer())
         static_cast<Player*>(victim)->botDamageTaken += damage;

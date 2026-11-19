@@ -26,6 +26,11 @@ EndScriptData */
 #include "Spells/Scripts/SpellScript.h"
 #include "World/WorldStateDefines.h"
 
+// Hellmaw can only be unbanished when every Cabal Ritualist is gone from the instance. The set
+// used to be cleaned on death only, so one stale entry (despawn / reset without a death event)
+// blocked the event forever. Recheck periodically instead of trusting a single death event.
+static const uint32 HELLMAW_RECHECK_INTERVAL = 5000;
+
 /* Shadow Labyrinth encounters:
 1 - Ambassador Hellmaw event
 2 - Blackheart the Inciter event
@@ -41,6 +46,11 @@ instance_shadow_labyrinth::instance_shadow_labyrinth(Map* pMap) : ScriptedInstan
 void instance_shadow_labyrinth::Initialize()
 {
     memset(&m_auiEncounter, 0, sizeof(m_auiEncounter));
+
+    // a fresh instance has no registered ritualists and nothing pending for Hellmaw
+    m_sRitualistsAliveGUIDSet.clear();
+    m_uiHellmawRecheckTimer = HELLMAW_RECHECK_INTERVAL;
+    m_bHellmawUnbanishRequested = false;
 }
 
 void instance_shadow_labyrinth::OnObjectCreate(GameObject* pGo)
@@ -86,7 +96,7 @@ void instance_shadow_labyrinth::SetData(uint32 uiType, uint32 uiData)
 
         case TYPE_INCITER:
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_REFECTORY_DOOR);
+                SetDoorStateExplicit(instance, GO_REFECTORY_DOOR, true);
             m_auiEncounter[1] = uiData;
             break;
 
@@ -137,7 +147,13 @@ void instance_shadow_labyrinth::SetData64(uint32 uiData, uint64 uiGuid)
     // Note: this is handled in Acid. The purpose is check which Cabal Ritualists is alive, in case of server reset
     // The function is triggered by eventAI on generic timer
     if (uiData == DATA_CABAL_RITUALIST)
-        m_sRitualistsAliveGUIDSet.insert(ObjectGuid(uiGuid));
+    {
+        ObjectGuid ritualistGuid(uiGuid);
+        if (m_sRitualistsAliveGUIDSet.insert(ritualistGuid).second)
+            sLog.outError("[SL-HELLMAW] op=register guid=%u alive_set=%u unbanished=%u diff=%u",
+                ritualistGuid.GetCounter(), uint32(m_sRitualistsAliveGUIDSet.size()),
+                uint32(IsHellmawUnbanished()), uint32(instance->IsRegularDifficulty() ? 0 : 1));
+    }
 }
 
 void instance_shadow_labyrinth::OnCreatureDeath(Creature* pCreature)
@@ -145,12 +161,17 @@ void instance_shadow_labyrinth::OnCreatureDeath(Creature* pCreature)
     // unbanish Hellmaw when all Cabal Ritualists are dead
     if (pCreature->GetEntry() == NPC_CABAL_RITUALIST)
     {
-        m_sRitualistsAliveGUIDSet.erase(pCreature->GetObjectGuid());
+        const size_t removed = m_sRitualistsAliveGUIDSet.erase(pCreature->GetObjectGuid());
+        Creature* hellmaw = GetSingleCreatureFromStorage(NPC_HELLMAW);
+        sLog.outError("[SL-HELLMAW] op=death guid=%u removed=%u alive_set=%u unbanished=%u aura=%u combat=%u diff=%u",
+            pCreature->GetGUIDLow(), uint32(removed), uint32(m_sRitualistsAliveGUIDSet.size()),
+            uint32(IsHellmawUnbanished()), uint32(hellmaw != nullptr && hellmaw->HasAura(SPELL_BANISH)),
+            uint32(hellmaw != nullptr && hellmaw->IsInCombat()), uint32(instance->IsRegularDifficulty() ? 0 : 1));
         // TODO: Make containment beam collapse when a group of ritualists dies
 
         if (m_sRitualistsAliveGUIDSet.empty())
         {
-            if (Creature* hellmaw = GetSingleCreatureFromStorage(NPC_HELLMAW))
+            if (hellmaw)
                 hellmaw->AI()->SendAIEvent(AI_EVENT_CUSTOM_A, hellmaw, hellmaw);
 
             GuidVector containmentVector;
@@ -162,6 +183,104 @@ void instance_shadow_labyrinth::OnCreatureDeath(Creature* pCreature)
             }
         }
     }
+}
+
+// A registered ritualist that leaves the world without dying (instance reset, grid unload,
+// scripted despawn, respawn with a new ObjectGuid) used to stay in the alive set forever,
+// which blocked the Hellmaw unbanish permanently. Drop it here as well.
+void instance_shadow_labyrinth::OnCreatureDespawn(Creature* pCreature)
+{
+    if (pCreature->GetEntry() != NPC_CABAL_RITUALIST)
+        return;
+
+    const size_t removed = m_sRitualistsAliveGUIDSet.erase(pCreature->GetObjectGuid());
+
+    Creature* hellmaw = GetSingleCreatureFromStorage(NPC_HELLMAW);
+    sLog.outError("[SL-HELLMAW] op=despawn guid=%u removed=%u alive_set=%u unbanished=%u aura=%u combat=%u diff=%u",
+        pCreature->GetGUIDLow(), uint32(removed), uint32(m_sRitualistsAliveGUIDSet.size()),
+        uint32(IsHellmawUnbanished()), uint32(hellmaw != nullptr && hellmaw->HasAura(SPELL_BANISH)),
+        uint32(hellmaw != nullptr && hellmaw->IsInCombat()), uint32(instance->IsRegularDifficulty() ? 0 : 1));
+
+    // the periodic recheck delivers the unbanish event from now on; do not keep a stale request
+    if (m_sRitualistsAliveGUIDSet.empty())
+        m_bHellmawUnbanishRequested = false;
+}
+
+void instance_shadow_labyrinth::Update(const uint32 diff)
+{
+    if (m_uiHellmawRecheckTimer <= diff)
+    {
+        m_uiHellmawRecheckTimer = HELLMAW_RECHECK_INTERVAL;
+        RecheckHellmawUnbanish();
+    }
+    else
+        m_uiHellmawRecheckTimer -= diff;
+}
+
+// The unbanish used to be driven by a single AI event from the last ritualist death; if that
+// event was ever lost the boss stayed banished with nothing left to retry. Recheck the existing
+// condition (the ritualist set must be empty - unchanged) while the boss is still banished and
+// out of combat, and re-send the original event at most once per stuck episode.
+// The alive set is fed by the ritualist EventAI timer and is normally cleaned on death. An entry
+// can survive its creature (despawn, grid unload, respawn with a new ObjectGuid, heroic-only
+// spawn that never becomes killable), and then the set never becomes empty. Drop such entries
+// before evaluating the condition - a ritualist that is loaded again alive simply registers
+// itself again on its next out-of-combat tick.
+void instance_shadow_labyrinth::PruneHellmawRitualists()
+{
+    uint32 uiPruned = 0;
+
+    for (GuidSet::iterator itr = m_sRitualistsAliveGUIDSet.begin(); itr != m_sRitualistsAliveGUIDSet.end();)
+    {
+        Creature* ritualist = instance->GetCreature(*itr);
+        if (!ritualist || !ritualist->IsAlive())
+        {
+            itr = m_sRitualistsAliveGUIDSet.erase(itr);
+            ++uiPruned;
+        }
+        else
+            ++itr;
+    }
+
+    if (uiPruned)
+        sLog.outError("[SL-HELLMAW] op=prune pruned=%u alive_set=%u unbanished=%u diff=%u",
+            uiPruned, uint32(m_sRitualistsAliveGUIDSet.size()), uint32(IsHellmawUnbanished()),
+            uint32(instance->IsRegularDifficulty() ? 0 : 1));
+}
+
+void instance_shadow_labyrinth::RecheckHellmawUnbanish()
+{
+    if (GetData(TYPE_HELLMAW) == DONE)
+        return;
+
+    PruneHellmawRitualists();
+
+    Creature* hellmaw = GetSingleCreatureFromStorage(NPC_HELLMAW);
+    if (!hellmaw || !hellmaw->IsAlive())
+        return;
+
+    if (hellmaw->IsInCombat())
+        return;
+
+    const bool hasBanish = hellmaw->HasAura(SPELL_BANISH);
+    if (!hasBanish)
+    {
+        m_bHellmawUnbanishRequested = false;
+        return;
+    }
+
+    if (!IsHellmawUnbanished())
+        return;
+
+    if (m_bHellmawUnbanishRequested)
+        return;
+
+    m_bHellmawUnbanishRequested = true;
+    sLog.outError("[SL-HELLMAW] op=recheck guid=%u alive_set=%u unbanished=%u aura=%u combat=%u diff=%u",
+        hellmaw->GetGUIDLow(), uint32(m_sRitualistsAliveGUIDSet.size()), uint32(IsHellmawUnbanished()),
+        uint32(hasBanish), uint32(hellmaw->IsInCombat()), uint32(instance->IsRegularDifficulty() ? 0 : 1));
+
+    hellmaw->AI()->SendAIEvent(AI_EVENT_CUSTOM_A, hellmaw, hellmaw);
 }
 
 void instance_shadow_labyrinth::OnCreatureRespawn(Creature* creature)

@@ -162,6 +162,34 @@ void instance_karazhan::OnCreatureCreate(Creature* pCreature)
     }
 }
 
+void instance_karazhan::OnCreatureEnterCombat(Creature* pCreature)
+{
+    // The opera performance starts when its bosses become hostile - either through Barnes escort
+    // waypoint 10 (SetData IN_PROGRESS) or through a direct pull that skips the intro. Close the
+    // arena barrier here too, so a pull cannot leave it open. The barrier setter is idempotent, and
+    // this deliberately does not change the encounter state itself.
+    if (!pCreature || GetData(TYPE_OPERA) == DONE)
+        return;
+
+    bool isOperaBoss = false;
+    for (uint32 entry : OPERA_BOSS_ENTRIES)
+    {
+        if (pCreature->GetEntry() == entry)
+        {
+            isOperaBoss = true;
+            break;
+        }
+    }
+    if (!isOperaBoss)
+        return;
+
+    DoSetOperaBarrierDoor(GO_STAGE_DOOR_LEFT, false);
+
+    if (GameObject* pDoor = GetSingleGameObjectFromStorage(GO_STAGE_DOOR_LEFT))
+        sLog.outString("[OPERA-BARRIER-ENGAGE] entry=%u state=%u locked=%u", pCreature->GetEntry(),
+            uint32(pDoor->GetGoState()), uint32(pDoor->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED)));
+}
+
 void instance_karazhan::OnObjectCreate(GameObject* pGo)
 {
     switch (pGo->GetEntry())
@@ -272,14 +300,10 @@ void instance_karazhan::SetData(uint32 uiType, uint32 uiData)
             m_auiEncounter[uiType] = uiData;
             if (uiData == IN_PROGRESS)
                 m_uiOzDeathCount = 0;
-            if (uiData == FAIL)
-            {
-                DoUseDoorOrButton(GO_STAGE_DOOR_LEFT);
-            }
             if (uiData == DONE)
             {
-                DoUseDoorOrButton(GO_STAGE_DOOR_LEFT);
-                DoUseDoorOrButton(GO_STAGE_DOOR_RIGHT);
+                DoSetOperaBarrierDoor(GO_STAGE_DOOR_LEFT, true);
+                DoSetOperaBarrierDoor(GO_STAGE_DOOR_RIGHT, true);
                 DoToggleGameObjectFlags(GO_SERVANTS_ACCESS_DOOR, GO_FLAG_LOCKED, false);
                 DoToggleGameObjectFlags(GO_SIDE_ENTRANCE_DOOR, GO_FLAG_LOCKED, false);
                 // 直接打开露台门（不要用 DoUseDoorOrButton）
@@ -288,6 +312,16 @@ void instance_karazhan::SetData(uint32 uiType, uint32 uiData)
                 if (GameObject* pDoor2 = GetSingleGameObjectFromStorage(GO_MASTERS_TERRACE_DOOR_2))
                     pDoor2->SetGoState(GO_STATE_ACTIVE);
             }
+            // The stage doors are the opera arena barrier. They used to be driven only by
+            // DoUseDoorOrButton() from Barnes escort waypoints 1 (open door) and 9 (close door);
+            // that is a toggle, so a door the players already opened to walk in was closed at
+            // waypoint 1 and opened again at waypoint 9 - the barrier was left open exactly when
+            // the encounter started. Set the state explicitly so that any encounter start closes
+            // and locks the barrier and fail/kill opens it again.
+            if (uiData == IN_PROGRESS)
+                DoSetOperaBarrierDoor(GO_STAGE_DOOR_LEFT, false);
+            else if (uiData == FAIL)
+                DoSetOperaBarrierDoor(GO_STAGE_DOOR_LEFT, true);
             // Explicit state is idempotent; never toggle a live arena barrier.
             if (GameObject* curtain = GetSingleGameObjectFromStorage(GO_STAGE_CURTAIN))
             {
@@ -326,7 +360,7 @@ void instance_karazhan::SetData(uint32 uiType, uint32 uiData)
             break;
         case TYPE_NETHERSPITE:
             m_auiEncounter[uiType] = uiData;
-            DoUseDoorOrButton(GO_MASSIVE_DOOR);
+            SetDoorStateExplicit(instance, GO_MASSIVE_DOOR, uiData == FAIL || uiData == DONE, true);
             break;
         case TYPE_CHESS:
             if (uiData == DONE)
@@ -341,7 +375,7 @@ void instance_karazhan::SetData(uint32 uiType, uint32 uiData)
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_MALCHEZZAR:
-            DoUseDoorOrButton(GO_NETHERSPACE_DOOR);
+            SetDoorStateExplicit(instance, GO_NETHERSPACE_DOOR, uiData == FAIL || uiData == DONE, true);
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_NIGHTBANE:
@@ -710,7 +744,7 @@ void instance_karazhan::DoFinishChessEvent()
     // doors and loot are not handled for friendly games
     if (GetData(TYPE_CHESS) != SPECIAL)
     {
-        DoUseDoorOrButton(GO_GAMESMANS_HALL_EXIT_DOOR);
+        SetDoorStateExplicit(instance, GO_GAMESMANS_HALL_EXIT_DOOR, true);
         DoRespawnGameObject(GO_DUST_COVERED_CHEST, DAY);
         DoToggleGameObjectFlags(GO_DUST_COVERED_CHEST, GO_FLAG_NO_INTERACT, false);
         if (GameObject* chest = GetSingleGameObjectFromStorage(GO_DUST_COVERED_CHEST))
@@ -766,6 +800,33 @@ void instance_karazhan::DoFinishChessEvent()
     m_bFriendlyGame = false;
     m_uiChessResetTimer = 35000;
     m_uiChessEndingTimer = 30000;
+}
+
+// Sets one of the opera stage doors to an explicit, idempotent state. Never toggles: the old
+// DoUseDoorOrButton() calls made the barrier depend on whether the door happened to be open when
+// Barnes started his escort (same defect class as the Nightbane terrace / Aran library doors).
+void instance_karazhan::DoSetOperaBarrierDoor(uint32 uiEntry, bool bOpen)
+{
+    GameObject* pDoor = GetSingleGameObjectFromStorage(uiEntry);
+    if (!pDoor)
+        return;
+
+    pDoor->SetLootState(GO_READY);
+    pDoor->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+    if (bOpen)
+    {
+        pDoor->SetGoState(GO_STATE_ACTIVE);
+        pDoor->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+    }
+    else
+    {
+        pDoor->SetGoState(GO_STATE_READY);
+        pDoor->SetFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+    }
+
+    sLog.outString("[OPERA-BARRIER] entry=%u open=%u state=%u locked=%u inUse=%u", uiEntry, uint32(bOpen),
+        uint32(pDoor->GetGoState()), uint32(pDoor->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED)),
+        uint32(pDoor->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE)));
 }
 
 void instance_karazhan::DoPrepareOperaStage(Creature* pOrganizer)

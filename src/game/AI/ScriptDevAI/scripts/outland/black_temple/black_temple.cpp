@@ -283,21 +283,21 @@ void instance_black_temple::SetData(uint32 type, uint32 data)
             m_auiEncounter[type] = data;
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_NAJENTUS_GATE);
+                SetDoorStateExplicit(instance, GO_NAJENTUS_GATE, true);
                 if (Creature* trigger = GetSingleCreatureFromStorage(NPC_BLACK_TEMPLE_TRIGGER))
                     DoScriptText(EMOTE_OPEN_NAJENTUS_DOOR, trigger);
             }
             break;
         case TYPE_SUPREMUS:
             m_auiEncounter[type] = data;
-            DoUseDoorOrButton(GO_NAJENTUS_GATE);
+            SetDoorStateExplicit(instance, GO_NAJENTUS_GATE, true);
             if (data == DONE)
-                DoUseDoorOrButton(GO_SUPREMUS_DOORS);
+                SetDoorStateExplicit(instance, GO_SUPREMUS_DOORS, true);
             break;
         case TYPE_SHADE:
             m_auiEncounter[type] = data;
             // combat door
-            DoUseDoorOrButton(GO_SHADE_OF_AKAMA);
+            SetDoorStateExplicit(instance, GO_SHADE_OF_AKAMA, true);
             if (data == FAIL)
                 // Despawn channelers on fail
                 for (ObjectGuid guid : m_channelersGuidVector)
@@ -317,7 +317,7 @@ void instance_black_temple::SetData(uint32 type, uint32 data)
             break;
         case TYPE_GOREFIEND:
             m_auiEncounter[type] = data;
-            DoUseDoorOrButton(GO_GOREFIEND_DOOR);
+            SetDoorStateExplicit(instance, GO_GOREFIEND_DOOR, true);
             if (data == DONE)
                 DoOpenPreMotherDoor();
             break;
@@ -326,7 +326,7 @@ void instance_black_temple::SetData(uint32 type, uint32 data)
             if (data == DONE)
             {
                 DoOpenPreMotherDoor();
-                DoUseDoorOrButton(GO_GURTOGG_DOOR);
+                SetDoorStateExplicit(instance, GO_GURTOGG_DOOR, true);
             }
             break;
         case TYPE_RELIQUIARY:
@@ -378,7 +378,7 @@ void instance_black_temple::SetData(uint32 type, uint32 data)
             break;
         case TYPE_SHAHRAZ:
             if (data == DONE)
-                DoUseDoorOrButton(GO_POST_SHAHRAZ_DOOR);
+                SetDoorStateExplicit(instance, GO_POST_SHAHRAZ_DOOR, true);
             m_auiEncounter[type] = data;
             break;
         case TYPE_COUNCIL:
@@ -386,15 +386,15 @@ void instance_black_temple::SetData(uint32 type, uint32 data)
             if (m_auiEncounter[type] == data)
                 return;
             m_auiEncounter[type] = data;
-            DoUseDoorOrButton(GO_COUNCIL_DOOR);
+            SetDoorStateExplicit(instance, GO_COUNCIL_DOOR, true);
             if (data == DONE)
                 DoTeleportAkamaIfCan();
             break;
         case TYPE_ILLIDAN:
             if (data == IN_PROGRESS && GetData(TYPE_COUNCIL) != DONE)
                 BanPlayersIfNoGm("Player engaged Illidan without killing council and Gamemaster being present in instance.");
-            DoUseDoorOrButton(GO_ILLIDAN_DOOR_R);
-            DoUseDoorOrButton(GO_ILLIDAN_DOOR_L);
+            SetDoorStateExplicit(instance, GO_ILLIDAN_DOOR_R, false);
+            SetDoorStateExplicit(instance, GO_ILLIDAN_DOOR_L, false);
             m_auiEncounter[type] = data;
             if (data == FAIL)
             {
@@ -436,7 +436,7 @@ void instance_black_temple::DoOpenPreMotherDoor()
 {
     if (GetData(TYPE_SHADE) == DONE && GetData(TYPE_GOREFIEND) == DONE && GetData(TYPE_BLOODBOIL) == DONE && GetData(TYPE_RELIQUIARY) == DONE)
     {
-        DoUseDoorOrButton(GO_PRE_SHAHRAZ_DOOR);
+        SetDoorStateExplicit(instance, GO_PRE_SHAHRAZ_DOOR, true);
         if (Creature* trigger = GetSingleCreatureFromStorage(NPC_BLACK_TEMPLE_TRIGGER))
             DoScriptText(EMOTE_OPEN_MOTHER_DOOR, trigger);
     }

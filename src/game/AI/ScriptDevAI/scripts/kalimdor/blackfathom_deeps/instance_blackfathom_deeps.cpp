@@ -124,7 +124,7 @@ void instance_blackfathom_deeps::SetData(uint32 uiType, uint32 uiData)
                 ++m_uiWaveCounter;
             }
             else if (uiData == DONE)
-                DoUseDoorOrButton(GO_PORTAL_DOOR);
+                SetDoorStateExplicit(instance, GO_PORTAL_DOOR, true);
             break;
         case TYPE_AQUANIS:
             m_auiEncounter[2] = uiData;

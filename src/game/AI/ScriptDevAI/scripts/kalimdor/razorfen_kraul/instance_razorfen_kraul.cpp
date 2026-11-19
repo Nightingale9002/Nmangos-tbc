@@ -66,7 +66,7 @@ void instance_razorfen_kraul::SetData(uint32 uiType, uint32 uiData)
             if (!m_uiWardKeepersRemaining)
             {
                 m_auiEncounter[0] = uiData;
-                DoUseDoorOrButton(GO_AGATHELOS_WARD);
+                SetDoorStateExplicit(instance, GO_AGATHELOS_WARD, true);
             }
             break;
     }

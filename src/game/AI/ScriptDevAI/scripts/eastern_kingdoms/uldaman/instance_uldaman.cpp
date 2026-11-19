@@ -92,8 +92,8 @@ void instance_uldaman::SetData(uint32 uiType, uint32 uiData)
         case TYPE_ALTAR_EVENT:
             if (uiData == DONE)
             {
-                DoUseDoorOrButton(GO_TEMPLE_DOOR_UPPER);
-                DoUseDoorOrButton(GO_TEMPLE_DOOR_LOWER);
+                SetDoorStateExplicit(instance, GO_TEMPLE_DOOR_UPPER, true);
+                SetDoorStateExplicit(instance, GO_TEMPLE_DOOR_LOWER, true);
             }
             else if (uiData == IN_PROGRESS)
             {
@@ -112,7 +112,7 @@ void instance_uldaman::SetData(uint32 uiType, uint32 uiData)
         case TYPE_ARCHAEDAS:
             if (uiData == DONE)
             {
-                DoUseDoorOrButton(GO_ANCIENT_VAULT);
+                SetDoorStateExplicit(instance, GO_ANCIENT_VAULT, true);
                 DoRespawnGameObject(GO_ANCIENT_TREASURE, HOUR);
             }
             m_auiEncounter[1] = uiData;

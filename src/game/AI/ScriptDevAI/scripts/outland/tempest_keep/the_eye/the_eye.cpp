@@ -128,8 +128,8 @@ void instance_the_eye::SetData(uint32 uiType, uint32 uiData)
             // Don't set the same data twice
             if (m_auiEncounter[uiType] == uiData)
                 break;
-            DoUseDoorOrButton(GO_ARCANE_DOOR_HORIZ_3);
-            DoUseDoorOrButton(GO_ARCANE_DOOR_HORIZ_4);
+            SetDoorStateExplicit(instance, GO_ARCANE_DOOR_HORIZ_3, true);
+            SetDoorStateExplicit(instance, GO_ARCANE_DOOR_HORIZ_4, true);
             if (uiData == FAIL)
             {
                 if (GameObject* pGo = GetSingleGameObjectFromStorage(GO_KAEL_STATUE_LEFT))
@@ -207,10 +207,10 @@ bool instance_the_eye::CheckDoorOpening() const
 
 void instance_the_eye::OpenDoors()
 {
-    DoUseOpenableObject(GO_RAID_DOOR_3, true);
-    DoUseOpenableObject(GO_RAID_DOOR_4, true);
-    DoUseOpenableObject(GO_ARCANE_DOOR_VERT_3, true);
-    DoUseOpenableObject(GO_ARCANE_DOOR_VERT_4, true);
+    SetDoorStateExplicit(instance, GO_RAID_DOOR_3, true);
+    SetDoorStateExplicit(instance, GO_RAID_DOOR_4, true);
+    SetDoorStateExplicit(instance, GO_ARCANE_DOOR_VERT_3, true);
+    SetDoorStateExplicit(instance, GO_ARCANE_DOOR_VERT_4, true);
 }
 
 

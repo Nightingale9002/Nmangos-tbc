@@ -1601,7 +1601,7 @@ struct npc_akama_illidanAI : public CombatAI, private DialogueHelper
                     if (Creature* trigger = m_instance->GetSingleCreatureFromStorage(NPC_ILLIDAN_DOOR_TRIGGER))
                         trigger->CastSpell(trigger, SPELL_ARCANE_EXPL_VISUAL, TRIGGERED_OLD_TRIGGERED);
 
-                    m_instance->DoUseDoorOrButton(GO_ILLIDAN_GATE);
+                    SetDoorStateExplicit(m_creature->GetMap(), GO_ILLIDAN_GATE, true);
                 }
                 break;
             case EMOTE_ONESHOT_SALUTE:

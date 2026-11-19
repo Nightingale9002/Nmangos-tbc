@@ -67,6 +67,7 @@ class instance_shadow_labyrinth : public ScriptedInstance
         void OnCreatureCreate(Creature* pCreature) override;
 
         void OnCreatureDeath(Creature* pCreature) override;
+        void OnCreatureDespawn(Creature* pCreature) override;
         void OnCreatureRespawn(Creature* creature) override;
 
         void OnCreatureGroupDespawn(CreatureGroup* pGroup, Creature* pCreature) override;
@@ -76,16 +77,24 @@ class instance_shadow_labyrinth : public ScriptedInstance
 
         void SetData64(uint32 uiType, uint64 uiGuid) override;
 
+        void Update(const uint32 diff) override;
+
         const char* Save() const override { return m_strInstData.c_str(); }
         void Load(const char* chrIn) override;
 
         bool IsHellmawUnbanished() const { return m_sRitualistsAliveGUIDSet.empty(); }
+        uint32 GetRitualistsAliveCount() const { return uint32(m_sRitualistsAliveGUIDSet.size()); }
 
     private:
+        void RecheckHellmawUnbanish();
+        void PruneHellmawRitualists();
+
         uint32 m_auiEncounter[MAX_ENCOUNTER];
         std::string m_strInstData;
 
         GuidSet m_sRitualistsAliveGUIDSet;
+        uint32 m_uiHellmawRecheckTimer;
+        bool m_bHellmawUnbanishRequested;
 };
 
 #endif

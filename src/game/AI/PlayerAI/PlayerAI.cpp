@@ -19,7 +19,32 @@
 #include "PlayerAI.h"
 #include "Entities/Player.h"
 #include "Spells/SpellMgr.h"
+#include "World/World.h"
 #include <limits>
+
+// Blackheart the Inciter (Shadow Labyrinth): "Incite Chaos" charm. The charm aura (33684,
+// SPELL_AURA_MOD_CHARM) is applied by the inciter trigger NPCs 19300-19304 that the players
+// summon themselves. Only that charm gets a start delay - every other charm source keeps the
+// old immediate behaviour, which is why the scope is keyed on the trigger entry.
+enum PlayerAICharmHold
+{
+    CHARM_START_DELAY_MS        = 3000,
+    SPELL_INCITE_CHAOS_CHARM    = 33684,
+};
+
+static const uint32 InciteChaosTriggerEntries[] = { 19300, 19301, 19302, 19303, 19304 };
+
+static bool IsInciteChaosTrigger(Unit* charmer)
+{
+    if (!charmer || charmer->GetTypeId() != TYPEID_UNIT)
+        return false;
+
+    for (uint32 entry : InciteChaosTriggerEntries)
+        if (charmer->GetEntry() == entry)
+            return true;
+
+    return false;
+}
 
 enum GenericPlayerAIActions
 {
@@ -27,7 +52,8 @@ enum GenericPlayerAIActions
     GENERIC_THREAT_CHANGE = 1001,
 };
 
-PlayerAI::PlayerAI(Player* player) : UnitAI(player), m_player(player), m_spellsDisabled(false)
+PlayerAI::PlayerAI(Player* player) : UnitAI(player), m_player(player), m_spellsDisabled(false),
+    m_executeTargetChange(false), m_charmHoldEndTime(0), m_charmHoldSpellId(0)
 {
     AddCustomAction(GENERIC_ACTION_RESET, true, [&]() { m_spellsDisabled = false; });
     AddCustomAction(GENERIC_THREAT_CHANGE, true, [&]() { m_executeTargetChange = true; });
@@ -100,17 +126,84 @@ void PlayerAI::ExecuteSpells()
 
 void PlayerAI::JustGotCharmed(Unit* charmer)
 {
-    if (charmer->GetFormationSlot())
+    // Blackheart the Inciter: hold the charmed player completely still for a moment before the
+    // charmed-player AI takes over (matches the reference behaviour).
+    if (IsInciteChaosTrigger(charmer))
     {
-        charmer->GetFormationSlot()->GetFormationData()->Add(m_player);
+        StartCharmHold(SPELL_INCITE_CHAOS_CHARM);
+        return;
     }
-    else
+
+    TakeOverCharmedActions(charmer);
+}
+
+// Everything the charmed player normally starts doing right away: follow the charmer and fight.
+void PlayerAI::TakeOverCharmedActions(Unit* charmer)
+{
+    if (charmer && charmer->GetFormationSlot())
+        charmer->GetFormationSlot()->GetFormationData()->Add(m_player);
+    else if (charmer)
         m_player->GetMotionMaster()->MoveFollow(charmer, PET_FOLLOW_DIST, PET_FOLLOW_ANGLE, true);
+
     AttackClosestEnemy();
+}
+
+void PlayerAI::StartCharmHold(uint32 uiSpellId)
+{
+    m_charmHoldEndTime = WorldTimer::getMSTime() + CHARM_START_DELAY_MS;
+    m_charmHoldSpellId = uiSpellId;
+
+    // freeze whatever the player was doing when the charm landed
+    m_player->AttackStop();
+    m_player->InterruptNonMeleeSpells(false);
+    m_player->GetMotionMaster()->Clear(false, true);
+    m_player->GetMotionMaster()->MoveIdle();
+
+    sLog.outString("[CHARM-HOLD] guid=%u spell=%u remain_ms=%u", m_player->GetGUIDLow(),
+        m_charmHoldSpellId, CHARM_START_DELAY_MS);
+}
+
+void PlayerAI::FinishCharmHold(bool bTakeOver)
+{
+    sLog.outString("[CHARM-HOLD] guid=%u spell=%u remain_ms=0", m_player->GetGUIDLow(),
+        m_charmHoldSpellId);
+
+    m_charmHoldEndTime = 0;
+    m_charmHoldSpellId = 0;
+
+    // bTakeOver is false when the charm ended before the delay was over - then there is nothing
+    // left to take over and the player simply gets control back.
+    if (bTakeOver)
+        TakeOverCharmedActions(m_player->GetCharmer());
+}
+
+void PlayerAI::UpdateAI(const uint32 diff)
+{
+    if (m_charmHoldEndTime)
+    {
+        // the charm can end early (dispel, death, trigger despawn): never leave the player frozen
+        if (!m_player->HasCharmer())
+        {
+            FinishCharmHold(false);
+            return;
+        }
+
+        // stay completely still: no movement, facing, target selection, casting or melee
+        if (WorldTimer::getMSTime() < m_charmHoldEndTime)
+            return;
+
+        FinishCharmHold(true);
+    }
+
+    UnitAI::UpdateAI(diff);
 }
 
 void PlayerAI::EnterEvadeMode()
 {
+    // never leave the player frozen when the charm encounter ends while the start delay is pending
+    if (m_charmHoldEndTime)
+        FinishCharmHold(false);
+
     m_player->CombatStopWithPets(true);
     if (Unit* charmer = m_player->GetCharmer())
     {
@@ -125,6 +218,11 @@ void PlayerAI::EnterEvadeMode()
 
 void PlayerAI::AttackClosestEnemy()
 {
+    // the Blackheart inciter trigger calls this straight after the charm lands; keep it inert
+    // while the start delay is still running
+    if (IsCharmHolding())
+        return;
+
     float distance = std::numeric_limits<float>::max();
     AttackSpecificEnemy([&](Unit* enemy, Unit*& closestEnemy) mutable
     {

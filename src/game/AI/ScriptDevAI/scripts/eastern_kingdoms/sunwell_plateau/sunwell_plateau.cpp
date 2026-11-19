@@ -76,7 +76,7 @@ void instance_sunwell_plateau::Initialize()
         if (!muru->IsInCombat() || muru->GetCombatManager().IsEvadingHome())
             return;
 
-        DoUseOpenableObject(GO_MURU_ENTER_GATE, false);
+        SetDoorStateExplicit(instance, GO_MURU_ENTER_GATE, false);
     });
 }
 
@@ -311,9 +311,9 @@ void instance_sunwell_plateau::SetData(uint32 type, uint32 data)
             m_auiEncounter[type] = data;
             if (data != IN_PROGRESS) // closing done delayed on start
             {
-                DoUseOpenableObject(GO_FORCEFIELD, true);
-                DoUseOpenableObject(GO_BOSS_COLLISION_1, true);
-                DoUseOpenableObject(GO_BOSS_COLLISION_2, true);
+                SetDoorStateExplicit(instance, GO_FORCEFIELD, true);
+                SetDoorStateExplicit(instance, GO_BOSS_COLLISION_1, true);
+                SetDoorStateExplicit(instance, GO_BOSS_COLLISION_2, true);
 
             }
             if (data == FAIL)
@@ -393,12 +393,12 @@ void instance_sunwell_plateau::SetData(uint32 type, uint32 data)
                 BanPlayersIfNoGm("Player engaged muru without killing eredar twins and Gamemaster being present in instance.");
             // combat door
             if (data != IN_PROGRESS) // closing done delayed on start
-                DoUseOpenableObject(GO_MURU_ENTER_GATE, true);
+                SetDoorStateExplicit(instance, GO_MURU_ENTER_GATE, true);
             else
                 ResetTimer(ACTION_MURU_DOOR, 10000);
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_MURU_EXIT_GATE);
+                SetDoorStateExplicit(instance, GO_MURU_EXIT_GATE, false);
                 SpawnKiljaeden();
             }
             else if (data == IN_PROGRESS)

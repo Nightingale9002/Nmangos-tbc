@@ -394,7 +394,7 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
                 m_lSkarlocAddsGuids.clear();
 
                 // reset prison door
-                m_pInstance->DoUseDoorOrButton(GO_PRISON_DOOR);
+                SetDoorStateExplicit(m_creature->GetMap(), GO_PRISON_DOOR, false);
                 // respawn the Armorer
                 if (Creature* pArmorer = m_pInstance->GetSingleCreatureFromStorage(NPC_ARMORER))
                     pArmorer->Respawn();
@@ -722,7 +722,7 @@ struct npc_thrall_old_hillsbradAI : public npc_escortAI, private DialogueHelper
         {
             // *** Escort event - Part I - inside the keep ***
             case 1:
-                m_pInstance->DoUseDoorOrButton(GO_PRISON_DOOR);
+                SetDoorStateExplicit(m_creature->GetMap(), GO_PRISON_DOOR, true);
                 break;
             case 9:
                 if (Creature* pArmorer = m_pInstance->GetSingleCreatureFromStorage(NPC_ARMORER))

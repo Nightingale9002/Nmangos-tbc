@@ -249,9 +249,9 @@ struct npc_blastmaster_emi_shortfuseAI : public npc_escortAI
         m_pInstance->SetData(TYPE_GRUBBIS, FAIL);
 
         if (m_bSouthernCaveInOpened)                        // close southern cave-in door
-            m_pInstance->DoUseDoorOrButton(GO_CAVE_IN_SOUTH);
+            SetDoorStateExplicit(m_creature->GetMap(), GO_CAVE_IN_SOUTH, false);
         if (m_bNorthernCaveInOpened)                        // close northern cave-in door
-            m_pInstance->DoUseDoorOrButton(GO_CAVE_IN_NORTH);
+            SetDoorStateExplicit(m_creature->GetMap(), GO_CAVE_IN_NORTH, false);
 
         for (GuidList::const_iterator itr = m_luiSummonedMobGUIDs.begin(); itr != m_luiSummonedMobGUIDs.end(); ++itr)
         {
@@ -279,7 +279,7 @@ struct npc_blastmaster_emi_shortfuseAI : public npc_escortAI
             case 10:
                 // Open Southern Cave-In
                 if (m_pInstance && !m_bSouthernCaveInOpened)
-                    m_pInstance->DoUseDoorOrButton(GO_CAVE_IN_SOUTH);
+                    SetDoorStateExplicit(m_creature->GetMap(), GO_CAVE_IN_SOUTH, true);
                 m_bSouthernCaveInOpened = true;
                 break;
             case 12:
@@ -289,7 +289,7 @@ struct npc_blastmaster_emi_shortfuseAI : public npc_escortAI
                 DoScriptText(SAY_CHARGE_3, m_creature);
                 // Open Northern Cave-In
                 if (m_pInstance && !m_bNorthernCaveInOpened)
-                    m_pInstance->DoUseDoorOrButton(GO_CAVE_IN_NORTH);
+                    SetDoorStateExplicit(m_creature->GetMap(), GO_CAVE_IN_NORTH, true);
                 m_bNorthernCaveInOpened = true;
                 break;
         }
@@ -449,7 +449,7 @@ struct npc_blastmaster_emi_shortfuseAI : public npc_escortAI
                         // Close southern cave-in and let charges explode
                         if (m_pInstance)
                         {
-                            m_pInstance->DoUseDoorOrButton(GO_CAVE_IN_SOUTH);
+                            SetDoorStateExplicit(m_creature->GetMap(), GO_CAVE_IN_SOUTH, false);
                             m_bSouthernCaveInOpened = false;
                             m_pInstance->SetData(TYPE_EXPLOSIVE_CHARGE, DATA_EXPLOSIVE_CHARGE_USE);
                         }
@@ -566,7 +566,7 @@ struct npc_blastmaster_emi_shortfuseAI : public npc_escortAI
                         // Close northern cave-in and let charges explode
                         if (m_pInstance)
                         {
-                            m_pInstance->DoUseDoorOrButton(GO_CAVE_IN_NORTH);
+                            SetDoorStateExplicit(m_creature->GetMap(), GO_CAVE_IN_NORTH, false);
                             m_bNorthernCaveInOpened = false;
                             m_pInstance->SetData(TYPE_EXPLOSIVE_CHARGE, DATA_EXPLOSIVE_CHARGE_USE);
                         }

@@ -116,7 +116,7 @@ void instance_magtheridons_lair::SetData(uint32 uiType, uint32 uiData)
                     break;
                 case DONE:
                     // Reset door on Fail or Done
-                    DoUseOpenableObject(GO_DOODAD_HF_MAG_DOOR01, true);
+                    SetDoorStateExplicit(instance, GO_DOODAD_HF_MAG_DOOR01, true);
                     SetData(TYPE_CHANNELER_EVENT, DONE);
                     break;
                 case IN_PROGRESS:
@@ -209,7 +209,7 @@ void instance_magtheridons_lair::FailBoss()
     SetData(TYPE_CHANNELER_EVENT, NOT_STARTED);
 
     // Reset door on Fail
-    DoUseOpenableObject(GO_DOODAD_HF_MAG_DOOR01, true);
+    SetDoorStateExplicit(instance, GO_DOODAD_HF_MAG_DOOR01, true);
 
     for (GuidList::const_iterator itr = m_lColumnGuidList.begin(); itr != m_lColumnGuidList.end(); ++itr)
     {

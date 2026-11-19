@@ -97,7 +97,7 @@ struct boss_akilzonAI : public CombatAI
         AddCustomAction(AKILZON_WIND_WALL_DELAY, true, [&]()
         {
             if (m_creature->IsInCombat() && !m_creature->GetCombatManager().IsEvadingHome())
-                m_instance->DoUseDoorOrButton(GO_WIND_DOOR);
+                SetDoorStateExplicit(m_creature->GetMap(), GO_WIND_DOOR, true);
         });
         m_creature->GetCombatManager().SetLeashingCheck([](Unit*, float x, float /*y*/, float /*z*/)
         {

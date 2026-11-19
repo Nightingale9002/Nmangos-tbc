@@ -171,7 +171,7 @@ void instance_shadowfang_keep::SetData(uint32 type, uint32 data)
     {
         case TYPE_FREE_NPC:
             if (data == DONE)
-                DoUseDoorOrButton(GO_COURTYARD_DOOR);
+                SetDoorStateExplicit(instance, GO_COURTYARD_DOOR, true);
             m_auiEncounter[0] = data;
             break;
         case TYPE_RETHILGORE:
@@ -192,7 +192,7 @@ void instance_shadowfang_keep::SetData(uint32 type, uint32 data)
             break;
         case TYPE_NANDOS:
             if (data == DONE)
-                DoUseDoorOrButton(GO_ARUGAL_DOOR);
+                SetDoorStateExplicit(instance, GO_ARUGAL_DOOR, true);
             m_auiEncounter[3] = data;
             break;
         case TYPE_INTRO:
@@ -203,7 +203,7 @@ void instance_shadowfang_keep::SetData(uint32 type, uint32 data)
             {
                 m_auiEncounter[5]++;
                 if (m_auiEncounter[5] > 3)
-                    DoUseDoorOrButton(GO_SORCERER_DOOR);
+                    SetDoorStateExplicit(instance, GO_SORCERER_DOOR, true);
             }
             break;
     }

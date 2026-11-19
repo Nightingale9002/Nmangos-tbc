@@ -424,26 +424,26 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
     {
         case TYPE_ANUB_REKHAN:
             m_auiEncounter[type] = data;
-            DoUseDoorOrButton(GO_ARAC_ANUB_DOOR);
+            SetDoorStateExplicit(instance, GO_ARAC_ANUB_DOOR, true);
             if (data == DONE)
-                DoUseDoorOrButton(GO_ARAC_ANUB_GATE);
+                SetDoorStateExplicit(instance, GO_ARAC_ANUB_GATE, true);
             break;
         case TYPE_FAERLINA:
-            DoUseDoorOrButton(GO_ARAC_FAER_WEB);
+            SetDoorStateExplicit(instance, GO_ARAC_FAER_WEB, true);
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_ARAC_FAER_DOOR);
-                DoUseDoorOrButton(GO_ARAC_MAEX_OUTER_DOOR);
+                SetDoorStateExplicit(instance, GO_ARAC_FAER_DOOR, true);
+                SetDoorStateExplicit(instance, GO_ARAC_MAEX_OUTER_DOOR, true);
             }
             m_auiEncounter[type] = data;
             break;
         case TYPE_MAEXXNA:
             m_auiEncounter[type] = data;
-            DoUseDoorOrButton(GO_ARAC_MAEX_INNER_DOOR, data);
+            SetDoorStateExplicit(instance, GO_ARAC_MAEX_INNER_DOOR, true);
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_ARAC_EYE_RAMP);
-                DoUseDoorOrButton(GO_ARAC_EYE_BOSS);
+                SetDoorStateExplicit(instance, GO_ARAC_EYE_RAMP, true);
+                SetDoorStateExplicit(instance, GO_ARAC_EYE_BOSS, true);
                 DoRespawnGameObject(GO_ARAC_PORTAL, 30 * MINUTE);
                 DoToggleGameObjectFlags(GO_ARAC_PORTAL, GO_FLAG_NO_INTERACT, false);
                 m_tauntTimer = 5000;
@@ -451,11 +451,11 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
             break;
         case TYPE_NOTH:
             m_auiEncounter[type] = data;
-            DoUseDoorOrButton(GO_PLAG_NOTH_ENTRY_DOOR);
+            SetDoorStateExplicit(instance, GO_PLAG_NOTH_ENTRY_DOOR, true);
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_PLAG_NOTH_EXIT_DOOR);
-                DoUseDoorOrButton(GO_PLAG_HEIG_ENTRY_DOOR);
+                SetDoorStateExplicit(instance, GO_PLAG_NOTH_EXIT_DOOR, true);
+                SetDoorStateExplicit(instance, GO_PLAG_HEIG_ENTRY_DOOR, true);
             }
             break;
         case TYPE_HEIGAN:
@@ -467,15 +467,15 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
                     door->SetGoState(GO_STATE_ACTIVE);
             }
             if (data == DONE)
-                DoUseDoorOrButton(GO_PLAG_HEIG_EXIT_HALLWAY);
+                SetDoorStateExplicit(instance, GO_PLAG_HEIG_EXIT_HALLWAY, true);
             break;
         case TYPE_LOATHEB:
             m_auiEncounter[type] = data;
-            DoUseDoorOrButton(GO_PLAG_LOAT_DOOR);
+            SetDoorStateExplicit(instance, GO_PLAG_LOAT_DOOR, true);
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_PLAG_EYE_RAMP);
-                DoUseDoorOrButton(GO_PLAG_EYE_BOSS);
+                SetDoorStateExplicit(instance, GO_PLAG_EYE_RAMP, true);
+                SetDoorStateExplicit(instance, GO_PLAG_EYE_BOSS, true);
                 DoRespawnGameObject(GO_PLAG_PORTAL, 30 * MINUTE);
                 DoToggleGameObjectFlags(GO_PLAG_PORTAL, GO_FLAG_NO_INTERACT, false);
                 m_tauntTimer = 5000;
@@ -490,11 +490,11 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
             {
                 case IN_PROGRESS:
                     // Encounter begins: close the gate and start timer to summon unrelenting trainees
-                    DoUseDoorOrButton(GO_MILI_GOTH_ENTRY_GATE);
-                    DoUseDoorOrButton(GO_MILI_GOTH_COMBAT_GATE);
+                    SetDoorStateExplicit(instance, GO_MILI_GOTH_ENTRY_GATE, false, true);
+                    SetDoorStateExplicit(instance, GO_MILI_GOTH_COMBAT_GATE, false, true);
                     break;
                 case SPECIAL:
-                    DoUseDoorOrButton(GO_MILI_GOTH_COMBAT_GATE);
+                    SetDoorStateExplicit(instance, GO_MILI_GOTH_COMBAT_GATE, false);
                     for (auto& spectralGuid : m_spectralSideList)
                     {
                         if (Creature* spectral = instance->GetCreature(spectralGuid))
@@ -508,16 +508,16 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
                     break;
                 case FAIL:
                     if (m_auiEncounter[type] == IN_PROGRESS)
-                        DoUseDoorOrButton(GO_MILI_GOTH_COMBAT_GATE);
-                    DoUseDoorOrButton(GO_MILI_GOTH_ENTRY_GATE);
+                        SetDoorStateExplicit(instance, GO_MILI_GOTH_COMBAT_GATE, true);
+                    SetDoorStateExplicit(instance, GO_MILI_GOTH_ENTRY_GATE, true);
                     break;
                 case DONE:
-                    DoUseDoorOrButton(GO_MILI_GOTH_ENTRY_GATE);
-                    DoUseDoorOrButton(GO_MILI_GOTH_EXIT_GATE);
-                    DoUseDoorOrButton(GO_MILI_HORSEMEN_DOOR);
+                    SetDoorStateExplicit(instance, GO_MILI_GOTH_ENTRY_GATE, true);
+                    SetDoorStateExplicit(instance, GO_MILI_GOTH_EXIT_GATE, true);
+                    SetDoorStateExplicit(instance, GO_MILI_HORSEMEN_DOOR, true);
                     // Open the central gate if Gothik is defeated before doing so
                     if (m_auiEncounter[type] == IN_PROGRESS)
-                        DoUseDoorOrButton(GO_MILI_GOTH_COMBAT_GATE);
+                        SetDoorStateExplicit(instance, GO_MILI_GOTH_COMBAT_GATE, true);
                     StartNextDialogueText(NPC_THANE);
                     break;
             }
@@ -548,7 +548,7 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
                 }
             }
             m_auiEncounter[type] = data;
-            DoUseDoorOrButton(GO_MILI_HORSEMEN_DOOR);
+            SetDoorStateExplicit(instance, GO_MILI_HORSEMEN_DOOR, true);
             // Despawn Horsemen's spirit on FAIL or DONE
             std::vector<uint32> entries = {NPC_SPIRIT_OF_BLAUMEUX, NPC_SPIRIT_OF_MOGRAINE, NPC_SPIRIT_OF_KORTHAZZ, NPC_SPIRIT_OF_ZELIREK};
             for (uint32 entry : entries)
@@ -558,8 +558,8 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
             }
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_MILI_EYE_RAMP);
-                DoUseDoorOrButton(GO_MILI_EYE_BOSS);
+                SetDoorStateExplicit(instance, GO_MILI_EYE_RAMP, true);
+                SetDoorStateExplicit(instance, GO_MILI_EYE_BOSS, true);
                 DoRespawnGameObject(GO_MILI_PORTAL, 30 * MINUTE);
                 DoToggleGameObjectFlags(GO_MILI_PORTAL, GO_FLAG_NO_INTERACT, false);
                 DoRespawnGameObject(GO_CHEST_HORSEMEN_NORM, 30 * MINUTE);
@@ -570,7 +570,7 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
         case TYPE_PATCHWERK:
             m_auiEncounter[type] = data;
             if (data == DONE)
-                DoUseDoorOrButton(GO_CONS_PATH_EXIT_DOOR);
+                SetDoorStateExplicit(instance, GO_CONS_PATH_EXIT_DOOR, true);
             break;
         case TYPE_GROBBULUS:
             m_auiEncounter[type] = data;
@@ -579,8 +579,8 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
             m_auiEncounter[type] = data;
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_CONS_GLUT_EXIT_DOOR);
-                DoUseDoorOrButton(GO_CONS_THAD_DOOR);
+                SetDoorStateExplicit(instance, GO_CONS_GLUT_EXIT_DOOR, true);
+                SetDoorStateExplicit(instance, GO_CONS_THAD_DOOR, true);
             }
             break;
         case TYPE_THADDIUS:
@@ -619,11 +619,11 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
                     feugenTesla->SetGoState(GO_STATE_ACTIVE);
             }
             if (data != SPECIAL)
-                DoUseDoorOrButton(GO_CONS_THAD_DOOR, data);
+                SetDoorStateExplicit(instance, GO_CONS_THAD_DOOR, data == FAIL || data == DONE);
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_CONS_EYE_RAMP);
-                DoUseDoorOrButton(GO_CONS_EYE_BOSS);
+                SetDoorStateExplicit(instance, GO_CONS_EYE_RAMP, true);
+                SetDoorStateExplicit(instance, GO_CONS_EYE_BOSS, true);
                 DoRespawnGameObject(GO_CONS_PORTAL, 30 * MINUTE);
                 DoToggleGameObjectFlags(GO_CONS_PORTAL, GO_FLAG_NO_INTERACT, false);
                 m_tauntTimer = 5000;
@@ -633,7 +633,7 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
             m_auiEncounter[type] = data;
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_KELTHUZAD_WATERFALL_DOOR);
+                SetDoorStateExplicit(instance, GO_KELTHUZAD_WATERFALL_DOOR, true);
                 StartNextDialogueText(NPC_KELTHUZAD);
             }
             // Start Sapph summoning process
@@ -642,7 +642,7 @@ void instance_naxxramas::SetData(uint32 type, uint32 data)
             break;
         case TYPE_KELTHUZAD:
             m_auiEncounter[type] = data;
-            DoUseDoorOrButton(GO_KELTHUZAD_EXIT_DOOR);
+            SetDoorStateExplicit(instance, GO_KELTHUZAD_EXIT_DOOR, false, true);
             if (data == IN_PROGRESS)
             {
                 DoUseDoorOrButton(GO_KELTHUZAD_TRIGGER);

@@ -478,9 +478,9 @@ struct boss_kalecgos_humanoidAI : public CombatAI
             if (!m_creature->IsInCombat() || m_creature->GetCombatManager().IsEvadingHome())
                 return;
             // combat doors
-            m_instance->DoUseDoorOrButton(GO_FORCEFIELD);
-            m_instance->DoUseDoorOrButton(GO_BOSS_COLLISION_1);
-            m_instance->DoUseDoorOrButton(GO_BOSS_COLLISION_2);
+            SetDoorStateExplicit(m_creature->GetMap(), GO_FORCEFIELD, false);
+            SetDoorStateExplicit(m_creature->GetMap(), GO_BOSS_COLLISION_1, false);
+            SetDoorStateExplicit(m_creature->GetMap(), GO_BOSS_COLLISION_2, false);
         });
     }
 

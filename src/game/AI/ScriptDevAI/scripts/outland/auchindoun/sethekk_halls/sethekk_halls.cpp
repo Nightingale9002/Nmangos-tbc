@@ -92,7 +92,7 @@ void instance_sethekk_halls::SetData(uint32 uiType, uint32 uiData)
         case TYPE_IKISS:
             if (uiData == DONE)
             {
-                DoUseDoorOrButton(GO_IKISS_SWING_DOOR, DAY);
+                SetDoorStateExplicit(instance, GO_IKISS_SWING_DOOR, true);
                 DoToggleGameObjectFlags(GO_IKISS_CHEST, GO_FLAG_NO_INTERACT | GO_FLAG_INTERACT_COND, false);
             }
             m_auiEncounter[uiType] = uiData;

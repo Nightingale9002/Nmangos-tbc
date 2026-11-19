@@ -202,7 +202,7 @@ void instance_blackrock_spire::SetData(uint32 uiType, uint32 uiData)
     {
         case TYPE_ROOM_EVENT:
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_EMBERSEER_IN);
+                SetDoorStateExplicit(instance, GO_EMBERSEER_IN, true);
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_EMBERSEER:
@@ -210,7 +210,7 @@ void instance_blackrock_spire::SetData(uint32 uiType, uint32 uiData)
             if (m_auiEncounter[uiType] == uiData)
                 break;
             // Combat door
-            DoUseDoorOrButton(GO_DOORS);
+            SetDoorStateExplicit(instance, GO_DOORS, true);
             // Respawn all incarcerators and reset the runes on FAIL
             if (uiData == FAIL)
             {
@@ -230,7 +230,7 @@ void instance_blackrock_spire::SetData(uint32 uiType, uint32 uiData)
             else if (uiData == DONE)
             {
                 DoUseEmberseerRunes();
-                DoUseDoorOrButton(GO_EMBERSEER_OUT);
+                SetDoorStateExplicit(instance, GO_EMBERSEER_OUT, true);
             }
             m_auiEncounter[uiType] = uiData;
             break;
@@ -247,7 +247,7 @@ void instance_blackrock_spire::SetData(uint32 uiType, uint32 uiData)
             if (m_auiEncounter[uiType] == uiData)
                 break;
             // Combat door
-            DoUseDoorOrButton(GO_GYTH_ENTRY_DOOR);
+            SetDoorStateExplicit(instance, GO_GYTH_ENTRY_DOOR, true);
             // Start event
             if (uiData == IN_PROGRESS)
                 StartNextDialogueText(SAY_NEFARIUS_INTRO_1);
@@ -260,7 +260,7 @@ void instance_blackrock_spire::SetData(uint32 uiType, uint32 uiData)
                     if (pSpectator)
                         pSpectator->ForcedDespawn();
                 }
-                DoUseDoorOrButton(GO_GYTH_EXIT_DOOR);
+                SetDoorStateExplicit(instance, GO_GYTH_EXIT_DOOR, true);
             }
             else if (uiData == FAIL)
             {
@@ -388,8 +388,8 @@ void instance_blackrock_spire::OnCreatureDeath(Creature* pCreature)
             break;
         case NPC_DRAKKISATH:
             SetData(TYPE_DRAKKISATH, DONE);
-            DoUseDoorOrButton(GO_DRAKKISATH_DOOR_1);
-            DoUseDoorOrButton(GO_DRAKKISATH_DOOR_2);
+            SetDoorStateExplicit(instance, GO_DRAKKISATH_DOOR_1, true);
+            SetDoorStateExplicit(instance, GO_DRAKKISATH_DOOR_2, true);
             break;
         case NPC_CHROMATIC_WHELP:
         case NPC_CHROMATIC_DRAGON:
@@ -637,7 +637,7 @@ void instance_blackrock_spire::DoSendNextStadiumWave()
             }
         }
 
-        DoUseDoorOrButton(GO_GYTH_COMBAT_DOOR);
+        SetDoorStateExplicit(instance, GO_GYTH_COMBAT_DOOR, true);
     }
     // All waves are cleared - start Gyth intro
     else if (m_uiStadiumWaves == MAX_STADIUM_WAVES)
@@ -658,7 +658,7 @@ void instance_blackrock_spire::DoSendNextStadiumWave()
         // Set this to 2, because Rend will be summoned later during the fight
         m_uiStadiumMobsAlive = 2;
 
-        DoUseDoorOrButton(GO_GYTH_COMBAT_DOOR);
+        SetDoorStateExplicit(instance, GO_GYTH_COMBAT_DOOR, true);
     }
 
     ++m_uiStadiumWaves;
@@ -754,7 +754,7 @@ void instance_blackrock_spire::Update(uint32 uiDiff)
                     DoUseDoorOrButton(GO_BRAZIER_6);
                     break;
                 case 3:
-                    DoUseDoorOrButton(GO_DRAGONSPINE);
+                    SetDoorStateExplicit(instance, GO_DRAGONSPINE, true);
                     break;
             }
             ++m_uiDragonspineGoCount;

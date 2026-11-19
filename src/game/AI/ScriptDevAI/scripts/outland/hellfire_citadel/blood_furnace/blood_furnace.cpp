@@ -162,13 +162,13 @@ void instance_blood_furnace::SetData(uint32 type, uint32 data)
     {
         case TYPE_THE_MAKER_EVENT:
             if (data == IN_PROGRESS)
-                DoUseDoorOrButton(GO_DOOR_MAKER_FRONT);
+                SetDoorStateExplicit(instance, GO_DOOR_MAKER_FRONT, false);
             if (data == FAIL)
-                DoUseDoorOrButton(GO_DOOR_MAKER_FRONT);
+                SetDoorStateExplicit(instance, GO_DOOR_MAKER_FRONT, true);
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_DOOR_MAKER_FRONT);
-                DoUseDoorOrButton(GO_DOOR_MAKER_REAR);
+                SetDoorStateExplicit(instance, GO_DOOR_MAKER_FRONT, true);
+                SetDoorStateExplicit(instance, GO_DOOR_MAKER_REAR, true);
             }
             m_auiEncounter[type] = data;
             break;
@@ -177,7 +177,7 @@ void instance_blood_furnace::SetData(uint32 type, uint32 data)
                 return;
 
             // Combat door; the exit door is opened in event
-            DoUseDoorOrButton(GO_DOOR_BROGGOK_FRONT);
+            SetDoorStateExplicit(instance, GO_DOOR_BROGGOK_FRONT, true);
             if (data == IN_PROGRESS)
             {
                 if (Creature* broggok = GetSingleCreatureFromStorage(NPC_BROGGOK))
@@ -233,8 +233,8 @@ void instance_blood_furnace::SetData(uint32 type, uint32 data)
         case TYPE_KELIDAN_EVENT:
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_DOOR_KELIDAN_EXIT);
-                DoUseDoorOrButton(GO_DOOR_FINAL_EXIT);
+                SetDoorStateExplicit(instance, GO_DOOR_KELIDAN_EXIT, true);
+                SetDoorStateExplicit(instance, GO_DOOR_FINAL_EXIT, true);
             }
             m_auiEncounter[type] = data;
             break;
@@ -262,7 +262,7 @@ void instance_blood_furnace::DoNextBroggokEventPhase()
     // Open door to the final boss now and move boss to the center of the room
     if (m_uiBroggokEventPhase >= MAX_ORC_WAVES)
     {
-        DoUseDoorOrButton(GO_DOOR_BROGGOK_REAR);
+        SetDoorStateExplicit(instance, GO_DOOR_BROGGOK_REAR, true);
 
         if (Creature* pBroggok = GetSingleCreatureFromStorage(NPC_BROGGOK))
         {

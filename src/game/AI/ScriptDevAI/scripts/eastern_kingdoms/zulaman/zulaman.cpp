@@ -355,7 +355,7 @@ void instance_zulaman::SetData(uint32 type, uint32 data)
             if (data == IN_PROGRESS)
             {
                 DoTimeRunSay(RUN_START);
-                DoUseDoorOrButton(GO_MASSIVE_GATE);
+                SetDoorStateExplicit(instance, GO_MASSIVE_GATE, false);
                 if (m_auiEncounter[TYPE_RUN_EVENT_TIME])
                     SetData(TYPE_RUN_EVENT_TIME, m_auiEncounter[TYPE_RUN_EVENT_TIME]);
                 else
@@ -384,10 +384,10 @@ void instance_zulaman::SetData(uint32 type, uint32 data)
             break;
         case TYPE_AKILZON:
             if (data != IN_PROGRESS) // start is done with delay in boss script
-                DoUseOpenableObject(GO_WIND_DOOR, true);
+                SetDoorStateExplicit(instance, GO_WIND_DOOR, true);
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_ALTAR_TORCH_EAGLE_GOD);
+                SetDoorStateExplicit(instance, GO_ALTAR_TORCH_EAGLE_GOD, true);
                 if (m_auiEncounter[TYPE_EVENT_RUN] == IN_PROGRESS)
                 {
                     m_auiEncounter[TYPE_RUN_EVENT_TIME] += 10; // Add 10 minutes
@@ -400,7 +400,7 @@ void instance_zulaman::SetData(uint32 type, uint32 data)
         case TYPE_NALORAKK:
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_ALTAR_TORCH_BEAR_GOD);
+                SetDoorStateExplicit(instance, GO_ALTAR_TORCH_BEAR_GOD, true);
                 if (m_auiEncounter[TYPE_EVENT_RUN] == IN_PROGRESS)
                 {
                     m_auiEncounter[TYPE_RUN_EVENT_TIME] += 15; // Add 15 minutes
@@ -413,25 +413,25 @@ void instance_zulaman::SetData(uint32 type, uint32 data)
         case TYPE_JANALAI:
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_ALTAR_TORCH_DRAGONHAWK_GOD);
+                SetDoorStateExplicit(instance, GO_ALTAR_TORCH_DRAGONHAWK_GOD, true);
                 if (m_auiEncounter[TYPE_EVENT_RUN] == IN_PROGRESS)
                     DoChestEvent(INDEX_JANALAI);
             }
             m_auiEncounter[type] = data;
             break;
         case TYPE_HALAZZI:
-            DoUseDoorOrButton(GO_LYNX_TEMPLE_ENTRANCE);
+            SetDoorStateExplicit(instance, GO_LYNX_TEMPLE_ENTRANCE, true);
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_ALTAR_TORCH_LYNX_GOD);
-                DoUseDoorOrButton(GO_LYNX_TEMPLE_EXIT);
+                SetDoorStateExplicit(instance, GO_ALTAR_TORCH_LYNX_GOD, true);
+                SetDoorStateExplicit(instance, GO_LYNX_TEMPLE_EXIT, true);
                 if (m_auiEncounter[TYPE_EVENT_RUN] == IN_PROGRESS)
                     DoChestEvent(INDEX_HALAZZI);
             }
             m_auiEncounter[type] = data;
             break;
         case TYPE_MALACRASS:
-            DoUseDoorOrButton(GO_HEXLORD_ENTRANCE);
+            SetDoorStateExplicit(instance, GO_HEXLORD_ENTRANCE, true);
             if (data == DONE)
                 if (GameObject* pDoor = GetSingleGameObjectFromStorage(GO_WOODEN_DOOR))
                     pDoor->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
@@ -443,7 +443,7 @@ void instance_zulaman::SetData(uint32 type, uint32 data)
         case TYPE_ZULJIN:
             m_auiEncounter[type] = data;
             if (data != IN_PROGRESS) // start is done with delay in boss script
-                DoUseOpenableObject(GO_FIRE_DOOR, true);
+                SetDoorStateExplicit(instance, GO_FIRE_DOOR, true);
             if (data == DONE)
             {
                 if (Creature* pTanzar = instance->GetCreature(m_aEventNpcInfo[INDEX_NALORAKK].npGuid))
@@ -500,7 +500,7 @@ void instance_zulaman::SetData(uint32 type, uint32 data)
 
     if (data == DONE && GetKilledPreBosses() == 4 && (type == TYPE_AKILZON || type == TYPE_NALORAKK || type == TYPE_JANALAI || type == TYPE_HALAZZI))
     {
-        DoUseDoorOrButton(GO_HEXLORD_ENTRANCE);
+        SetDoorStateExplicit(instance, GO_HEXLORD_ENTRANCE, true);
         if (m_auiEncounter[TYPE_EVENT_RUN] == IN_PROGRESS)
             SetData(TYPE_EVENT_RUN, DONE);
         SpawnMalacrass();
@@ -808,7 +808,7 @@ void instance_zulaman::ExecuteChatCommand(ChatHandler* handler, char* args)
     std::string val = result;
     if (val == "spawnmalacrass")
     {
-        DoUseDoorOrButton(GO_HEXLORD_ENTRANCE);
+        SetDoorStateExplicit(instance, GO_HEXLORD_ENTRANCE, true);
         SpawnMalacrass();
     }
     else if (val == "opengongdoor")

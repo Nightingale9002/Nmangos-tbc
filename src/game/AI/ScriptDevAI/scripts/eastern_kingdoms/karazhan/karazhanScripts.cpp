@@ -132,8 +132,9 @@ struct npc_barnesAI : public npc_escortAI, private DialogueHelper
         {
             case 1:
                 DoCastSpellIfCan(m_creature, SPELL_TUXEDO);
+                // Open the barrier explicitly: a toggle would close a door the raid already opened.
                 if (m_pInstance->GetData(TYPE_OPERA) != FAIL)
-                    m_pInstance->DoUseDoorOrButton(GO_STAGE_DOOR_LEFT);
+                    m_pInstance->DoSetOperaBarrierDoor(GO_STAGE_DOOR_LEFT, true);
                 break;
             case 5:
                 switch (m_pInstance->GetData(TYPE_OPERA_PERFORMANCE))
@@ -152,7 +153,8 @@ struct npc_barnesAI : public npc_escortAI, private DialogueHelper
                 m_creature->SummonCreature(NPC_SPOTLIGHT, -10895.27f, -1782.626f, 90.55984f, 3.769911f, TEMPSPAWN_DEAD_DESPAWN, 0);
                 break;
             case 9:
-                m_pInstance->DoUseDoorOrButton(GO_STAGE_DOOR_LEFT);
+                // "close door" waypoint: explicit close + lock, never a toggle.
+                m_pInstance->DoSetOperaBarrierDoor(GO_STAGE_DOOR_LEFT, false);
                 break;
             case 10:
                 m_pInstance->DoPrepareOperaStage(m_creature);

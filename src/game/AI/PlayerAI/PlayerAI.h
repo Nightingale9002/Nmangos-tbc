@@ -33,9 +33,15 @@ class PlayerAI : public UnitAI
     public:
         PlayerAI(Player* player);
 
+        void UpdateAI(const uint32 diff) override;
+
         void JustGotCharmed(Unit* charmer) override;
         void EnterEvadeMode() override;
         void AttackClosestEnemy() override;
+
+        // Start delay of the Blackheart the Inciter "Incite Chaos" charm is still running:
+        // the charmed player must not move, turn, select a target, cast or swing.
+        bool IsCharmHolding() const { return m_charmHoldEndTime != 0; }
 
         void RequestFollow(Unit* followee) override;
 
@@ -57,9 +63,14 @@ class PlayerAI : public UnitAI
         };
 
         void ExecuteSpells();
+        void TakeOverCharmedActions(Unit* charmer);
+        void StartCharmHold(uint32 uiSpellId);
+        void FinishCharmHold(bool bTakeOver);
         std::vector<SpellData> m_playerSpellActions;
         bool m_spellsDisabled;
         bool m_executeTargetChange;
+        uint32 m_charmHoldEndTime;
+        uint32 m_charmHoldSpellId;
 };
 
 UnitAI* GetClassAI(Classes playerClass, Player* player);

@@ -147,7 +147,7 @@ void instance_blackwing_lair::SetData(uint32 uiType, uint32 uiData)
     // Close de the main gate whenever an event starts (if it is not already open)
     if (m_bIsMainGateOpen && (uiData == IN_PROGRESS || uiData == SPECIAL))
     {
-        DoUseDoorOrButton(GO_DOOR_RAZORGORE_ENTER);
+        SetDoorStateExplicit(instance, GO_DOOR_RAZORGORE_ENTER, false);
         m_bIsMainGateOpen = false;
     }
     // If an encounter is failed or won, open the main gate only if it is currently closed and no other event is in progress
@@ -162,7 +162,7 @@ void instance_blackwing_lair::SetData(uint32 uiType, uint32 uiData)
 
         if (!ShouldKeepGateClosed)
         {
-            DoUseDoorOrButton(GO_DOOR_RAZORGORE_ENTER);
+            SetDoorStateExplicit(instance, GO_DOOR_RAZORGORE_ENTER, true);
             m_bIsMainGateOpen = true;
         }
     }
@@ -172,7 +172,7 @@ void instance_blackwing_lair::SetData(uint32 uiType, uint32 uiData)
         case TYPE_RAZORGORE:
             m_auiEncounter[uiType] = uiData;
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_DOOR_RAZORGORE_EXIT);
+                SetDoorStateExplicit(instance, GO_DOOR_RAZORGORE_EXIT, true);
             else if (uiData == FAIL)
             {
                 m_uiResetTimer = 30000;
@@ -209,14 +209,14 @@ void instance_blackwing_lair::SetData(uint32 uiType, uint32 uiData)
             m_auiEncounter[uiType] = uiData;
             // Prevent the players from running back to the first room; use if the encounter is not special
             if (uiData != SPECIAL)
-                DoUseDoorOrButton(GO_DOOR_RAZORGORE_EXIT);
+                SetDoorStateExplicit(instance, GO_DOOR_RAZORGORE_EXIT, true);
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_DOOR_VAELASTRASZ);
+                SetDoorStateExplicit(instance, GO_DOOR_VAELASTRASZ, true);
             break;
         case TYPE_LASHLAYER:
             m_auiEncounter[uiType] = uiData;
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_DOOR_LASHLAYER);
+                SetDoorStateExplicit(instance, GO_DOOR_LASHLAYER, true);
             break;
         case TYPE_FIREMAW:
         case TYPE_EBONROC:
@@ -226,7 +226,7 @@ void instance_blackwing_lair::SetData(uint32 uiType, uint32 uiData)
         case TYPE_CHROMAGGUS:
             m_auiEncounter[uiType] = uiData;
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_DOOR_CHROMAGGUS_EXIT);
+                SetDoorStateExplicit(instance, GO_DOOR_CHROMAGGUS_EXIT, true);
             break;
         case TYPE_NEFARIAN:
             // If epic quest for Scepter of the Shifting Sands is in progress when Nefarian is defeated mark it as complete
@@ -249,7 +249,7 @@ void instance_blackwing_lair::SetData(uint32 uiType, uint32 uiData)
             if (uiData == FAIL)
                 CleanupNefarianStage(true); // Cleanup the drakonid bones, dead drakonids count and spawners
             m_auiEncounter[uiType] = uiData;
-            DoUseDoorOrButton(GO_DOOR_NEFARIAN);
+            SetDoorStateExplicit(instance, GO_DOOR_NEFARIAN, true);
             break;
         case TYPE_QUEST_SCEPTER:
             m_auiEncounter[uiType] = uiData;

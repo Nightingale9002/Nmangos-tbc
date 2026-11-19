@@ -111,7 +111,7 @@ void instance_steam_vault::SetData(uint32 uiType, uint32 uiData)
             if (uiData == SPECIAL)
             {
                 if (GetData(TYPE_MEKGINEER_STEAMRIGGER) == SPECIAL)
-                    DoUseDoorOrButton(GO_MAIN_CHAMBERS_DOOR);
+                    SetDoorStateExplicit(instance, GO_MAIN_CHAMBERS_DOOR, true);
             }
             m_auiEncounter[uiType] = uiData;
             break;
@@ -121,7 +121,7 @@ void instance_steam_vault::SetData(uint32 uiType, uint32 uiData)
             if (uiData == SPECIAL)
             {
                 if (GetData(TYPE_HYDROMANCER_THESPIA) == SPECIAL)
-                    DoUseDoorOrButton(GO_MAIN_CHAMBERS_DOOR);
+                    SetDoorStateExplicit(instance, GO_MAIN_CHAMBERS_DOOR, true);
             }
             m_auiEncounter[uiType] = uiData;
             break;

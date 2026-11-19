@@ -382,13 +382,13 @@ struct npc_grimstoneAI : public npc_escortAI
             // Reset Doors
             if (m_uiEventPhase >= 10)                       // North Gate is opened
             {
-                m_pInstance->DoUseDoorOrButton(GO_ARENA_2);
-                m_pInstance->DoUseDoorOrButton(GO_ARENA_4);
+                SetDoorStateExplicit(m_creature->GetMap(), GO_ARENA_2, true);
+                SetDoorStateExplicit(m_creature->GetMap(), GO_ARENA_4, true);
             }
             else if (m_uiEventPhase >= 4)                   // East Gate is opened
             {
-                m_pInstance->DoUseDoorOrButton(GO_ARENA_1);
-                m_pInstance->DoUseDoorOrButton(GO_ARENA_4);
+                SetDoorStateExplicit(m_creature->GetMap(), GO_ARENA_1, true);
+                SetDoorStateExplicit(m_creature->GetMap(), GO_ARENA_4, true);
             }
 
             // Despawn Summoned Mobs
@@ -414,7 +414,7 @@ struct npc_grimstoneAI : public npc_escortAI
                         // Shortly after spawn, start walking
                         DoCastSpellIfCan(m_creature, SPELL_ASHCROMBES_TELEPORT_A, CAST_TRIGGERED);
                         DoScriptText(SAY_START_2, m_creature);
-                        m_pInstance->DoUseDoorOrButton(GO_ARENA_4);
+                        SetDoorStateExplicit(m_creature->GetMap(), GO_ARENA_4, true);
                         // Some of the NPCs in the crowd do cheer emote at event start
                         // we randomly select 25% of the NPCs to do this
                         m_pInstance->GetArenaCrowdGuid(m_lArenaCrowd);
@@ -442,7 +442,7 @@ struct npc_grimstoneAI : public npc_escortAI
                         // Open East Gate
                         DoCastSpellIfCan(m_creature, SPELL_ARENA_FLASH_A, CAST_TRIGGERED);
                         DoCastSpellIfCan(m_creature, SPELL_ARENA_FLASH_B, CAST_TRIGGERED);
-                        m_pInstance->DoUseDoorOrButton(GO_ARENA_1);
+                        SetDoorStateExplicit(m_creature->GetMap(), GO_ARENA_1, true);
                         m_uiEventTimer = 3000;
                         break;
                     case 4:
@@ -467,7 +467,7 @@ struct npc_grimstoneAI : public npc_escortAI
                         DoScriptText(SAY_SUMMON_BOSS_2, m_creature);
                         m_creature->SetVisibility(VISIBILITY_ON);
                         DoCastSpellIfCan(m_creature, SPELL_ASHCROMBES_TELEPORT_A, CAST_TRIGGERED);
-                        m_pInstance->DoUseDoorOrButton(GO_ARENA_1);
+                        SetDoorStateExplicit(m_creature->GetMap(), GO_ARENA_1, true);
                         SetEscortPaused(false);
                         m_uiEventTimer = 0;
                         break;
@@ -475,7 +475,7 @@ struct npc_grimstoneAI : public npc_escortAI
                         // Open North Gate
                         DoCastSpellIfCan(m_creature, SPELL_ARENA_FLASH_C, CAST_TRIGGERED);
                         DoCastSpellIfCan(m_creature, SPELL_ARENA_FLASH_D, CAST_TRIGGERED);
-                        m_pInstance->DoUseDoorOrButton(GO_ARENA_2);
+                        SetDoorStateExplicit(m_creature->GetMap(), GO_ARENA_2, true);
                         m_uiEventTimer = 5000;
                         break;
                     case 10:
@@ -504,9 +504,9 @@ struct npc_grimstoneAI : public npc_escortAI
                     case 12:
                         // Boss dead
                         m_lSummonedGUIDList.clear();
-                        m_pInstance->DoUseDoorOrButton(GO_ARENA_2);
-                        m_pInstance->DoUseDoorOrButton(GO_ARENA_3);
-                        m_pInstance->DoUseDoorOrButton(GO_ARENA_4);
+                        SetDoorStateExplicit(m_creature->GetMap(), GO_ARENA_2, true);
+                        SetDoorStateExplicit(m_creature->GetMap(), GO_ARENA_3, true);
+                        SetDoorStateExplicit(m_creature->GetMap(), GO_ARENA_4, true);
                         SetEscortPaused(false);
                         m_uiEventTimer = 0;
                         break;
@@ -961,7 +961,7 @@ struct npc_rocknotAI : public npc_escortAI
                 m_pInstance->GetBarDoorIsOpen(m_bIsDoorOpen);
                 if (!m_bIsDoorOpen)
                 {
-                    m_pInstance->DoUseDoorOrButton(GO_BAR_DOOR);
+                    SetDoorStateExplicit(m_creature->GetMap(), GO_BAR_DOOR, true);
                     m_pInstance->SetBarDoorIsOpen();
                 }
                 if (pNagmara)
@@ -1217,7 +1217,7 @@ struct npc_marshal_windsorAI : public npc_escortAI
                 break;
             case 16:
                 if (m_pInstance)
-                    m_pInstance->DoUseDoorOrButton(GO_JAIL_DOOR_SUPPLY);
+                    SetDoorStateExplicit(m_creature->GetMap(), GO_JAIL_DOOR_SUPPLY, true);
                 break;
             case 18:
                 DoScriptText(SAY_WINDSOR_EQUIPMENT_2, m_creature);

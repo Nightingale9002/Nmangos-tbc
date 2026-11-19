@@ -99,12 +99,12 @@ void instance_mechanar::SetData(uint32 type, uint32 data)
     {
         case TYPE_GYRO_KILL:
             if (data == DONE)
-                DoUseDoorOrButton(GO_MOARG_DOOR_1);
+                SetDoorStateExplicit(instance, GO_MOARG_DOOR_1, true);
             m_auiEncounter[type] = data;
             break;
         case TYPE_IRON_HAND:
             if (data == DONE)
-                DoUseDoorOrButton(GO_MOARG_DOOR_2);
+                SetDoorStateExplicit(instance, GO_MOARG_DOOR_2, true);
             m_auiEncounter[type] = data;
             break;
         case TYPE_CAPACITUS:
@@ -112,7 +112,7 @@ void instance_mechanar::SetData(uint32 type, uint32 data)
             break;
         case TYPE_SEPETHREA:
             m_auiEncounter[type] = data;
-            DoUseDoorOrButton(GO_NETHERMANCER_DOOR);
+            SetDoorStateExplicit(instance, GO_NETHERMANCER_DOOR, true);
             break;
         case TYPE_BRIDGEEVENT:
             m_auiEncounter[type] = data;

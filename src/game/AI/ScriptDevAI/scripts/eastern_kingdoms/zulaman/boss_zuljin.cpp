@@ -162,7 +162,7 @@ struct boss_zuljinAI : public CombatAI
         AddCustomAction(ZULJIN_FIRE_WALL_DELAY, true, [&]()
         {
             if (m_creature->IsInCombat() && !m_creature->GetCombatManager().IsEvadingHome())
-                m_instance->DoUseDoorOrButton(GO_FIRE_DOOR);
+                SetDoorStateExplicit(m_creature->GetMap(), GO_FIRE_DOOR, true);
         }, TIMER_COMBAT_COMBAT);
         m_creature->SetWalk(true);
         m_creature->GetCombatManager().SetLeashingCheck([&](Unit*, float /*x*/, float y, float /*z*/)

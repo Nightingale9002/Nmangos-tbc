@@ -842,9 +842,9 @@ struct boss_kaelthasAI : public CombatAI
                 m_creature->CastSpell(nullptr, SPELL_EXPLODE, TRIGGERED_NONE);
                 m_creature->RemoveAurasDueToSpell(SPELL_NETHERBEAM_EXPLODE);
                 m_creature->RemoveAurasDueToSpell(SPELL_NETHERBEAM);
-                m_instance->DoUseDoorOrButton(GO_KAEL_STATUE_RIGHT);
-                m_instance->DoUseDoorOrButton(GO_BRIDGE_WINDOW);
-                m_instance->DoUseDoorOrButton(GO_KAEL_STATUE_LEFT);
+                SetDoorStateExplicit(m_creature->GetMap(), GO_KAEL_STATUE_RIGHT, true);
+                SetDoorStateExplicit(m_creature->GetMap(), GO_BRIDGE_WINDOW, true);
+                SetDoorStateExplicit(m_creature->GetMap(), GO_KAEL_STATUE_LEFT, true);
 #ifdef FAST_TRANSITION_TIMERS
                 timer = 500;
 #else

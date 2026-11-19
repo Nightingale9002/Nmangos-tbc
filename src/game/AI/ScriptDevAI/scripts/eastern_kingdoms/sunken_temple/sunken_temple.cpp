@@ -164,7 +164,7 @@ void instance_sunken_temple::SetData(uint32 uiType, uint32 uiData)
                 if (!m_uiProtectorsRemaining)
                 {
                     m_auiEncounter[uiType] = uiData;
-                    DoUseDoorOrButton(GO_JAMMALAN_BARRIER);
+                    SetDoorStateExplicit(instance, GO_JAMMALAN_BARRIER, true);
                     // Intro yell
                     DoOrSimulateScriptTextForThisInstance(SAY_JAMMALAN_INTRO, NPC_JAMMALAN);
 
@@ -280,8 +280,8 @@ void instance_sunken_temple::SetData(uint32 uiType, uint32 uiData)
             }
 
             // Use combat doors
-            DoUseDoorOrButton(GO_HAKKAR_DOOR_1);
-            DoUseDoorOrButton(GO_HAKKAR_DOOR_2);
+            SetDoorStateExplicit(instance, GO_HAKKAR_DOOR_1, true);
+            SetDoorStateExplicit(instance, GO_HAKKAR_DOOR_2, true);
 
             m_auiEncounter[uiType] = uiData;
 

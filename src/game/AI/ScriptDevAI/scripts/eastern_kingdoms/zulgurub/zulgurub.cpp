@@ -118,9 +118,9 @@ void instance_zulgurub::SetData(uint32 type, uint32 data)
         case TYPE_ARLOKK:
             m_auiEncounter[type] = data;
             if (data == DONE || data == FAIL)
-                DoUseOpenableObject(GO_FORCEFIELD, true);
+                SetDoorStateExplicit(instance, GO_FORCEFIELD, true);
             else if (data == IN_PROGRESS)
-                DoUseOpenableObject(GO_FORCEFIELD, false);
+                SetDoorStateExplicit(instance, GO_FORCEFIELD, false);
 
             if (data == DONE)
                 RemoveHakkarPowerStack();

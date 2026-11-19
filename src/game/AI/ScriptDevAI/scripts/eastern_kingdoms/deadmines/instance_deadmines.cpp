@@ -137,7 +137,7 @@ void instance_deadmines::SetData(uint32 uiType, uint32 uiData)
         case TYPE_RHAHKZOR:
         {
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_FACTORY_DOOR);
+                SetDoorStateExplicit(instance, GO_FACTORY_DOOR, true);
 
             SpawnFirstDeadminesPatrol();
             m_auiEncounter[uiType] = uiData;
@@ -146,7 +146,7 @@ void instance_deadmines::SetData(uint32 uiType, uint32 uiData)
         case TYPE_SNEED:
         {
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_MAST_ROOM_DOOR);
+                SetDoorStateExplicit(instance, GO_MAST_ROOM_DOOR, true);
 
             SpawnSecondDeadminesPatrol();
             m_auiEncounter[uiType] = uiData;
@@ -155,7 +155,7 @@ void instance_deadmines::SetData(uint32 uiType, uint32 uiData)
         case TYPE_GILNID:
         {
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_FOUNDRY_DOOR);
+                SetDoorStateExplicit(instance, GO_FOUNDRY_DOOR, true);
 
             SpawnThirdDeadminesPatrol();
             m_auiEncounter[uiType] = uiData;
@@ -225,7 +225,7 @@ void instance_deadmines::Update(uint32 uiDiff)
             switch (m_uiDoorStep)
             {
                 case 0:
-                    DoUseDoorOrButton(GO_IRON_CLAD_DOOR, 0, true);
+                    SetDoorStateExplicit(instance, GO_IRON_CLAD_DOOR, true);
 
                     if (Creature* pMrSmite = GetSingleCreatureFromStorage(NPC_MR_SMITE))
                         DoScriptText(INST_SAY_ALARM1, pMrSmite);

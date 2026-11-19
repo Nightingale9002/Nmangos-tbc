@@ -77,11 +77,11 @@ void instance_gruuls_lair::SetData(uint32 uiType, uint32 uiData)
     {
         case TYPE_MAULGAR_EVENT:            
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_PORT_GRONN_1);
+                SetDoorStateExplicit(instance, GO_PORT_GRONN_1, true);
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_GRUUL_EVENT:
-            DoUseDoorOrButton(GO_PORT_GRONN_2);
+            SetDoorStateExplicit(instance, GO_PORT_GRONN_2, true);
             m_auiEncounter[uiType] = uiData;
             break;
     }

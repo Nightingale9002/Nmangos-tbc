@@ -95,6 +95,8 @@ struct boss_ambassador_hellmawAI : public CombatAI
 
     void Unbanish()
     {
+        const bool bAuraBefore = m_creature->HasAura(SPELL_BANISH);
+
         // yell intro and remove banish aura
         m_creature->PlayDirectSound(10473, PlayPacketSettings::ZONE);
         m_creature->GetMotionMaster()->Clear(false, true);
@@ -102,10 +104,22 @@ struct boss_ambassador_hellmawAI : public CombatAI
         m_creature->RemoveAurasDueToSpell(SPELL_BANISH);
         m_creature->SetCanEnterCombat(true);
         SetReactState(REACT_AGGRESSIVE);
+
+        sLog.outError("[SL-HELLMAW] op=unbanish guid=%u alive_set=%u unbanished=%u aura=%u aura_before=%u combat=%u diff=%u",
+            m_creature->GetGUIDLow(), m_instance ? m_instance->GetRitualistsAliveCount() : 0,
+            uint32(m_instance != nullptr && m_instance->IsHellmawUnbanished()),
+            uint32(m_creature->HasAura(SPELL_BANISH)), uint32(bAuraBefore),
+            uint32(m_creature->IsInCombat()), uint32(m_isRegularMode ? 0 : 1));
     }
 
     void UnbanishCheck()
     {
+        sLog.outError("[SL-HELLMAW] op=check guid=%u alive_set=%u unbanished=%u aura=%u combat=%u diff=%u",
+            m_creature->GetGUIDLow(), m_instance ? m_instance->GetRitualistsAliveCount() : 0,
+            uint32(m_instance != nullptr && m_instance->IsHellmawUnbanished()),
+            uint32(m_creature->HasAura(SPELL_BANISH)), uint32(m_creature->IsInCombat()),
+            uint32(m_isRegularMode ? 0 : 1));
+
         if (m_instance && !m_instance->IsHellmawUnbanished())
         {
             DoCastSpellIfCan(nullptr, SPELL_BANISH, CAST_TRIGGERED | CAST_AURA_NOT_PRESENT);

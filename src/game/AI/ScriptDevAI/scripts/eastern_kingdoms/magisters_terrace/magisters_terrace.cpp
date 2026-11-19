@@ -107,7 +107,7 @@ void instance_magisters_terrace::SetData(uint32 uiType, uint32 uiData)
     {
         case TYPE_SELIN:
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_SELIN_DOOR);
+                SetDoorStateExplicit(instance, GO_SELIN_DOOR, true);
             if (uiData == FAIL)
             {
                 // Reset crystals - respawn and kill is handled by creature linking
@@ -142,21 +142,21 @@ void instance_magisters_terrace::SetData(uint32 uiType, uint32 uiData)
                         pTemp->InterruptNonMeleeSpells(false);
                 }
             }
-            DoUseDoorOrButton(GO_SELIN_ENCOUNTER_DOOR);
+            SetDoorStateExplicit(instance, GO_SELIN_ENCOUNTER_DOOR, false, true);
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_VEXALLUS:
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_VEXALLUS_DOOR);
+                SetDoorStateExplicit(instance, GO_VEXALLUS_DOOR, true);
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_DELRISSA:
             if (uiData == DONE)
-                DoUseDoorOrButton(GO_DELRISSA_DOOR);
+                SetDoorStateExplicit(instance, GO_DELRISSA_DOOR, true);
             m_auiEncounter[uiType] = uiData;
             break;
         case TYPE_KAELTHAS:
-            DoUseDoorOrButton(GO_KAEL_DOOR);
+            SetDoorStateExplicit(instance, GO_KAEL_DOOR, true);
             if (uiData == DONE)
                 DoToggleGameObjectFlags(GO_ESCAPE_QUEL_DANAS, GO_FLAG_NO_INTERACT, false);
             m_auiEncounter[uiType] = uiData;

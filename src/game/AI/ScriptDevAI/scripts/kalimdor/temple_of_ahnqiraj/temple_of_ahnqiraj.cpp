@@ -217,7 +217,7 @@ void instance_temple_of_ahnqiraj::SetData(uint32 type, uint32 data)
         case TYPE_SKERAM:
             m_encounter[type] = data;
             if (data == DONE)
-                DoUseDoorOrButton(GO_SKERAM_GATE);
+                SetDoorStateExplicit(instance, GO_SKERAM_GATE, true);
             break;
         case TYPE_BUG_TRIO:
             if (data > SPECIAL)
@@ -274,7 +274,7 @@ void instance_temple_of_ahnqiraj::SetData(uint32 type, uint32 data)
         case TYPE_HUHURAN:
             m_encounter[type] = data;
             if (data == DONE)
-                DoUseDoorOrButton(GO_TWINS_ENTER_DOOR);
+                SetDoorStateExplicit(instance, GO_TWINS_ENTER_DOOR, true);
             break;
         case TYPE_TWINS:
             // Either of the twins can set data, so return to avoid double changing
@@ -282,9 +282,9 @@ void instance_temple_of_ahnqiraj::SetData(uint32 type, uint32 data)
                 return;
 
             m_encounter[type] = data;
-            DoUseDoorOrButton(GO_TWINS_ENTER_DOOR);
+            SetDoorStateExplicit(instance, GO_TWINS_ENTER_DOOR, true);
             if (data == DONE)
-                DoUseDoorOrButton(GO_TWINS_EXIT_DOOR);
+                SetDoorStateExplicit(instance, GO_TWINS_EXIT_DOOR, true);
             break;
         case TYPE_OURO:
             switch (data)

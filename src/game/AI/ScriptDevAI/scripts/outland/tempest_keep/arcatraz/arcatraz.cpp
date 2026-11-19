@@ -218,7 +218,7 @@ void instance_arcatraz::SetData(uint32 type, uint32 data)
             }
             if (data == DONE)
             {
-                DoUseDoorOrButton(GO_CORE_SECURITY_FIELD_BETA);
+                SetDoorStateExplicit(instance, GO_CORE_SECURITY_FIELD_BETA, true);
 
                 // Soccothares taunts after Dalliah dies
                 if (GetData(TYPE_SOCCOTHRATES) != DONE)
@@ -241,7 +241,7 @@ void instance_arcatraz::SetData(uint32 type, uint32 data)
                 }
             }
             if (data == DONE)
-                DoUseDoorOrButton(GO_CORE_SECURITY_FIELD_ALPHA);
+                SetDoorStateExplicit(instance, GO_CORE_SECURITY_FIELD_ALPHA, true);
             m_auiEncounter[type] = data;
             break;
         case TYPE_HARBINGERSKYRISS:
@@ -272,7 +272,7 @@ void instance_arcatraz::SetData(uint32 type, uint32 data)
             if (data == IN_PROGRESS)
             {
                 StartNextDialogueText(YELL_MELLICHAR_INTRO1);
-                DoUseDoorOrButton(GO_SEAL_SPHERE);
+                SetDoorStateExplicit(instance, GO_SEAL_SPHERE, false);
             }
             if (data == DONE)
             {
@@ -296,35 +296,35 @@ void instance_arcatraz::SetData(uint32 type, uint32 data)
             break;
         case TYPE_WARDEN_1:
             if (data == IN_PROGRESS)
-                DoUseDoorOrButton(GO_POD_ALPHA);
+                SetDoorStateExplicit(instance, GO_POD_ALPHA, false);
             if (data == DONE)
                 StartNextDialogueText(YELL_MELLICHAR_RELEASE2);
             m_auiEncounter[type] = data;
             break;
         case TYPE_WARDEN_2:
             if (data == IN_PROGRESS)
-                DoUseDoorOrButton(GO_POD_BETA);
+                SetDoorStateExplicit(instance, GO_POD_BETA, false);
             if (data == DONE)
                 StartNextDialogueText(YELL_MELLICHAR_RELEASE3);
             m_auiEncounter[type] = data;
             break;
         case TYPE_WARDEN_3:
             if (data == IN_PROGRESS)
-                DoUseDoorOrButton(GO_POD_DELTA);
+                SetDoorStateExplicit(instance, GO_POD_DELTA, false);
             if (data == DONE)
                 StartNextDialogueText(YELL_MELLICHAR_RELEASE4);
             m_auiEncounter[type] = data;
             break;
         case TYPE_WARDEN_4:
             if (data == IN_PROGRESS)
-                DoUseDoorOrButton(GO_POD_GAMMA);
+                SetDoorStateExplicit(instance, GO_POD_GAMMA, false);
             if (data == DONE)
                 StartNextDialogueText(YELL_MELLICHAR_RELEASE5);
             m_auiEncounter[type] = data;
             break;
         case TYPE_WARDEN_5:
             if (data == IN_PROGRESS)
-                DoUseDoorOrButton(GO_POD_OMEGA);
+                SetDoorStateExplicit(instance, GO_POD_OMEGA, false);
             m_auiEncounter[type] = data;
             break;
     }
@@ -453,7 +453,7 @@ void instance_arcatraz::JustDidDialogueStep(int32 dialogueEntry)
                 skyriss->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PLAYER);
                 mellichar->CastSpell(nullptr, SPELL_QUIET_SUICIDE, TRIGGERED_NONE);
             }
-            DoUseDoorOrButton(GO_SEAL_SPHERE);
+            SetDoorStateExplicit(instance, GO_SEAL_SPHERE, true);
             break;
     }
 }
